@@ -2,10 +2,22 @@
 
 import { useEffect, useState } from 'react';
 
+interface SchedulerJob {
+    name: string;
+    schedule: string;
+    lastRun: string | null;
+    nextRun: string | null;
+    enabled: boolean;
+    running: boolean;
+}
+
 export default function SettingsPage() {
     const [settings, setSettings] = useState<Record<string, string>>({});
     const [editValues, setEditValues] = useState<Record<string, string>>({});
     const [saved, setSaved] = useState(false);
+    const [syncing, setSyncing] = useState<string | null>(null);
+    const [syncResult, setSyncResult] = useState<string | null>(null);
+    const [schedulerJobs, setSchedulerJobs] = useState<SchedulerJob[]>([]);
 
     useEffect(() => {
         fetch('/api/settings')
@@ -14,6 +26,10 @@ export default function SettingsPage() {
                 setSettings(data.settings || {});
                 setEditValues(data.settings || {});
             });
+        fetch('/api/cron')
+            .then(r => r.json())
+            .then(data => setSchedulerJobs(data.jobs || []))
+            .catch(() => { });
     }, []);
 
     const saveSettings = async () => {
@@ -26,13 +42,53 @@ export default function SettingsPage() {
         setTimeout(() => setSaved(false), 2000);
     };
 
+    const triggerSync = async (type: string, endpoint: string) => {
+        setSyncing(type);
+        setSyncResult(null);
+        try {
+            const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const data = await res.json();
+            if (data.errors?.length) {
+                setSyncResult(`⚠️ ${data.errors[0]}`);
+            } else if (data.synced !== undefined) {
+                setSyncResult(`✅ Synced ${data.synced} items`);
+            } else if (data.collected !== undefined) {
+                setSyncResult(`✅ Collected ${data.collected} apps`);
+            } else {
+                setSyncResult('✅ Done');
+            }
+        } catch (err) {
+            setSyncResult(`❌ ${String(err)}`);
+        }
+        setSyncing(null);
+        setTimeout(() => setSyncResult(null), 5000);
+    };
+
+    const triggerJob = async (jobName: string) => {
+        setSyncing(jobName);
+        try {
+            await fetch('/api/cron', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job: jobName }),
+            });
+            // Refresh status
+            const res = await fetch('/api/cron');
+            const data = await res.json();
+            setSchedulerJobs(data.jobs || []);
+        } catch { /* ignore */ }
+        setSyncing(null);
+    };
+
     const groups = [
         {
-            title: '🔑 API Keys',
-            description: 'Connect your accounts',
+            title: '🔑 API Keys & Accounts',
+            description: 'Connect your services',
             fields: [
                 { key: 'gemini_api_key', label: 'Gemini API Key', type: 'password', placeholder: 'AIzaSy...' },
                 { key: 'github_pat', label: 'GitHub Personal Access Token', type: 'password', placeholder: 'ghp_...' },
+                { key: 'github_username', label: 'GitHub Username', type: 'text', placeholder: 'your-username' },
+                { key: 'calendar_ics_url', label: 'Google Calendar ICS URL', type: 'text', placeholder: 'https://calendar.google.com/calendar/ical/...' },
             ]
         },
         {
@@ -62,6 +118,15 @@ export default function SettingsPage() {
             ]
         },
     ];
+
+    const jobLabels: Record<string, { icon: string; label: string }> = {
+        morning_brief: { icon: '🌅', label: 'Morning Brief' },
+        daily_summary: { icon: '📝', label: 'Daily Summary' },
+        deep_analysis: { icon: '🧠', label: 'Deep Analysis' },
+        github_sync: { icon: '🐙', label: 'GitHub Sync' },
+        calendar_sync: { icon: '📅', label: 'Calendar Sync' },
+        screen_time: { icon: '🖥️', label: 'Screen Time' },
+    };
 
     return (
         <div className="max-w-[700px] mx-auto animate-fade-in">
@@ -99,6 +164,88 @@ export default function SettingsPage() {
                     </div>
                 ))}
 
+                {/* Sync Actions */}
+                <div className="card">
+                    <h3 className="font-semibold mb-1">🔄 Data Sync</h3>
+                    <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Manually trigger data syncs</p>
+                    <div className="flex flex-wrap gap-3">
+                        <button
+                            className="btn"
+                            onClick={() => triggerSync('github', '/api/github')}
+                            disabled={syncing === 'github'}
+                            style={{ background: 'rgba(110,84,148,0.2)', border: '1px solid rgba(110,84,148,0.3)', color: '#b48eff', cursor: 'pointer' }}
+                        >
+                            {syncing === 'github' ? '⏳ Syncing...' : '🐙 Sync GitHub'}
+                        </button>
+                        <button
+                            className="btn"
+                            onClick={() => triggerSync('calendar', '/api/calendar')}
+                            disabled={syncing === 'calendar'}
+                            style={{ background: 'rgba(66,133,244,0.15)', border: '1px solid rgba(66,133,244,0.3)', color: '#6fb3ff', cursor: 'pointer' }}
+                        >
+                            {syncing === 'calendar' ? '⏳ Syncing...' : '📅 Sync Calendar'}
+                        </button>
+                        <button
+                            className="btn"
+                            onClick={() => triggerSync('screentime', '/api/screentime')}
+                            disabled={syncing === 'screentime'}
+                            style={{ background: 'rgba(52,199,89,0.15)', border: '1px solid rgba(52,199,89,0.3)', color: '#34c759', cursor: 'pointer' }}
+                        >
+                            {syncing === 'screentime' ? '⏳ Collecting...' : '🖥️ Collect Screen Time'}
+                        </button>
+                    </div>
+                    {syncResult && (
+                        <p className="text-xs mt-3" style={{ color: syncResult.startsWith('✅') ? '#34c759' : syncResult.startsWith('⚠️') ? '#ff9f0a' : '#ff453a' }}>
+                            {syncResult}
+                        </p>
+                    )}
+                </div>
+
+                {/* Scheduler Status */}
+                <div className="card">
+                    <h3 className="font-semibold mb-1">⚡ Scheduler</h3>
+                    <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Automated background jobs</p>
+                    <div className="space-y-3">
+                        {schedulerJobs.length > 0 ? schedulerJobs.map(job => {
+                            const info = jobLabels[job.name] || { icon: '⚙️', label: job.name };
+                            return (
+                                <div key={job.name} style={{
+                                    display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                                    background: '#0a0a12', borderRadius: 8, border: '1px solid #1a1a2e'
+                                }}>
+                                    <span style={{ fontSize: 18 }}>{info.icon}</span>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <span className="text-sm font-medium">{info.label}</span>
+                                            <span className="text-xs" style={{ color: '#555570' }}>{job.schedule}</span>
+                                        </div>
+                                        <p className="text-xs" style={{ color: '#555570' }}>
+                                            {job.lastRun
+                                                ? `Last: ${new Date(job.lastRun).toLocaleTimeString()}`
+                                                : 'Never run'}
+                                        </p>
+                                    </div>
+                                    <button
+                                        onClick={() => triggerJob(job.name)}
+                                        disabled={syncing === job.name || job.running}
+                                        style={{
+                                            padding: '4px 12px', fontSize: 11, borderRadius: 4,
+                                            background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)',
+                                            color: '#818cf8', cursor: 'pointer',
+                                        }}
+                                    >
+                                        {job.running || syncing === job.name ? '⏳' : '▶ Run'}
+                                    </button>
+                                </div>
+                            );
+                        }) : (
+                            <p className="text-xs" style={{ color: '#555570' }}>
+                                Scheduler will initialize on first API call. Visit any page to start.
+                            </p>
+                        )}
+                    </div>
+                </div>
+
                 {/* Domain Lists */}
                 <div className="card">
                     <h3 className="font-semibold mb-1">🌐 Domain Classification</h3>
@@ -128,6 +275,25 @@ export default function SettingsPage() {
                                 placeholder='["github.com", "stackoverflow.com"]'
                             />
                         </div>
+                    </div>
+                </div>
+
+                {/* Auto-Start */}
+                <div className="card">
+                    <h3 className="font-semibold mb-1">🚀 Auto-Start</h3>
+                    <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+                        Start LifeOS automatically on login
+                    </p>
+                    <div style={{ padding: 12, background: '#0a0a12', borderRadius: 8, border: '1px solid #1a1a2e' }}>
+                        <p className="text-xs" style={{ color: '#8888a0' }}>
+                            Run the following command to install auto-start:
+                        </p>
+                        <code className="text-xs block mt-2" style={{
+                            padding: '8px 12px', background: '#12121a', borderRadius: 6,
+                            color: '#e0e0f0', wordBreak: 'break-all', fontFamily: 'monospace',
+                        }}>
+                            bash scripts/install-launchagent.sh
+                        </code>
                     </div>
                 </div>
             </div>

@@ -67,6 +67,7 @@ interface InsightData {
     insight: string;
     actionable_tip: string;
     severity: string;
+    feedback: string | null;
     created_at: string;
 }
 
@@ -148,6 +149,15 @@ export default function InsightsPage() {
 
     const deleteGoal = async (id: number) => {
         await fetch(`/api/goals?id=${id}`, { method: 'DELETE' });
+        await loadData();
+    };
+
+    const sendFeedback = async (insightId: number, feedback: 'helpful' | 'not_helpful') => {
+        await fetch('/api/behavior', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'insight_feedback', insight_id: insightId, feedback }),
+        });
         await loadData();
     };
 
@@ -426,7 +436,7 @@ export default function InsightsPage() {
                                         }} />
                                     </div>
                                     <div style={{ fontSize: 10, color: '#8888a0', marginTop: 2 }}>
-                                        {key === 'work' && `CV: ${Math.round(dim.cv * 100) / 100} · trend: ${(dim as { trend: string }).trend}`}
+                                        {key === 'work' && `CV: ${Math.round((dim as ConsistencyData['dimensions']['work']).cv * 100) / 100} · trend: ${(dim as ConsistencyData['dimensions']['work']).trend}`}
                                         {key === 'habits' && `${Math.round((dim as ConsistencyData['dimensions']['habits']).rate * 100)}% rate · ${(dim as ConsistencyData['dimensions']['habits']).streakCurrent}d streak (best: ${(dim as ConsistencyData['dimensions']['habits']).streakLongest}d)`}
                                         {key === 'tasks' && `${Math.round((dim as ConsistencyData['dimensions']['tasks']).completionRate * 100)}% completion · ${(dim as ConsistencyData['dimensions']['tasks']).avgPerDay}/day avg`}
                                         {key === 'focus' && `${(dim as ConsistencyData['dimensions']['focus']).avgDeepMinutes}m avg deep work · CV: ${Math.round((dim as ConsistencyData['dimensions']['focus']).cv * 100) / 100}`}
@@ -585,7 +595,8 @@ export default function InsightsPage() {
             {/* ═══════════════════════════════════════════════ */}
             {activeTab === 'insights' && (
                 <>
-                    <h2 style={{ margin: '0 0 20px', fontWeight: 700, fontSize: 20 }}>💡 AI Behavioral Insights</h2>
+                    <h2 style={{ margin: '0 0 8px', fontWeight: 700, fontSize: 20 }}>💡 AI Behavioral Insights</h2>
+                    <p style={{ color: '#8888a0', fontSize: 12, marginTop: 0, marginBottom: 20 }}>Rate insights to help the AI learn what&apos;s useful — it adapts based on your feedback.</p>
                     {insights && insights.length > 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                             {insights.map(ins => (
@@ -603,7 +614,25 @@ export default function InsightsPage() {
                                         </span>
                                     </div>
                                     <p style={{ margin: '0 0 6px', color: '#e0e0f0', fontSize: 14 }}>{ins.insight}</p>
-                                    {ins.actionable_tip && <p style={{ margin: 0, color: '#8888a0', fontSize: 12 }}>💡 {ins.actionable_tip}</p>}
+                                    {ins.actionable_tip && <p style={{ margin: '0 0 8px', color: '#8888a0', fontSize: 12 }}>💡 {ins.actionable_tip}</p>}
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                        {ins.feedback ? (
+                                            <span style={{ fontSize: 11, color: ins.feedback === 'helpful' ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                                                {ins.feedback === 'helpful' ? '👍 Helpful' : '👎 Not helpful'}
+                                            </span>
+                                        ) : (
+                                            <>
+                                                <button onClick={() => sendFeedback(ins.id, 'helpful')}
+                                                    style={{ padding: '3px 10px', fontSize: 11, background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 4, color: '#22c55e', cursor: 'pointer' }}>
+                                                    👍 Helpful
+                                                </button>
+                                                <button onClick={() => sendFeedback(ins.id, 'not_helpful')}
+                                                    style={{ padding: '3px 10px', fontSize: 11, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 4, color: '#ef4444', cursor: 'pointer' }}>
+                                                    👎 Not useful
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                             ))}
                         </div>

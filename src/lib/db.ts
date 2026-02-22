@@ -217,6 +217,20 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_memory_type ON behavioral_memory(memory_type);
     CREATE INDEX IF NOT EXISTS idx_memory_active ON behavioral_memory(superseded);
+
+    -- Screen time data (macOS app usage)
+    CREATE TABLE IF NOT EXISTS screen_time (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_name TEXT NOT NULL,
+      bundle_id TEXT NOT NULL,
+      usage_seconds INTEGER DEFAULT 0,
+      category TEXT DEFAULT 'neutral',
+      date TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(bundle_id, date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_screentime_date ON screen_time(date);
   `);
 
   // Insert default settings if not present
@@ -226,6 +240,8 @@ function initSchema(db: Database.Database) {
   const defaults: Record<string, string> = {
     gemini_api_key: '',
     github_pat: '',
+    github_username: '',
+    calendar_ics_url: '',
     nudge_threshold_minutes: '15',
     daily_summary_time: '23:00',
     morning_brief_time: '08:00',
