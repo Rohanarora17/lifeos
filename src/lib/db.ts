@@ -61,6 +61,8 @@ function initSchema(db: Database.Database) {
       name TEXT NOT NULL,
       icon TEXT DEFAULT '✅',
       frequency TEXT DEFAULT 'daily' CHECK(frequency IN ('daily','weekly')),
+      goal_metric TEXT DEFAULT 'boolean' CHECK(goal_metric IN ('boolean', 'time')),
+      goal_target INTEGER DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now')),
       archived INTEGER DEFAULT 0
     );
@@ -70,6 +72,7 @@ function initSchema(db: Database.Database) {
       habit_id INTEGER NOT NULL,
       date TEXT NOT NULL,
       completed INTEGER DEFAULT 1,
+      value INTEGER DEFAULT 1,
       FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
       UNIQUE(habit_id, date)
     );
@@ -232,6 +235,11 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_screentime_date ON screen_time(date);
   `);
+
+  // Migrations
+  try { db.prepare('ALTER TABLE habits ADD COLUMN goal_metric TEXT DEFAULT "boolean" CHECK(goal_metric IN ("boolean", "time"))').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE habits ADD COLUMN goal_target INTEGER DEFAULT 1').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE habit_checkins ADD COLUMN value INTEGER DEFAULT 1').run(); } catch (e) { }
 
   // Insert default settings if not present
   const insertSetting = db.prepare(

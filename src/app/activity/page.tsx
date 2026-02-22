@@ -14,6 +14,7 @@ interface Activity {
     duration_seconds: number;
     youtube_video_id: string | null;
     youtube_channel: string | null;
+    ai_classification?: string;
 }
 
 interface Stats {
@@ -41,6 +42,21 @@ export default function ActivityPage() {
         const data = await res.json();
         setActivities(data.activities || []);
         setStats(data.stats || null);
+    };
+
+    const handleCategoryChange = async (id: number, newCategory: string) => {
+        try {
+            const res = await fetch(`/api/activity`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, category: newCategory })
+            });
+            if (res.ok) {
+                fetchActivities(); // Refresh to update UI and stats
+            }
+        } catch (e) {
+            console.error(e);
+        }
     };
 
     const formatTime = (mins: number) => {
@@ -116,7 +132,10 @@ export default function ActivityPage() {
                                     {formatTimestamp(act.started_at)}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm truncate font-medium">
+                                    <p
+                                        className="text-sm truncate font-medium cursor-help"
+                                        title={act.ai_classification ? JSON.parse(act.ai_classification).reasoning : 'No reasoning available'}
+                                    >
                                         {act.youtube_video_id && '🎬 '}
                                         {act.title || act.url}
                                     </p>
@@ -128,11 +147,20 @@ export default function ActivityPage() {
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-3 flex-shrink-0">
-                                    <span className={`badge ${act.category === 'productive' ? 'badge-green' :
-                                            act.category === 'distraction' ? 'badge-red' : 'badge-yellow'
-                                        }`}>
+                                    <span className="text-xs text-muted-foreground hidden sm:block">
                                         {act.subcategory}
                                     </span>
+                                    <select
+                                        className={`text-xs font-semibold px-2 py-1 rounded-md border-none outline-none cursor-pointer ${act.category === 'productive' ? 'badge-green' : act.category === 'distraction' ? 'badge-red' : 'badge-yellow'
+                                            }`}
+                                        value={act.category}
+                                        onChange={(e) => handleCategoryChange(act.id, e.target.value)}
+                                        title="Change category"
+                                    >
+                                        <option value="productive" className="bg-[#1e1e24] text-white">Productive</option>
+                                        <option value="neutral" className="bg-[#1e1e24] text-white">Neutral</option>
+                                        <option value="distraction" className="bg-[#1e1e24] text-white">Distraction</option>
+                                    </select>
                                     <span className="text-sm font-mono w-12 text-right" style={{ color: 'var(--text-muted)' }}>
                                         {act.duration_seconds > 0 ? formatTime(Math.round(act.duration_seconds / 60)) : '—'}
                                     </span>

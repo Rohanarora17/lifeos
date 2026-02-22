@@ -40,13 +40,40 @@ export async function GET(request: NextRequest) {
         const today = new Date().toISOString().split('T')[0];
         const habits = db.prepare(`
       SELECT h.*, 
-        CASE WHEN hc.id IS NOT NULL THEN 1 ELSE 0 END as checked_today,
+        CASE WHEN hc.id IS NOT NULL THEN hc.completed ELSE 0 END as checked_today,
+        COALESCE(hc.value, 0) as today_value,
         (SELECT COUNT(*) FROM habit_checkins WHERE habit_id = h.id AND completed = 1) as total_checkins
       FROM habits h
       LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?
       WHERE h.archived = 0
       ORDER BY h.created_at ASC
-    `).all(today);
+    `).all(today) as any[];
+
+        // Auto-update time-based habits for today
+        const timeHabits = habits.filter(h => h.goal_metric === 'time');
+        if (timeHabits.length > 0) {
+            const productiveMinutes = db.prepare(`
+                SELECT SUM(duration_seconds) / 60 as mins
+                FROM activities WHERE date(started_at) = ? AND category = 'productive'
+            `).get(today) as { mins: number } | undefined;
+
+            const todayProdMins = Math.round(productiveMinutes?.mins || 0);
+
+            const updateStmt = db.prepare(`
+                INSERT INTO habit_checkins (habit_id, date, completed, value) 
+                VALUES (?, ?, ?, ?) 
+                ON CONFLICT(habit_id, date) DO UPDATE SET completed = excluded.completed, value = excluded.value
+            `);
+            const updateMany = db.transaction((habitsToUpdate: any[]) => {
+                for (const h of habitsToUpdate) {
+                    const isCompleted = todayProdMins >= (h.goal_target || 1) ? 1 : 0;
+                    updateStmt.run(h.id, today, isCompleted, todayProdMins);
+                    h.today_value = todayProdMins;
+                    h.checked_today = isCompleted;
+                }
+            });
+            updateMany(timeHabits);
+        }
 
         // Global streak: how many consecutive days have ALL habits been completed
         const allDates = db.prepare(`
@@ -69,7 +96,7 @@ export async function POST(request: NextRequest) {
         const db = getDb();
 
         if (action === 'checkin') {
-            const { habit_id, date } = body;
+            const { habit_id, date, value, completed } = body;
             if (!habit_id) {
                 return NextResponse.json({ error: 'habit_id is required' }, { status: 400 });
             }
@@ -82,23 +109,31 @@ export async function POST(request: NextRequest) {
             ).get(habit_id, checkinDate);
 
             if (existing) {
-                db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
-                return NextResponse.json({ checked: false });
+                if (value !== undefined) {
+                    const isCompleted = completed !== undefined ? completed : 1;
+                    db.prepare('UPDATE habit_checkins SET value = ?, completed = ? WHERE habit_id = ? AND date = ?').run(value, isCompleted ? 1 : 0, habit_id, checkinDate);
+                    return NextResponse.json({ checked: !!isCompleted, value });
+                } else {
+                    db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
+                    return NextResponse.json({ checked: false });
+                }
             } else {
-                db.prepare('INSERT INTO habit_checkins (habit_id, date, completed) VALUES (?, ?, 1)').run(habit_id, checkinDate);
-                return NextResponse.json({ checked: true });
+                const isCompleted = completed !== undefined ? completed : 1;
+                const finalValue = value !== undefined ? value : 1;
+                db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, isCompleted ? 1 : 0, finalValue);
+                return NextResponse.json({ checked: !!isCompleted, value: finalValue });
             }
         }
 
         // Create new habit
-        const { name, icon, frequency } = body;
+        const { name, icon, frequency, goal_metric, goal_target } = body;
         if (!name) {
             return NextResponse.json({ error: 'name is required' }, { status: 400 });
         }
 
         const result = db.prepare(
-            'INSERT INTO habits (name, icon, frequency) VALUES (?, ?, ?)'
-        ).run(name, icon || '✅', frequency || 'daily');
+            'INSERT INTO habits (name, icon, frequency, goal_metric, goal_target) VALUES (?, ?, ?, ?, ?)'
+        ).run(name, icon || '✅', frequency || 'daily', goal_metric || 'boolean', goal_target || 1);
 
         return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
     } catch (error) {

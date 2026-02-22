@@ -101,3 +101,61 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
 }
+
+// PATCH: Manually override an activity category
+export async function PATCH(request: NextRequest) {
+    try {
+        const body = await request.json();
+        const { id, category } = body;
+
+        if (!id || !category) {
+            return NextResponse.json({ error: 'Missing id or category' }, { status: 400 });
+        }
+
+        const db = getDb();
+
+        // 1. Update the activity record
+        db.prepare('UPDATE activities SET category = ? WHERE id = ?').run(category, id);
+
+        // 2. Fetch the updated activity to inject a rule into memory
+        const activity = db.prepare('SELECT domain, url, youtube_video_id, title FROM activities WHERE id = ?').get(id) as any;
+
+        if (activity) {
+            const { learnMemory } = require('@/lib/behavior');
+
+            // If it's a YouTube video, remember the specific title/type.
+            let detail = activity.domain;
+            if (activity.youtube_video_id) {
+                detail += ` (Video: ${activity.title})`;
+            }
+
+            const memoryContent = JSON.stringify({
+                type: 'manual_override',
+                domain: activity.domain,
+                url: activity.url,
+                youtube_video_id: activity.youtube_video_id,
+                user_designated_category: category,
+                reason: `User manually re-categorized ${detail} as ${category}`
+            });
+
+            // Store in behavioral_memory so AI considers it in future summaries/context
+            learnMemory('user_preference', memoryContent, 'classification_override');
+
+            // Modify ai_classification row so if it gets cached, it gets the new category
+            const existingAi = db.prepare('SELECT ai_classification FROM activities WHERE id = ?').get(id) as any;
+            if (existingAi && existingAi.ai_classification) {
+                try {
+                    const parsed = JSON.parse(existingAi.ai_classification);
+                    parsed.category = category;
+                    parsed.reasoning = `Manually overridden by user to ${category}`;
+                    db.prepare('UPDATE activities SET ai_classification = ? WHERE id = ?').run(JSON.stringify(parsed), id);
+                } catch (e) { }
+            }
+        }
+
+        return NextResponse.json({ success: true, id, category });
+    } catch (error) {
+        console.error('Activity PATCH error:', error);
+        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
+}

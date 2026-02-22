@@ -8,7 +8,10 @@ interface Habit {
     icon: string;
     frequency: string;
     checked_today: number;
+    today_value: number;
     total_checkins: number;
+    goal_metric: 'boolean' | 'time';
+    goal_target: number;
 }
 
 interface HeatmapDay {
@@ -25,6 +28,8 @@ export default function HabitsPage() {
     const [showNewHabit, setShowNewHabit] = useState(false);
     const [newName, setNewName] = useState('');
     const [newIcon, setNewIcon] = useState('✅');
+    const [newGoalMetric, setNewGoalMetric] = useState<'boolean' | 'time'>('boolean');
+    const [newGoalTarget, setNewGoalTarget] = useState<number>(60);
 
     useEffect(() => {
         fetchHabits();
@@ -59,10 +64,17 @@ export default function HabitsPage() {
         await fetch('/api/habits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newName.trim(), icon: newIcon }),
+            body: JSON.stringify({
+                name: newName.trim(),
+                icon: newIcon,
+                goal_metric: newGoalMetric,
+                goal_target: newGoalMetric === 'time' ? newGoalTarget : 1
+            }),
         });
         setNewName('');
         setNewIcon('✅');
+        setNewGoalMetric('boolean');
+        setNewGoalTarget(60);
         setShowNewHabit(false);
         fetchHabits();
     };
@@ -140,11 +152,31 @@ export default function HabitsPage() {
                         >
                             {habit.checked_today ? '✓' : habit.icon}
                         </button>
-                        <div className="flex-1">
-                            <p className={`font-medium ${habit.checked_today ? 'line-through' : ''}`}
-                                style={{ color: habit.checked_today ? 'var(--text-muted)' : 'var(--text-primary)' }}>
-                                {habit.name}
-                            </p>
+                        <div className="flex-1 space-y-1">
+                            <div className="flex justify-between items-center">
+                                <p className={`font-medium ${habit.checked_today ? 'line-through' : ''}`}
+                                    style={{ color: habit.checked_today ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+                                    {habit.name}
+                                </p>
+                                {habit.goal_metric === 'time' && (
+                                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                                        {habit.today_value} / {habit.goal_target} min
+                                    </span>
+                                )}
+                            </div>
+
+                            {habit.goal_metric === 'time' && (
+                                <div className="w-full h-1.5 bg-[#121212] rounded-full overflow-hidden border border-[#333]">
+                                    <div
+                                        className="h-full transition-all"
+                                        style={{
+                                            width: `${Math.min((habit.today_value / habit.goal_target) * 100, 100)}%`,
+                                            backgroundColor: habit.checked_today ? 'var(--accent-green)' : 'var(--accent-purple)'
+                                        }}
+                                    />
+                                </div>
+                            )}
+
                             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                                 {habit.total_checkins} total check-ins
                             </p>
@@ -164,14 +196,38 @@ export default function HabitsPage() {
                                 onChange={e => setNewIcon(e.target.value)}
                                 placeholder="🎯"
                             />
-                            <input
-                                className="input flex-1"
-                                placeholder="Habit name..."
-                                value={newName}
-                                onChange={e => setNewName(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && addHabit()}
-                                autoFocus
-                            />
+                            <div className="flex-1 space-y-2">
+                                <input
+                                    className="input w-full"
+                                    placeholder="Habit name (e.g., Read, Study for 2 hours)..."
+                                    value={newName}
+                                    onChange={e => setNewName(e.target.value)}
+                                    autoFocus
+                                />
+                                <div className="flex gap-2">
+                                    <select
+                                        className="input text-sm"
+                                        value={newGoalMetric}
+                                        onChange={(e: any) => setNewGoalMetric(e.target.value)}
+                                    >
+                                        <option value="boolean">Simple Checkbox</option>
+                                        <option value="time">Time based (Productive minutes)</option>
+                                    </select>
+
+                                    {newGoalMetric === 'time' && (
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="number"
+                                                className="input w-24 text-sm"
+                                                value={newGoalTarget}
+                                                onChange={(e) => setNewGoalTarget(Math.max(1, parseInt(e.target.value) || 60))}
+                                                min="1"
+                                            />
+                                            <span className="text-sm text-gray-400">min</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
                         </div>
                         <div className="flex gap-2">
                             <button className="btn btn-primary btn-sm" onClick={addHabit}>Add Habit</button>

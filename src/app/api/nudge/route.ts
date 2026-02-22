@@ -9,12 +9,14 @@ export async function GET(request: NextRequest) {
         const domain = searchParams.get('domain') || '';
         const minutes = parseInt(searchParams.get('minutes') || '0');
         const title = searchParams.get('title') || '';
+        const url = searchParams.get('url') || '';
+        const videoId = searchParams.get('videoId');
 
         if (!domain || minutes === 0) {
             return NextResponse.json({ nudge: false });
         }
 
-        const nudgeResult = await shouldNudge(domain, minutes, title);
+        const nudgeResult = await shouldNudge(url, domain, minutes, title, videoId);
 
         if (nudgeResult.shouldNudge) {
             // Log the nudge

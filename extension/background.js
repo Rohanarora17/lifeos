@@ -2,7 +2,6 @@
 // Tracks active tab, time on page, and polls for nudges
 
 const API_BASE = 'http://localhost:3000/api';
-const SEND_INTERVAL_MS = 30000; // Send activity every 30s
 const NUDGE_INTERVAL_MS = 60000; // Check nudges every 60s
 const IDLE_THRESHOLD_S = 300; // 5 minutes
 
@@ -12,7 +11,7 @@ let isUserActive = true;
 // Initialize
 chrome.runtime.onInstalled.addListener(() => {
     console.log('LifeOS Tracker installed');
-    chrome.alarms.create('sendActivity', { periodInMinutes: 0.5 });
+    chrome.alarms.create('flushActivities', { periodInMinutes: 2 });
     chrome.alarms.create('checkNudge', { periodInMinutes: 1 });
 });
 
@@ -110,6 +109,15 @@ function handleTabChange(tab) {
     chrome.storage.local.set({ currentActivity });
 }
 
+// Add activity to queue
+async function queueActivity(activity) {
+    const data = await chrome.storage.local.get('pendingActivities');
+    const pending = data.pendingActivities || [];
+    pending.push(activity);
+    if (pending.length > 500) pending.splice(0, pending.length - 500);
+    await chrome.storage.local.set({ pendingActivities: pending });
+}
+
 // Finalize and send current activity
 async function finalizeCurrentActivity() {
     if (!currentActivity) return;
@@ -133,27 +141,11 @@ async function finalizeCurrentActivity() {
 
     currentActivity = null;
     chrome.storage.local.remove('currentActivity');
-
-    // Send to backend
-    try {
-        await fetch(`${API_BASE}/activity`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(activity),
-        });
-    } catch (e) {
-        // Backend might be down — store locally for retry
-        const pending = (await chrome.storage.local.get('pendingActivities')).pendingActivities || [];
-        pending.push(activity);
-        // Keep only last 500 pending
-        if (pending.length > 500) pending.splice(0, pending.length - 500);
-        await chrome.storage.local.set({ pendingActivities: pending });
-    }
+    await queueActivity(activity);
 }
 
-// Periodic alarm handler
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === 'sendActivity') {
+    if (alarm.name === 'flushActivities') {
         // Send current activity checkpoint (keep tracking)
         if (currentActivity && isUserActive) {
             const now = new Date().toISOString();
@@ -162,38 +154,30 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             );
 
             if (durationSeconds >= 5) {
-                try {
-                    await fetch(`${API_BASE}/activity`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            ...currentActivity,
-                            ended_at: now,
-                            duration_seconds: durationSeconds,
-                        }),
-                    });
-                    // Reset timer for current activity
-                    currentActivity.started_at = now;
-                } catch (e) { }
+                await queueActivity({
+                    ...currentActivity,
+                    ended_at: now,
+                    duration_seconds: durationSeconds,
+                });
+                currentActivity.started_at = now;
             }
         }
 
-        // Retry pending activities
+        // Flush pending activities in a batch
         const { pendingActivities } = await chrome.storage.local.get('pendingActivities');
         if (pendingActivities && pendingActivities.length > 0) {
-            const remaining = [];
-            for (const activity of pendingActivities) {
-                try {
-                    await fetch(`${API_BASE}/activity`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(activity),
-                    });
-                } catch (e) {
-                    remaining.push(activity);
+            try {
+                const res = await fetch(`${API_BASE}/activity/batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ activities: pendingActivities }),
+                });
+                if (res.ok) {
+                    await chrome.storage.local.set({ pendingActivities: [] });
                 }
+            } catch (e) {
+                // Keep pending if fetch fails
             }
-            await chrome.storage.local.set({ pendingActivities: remaining });
         }
     }
 
@@ -206,8 +190,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         );
 
         try {
+            const videoIdParam = currentActivity.youtube_video_id ? `&videoId=${encodeURIComponent(currentActivity.youtube_video_id)}` : '';
             const res = await fetch(
-                `${API_BASE}/nudge?domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}`,
+                `${API_BASE}/nudge?url=${encodeURIComponent(currentActivity.url)}&domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}${videoIdParam}`
             );
             const data = await res.json();
 

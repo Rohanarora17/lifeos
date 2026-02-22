@@ -42,8 +42,15 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         }
 
         const icsText = await res.text();
-        const events = parseICS(icsText);
-        result.total = events.length;
+        let events: CalendarEvent[] = [];
+        try {
+            events = parseICS(icsText);
+            result.total = events.length;
+        } catch (e) {
+            console.error('[Calendar] Failed to parse ICS format:', e);
+            result.errors.push(`Parse error: ${String(e)}`);
+            return result;
+        }
 
         const db = getDb();
         const upsert = db.prepare(`
@@ -66,10 +73,13 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                         event.title, event.description, event.startTime, event.endTime, event.location
                     );
                     result.synced++;
-                } catch { /* skip invalid */ }
+                } catch (e) {
+                    console.error(`[Calendar] Failed to insert event: ${event.title}`, e);
+                }
             }
         }
     } catch (err) {
+        console.error('[Calendar] Sync failed completely:', err);
         result.errors.push(`Sync failed: ${String(err)}`);
     }
 
@@ -82,7 +92,8 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
  */
 function parseICS(icsText: string): CalendarEvent[] {
     const events: CalendarEvent[] = [];
-    const lines = icsText.replace(/\r\n /g, '').replace(/\r/g, '\n').split('\n');
+    // Unfold lines first (ICS specs say lines continuing with space/tab belong to previous line)
+    const lines = icsText.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
 
     let inEvent = false;
     let current: Partial<CalendarEvent> = {};
@@ -153,7 +164,8 @@ function parseICSDate(value: string): string {
         const hour = value.slice(9, 11);
         const minute = value.slice(11, 13);
         const second = value.slice(13, 15);
-        return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+        const isUTC = value.toUpperCase().endsWith('Z');
+        return `${year}-${month}-${day}T${hour}:${minute}:${second}${isUTC ? 'Z' : ''}`;
     }
     // Date only: 20260222
     if (value.length >= 8) {
