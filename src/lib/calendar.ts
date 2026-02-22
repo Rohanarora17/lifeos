@@ -51,11 +51,11 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
 
         const icsText = await res.text();
         console.log(`[Calendar] Fetched ICS text length: ${icsText.length} characters`);
-        console.log(`[Calendar] First 100 chars: ${icsText.substring(0, 100)}`);
-        let events: CalendarEvent[] = [];
+
+        let parsedData: any;
         try {
-            events = parseICS(icsText);
-            result.total = events.length;
+            const ical = require('node-ical');
+            parsedData = ical.sync.parseICS(icsText);
         } catch (e) {
             console.error('[Calendar] Failed to parse ICS format:', e);
             result.errors.push(`Parse error: ${String(e)}`);
@@ -70,24 +70,66 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         title = ?, description = ?, start_time = ?, end_time = ?, location = ?, synced_at = datetime('now')
     `);
 
-        // Only sync events from today onwards (no ancient history)
+        // Sync window: from 7 days ago to 30 days in the future
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const windowStart = new Date(today.getTime() - 7 * 86400000);
+        const windowEnd = new Date(today.getTime() + 30 * 86400000);
 
-        for (const event of events) {
-            const eventDate = new Date(event.startTime);
-            if (eventDate >= new Date(today.getTime() - 7 * 86400000)) { // Last 7 days + future
+        let eventCount = 0;
+
+        for (const key in parsedData) {
+            if (!parsedData.hasOwnProperty(key)) continue;
+            const ev = parsedData[key];
+            if (ev.type !== 'VEVENT') continue;
+
+            let instances: { start: Date, end: Date }[] = [];
+
+            const evStart = new Date(ev.start);
+            const evEnd = new Date(ev.end || ev.start);
+            const duration = evEnd.getTime() - evStart.getTime();
+
+            if (ev.rrule) {
+                // Expand recurring events within our window
+                const dates = ev.rrule.between(windowStart, windowEnd);
+                for (const date of dates) {
+                    // node-ical rrule between() returns Date objects for start times
+                    instances.push({
+                        start: new Date(date),
+                        end: new Date(new Date(date).getTime() + duration) // Add duration to each new start
+                    });
+                }
+            } else {
+                // Single event
+                if (evStart >= windowStart && evStart <= windowEnd) {
+                    instances.push({ start: evStart, end: evEnd });
+                }
+            }
+
+            for (const instance of instances) {
                 try {
+                    // To avoid PK conflicts on recurring events, augment the ID with the start ISO string
+                    const instanceId = `${ev.uid}_${instance.start.toISOString()}`;
+                    const title = ev.summary || 'Busy';
+                    const description = ev.description || '';
+                    const loc = ev.location || '';
+                    const startTime = instance.start.toISOString();
+                    const endTime = instance.end.toISOString();
+
                     upsert.run(
-                        event.uid, event.title, event.description, event.startTime, event.endTime, event.location,
-                        event.title, event.description, event.startTime, event.endTime, event.location
+                        instanceId, title, description, startTime, endTime, loc,
+                        title, description, startTime, endTime, loc
                     );
+                    eventCount++;
                     result.synced++;
                 } catch (e) {
-                    console.error(`[Calendar] Failed to insert event: ${event.title}`, e);
+                    console.error(`[Calendar] Failed to insert event: ${ev.summary}`, e);
                 }
             }
         }
+
+        result.total = eventCount;
+
     } catch (err) {
         console.error('[Calendar] Sync failed completely:', err);
         result.errors.push(`Sync failed: ${String(err)}`);
@@ -96,102 +138,7 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
     return result;
 }
 
-/**
- * Lightweight ICS (iCalendar) parser.
- * Extracts VEVENT components: UID, SUMMARY, DTSTART, DTEND, LOCATION, DESCRIPTION.
- */
-function parseICS(icsText: string): CalendarEvent[] {
-    const events: CalendarEvent[] = [];
-    // Unfold lines first (ICS specs say lines continuing with space/tab belong to previous line)
-    const lines = icsText.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
 
-    let inEvent = false;
-    let current: Partial<CalendarEvent> = {};
-
-    for (const line of lines) {
-        if (line === 'BEGIN:VEVENT') {
-            inEvent = true;
-            current = {};
-            continue;
-        }
-
-        if (line === 'END:VEVENT') {
-            inEvent = false;
-            if (current.uid && current.title && current.startTime) {
-                events.push({
-                    uid: current.uid,
-                    title: current.title,
-                    description: current.description || '',
-                    startTime: current.startTime,
-                    endTime: current.endTime || current.startTime,
-                    location: current.location || '',
-                });
-            }
-            continue;
-        }
-
-        if (!inEvent) continue;
-
-        const colonIdx = line.indexOf(':');
-        if (colonIdx === -1) continue;
-
-        const keyPart = line.slice(0, colonIdx);
-        const value = line.slice(colonIdx + 1);
-        const key = keyPart.split(';')[0]; // Strip parameters like DTSTART;VALUE=DATE
-
-        switch (key) {
-            case 'UID':
-                current.uid = value;
-                break;
-            case 'SUMMARY':
-                current.title = unescapeICS(value);
-                break;
-            case 'DESCRIPTION':
-                current.description = unescapeICS(value).slice(0, 500);
-                break;
-            case 'LOCATION':
-                current.location = unescapeICS(value);
-                break;
-            case 'DTSTART':
-                current.startTime = parseICSDate(value);
-                break;
-            case 'DTEND':
-                current.endTime = parseICSDate(value);
-                break;
-        }
-    }
-
-    return events;
-}
-
-/** Parse ICS date formats: 20260222T180000Z or 20260222 */
-function parseICSDate(value: string): string {
-    // Full datetime: 20260222T180000Z
-    if (value.length >= 15) {
-        const year = value.slice(0, 4);
-        const month = value.slice(4, 6);
-        const day = value.slice(6, 8);
-        const hour = value.slice(9, 11);
-        const minute = value.slice(11, 13);
-        const second = value.slice(13, 15);
-        const isUTC = value.toUpperCase().endsWith('Z');
-        return `${year}-${month}-${day}T${hour}:${minute}:${second}${isUTC ? 'Z' : ''}`;
-    }
-    // Date only: 20260222
-    if (value.length >= 8) {
-        return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T00:00:00`;
-    }
-    return value;
-}
-
-/** Unescape ICS special characters */
-function unescapeICS(value: string): string {
-    return value
-        .replace(/\\n/g, '\n')
-        .replace(/\\,/g, ',')
-        .replace(/\\;/g, ';')
-        .replace(/\\\\/g, '\\');
-}
 
 /**
  * Get calendar events for a date range.
