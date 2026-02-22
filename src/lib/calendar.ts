@@ -25,6 +25,9 @@ interface SyncResult {
  */
 export async function syncCalendarFromICS(): Promise<SyncResult> {
     const icsUrl = getSetting('calendar_ics_url');
+    console.log('[Calendar] Starting sync. ICS URL configured:', !!icsUrl);
+    console.log('[Calendar] ICS URL:', icsUrl);
+
     if (!icsUrl) {
         return { synced: 0, total: 0, errors: ['Calendar ICS URL not configured'] };
     }
@@ -32,16 +35,23 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
     const result: SyncResult = { synced: 0, total: 0, errors: [] };
 
     try {
+        console.log('[Calendar] Fetching ICS from url...');
         const res = await fetch(icsUrl, {
             headers: { 'User-Agent': 'LifeOS/1.0' },
             next: { revalidate: 0 }
         });
+
+        console.log('[Calendar] Fetch response status:', res.status, res.statusText);
+
         if (!res.ok) {
+            console.error('[Calendar] Fetch failed:', res.status);
             result.errors.push(`Failed to fetch ICS: HTTP ${res.status}`);
             return result;
         }
 
         const icsText = await res.text();
+        console.log(`[Calendar] Fetched ICS text length: ${icsText.length} characters`);
+        console.log(`[Calendar] First 100 chars: ${icsText.substring(0, 100)}`);
         let events: CalendarEvent[] = [];
         try {
             events = parseICS(icsText);

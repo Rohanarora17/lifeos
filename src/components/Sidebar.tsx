@@ -8,6 +8,7 @@ const navItems = [
     { href: '/activity', label: 'Activity', icon: '📊' },
     { href: '/tasks', label: 'Tasks', icon: '📋' },
     { href: '/habits', label: 'Habits', icon: '🔥' },
+    { href: '/goals', label: 'Goals', icon: '🎯' },
     { href: '/analytics', label: 'Analytics', icon: '📈' },
     { href: '/calendar', label: 'Calendar', icon: '📅' },
     { href: '/insights', label: 'AI Insights', icon: '🧠' },

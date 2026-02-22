@@ -1296,7 +1296,6 @@ function computeHabitStreak(days: number): { current: number; longest: number } 
     else break;
   }
 
-  // Longest streak (simplified)
   let longest = 0, streak = 0;
   for (let i = 0; i < checkins.length; i++) {
     if (i === 0 || checkins[i].date === new Date(new Date(checkins[i - 1].date).getTime() - 86400000).toISOString().slice(0, 10)) {
@@ -1309,4 +1308,31 @@ function computeHabitStreak(days: number): { current: number; longest: number } 
   longest = Math.max(longest, streak);
 
   return { current, longest };
+}
+
+/**
+ * Builds a formatted string of the user's active goals and habits to feed to the AI context.
+ */
+export function buildGoalsContext(): string {
+  try {
+    const db = getDb();
+    const activeGoals = db.prepare('SELECT title, type, target_value, unit FROM goals WHERE active = 1').all() as any[];
+    const activeHabits = db.prepare('SELECT name, frequency FROM habits WHERE archived = 0').all() as any[];
+
+    if (activeGoals.length === 0 && activeHabits.length === 0) return '';
+
+    let context = 'USER LONG-TERM GOALS & HABITS:\n';
+    if (activeGoals.length > 0) {
+      context += 'Core Goals:\n' + activeGoals.map(g => `- ${g.title} (${g.target_value} ${g.unit} ${g.type})`).join('\n') + '\n';
+    }
+    if (activeHabits.length > 0) {
+      context += 'Daily Habits:\n' + activeHabits.map(h => `- ${h.name} (${h.frequency})`).join('\n') + '\n';
+    }
+
+    context += '\nCRITICAL RULE: Always prioritize classifying websites that align with the user\'s listed Core Goals and Habits as "productive". Provide nudges against highly distracting pages that contradict these goals.\n';
+
+    return context;
+  } catch (err) {
+    return '';
+  }
 }

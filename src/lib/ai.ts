@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getSetting } from './db';
 import { Category, Subcategory, classifyByRules, CategoryResult } from './categories';
-import { buildBehaviorContext, getSmartNudgeContext } from './behavior';
+import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
 
 let genAI: GoogleGenerativeAI | null = null;
 
@@ -63,6 +63,7 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
 
     try {
         const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const goalsContext = buildGoalsContext();
 
         // Chunk sizes to prevent hitting output token limits (e.g. max 15 per prompt)
         const CHUNK_SIZE = 15;
@@ -72,6 +73,8 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
             
 INPUT:
 ${JSON.stringify(chunk, null, 2)}
+
+${goalsContext}
 
 OUTPUT FORMAT (JSON ARRAY):
 [
@@ -195,9 +198,11 @@ export async function generateDailySummary(date: string, stats: {
     try {
         const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const behaviorContext = buildBehaviorContext();
+        const goalsContext = buildGoalsContext();
         const prompt = `Generate a concise, motivating daily productivity report. Use emojis. Be encouraging but honest about distractions. Keep it under 200 words.
 
 ${behaviorContext}
+${goalsContext}
 
 Date: ${date}
 Productive time: ${Math.round(stats.productiveMinutes / 60)}h ${stats.productiveMinutes % 60}m
@@ -237,9 +242,11 @@ export async function generateMorningBrief(date: string, data: {
     try {
         const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const behaviorContext = buildBehaviorContext();
+        const goalsContext = buildGoalsContext();
         const prompt = `Generate a brief, energizing morning briefing. Use emojis. Keep it under 150 words. Be motivating!
 
 ${behaviorContext}
+${goalsContext}
 
 Date: ${date}
 Calendar events today:
@@ -303,10 +310,12 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
             const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const nudgeContext = getSmartNudgeContext();
             const behaviorContext = buildBehaviorContext();
+            const goalsContext = buildGoalsContext();
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
 ${behaviorContext}
+${goalsContext}
 ${nudgeContext}
 
 Use their behavioral profile to decide. If this site matches their known distraction patterns, be more assertive. If they're usually productive at this hour, a gentle reminder is enough.

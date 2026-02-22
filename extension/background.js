@@ -34,9 +34,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.windows.onFocusChanged.addListener((windowId) => {
     if (windowId === chrome.windows.WINDOW_ID_NONE) {
         // Window lost focus — finalize current activity
+        isUserActive = false;
         finalizeCurrentActivity();
     } else {
         // Window gained focus — start tracking active tab
+        isUserActive = true;
         chrome.tabs.query({ active: true, windowId }, (tabs) => {
             if (tabs[0]) handleTabChange(tabs[0]);
         });
@@ -81,6 +83,14 @@ function handleTabChange(tab) {
                 }),
             }).catch(() => { });
         } catch (e) { }
+    }
+
+    // Ignore updates that don't change the URL (e.g., hash changes or title updates in SPAs)
+    // Unless we're returning from an idle state where currentActivity was cleared
+    if (currentActivity && currentActivity.url === tab.url && isUserActive) {
+        // Just update title if it changed
+        currentActivity.title = tab.title || currentActivity.title;
+        return;
     }
 
     // Finalize previous activity
