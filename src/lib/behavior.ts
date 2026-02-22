@@ -773,7 +773,7 @@ export function learnMemory(
     const newCount = existing.reinforcement_count + 1;
     const newConfidence = Math.min(0.99, 1 - (1 / (newCount + 2)));
     db.prepare(
-      'UPDATE behavioral_memory SET reinforcement_count = ?, confidence = ?, last_reinforced = datetime("now") WHERE id = ?'
+      "UPDATE behavioral_memory SET reinforcement_count = ?, confidence = ?, last_reinforced = datetime('now') WHERE id = ?"
     ).run(newCount, newConfidence, existing.id);
   } else {
     db.prepare(

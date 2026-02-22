@@ -151,6 +151,28 @@ async function finalizeCurrentActivity() {
 
     currentActivity = null;
     chrome.storage.local.remove('currentActivity');
+
+    // Attempt to merge with the last pending activity if it's identical
+    const data = await chrome.storage.local.get('pendingActivities');
+    const pending = data.pendingActivities || [];
+
+    if (pending.length > 0) {
+        const last = pending[pending.length - 1];
+        const isSameUrl = last.url === activity.url;
+        const isSameVideo = last.youtube_video_id === activity.youtube_video_id;
+
+        // If it's the exact same activity and happened roughly contiguously (within 60s), just extend it
+        if (isSameUrl && isSameVideo) {
+            const gapSeconds = Math.round((new Date(activity.started_at).getTime() - new Date(last.ended_at).getTime()) / 1000);
+            if (gapSeconds < 60) {
+                last.duration_seconds += activity.duration_seconds;
+                last.ended_at = activity.ended_at;
+                await chrome.storage.local.set({ pendingActivities: pending });
+                return;
+            }
+        }
+    }
+
     await queueActivity(activity);
 }
 
