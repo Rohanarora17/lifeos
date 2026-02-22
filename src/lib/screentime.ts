@@ -95,15 +95,29 @@ function readKnowledgeC(dbPath: string, date: string): ScreenTimeEntry[] {
       WHERE ZSTREAMNAME = '/app/usage'
         AND datetime(ZOBJECT.ZSTARTDATE + 978307200, 'unixepoch', 'localtime') LIKE '${date}%'
         AND ZOBJECT.ZVALUESTRING IS NOT NULL
+        AND ZOBJECT.ZENDDATE IS NOT NULL
+        AND ZOBJECT.ZSTARTDATE IS NOT NULL
       GROUP BY ZOBJECT.ZVALUESTRING
       HAVING usage_seconds > 30
       ORDER BY usage_seconds DESC;
     `;
 
-        const output = execSync(
-            `sqlite3 -separator '|' "${dbPath}" "${query}"`,
-            { encoding: 'utf-8', timeout: 10000 }
-        ).trim();
+        let output = '';
+        try {
+            output = execSync(
+                `sqlite3 -separator '|' "${dbPath}" "${query}"`,
+                { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+            ).toString().trim();
+        } catch (execErr: any) {
+            const stderr = execErr.stderr ? execErr.stderr.toString() : String(execErr);
+            if (stderr.includes('authorization denied') || stderr.includes('Operation not permitted')) {
+                console.warn('\n⚠️  [ScreenTime] Native Mac App tracking paused.');
+                console.warn('⚠️  To track native apps, grant "Full Disk Access" to your Terminal app in your Mac System Settings -> Privacy & Security.\n');
+                return [];
+            }
+            console.error('[ScreenTime] SQLite query failed:', stderr);
+            return [];
+        }
 
         if (!output) return [];
 

@@ -218,15 +218,16 @@ function unescapeICS(text: string): string {
 }
 
 function parseICSDate(icsDate: string): string {
-    // ICS dates can be YYYYMMDDTHHMMSSZ (UTC) or YYYYMMDDTHHMMSS (local) or YYYYMMDD (all-day)
-    // We'll try to parse as UTC if 'Z' is present, otherwise assume local and convert to ISO string.
-    // For all-day events (YYYYMMDD), we'll treat them as starting at midnight UTC for consistency.
+    // We parse as UTC if 'Z' is present, otherwise assume IST (UTC+05:30) and convert to ISO string.
 
     if (icsDate.length === 8) { // YYYYMMDD (all-day event)
         const year = parseInt(icsDate.substring(0, 4), 10);
         const month = parseInt(icsDate.substring(4, 6), 10) - 1; // Month is 0-indexed
         const day = parseInt(icsDate.substring(6, 8), 10);
-        return new Date(Date.UTC(year, month, day, 0, 0, 0)).toISOString();
+        // All day event starts at 00:00:00 IST -> which is 18:30:00 UTC of previous day
+        const utcMs = Date.UTC(year, month, day, 0, 0, 0);
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        return new Date(utcMs - istOffsetMs).toISOString();
     }
 
     // YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
@@ -240,41 +241,51 @@ function parseICSDate(icsDate: string): string {
     if (icsDate.endsWith('Z')) {
         return new Date(Date.UTC(year, month, day, hour, minute, second)).toISOString();
     } else {
-        // Assume local time if no 'Z' and convert to ISO string (which is UTC)
-        // This will correctly represent the local time in UTC.
-        return new Date(year, month, day, hour, minute, second).toISOString();
+        // Assume Indian Standard Time (IST, UTC+5:30) for floating times
+        const utcMs = Date.UTC(year, month, day, hour, minute, second);
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        return new Date(utcMs - istOffsetMs).toISOString();
     }
 }
 
 
 /**
- * Get calendar events for a date range.
+ * Helper to get current YYYY-MM-DD in IST
+ */
+function getTodayIST(): string {
+    const istMs = Date.now() + (5.5 * 60 * 60 * 1000);
+    return new Date(istMs).toISOString().slice(0, 10);
+}
+
+/**
+ * Get calendar events for a date range in IST.
  */
 export function getCalendarEvents(startDate?: string, endDate?: string) {
     const db = getDb();
-    const start = startDate || new Date().toISOString().slice(0, 10);
+    const start = startDate || getTodayIST();
     const end = endDate || start;
 
     return db.prepare(`
     SELECT * FROM calendar_events
-    WHERE date(start_time) >= ? AND date(start_time) <= ?
+    WHERE date(start_time, '+5 hours', '+30 minutes') >= ? AND date(start_time, '+5 hours', '+30 minutes') <= ?
     ORDER BY start_time ASC
   `).all(start, end);
 }
 
 /**
- * Get today's events for morning brief / dashboard.
+ * Get today's events for morning brief / dashboard (IST).
  */
 export function getTodayEvents() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getTodayIST();
     return getCalendarEvents(today, today);
 }
 
 /**
- * Get upcoming events (next 7 days).
+ * Get upcoming events (next 7 days) in IST.
  */
 export function getUpcomingEvents() {
-    const today = new Date().toISOString().slice(0, 10);
-    const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    const today = getTodayIST();
+    const nextWeekMs = Date.now() + (5.5 * 60 * 60 * 1000) + (7 * 86400000);
+    const nextWeek = new Date(nextWeekMs).toISOString().slice(0, 10);
     return getCalendarEvents(today, nextWeek);
 }
