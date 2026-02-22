@@ -5,6 +5,21 @@ const API_BASE = 'http://localhost:3000/api';
 const NUDGE_INTERVAL_MS = 60000; // Check nudges every 60s
 const IDLE_THRESHOLD_S = 300; // 5 minutes
 
+// Privacy & Scalability thresholds
+const MICRO_CONTEXT_THRESHOLD_S = 15; // Visits shorter than this are bundled
+const PRIVACY_BLOCKLIST = [
+    /bank/i,
+    /finance/i,
+    /fidelity/i,
+    /chase/i,
+    /paypal/i,
+    /health/i,
+    /insurance/i,
+    /medical/i,
+    /localhost:3000/i,
+    /^file:\/\//i
+];
+
 let currentActivity = null;
 let isUserActive = true;
 
@@ -33,9 +48,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // Track window focus
 chrome.windows.onFocusChanged.addListener((windowId) => {
     if (windowId === chrome.windows.WINDOW_ID_NONE) {
-        // Window lost focus — finalize current activity
-        isUserActive = false;
-        finalizeCurrentActivity();
+        // Window lost focus. 
+        // Check if the current tab is playing audio before we kill the session (e.g., dual monitor YouTube)
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const activeTab = tabs[0];
+            if (activeTab && activeTab.audible) {
+                // Keep tracking if audio is playing in the background
+                isUserActive = true;
+            } else {
+                isUserActive = false;
+                finalizeCurrentActivity();
+            }
+        });
     } else {
         // Window gained focus — start tracking active tab
         isUserActive = true;
@@ -55,8 +79,17 @@ chrome.idle.onStateChanged.addListener((state) => {
             if (tabs[0]) handleTabChange(tabs[0]);
         });
     } else {
-        isUserActive = false;
-        finalizeCurrentActivity();
+        // User went idle (walked away). 
+        // We do the same check: if music/podcast is playing, keep tracking it loosely as active
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const activeTab = tabs[0];
+            if (activeTab && activeTab.audible) {
+                isUserActive = true;
+            } else {
+                isUserActive = false;
+                finalizeCurrentActivity();
+            }
+        });
     }
 });
 
@@ -66,23 +99,36 @@ function handleTabChange(tab) {
         return;
     }
 
+    // 1. Check Privacy Blocklist immediately
+    for (const pattern of PRIVACY_BLOCKLIST) {
+        if (pattern.test(tab.url)) {
+            // Drop tracking entirely if it hits blacklisted sensitive domains
+            finalizeCurrentActivity();
+            currentActivity = null;
+            return;
+        }
+    }
+
     const newDomain = extractDomain(tab.url);
 
     // Track tab switch for focus/entropy analysis
     if (currentActivity && currentActivity.domain !== newDomain) {
-        try {
-            fetch(`${API_BASE}/behavior`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    type: 'tab_switch',
-                    from_domain: currentActivity.domain,
-                    to_domain: newDomain,
-                    from_category: currentActivity._category || '',
-                    to_category: '',
-                }),
-            }).catch(() => { });
-        } catch (e) { }
+        chrome.storage.local.get('apiKey', (data) => {
+            const apiKey = data.apiKey;
+            try {
+                fetch(`${API_BASE}/behavior`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                    body: JSON.stringify({
+                        type: 'tab_switch',
+                        from_domain: currentActivity.domain,
+                        to_domain: newDomain,
+                        from_category: currentActivity._category || '',
+                        to_category: '',
+                    }),
+                }).catch(() => { });
+            } catch (e) { }
+        });
     }
 
     // Ignore updates that don't change the URL (e.g., hash changes or title updates in SPAs)
@@ -143,11 +189,21 @@ async function finalizeCurrentActivity() {
         return;
     }
 
-    const activity = {
+    // Micro-Context Filtering
+    // If user hopped tabs too fast (<15s), abstract it to save DB bloat
+    const actualActivity = {
         ...currentActivity,
         ended_at: now,
         duration_seconds: durationSeconds,
     };
+
+    if (durationSeconds <= MICRO_CONTEXT_THRESHOLD_S) {
+        actualActivity.url = 'lifeos://context-switch';
+        actualActivity.domain = 'context-switch';
+        actualActivity.title = 'Micro-Context Switching';
+        actualActivity.youtube_video_id = null;
+        actualActivity.youtube_channel = null;
+    }
 
     currentActivity = null;
     chrome.storage.local.remove('currentActivity');
@@ -158,22 +214,22 @@ async function finalizeCurrentActivity() {
 
     if (pending.length > 0) {
         const last = pending[pending.length - 1];
-        const isSameUrl = last.url === activity.url;
-        const isSameVideo = last.youtube_video_id === activity.youtube_video_id;
+        const isSameUrl = last.url === actualActivity.url;
+        const isSameVideo = last.youtube_video_id === actualActivity.youtube_video_id;
 
         // If it's the exact same activity and happened roughly contiguously (within 60s), just extend it
         if (isSameUrl && isSameVideo) {
-            const gapSeconds = Math.round((new Date(activity.started_at).getTime() - new Date(last.ended_at).getTime()) / 1000);
+            const gapSeconds = Math.round((new Date(actualActivity.started_at).getTime() - new Date(last.ended_at).getTime()) / 1000);
             if (gapSeconds < 60) {
-                last.duration_seconds += activity.duration_seconds;
-                last.ended_at = activity.ended_at;
+                last.duration_seconds += actualActivity.duration_seconds;
+                last.ended_at = actualActivity.ended_at;
                 await chrome.storage.local.set({ pendingActivities: pending });
                 return;
             }
         }
     }
 
-    await queueActivity(activity);
+    await queueActivity(actualActivity);
 }
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -223,12 +279,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
 
         // Flush pending activities in a batch
-        const { pendingActivities } = await chrome.storage.local.get('pendingActivities');
+        const dataInfo = await chrome.storage.local.get(['pendingActivities', 'apiKey']);
+        const pendingActivities = dataInfo.pendingActivities;
+        const apiKey = dataInfo.apiKey;
+
         if (pendingActivities && pendingActivities.length > 0) {
             try {
                 const res = await fetch(`${API_BASE}/activity/batch`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
                     body: JSON.stringify({ activities: pendingActivities }),
                 });
                 if (res.ok) {
@@ -249,9 +308,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         );
 
         try {
+            const dataInfo = await chrome.storage.local.get('apiKey');
+            const apiKey = dataInfo.apiKey;
+
             const videoIdParam = currentActivity.youtube_video_id ? `&videoId=${encodeURIComponent(currentActivity.youtube_video_id)}` : '';
             const res = await fetch(
-                `${API_BASE}/nudge?url=${encodeURIComponent(currentActivity.url)}&domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}${videoIdParam}`
+                `${API_BASE}/nudge?url=${encodeURIComponent(currentActivity.url)}&domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}${videoIdParam}`,
+                { headers: { ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) } }
             );
             const data = await res.json();
 

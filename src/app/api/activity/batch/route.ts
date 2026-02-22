@@ -5,6 +5,15 @@ import { extractDomain } from '@/lib/categories';
 
 export async function POST(request: NextRequest) {
     try {
+        // Simple API Key Check
+        const serverKey = process.env.LIFEOS_API_KEY;
+        if (serverKey) {
+            const authHeader = request.headers.get('authorization');
+            if (!authHeader || authHeader !== `Bearer ${serverKey}`) {
+                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+            }
+        }
+
         const body = await request.json();
         const { activities } = body;
 

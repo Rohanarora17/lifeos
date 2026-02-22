@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { getSetting } from './db';
+import { getSetting, getDb } from './db';
 import { Category, Subcategory, classifyByRules, CategoryResult } from './categories';
 import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
 
@@ -14,67 +14,117 @@ function getGenAI(): GoogleGenerativeAI | null {
     return genAI;
 }
 
+// Helper to extract YouTube video ID
+function extractYouTubeVideoId(url: string): string | null {
+    const videoIdMatch = url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
+    return videoIdMatch ? videoIdMatch[1] : null;
+}
+
 export async function classifyActivityBatch(activities: any[]): Promise<(CategoryResult & { reasoning?: string })[]> {
     const results: (CategoryResult & { reasoning?: string })[] = new Array(activities.length);
     const toClassifyIndices: number[] = [];
-    const itemsToClassify: any[] = [];
+    const itemsToClassify: { id: number, url: string, domain: string, title?: string, youtube_channel?: string | null }[] = [];
+    const missingDomains = new Set<string>();
 
-    // First pass: local rules and caching
+    const db = getDb();
+
+    // 1. Initial pass: Check DB caches and rules
     for (let i = 0; i < activities.length; i++) {
         const act = activities[i];
+        const { url, domain, title } = act;
 
         // Try rule-based first
-        const ruleResult = classifyByRules(act.url, act.title || '');
+        const ruleResult = classifyByRules(url, title || '');
         if (ruleResult && ruleResult.confidence === 'high') {
             results[i] = ruleResult;
             continue;
         }
 
-        // Check recent cache (last 24 hours) for this specific domain or video
-        const cacheResult = lookupRecentClassification(act.url, act.domain, act.youtube_video_id);
-        if (cacheResult) {
-            results[i] = cacheResult;
-            continue;
+        const isYouTube = domain.includes('youtube.com');
+        let isCached = false;
+
+        // 2. Check persistent Domain Cache for standard websites
+        if (!isYouTube) {
+            try {
+                const cachedDomain = db.prepare('SELECT category, subcategory, confidence, ai_reasoning FROM domain_categories WHERE domain = ?').get(domain) as any;
+                if (cachedDomain && cachedDomain.confidence >= 0.7) {
+                    results[i] = {
+                        category: cachedDomain.category,
+                        subcategory: cachedDomain.subcategory,
+                        confidence: cachedDomain.confidence < 0.8 ? 'medium' : 'high',
+                        reasoning: cachedDomain.ai_reasoning || 'Cached domain classification'
+                    };
+                    isCached = true;
+                }
+            } catch (e) { /* ignore sqlite errors if migration hasn't run yet */ }
         }
 
-        // Add to AI classification queue
-        toClassifyIndices.push(i);
-        itemsToClassify.push({
-            id: i,
-            url: act.url,
-            title: act.title || '',
-            domain: act.domain,
-            youtube_channel: act.youtube_channel || null
-        });
+        // 3. Check recent exact-URL cache (especially for YouTube videos)
+        if (!isCached && url) {
+            const cached = lookupRecentClassification(url, domain, isYouTube ? extractYouTubeVideoId(url) : null);
+            if (cached) {
+                results[i] = cached;
+                isCached = true;
+            }
+        }
+
+        if (!isCached) {
+            toClassifyIndices.push(i);
+            missingDomains.add(domain);
+            itemsToClassify.push({
+                id: i,
+                url: act.url,
+                domain: act.domain,
+                title: act.title,
+                youtube_channel: act.youtube_channel
+            });
+        }
     }
 
-    if (itemsToClassify.length === 0) {
+    if (toClassifyIndices.length === 0) {
         return results;
     }
 
-    // Second pass: Send unknown batch to Gemini
+    // AI Classification pass (Only for missing items)
     const ai = getGenAI();
     if (!ai) {
+        // Fallback if no AI setup
         for (const idx of toClassifyIndices) {
-            results[idx] = { category: 'neutral', subcategory: 'other', confidence: 'low', reasoning: 'AI not configured' };
+            results[idx] = { category: 'neutral', subcategory: 'other', confidence: 'low', reasoning: 'No AI key configured' };
         }
         return results;
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const goalsContext = buildGoalsContext();
+        const model = ai.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            systemInstruction: "You are a precise productivity classification engine."
+        });
 
-        // Chunk sizes to prevent hitting output token limits (e.g. max 15 per prompt)
-        const CHUNK_SIZE = 15;
+        // Batch into chunks to avoid prompt limits
+        const CHUNK_SIZE = 50;
         for (let i = 0; i < itemsToClassify.length; i += CHUNK_SIZE) {
             const chunk = itemsToClassify.slice(i, i + CHUNK_SIZE);
+            const _db = getDb();
+            const goalsContext = typeof buildGoalsContext === 'function' ? buildGoalsContext() : '';
+
+            // Get behavioral memory context
+            let memoryContext = '';
+            try {
+                const memories = _db.prepare('SELECT content FROM behavioral_memory WHERE memory_type = "categorization_rule"').all() as { content: string }[];
+                if (memories.length > 0) {
+                    memoryContext = "\nUSER MANUAL OVERRIDES (CRITICAL - ALWAYS FOLLOW THESE):\n" +
+                        memories.map(m => `- ${m.content}`).join('\n');
+                }
+            } catch (e) { }
+
             const prompt = `Classify these browsing activities for a productivity tracker. Respond ONLY with a valid JSON ARRAY of objects, matching the exact input order. Do not use markdown blocks.
             
 INPUT:
 ${JSON.stringify(chunk, null, 2)}
 
 ${goalsContext}
+${memoryContext}
 
 OUTPUT FORMAT (JSON ARRAY):
 [
@@ -106,12 +156,30 @@ RULES:
                 for (const parsed of parsedArray) {
                     const originalIdx = parsed.id;
                     if (originalIdx !== undefined && originalIdx < results.length) {
-                        results[originalIdx] = {
+                        const aiResult = {
                             category: parsed.category as Category,
                             subcategory: parsed.subcategory as Subcategory,
                             confidence: parsed.confidence || 'medium',
                             reasoning: parsed.reasoning
                         };
+                        results[originalIdx] = aiResult;
+
+                        // 4. Update the Domain Cache for future use
+                        const act = activities[originalIdx];
+                        if (act && !act.domain.includes('youtube.com')) {
+                            try {
+                                const confScore = aiResult.confidence === 'high' ? 0.9 : (aiResult.confidence === 'medium' ? 0.7 : 0.4);
+                                db.prepare(`
+                                    INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
+                                    VALUES (?, ?, ?, ?, ?)
+                                    ON CONFLICT(domain) DO UPDATE SET
+                                        category = ?, subcategory = ?, confidence = ?, ai_reasoning = ?, updated_at = datetime('now')
+                                `).run(
+                                    act.domain, aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning,
+                                    aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning
+                                );
+                            } catch (e) { /* ignore */ }
+                        }
                     }
                 }
             } else {
@@ -131,7 +199,6 @@ RULES:
 
     return results;
 }
-
 export async function classifyActivity(url: string, title: string, domain: string, youtubeChannel?: string): Promise<CategoryResult & { reasoning?: string }> {
     const results = await classifyActivityBatch([{ url, title, domain, youtube_channel: youtubeChannel }]);
     return results[0];
@@ -139,7 +206,6 @@ export async function classifyActivity(url: string, title: string, domain: strin
 
 function lookupRecentClassification(url: string, domain: string, youtubeVideoId?: string | null): (CategoryResult & { reasoning?: string }) | null {
     try {
-        const { getDb } = require('./db');
         const db = getDb();
 
         let query = `
@@ -147,7 +213,7 @@ function lookupRecentClassification(url: string, domain: string, youtubeVideoId?
             FROM activities 
             WHERE 
         `;
-        let params: string[] = [];
+        const params: string[] = [];
 
         if (youtubeVideoId) {
             query += `youtube_video_id = ? AND started_at > datetime('now', '-7 days')`;
