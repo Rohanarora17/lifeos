@@ -186,12 +186,39 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             );
 
             if (durationSeconds >= 5) {
-                await queueActivity({
+                const activityCheckpoint = {
                     ...currentActivity,
                     ended_at: now,
                     duration_seconds: durationSeconds,
-                });
+                };
+
+                // Merge this periodic checkpoint via our merge-aware finalizer
+                const data = await chrome.storage.local.get('pendingActivities');
+                const pending = data.pendingActivities || [];
+                let merged = false;
+
+                if (pending.length > 0) {
+                    const last = pending[pending.length - 1];
+                    const isSameUrl = last.url === activityCheckpoint.url;
+                    const isSameVideo = last.youtube_video_id === activityCheckpoint.youtube_video_id;
+
+                    if (isSameUrl && isSameVideo) {
+                        const gapSeconds = Math.round((new Date(activityCheckpoint.started_at).getTime() - new Date(last.ended_at).getTime()) / 1000);
+                        if (gapSeconds < 60) {
+                            last.duration_seconds += activityCheckpoint.duration_seconds;
+                            last.ended_at = activityCheckpoint.ended_at;
+                            await chrome.storage.local.set({ pendingActivities: pending });
+                            merged = true;
+                        }
+                    }
+                }
+
+                if (!merged) {
+                    await queueActivity(activityCheckpoint);
+                }
+
                 currentActivity.started_at = now;
+                await chrome.storage.local.set({ currentActivity });
             }
         }
 
