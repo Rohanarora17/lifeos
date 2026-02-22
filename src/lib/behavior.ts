@@ -822,7 +822,7 @@ export function feedbackOnInsight(insightId: number, feedback: 'helpful' | 'not_
 export function getHistoricalSnapshots(limit: number = 7): { snapshot_date: string; data: string }[] {
   const db = getDb();
   return db.prepare(
-    'SELECT snapshot_date, data FROM behavior_snapshots WHERE type = "deep_analysis" ORDER BY snapshot_date DESC LIMIT ?'
+    "SELECT snapshot_date, data FROM behavior_snapshots WHERE type = 'deep_analysis' ORDER BY snapshot_date DESC LIMIT ?"
   ).all(limit) as { snapshot_date: string; data: string }[];
 }
 

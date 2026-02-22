@@ -14,9 +14,9 @@
     "debounce": "^3.0.0",
     "next": "16.1.6",
     "node-cron": "^4.2.1",
-    "node-ical": "^0.25.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "rrule": "^2.8.1",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

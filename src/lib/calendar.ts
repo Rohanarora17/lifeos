@@ -1,20 +1,23 @@
 import { getDb, getSetting } from './db';
+import { rrulestr } from 'rrule';
 
 // ============================================================
 //  GOOGLE CALENDAR SYNC via ICS Feed
 //  No OAuth needed — user pastes their "Secret address in iCal format"
 // ============================================================
 
-interface CalendarEvent {
+export interface CalendarEvent {
     uid: string;
     title: string;
     description: string;
     startTime: string;
     endTime: string;
     location: string;
+    rrule?: string;
+    exdate?: string[];
 }
 
-interface SyncResult {
+export interface SyncResult {
     synced: number;
     total: number;
     errors: string[];
@@ -52,10 +55,10 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         const icsText = await res.text();
         console.log(`[Calendar] Fetched ICS text length: ${icsText.length} characters`);
 
-        let parsedData: any;
+        // 1. Parse raw events
+        let events: CalendarEvent[] = [];
         try {
-            const ical = require('node-ical');
-            parsedData = ical.sync.parseICS(icsText);
+            events = parseICS(icsText);
         } catch (e) {
             console.error('[Calendar] Failed to parse ICS format:', e);
             result.errors.push(`Parse error: ${String(e)}`);
@@ -64,13 +67,12 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
 
         const db = getDb();
         const upsert = db.prepare(`
-      INSERT INTO calendar_events (id, title, description, start_time, end_time, location, synced_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET
-        title = ?, description = ?, start_time = ?, end_time = ?, location = ?, synced_at = datetime('now')
-    `);
+        INSERT INTO calendar_events (id, title, description, start_time, end_time, location, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            title = ?, description = ?, start_time = ?, end_time = ?, location = ?, synced_at = datetime('now')
+        `);
 
-        // Sync window: from 7 days ago to 30 days in the future
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const windowStart = new Date(today.getTime() - 7 * 86400000);
@@ -78,29 +80,32 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
 
         let eventCount = 0;
 
-        for (const key in parsedData) {
-            if (!parsedData.hasOwnProperty(key)) continue;
-            const ev = parsedData[key];
-            if (ev.type !== 'VEVENT') continue;
-
+        for (const ev of events) {
             let instances: { start: Date, end: Date }[] = [];
 
-            const evStart = new Date(ev.start);
-            const evEnd = new Date(ev.end || ev.start);
+            const evStart = new Date(ev.startTime);
+            const evEnd = new Date(ev.endTime || ev.startTime);
             const duration = evEnd.getTime() - evStart.getTime();
 
             if (ev.rrule) {
-                // Expand recurring events within our window
-                const dates = ev.rrule.between(windowStart, windowEnd);
-                for (const date of dates) {
-                    // node-ical rrule between() returns Date objects for start times
-                    instances.push({
-                        start: new Date(date),
-                        end: new Date(new Date(date).getTime() + duration) // Add duration to each new start
-                    });
+                try {
+                    // Create RRule from string with explicit dtstart
+                    const rruleObj = rrulestr(ev.rrule, { forceset: true });
+                    // NOTE: Node-rrule uses the dtstart provided in the options mapping, but rrulestr can take it from string or it assumes current date. 
+                    // Better to parse with our known start date to fix bounds.
+                    const rruleWithStart = rrulestr(`DTSTART:${formatDateToICS(evStart)}\n${ev.rrule}`);
+
+                    const dates = rruleWithStart.between(windowStart, windowEnd);
+                    for (const date of dates) {
+                        instances.push({
+                            start: new Date(date),
+                            end: new Date(new Date(date).getTime() + duration)
+                        });
+                    }
+                } catch (rruleErr) {
+                    console.error('[Calendar] Failed to expand RRULE for event:', ev.title, rruleErr);
                 }
             } else {
-                // Single event
                 if (evStart >= windowStart && evStart <= windowEnd) {
                     instances.push({ start: evStart, end: evEnd });
                 }
@@ -108,22 +113,15 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
 
             for (const instance of instances) {
                 try {
-                    // To avoid PK conflicts on recurring events, augment the ID with the start ISO string
                     const instanceId = `${ev.uid}_${instance.start.toISOString()}`;
-                    const title = ev.summary || 'Busy';
-                    const description = ev.description || '';
-                    const loc = ev.location || '';
-                    const startTime = instance.start.toISOString();
-                    const endTime = instance.end.toISOString();
-
                     upsert.run(
-                        instanceId, title, description, startTime, endTime, loc,
-                        title, description, startTime, endTime, loc
+                        instanceId, ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location,
+                        ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location
                     );
                     eventCount++;
                     result.synced++;
                 } catch (e) {
-                    console.error(`[Calendar] Failed to insert event: ${ev.summary}`, e);
+                    // Ignore individual upsert collisions quietly
                 }
             }
         }
@@ -138,6 +136,115 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
     return result;
 }
 
+/** Format native Date to ICS format YYYYMMDDTHHMMSSZ */
+function formatDateToICS(date: Date): string {
+    return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+}
+
+/** Lightweight ICS (iCalendar) parser. */
+function parseICS(icsText: string): CalendarEvent[] {
+    const events: CalendarEvent[] = [];
+    const lines = icsText.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+
+    let inEvent = false;
+    let current: Partial<CalendarEvent> = {};
+
+    for (const line of lines) {
+        if (line === 'BEGIN:VEVENT') {
+            inEvent = true;
+            current = {};
+            continue;
+        }
+
+        if (line === 'END:VEVENT') {
+            inEvent = false;
+            if (current.uid && current.title && current.startTime) {
+                events.push({
+                    uid: current.uid,
+                    title: current.title,
+                    description: current.description || '',
+                    startTime: current.startTime,
+                    endTime: current.endTime || current.startTime,
+                    location: current.location || '',
+                    rrule: current.rrule
+                });
+            }
+            continue;
+        }
+
+        if (!inEvent) continue;
+
+        const colonIdx = line.indexOf(':');
+        if (colonIdx === -1) continue;
+
+        const keyPart = line.slice(0, colonIdx);
+        const value = line.slice(colonIdx + 1);
+        const key = keyPart.split(';')[0]; // Strip parameters like DTSTART;VALUE=DATE
+
+        switch (key) {
+            case 'UID':
+                current.uid = value;
+                break;
+            case 'SUMMARY':
+                current.title = unescapeICS(value);
+                break;
+            case 'DESCRIPTION':
+                current.description = unescapeICS(value).slice(0, 500);
+                break;
+            case 'LOCATION':
+                current.location = unescapeICS(value);
+                break;
+            case 'DTSTART':
+                current.startTime = parseICSDate(value);
+                break;
+            case 'DTEND':
+                current.endTime = parseICSDate(value);
+                break;
+            case 'RRULE':
+                current.rrule = line; // Store full line RRULE:FREQ=...
+                break;
+        }
+    }
+
+    return events;
+}
+
+function unescapeICS(text: string): string {
+    return text
+        .replace(/\\,/g, ',')
+        .replace(/\\;/g, ';')
+        .replace(/\\n/g, '\n')
+        .replace(/\\\\/g, '\\');
+}
+
+function parseICSDate(icsDate: string): string {
+    // ICS dates can be YYYYMMDDTHHMMSSZ (UTC) or YYYYMMDDTHHMMSS (local) or YYYYMMDD (all-day)
+    // We'll try to parse as UTC if 'Z' is present, otherwise assume local and convert to ISO string.
+    // For all-day events (YYYYMMDD), we'll treat them as starting at midnight UTC for consistency.
+
+    if (icsDate.length === 8) { // YYYYMMDD (all-day event)
+        const year = parseInt(icsDate.substring(0, 4), 10);
+        const month = parseInt(icsDate.substring(4, 6), 10) - 1; // Month is 0-indexed
+        const day = parseInt(icsDate.substring(6, 8), 10);
+        return new Date(Date.UTC(year, month, day, 0, 0, 0)).toISOString();
+    }
+
+    // YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
+    const year = parseInt(icsDate.substring(0, 4), 10);
+    const month = parseInt(icsDate.substring(4, 6), 10) - 1;
+    const day = parseInt(icsDate.substring(6, 8), 10);
+    const hour = parseInt(icsDate.substring(9, 11), 10);
+    const minute = parseInt(icsDate.substring(11, 13), 10);
+    const second = parseInt(icsDate.substring(13, 15), 10);
+
+    if (icsDate.endsWith('Z')) {
+        return new Date(Date.UTC(year, month, day, hour, minute, second)).toISOString();
+    } else {
+        // Assume local time if no 'Z' and convert to ISO string (which is UTC)
+        // This will correctly represent the local time in UTC.
+        return new Date(year, month, day, hour, minute, second).toISOString();
+    }
+}
 
 
 /**
