@@ -62,7 +62,7 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
         // Chunk sizes to prevent hitting output token limits (e.g. max 15 per prompt)
         const CHUNK_SIZE = 15;
@@ -193,7 +193,7 @@ export async function generateDailySummary(date: string, stats: {
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const behaviorContext = buildBehaviorContext();
         const prompt = `Generate a concise, motivating daily productivity report. Use emojis. Be encouraging but honest about distractions. Keep it under 200 words.
 
@@ -235,7 +235,7 @@ export async function generateMorningBrief(date: string, data: {
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const behaviorContext = buildBehaviorContext();
         const prompt = `Generate a brief, energizing morning briefing. Use emojis. Keep it under 150 words. Be motivating!
 
@@ -300,7 +300,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
     const ai = getGenAI();
     if (ai && (currentDomain.includes('youtube') || !ruleResult)) {
         try {
-            const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
             const nudgeContext = getSmartNudgeContext();
             const behaviorContext = buildBehaviorContext();
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
