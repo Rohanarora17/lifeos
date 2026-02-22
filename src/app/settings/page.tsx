@@ -33,13 +33,43 @@ export default function SettingsPage() {
     }, []);
 
     const saveSettings = async () => {
-        await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ settings: editValues }),
-        });
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
+        try {
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ settings: editValues }),
+            });
+
+            // Read back to verify save worked
+            const verifyRes = await fetch('/api/settings');
+            const verifyData = await verifyRes.json();
+            const verified = verifyData.settings || {};
+
+            // Count verified keys (non-sensitive values should match exactly)
+            let verifiedCount = 0;
+            let totalCount = 0;
+            for (const key of Object.keys(editValues)) {
+                totalCount++;
+                if (key.includes('api_key') || key.includes('pat') || key.includes('token')) {
+                    // Sensitive keys are masked, just check they're not empty
+                    if (editValues[key] && verified[key] && verified[key].startsWith('••••')) {
+                        verifiedCount++;
+                    } else if (!editValues[key]) {
+                        verifiedCount++; // empty is fine
+                    }
+                } else if (verified[key] === editValues[key]) {
+                    verifiedCount++;
+                }
+            }
+
+            setSettings(verified);
+            setSaved(true);
+            setSyncResult(`✅ ${verifiedCount}/${totalCount} settings saved and verified`);
+            setTimeout(() => { setSaved(false); setSyncResult(null); }, 3000);
+        } catch {
+            setSyncResult('❌ Failed to save settings');
+            setTimeout(() => setSyncResult(null), 3000);
+        }
     };
 
     const triggerSync = async (type: string, endpoint: string) => {

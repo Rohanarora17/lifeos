@@ -896,10 +896,40 @@ export function buildBehaviorContext(): string {
     }
   } catch { /* table may not exist yet */ }
 
+  // ── Section 5: Today's Calendar Context ──
+  try {
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const calEvents = db.prepare(`
+      SELECT title, start_time, end_time, location FROM calendar_events
+      WHERE DATE(start_time) = ? ORDER BY start_time
+    `).all(today) as { title: string; start_time: string; end_time: string; location: string }[];
+
+    if (calEvents.length > 0) {
+      parts.push('');
+      parts.push('--- TODAY\'S CALENDAR (factor meetings into productivity analysis) ---');
+      let totalMeetingMin = 0;
+      for (const ev of calEvents) {
+        const start = new Date(ev.start_time);
+        const end = new Date(ev.end_time);
+        const dur = Math.round((end.getTime() - start.getTime()) / 60000);
+        totalMeetingMin += dur;
+        const timeStr = start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        parts.push(`- ${timeStr}: ${ev.title} (${dur}min)${ev.location ? ` @ ${ev.location}` : ''}`);
+      }
+      parts.push(`Total meeting load: ${calEvents.length} events, ${Math.round(totalMeetingMin / 60)}h ${totalMeetingMin % 60}m`);
+      if (totalMeetingMin > 240) {
+        parts.push('⚠️ Heavy meeting day — adjust expectations for deep work');
+      } else if (totalMeetingMin === 0) {
+        parts.push('✅ No meetings — prime day for deep focus work');
+      }
+    }
+  } catch { /* calendar table may not exist */ }
+
   if (parts.length === 0) return '';
 
   parts.push('');
-  parts.push('--- Personalize your response using this profile. Reference patterns, compare to baseline, and build on recent insights. If user marked an insight as not_helpful, avoid similar ones. ---');
+  parts.push('--- Personalize your response using this profile. Reference patterns, compare to baseline, and build on recent insights. If user marked an insight as not_helpful, avoid similar ones. Factor in today\'s calendar when judging productivity. ---');
   return parts.join('\n');
 }
 
@@ -1051,6 +1081,40 @@ export async function runDeepAnalysis(): Promise<{
       const genAI = new GoogleGenerativeAI(apiKey);
       const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
+      // Gather calendar data for AI context
+      let calendarContext = '';
+      try {
+        const calEvents = db.prepare(`
+          SELECT title, start_time, end_time FROM calendar_events
+          WHERE DATE(start_time) = ? ORDER BY start_time
+        `).all(today) as { title: string; start_time: string; end_time: string }[];
+
+        if (calEvents.length > 0) {
+          let totalMin = 0;
+          const eventLines = calEvents.map(e => {
+            const dur = Math.round((new Date(e.end_time).getTime() - new Date(e.start_time).getTime()) / 60000);
+            totalMin += dur;
+            return `  - ${e.title} (${dur}min)`;
+          });
+          calendarContext = `\n\nTODAY'S CALENDAR (${calEvents.length} events, ${Math.round(totalMin / 60)}h ${totalMin % 60}m of meetings):\n${eventLines.join('\n')}\n  → Consider meeting load when judging focus and productivity. Meeting-heavy days naturally have less deep work time.`;
+        }
+
+        // Weekly meeting pattern
+        const weeklyMeetings = db.prepare(`
+          SELECT DATE(start_time) as day, COUNT(*) as cnt,
+            SUM(CAST((julianday(end_time) - julianday(start_time)) * 1440 AS INTEGER)) as total_min
+          FROM calendar_events
+          WHERE start_time >= datetime('now', '-7 days')
+          GROUP BY day
+        `).all() as { day: string; cnt: number; total_min: number }[];
+
+        if (weeklyMeetings.length > 0) {
+          const avgDailyMeetings = weeklyMeetings.reduce((a, d) => a + d.cnt, 0) / weeklyMeetings.length;
+          const avgDailyMin = weeklyMeetings.reduce((a, d) => a + d.total_min, 0) / weeklyMeetings.length;
+          calendarContext += `\n  Weekly avg: ${avgDailyMeetings.toFixed(1)} meetings/day, ${Math.round(avgDailyMin)}min/day in meetings.`;
+        }
+      } catch { /* calendar table may not exist */ }
+
       const prompt = `You are a behavioral scientist who has been studying this user over time. Generate NEW, personalized insights that BUILD ON your previous analysis.
 Respond ONLY with valid JSON (no markdown).
 
@@ -1067,7 +1131,7 @@ TODAY'S ANALYSIS DATA:
 - Nudge Response: ${Math.round(nudgeEffectiveness * 100)}%
 - Archetype Strengths: ${archetype.strengths.join('; ')}
 - Archetype Challenges: ${archetype.challenges.join('; ')}
-${historicalComparison}${pastInsightsContext}${memoriesContext}
+${calendarContext}${historicalComparison}${pastInsightsContext}${memoriesContext}
 
 IMPORTANT RULES:
 1. DO NOT repeat previous insights. Build on them — note changes, improvements, or regressions.
@@ -1162,6 +1226,15 @@ Generate 3-5 behavioral_memories — these are durable patterns you want to reme
     } catch (err) {
       console.error('AI deep analysis failed:', err);
     }
+  }
+
+  // ── Learn domain classifications from accumulated usage data ──
+  try {
+    const { learnDomainClassifications } = await import('./categories');
+    learnDomainClassifications();
+    console.log('[DeepAnalysis] Domain classification learning completed');
+  } catch (err) {
+    console.error('Domain classification learning failed:', err);
   }
 
   return { summary, archetype, focusScore, entropy, consistency, goalAlignment, insights };
