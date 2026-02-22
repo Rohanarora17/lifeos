@@ -356,7 +356,32 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   `).all() as { d: string; productive_mins: number }[];
 
   const workValues = dailyWork.map(d => d.productive_mins);
-  const workCV = coefficientOfVariation(workValues);
+
+  // Phase 9: Calendar-aware focus normalization
+  // Subtract meeting time from available hours so meeting-heavy days aren't penalized
+  let meetingMinutesPerDay: Map<string, number> = new Map();
+  try {
+    const meetings = db.prepare(`
+      SELECT date(start_time) as d,
+        SUM((julianday(end_time) - julianday(start_time)) * 1440) as meeting_mins
+      FROM calendar_events
+      WHERE start_time >= date('now', '-${days} days')
+      GROUP BY d
+    `).all() as { d: string; meeting_mins: number }[];
+    for (const m of meetings) {
+      meetingMinutesPerDay.set(m.d, Math.round(m.meeting_mins));
+    }
+  } catch { /* calendar may not exist */ }
+
+  // Normalize: boost productive minutes proportionally to lost meeting time
+  // If you had 3h meetings and did 3h deep work, that's equivalent to 6h on a free day
+  const normalizedWorkValues = dailyWork.map(d => {
+    const meetingMins = meetingMinutesPerDay.get(d.d) || 0;
+    const availableRatio = Math.max(0.3, (480 - meetingMins) / 480); // 480 = 8h workday
+    return d.productive_mins / availableRatio; // normalize up
+  });
+
+  const workCV = coefficientOfVariation(normalizedWorkValues.length > 0 ? normalizedWorkValues : workValues);
   const workScore = cvToScore(workCV);
 
   // Trend: EMA comparison (last 7 vs previous 7)

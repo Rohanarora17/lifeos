@@ -141,6 +141,23 @@ export async function PATCH(request: NextRequest) {
             // Store in behavioral_memory so AI considers it in future summaries/context
             learnMemory('user_preference', memoryContent, 'classification_override');
 
+            // 3. Update domain_categories cache — closes the feedback loop permanently
+            // User overrides use confidence 1.0 so they always win over AI (0.9) and seeds (0.8)
+            if (!activity.youtube_video_id) {
+                try {
+                    db.prepare(`
+                        INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
+                        VALUES (?, ?, 'other', 1.0, ?)
+                        ON CONFLICT(domain) DO UPDATE SET
+                            category = ?, subcategory = 'other', confidence = 1.0,
+                            ai_reasoning = ?, updated_at = datetime('now')
+                    `).run(
+                        activity.domain, category, `User manual override to ${category}`,
+                        category, `User manual override to ${category}`
+                    );
+                } catch { /* ignore if table doesn't exist */ }
+            }
+
             // Modify ai_classification row so if it gets cached, it gets the new category
             const existingAi = db.prepare('SELECT ai_classification FROM activities WHERE id = ?').get(id) as any;
             if (existingAi && existingAi.ai_classification) {

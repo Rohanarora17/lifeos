@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getSetting, getDb } from './db';
-import { Category, Subcategory, classifyByRules, CategoryResult } from './categories';
+import { Category, Subcategory, CategoryResult } from './categories';
 import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
 
 let genAI: GoogleGenerativeAI | null = null;
@@ -28,17 +28,10 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
 
     const db = getDb();
 
-    // 1. Initial pass: Check DB caches and rules
+    // 1. Initial pass: Check domain cache and recent activity
     for (let i = 0; i < activities.length; i++) {
         const act = activities[i];
-        const { url, domain, title } = act;
-
-        // Try rule-based first
-        const ruleResult = classifyByRules(url, title || '');
-        if (ruleResult && ruleResult.confidence === 'high') {
-            results[i] = ruleResult;
-            continue;
-        }
+        const { url, domain } = act;
 
         const isYouTube = domain.includes('youtube.com');
         let isCached = false;
@@ -110,6 +103,20 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
             const _db = getDb();
             const goalsContext = typeof buildGoalsContext === 'function' ? buildGoalsContext() : '';
 
+            // Build active tasks context for context-aware classification
+            let taskContext = '';
+            try {
+                const activeTasks = _db.prepare(`
+                    SELECT title, status FROM tasks
+                    WHERE status IN ('today', 'doing')
+                    ORDER BY status DESC
+                `).all() as { title: string; status: string }[];
+                if (activeTasks.length > 0) {
+                    taskContext = "\nUSER'S ACTIVE TASKS (use these to determine if browsing is task-related):\n" +
+                        activeTasks.map(t => `- [${t.status.toUpperCase()}] ${t.title}`).join('\n');
+                }
+            } catch { /* tasks table may not exist yet */ }
+
             // Get behavioral memory context
             let memoryContext = '';
             try {
@@ -126,6 +133,7 @@ INPUT:
 ${JSON.stringify(chunk, null, 2)}
 
 ${goalsContext}
+${taskContext}
 ${memoryContext}
 
 OUTPUT FORMAT (JSON ARRAY):
@@ -267,10 +275,30 @@ export async function generateDailySummary(date: string, stats: {
         const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const behaviorContext = buildBehaviorContext();
         const goalsContext = buildGoalsContext();
+
+        // Phase 9: Inject habit completion data for holistic daily feedback
+        let habitContext = '';
+        try {
+            const db = getDb();
+            const habits = db.prepare(`
+                SELECT h.name, h.icon,
+                    (SELECT COUNT(*) FROM habit_checkins hc WHERE hc.habit_id = h.id AND hc.completed = 1 AND hc.date = ?) as done_today
+                FROM habits h WHERE h.archived = 0
+            `).all(date) as { name: string; icon: string; done_today: number }[];
+            if (habits.length > 0) {
+                const completed = habits.filter(h => h.done_today > 0);
+                const missed = habits.filter(h => h.done_today === 0);
+                habitContext = `\n\nHABIT TRACKER (${completed.length}/${habits.length} completed today):`;
+                if (completed.length > 0) habitContext += `\n✅ Completed: ${completed.map(h => `${h.icon} ${h.name}`).join(', ')}`;
+                if (missed.length > 0) habitContext += `\n❌ Missed: ${missed.map(h => `${h.icon} ${h.name}`).join(', ')}`;
+            }
+        } catch { /* ignore */ }
+
         const prompt = `Generate a concise, motivating daily productivity report. Use emojis. Be encouraging but honest about distractions. Keep it under 200 words.
 
 ${behaviorContext}
 ${goalsContext}
+${habitContext}
 
 Date: ${date}
 Productive time: ${Math.round(stats.productiveMinutes / 60)}h ${stats.productiveMinutes % 60}m
@@ -285,7 +313,7 @@ XP earned: ${stats.xp}
 Top sites by time:
 ${stats.topDomains.map(d => `- ${d.domain}: ${d.minutes}min (${d.category})`).join('\n')}
 
-Use the behavioral profile above to personalize this report. Reference their patterns, progress, and known triggers. Compare today to their usual behavior. Format as a clean report with sections.`;
+Use the behavioral profile above to personalize this report. Reference their patterns, habit streaks, and known triggers. If habits were missed, give specific encouragement. Compare today to their usual behavior. Format as a clean report with sections.`;
 
         const result = await model.generateContent(prompt);
         return result.response.text().trim();
@@ -347,20 +375,35 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         return { shouldNudge: false, message: '' };
     }
 
-    // Quick check using rules
-    const ruleResult = classifyByRules(url || `https://${currentDomain}`, currentTitle);
-    if (ruleResult && ruleResult.category === 'productive') {
-        return { shouldNudge: false, message: '' };
-    }
+    const db = getDb();
 
-    if (ruleResult && ruleResult.category === 'distraction') {
-        return {
-            shouldNudge: true,
-            message: `⚠️ You've been on ${currentDomain} for ${minutesOnSite} minutes. Time to refocus!`,
-        };
-    }
+    // Phase 9: Calendar-based nudge suppression
+    // If user is currently in a scheduled meeting, suppress all nudges
+    try {
+        const activeMeeting = db.prepare(`
+            SELECT title FROM calendar_events
+            WHERE datetime('now', 'localtime') BETWEEN start_time AND end_time
+            LIMIT 1
+        `).get() as { title: string } | undefined;
+        if (activeMeeting) {
+            return { shouldNudge: false, message: '' };
+        }
+    } catch { /* calendar table may not exist */ }
 
-    // Check cache to save tokens
+    let domainCategory: string | null = null;
+
+    // Quick check using domain cache
+    try {
+        const cachedDomain = db.prepare('SELECT category, subcategory, ai_reasoning FROM domain_categories WHERE domain = ?').get(currentDomain) as any;
+        if (cachedDomain) {
+            domainCategory = cachedDomain.category;
+            if (cachedDomain.category === 'productive') {
+                return { shouldNudge: false, message: '' };
+            }
+        }
+    } catch { /* ignore */ }
+
+    // Check recent activity cache to save tokens
     const cachedResult = lookupRecentClassification(url, currentDomain, videoId);
     if (cachedResult) {
         if (cachedResult.category === 'productive') {
@@ -369,13 +412,10 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
     }
 
     // --- Phase 7: EMA / CUSUM Anomaly Detection (Yerkes-Dodson) ---
-    // If the user is on a distraction, instead of just checking raw minutes,
-    // let's check their 30-minute Exponential Moving Average.
-    const isDistraction = ruleResult?.category === 'distraction' || cachedResult?.category === 'distraction';
+    const isDistraction = domainCategory === 'distraction' || cachedResult?.category === 'distraction';
 
     if (isDistraction) {
         try {
-            const db = getDb();
             // Calculate a baseline score for today (long-term EMA proxy)
             const todayBaseline = db.prepare(`
                 SELECT 
@@ -419,19 +459,36 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
 
     // For YouTube and ambiguous sites, use AI
     const ai = getGenAI();
-    if (ai && (currentDomain.includes('youtube') || !ruleResult)) {
+    if (ai) {
         try {
             const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
             const nudgeContext = getSmartNudgeContext();
             const behaviorContext = buildBehaviorContext();
             const goalsContext = buildGoalsContext();
+
+            // Phase 9: Inject active tasks into nudge prompt
+            let taskContext = '';
+            try {
+                const activeTasks = db.prepare(`
+                    SELECT title, status FROM tasks
+                    WHERE status IN ('today', 'doing')
+                    ORDER BY status DESC
+                `).all() as { title: string; status: string }[];
+                if (activeTasks.length > 0) {
+                    taskContext = "\nUSER'S ACTIVE TASKS (if browsing is related to these, do NOT nudge):\n" +
+                        activeTasks.map(t => `- [${t.status.toUpperCase()}] ${t.title}`).join('\n');
+                }
+            } catch { /* tasks table may not exist */ }
+
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
 ${behaviorContext}
 ${goalsContext}
+${taskContext}
 ${nudgeContext}
 
+CRITICAL: If the page title or domain is clearly related to one of the user's ACTIVE TASKS, do NOT nudge — they are doing their work.
 Use their behavioral profile to decide. If this site matches their known distraction patterns, be more assertive. If they're usually productive at this hour, a gentle reminder is enough.
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns"}`;
 
@@ -453,8 +510,8 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
         }
     }
 
-    // Fallback: nudge if over threshold and not clearly productive
-    if (minutesOnSite >= threshold && (!ruleResult || ruleResult.category !== 'productive')) {
+    // Fallback: nudge if over threshold
+    if (minutesOnSite >= threshold) {
         return {
             shouldNudge: true,
             message: `⚠️ You've been on ${currentDomain} for ${minutesOnSite} minutes. Time for a break?`,
