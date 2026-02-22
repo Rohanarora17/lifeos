@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getAutomaticityScore, getStreakCount } from '@/lib/scoring';
 
 // GET: Fetch all habits with today's checkin status, or a full year of checkins for heatmap
 export async function GET(request: NextRequest) {
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Default: return all active habits with today's status
-        const today = new Date().toISOString().split('T')[0];
+        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const habits = db.prepare(`
       SELECT h.*, 
         CASE WHEN hc.id IS NOT NULL THEN hc.completed ELSE 0 END as checked_today,
@@ -54,7 +55,7 @@ export async function GET(request: NextRequest) {
         if (timeHabits.length > 0) {
             const productiveMinutes = db.prepare(`
                 SELECT SUM(duration_seconds) / 60 as mins
-                FROM activities WHERE date(started_at) = ? AND category = 'productive'
+                FROM activities WHERE date(started_at, 'localtime') = ? AND category = 'productive'
             `).get(today) as { mins: number } | undefined;
 
             const todayProdMins = Math.round(productiveMinutes?.mins || 0);
@@ -73,6 +74,14 @@ export async function GET(request: NextRequest) {
                 }
             });
             updateMany(timeHabits);
+        }
+
+        // Calculate Habit Automaticity Score (Lally Curve)
+        for (const h of habits) {
+            const checkins = db.prepare('SELECT date FROM habit_checkins WHERE habit_id = ? AND completed = 1 ORDER BY date DESC').all(h.id) as { date: string }[];
+            const streak = getStreakCount(checkins.map(c => c.date));
+            h.current_streak = streak;
+            h.automaticity_score = getAutomaticityScore(streak);
         }
 
         // Global streak: how many consecutive days have ALL habits been completed
@@ -101,7 +110,7 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ error: 'habit_id is required' }, { status: 400 });
             }
 
-            const checkinDate = date || new Date().toISOString().split('T')[0];
+            const checkinDate = date || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
             // Toggle: if already checked in, remove it; otherwise add it
             const existing = db.prepare(

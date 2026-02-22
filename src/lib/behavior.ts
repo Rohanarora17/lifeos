@@ -51,7 +51,7 @@ export function computeFocusSessions(date: string): FocusSession[] {
   const activities = db.prepare(`
     SELECT id, domain, category, started_at, ended_at, duration_seconds
     FROM activities
-    WHERE date(started_at) = ? AND duration_seconds > 0
+    WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
     ORDER BY started_at ASC
   `).all(date) as {
     id: number; domain: string; category: string;
@@ -238,7 +238,7 @@ export function computeAttentionEntropy(date: string): EntropyResult {
   const activities = db.prepare(`
     SELECT domain, duration_seconds, started_at
     FROM activities
-    WHERE date(started_at) = ? AND duration_seconds > 0
+    WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
     ORDER BY started_at ASC
   `).all(date) as { domain: string; duration_seconds: number; started_at: string }[];
 
@@ -348,7 +348,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
 
   // ── Work consistency (daily productive minutes) ──
   const dailyWork = db.prepare(`
-    SELECT date(started_at) as d,
+    SELECT date(started_at, 'localtime') as d,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as productive_mins
     FROM activities
     WHERE started_at >= datetime('now', '-${days} days')
@@ -414,7 +414,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
 
   // ── Timing consistency (when do they start working each day?) ──
   const startTimes = db.prepare(`
-    SELECT date(started_at) as d, MIN(CAST(strftime('%H', started_at) AS REAL) + CAST(strftime('%M', started_at) AS REAL) / 60) as start_hour
+    SELECT date(started_at, 'localtime') as d, MIN(CAST(strftime('%H', datetime(started_at, 'localtime')) AS REAL) + CAST(strftime('%M', datetime(started_at, 'localtime')) AS REAL) / 60) as start_hour
     FROM activities
     WHERE started_at >= datetime('now', '-${days} days') AND category = 'productive'
     GROUP BY d
@@ -434,16 +434,16 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
 
   // Daily streak (days with productive activity)
   const activeDates = db.prepare(`
-    SELECT DISTINCT date(started_at) as d
+    SELECT DISTINCT date(started_at, 'localtime') as d
     FROM activities
     WHERE category = 'productive'
     ORDER BY d DESC
   `).all() as { d: string }[];
 
   let streakDays = 0;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
   for (let i = 0; i < activeDates.length; i++) {
-    const expected = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const expected = new Date(Date.now() + 19800000 - i * 86400000).toISOString().slice(0, 10);
     if (activeDates[i]?.d === expected) {
       streakDays++;
     } else {
@@ -620,7 +620,7 @@ export function classifyArchetype(days: number = 30): Archetype {
 
   // Chronotype: when is peak productivity?
   const hourly = db.prepare(`
-    SELECT CAST(strftime('%H', started_at) AS INTEGER) as h,
+    SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) as prod
     FROM activities WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY h
@@ -654,7 +654,7 @@ export function classifyArchetype(days: number = 30): Archetype {
 
   // Consistency type
   const dailyProd = db.prepare(`
-    SELECT date(started_at) as d,
+    SELECT date(started_at, 'localtime') as d,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as mins
     FROM activities WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY d
@@ -899,7 +899,7 @@ export function buildBehaviorContext(): string {
   // ── Section 5: Today's Calendar Context ──
   try {
     const db = getDb();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
     const calEvents = db.prepare(`
       SELECT title, start_time, end_time, location FROM calendar_events
       WHERE DATE(start_time) = ? ORDER BY start_time
@@ -975,7 +975,7 @@ export async function runDeepAnalysis(): Promise<{
   insights: { category: string; insight: string; tip: string; severity: string }[];
 }> {
   const db = getDb();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
   // Run all analyses
   const sessions = computeFocusSessions(today);
@@ -987,7 +987,7 @@ export async function runDeepAnalysis(): Promise<{
 
   // Time patterns
   const hourly = db.prepare(`
-    SELECT CAST(strftime('%H', started_at) AS INTEGER) as h,
+    SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 3600.0 as productive_h
     FROM activities WHERE started_at >= datetime('now', '-30 days')
     GROUP BY h ORDER BY productive_h DESC LIMIT 4
@@ -1187,7 +1187,7 @@ Generate 3-5 behavioral_memories — these are durable patterns you want to reme
           top_productive_domains: topProductive.map(d => d.domain),
           top_distraction_domains: topDistraction.map(d => d.domain),
           productive_trend: consistency.trend,
-          last_deep_analysis: new Date().toISOString(),
+          last_deep_analysis: new Date(Date.now() + 19800000).toISOString(),
         };
 
         // setProfileValue now handles progressive confidence automatically
@@ -1291,7 +1291,7 @@ function computeHabitStreak(days: number): { current: number; longest: number } 
 
   let current = 0;
   for (let i = 0; i < checkins.length; i++) {
-    const expected = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const expected = new Date(Date.now() + 19800000 - i * 86400000).toISOString().slice(0, 10);
     if (checkins[i]?.date === expected) current++;
     else break;
   }

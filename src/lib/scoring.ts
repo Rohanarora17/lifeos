@@ -47,7 +47,7 @@ export function getStreakCount(checkinDates: string[]): number {
     if (checkinDates.length === 0) return 0;
 
     const sorted = [...checkinDates].sort((a, b) => b.localeCompare(a));
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
     // Check if the most recent checkin is today or yesterday
     const mostRecent = sorted[0];
@@ -71,6 +71,24 @@ function dateDiffDays(dateA: string, dateB: string): number {
     const a = new Date(dateA);
     const b = new Date(dateB);
     return Math.round(Math.abs(b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// -----------------------------------------------------------------------------
+// Lally's Habit Formation Curve (Automaticity Score)
+// Based on Lally et al. (2010): "How are habits formed: Modelling habit formation in the real world"
+// Habit strength grows asymptotically. Median 66 days to 95% automaticity.
+// Formula: A(t) = A_max * (1 - e^(-k * t))
+// -----------------------------------------------------------------------------
+export function getAutomaticityScore(streak: number): number {
+    if (streak <= 0) return 0;
+
+    // k = 0.045 sets 66 days to roughly 95% automaticity
+    // 1 - e^(-0.045 * 66) ≈ 0.948
+    const k = 0.045;
+    const maxAutomaticity = 100;
+
+    const automaticity = maxAutomaticity * (1 - Math.exp(-k * streak));
+    return Math.min(100, Math.round(automaticity));
 }
 
 export function getAccountabilityScore(stats: {

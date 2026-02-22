@@ -7,7 +7,7 @@ import { calculateDailyXp, getStreakCount, getAccountabilityScore, ScoreConfig }
 export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
-        const date = searchParams.get('date') || new Date().toISOString().split('T')[0];
+        const date = searchParams.get('date') || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const type = searchParams.get('type') || 'daily'; // 'daily' or 'morning'
 
         const db = getDb();
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
         SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as productive_minutes,
         SUM(CASE WHEN category = 'distraction' THEN duration_seconds ELSE 0 END) / 60 as distraction_minutes,
         SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60 as neutral_minutes
-      FROM activities WHERE date(started_at) = ?
+      FROM activities WHERE date(started_at, 'localtime') = ?
     `).get(date) as { productive_minutes: number; distraction_minutes: number; neutral_minutes: number };
 
         const tasksCompleted = (db.prepare(
@@ -101,7 +101,7 @@ export async function GET(request: NextRequest) {
 
         const topDomains = db.prepare(`
       SELECT domain, SUM(duration_seconds) / 60 as minutes, category
-      FROM activities WHERE date(started_at) = ?
+      FROM activities WHERE date(started_at, 'localtime') = ?
       GROUP BY domain ORDER BY minutes DESC LIMIT 10
     `).all(date) as { domain: string; minutes: number; category: string }[];
 

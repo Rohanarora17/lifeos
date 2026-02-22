@@ -7,7 +7,7 @@ export async function GET(request: Request) {
     const action = searchParams.get('action') || 'recent';
 
     if (action === 'stats') {
-        const date = searchParams.get('date') || new Date().toISOString().slice(0, 10);
+        const date = searchParams.get('date') || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         return NextResponse.json(getGitHubStats(date));
     }
 

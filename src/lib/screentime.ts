@@ -55,7 +55,7 @@ const APP_CATEGORIES: Record<string, string> = {
  * Falls back to `lsappinfo` if KnowledgeC is not accessible.
  */
 export function collectScreenTime(date?: string): ScreenTimeEntry[] {
-    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const targetDate = date || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
     // Try KnowledgeC database first
     const knowledgeCPath = path.join(
@@ -227,7 +227,7 @@ export function saveScreenTime(entries: ScreenTimeEntry[]) {
  */
 export function getScreenTime(date?: string) {
     const db = getDb();
-    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const targetDate = date || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
     try {
         const apps = db.prepare(`

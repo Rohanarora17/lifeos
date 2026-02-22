@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     }
 
     if (action === 'focus') {
-        const date = searchParams.get('date') || new Date().toISOString().slice(0, 10);
+        const date = searchParams.get('date') || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const sessions = computeFocusSessions(date);
         const score = computeFocusScore(sessions);
         const entropy = computeAttentionEntropy(date);
@@ -61,7 +61,7 @@ export async function GET(request: Request) {
     }
 
     // Full analysis (all at once)
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
     const sessions = computeFocusSessions(today);
     const focusScore = computeFocusScore(sessions);
     const entropy = computeAttentionEntropy(today);
@@ -73,7 +73,7 @@ export async function GET(request: Request) {
     // Hourly heatmap
     const db = getDb();
     const hourly = db.prepare(`
-    SELECT CAST(strftime('%H', started_at) AS INTEGER) as h,
+    SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
       SUM(CASE WHEN category='productive' THEN duration_seconds ELSE 0 END)/60 as productive,
       SUM(CASE WHEN category='distraction' THEN duration_seconds ELSE 0 END)/60 as distraction,
       SUM(duration_seconds)/60 as total
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
 
     // Day of week
     const dayOfWeek = db.prepare(`
-    SELECT CASE CAST(strftime('%w', started_at) AS INTEGER)
+    SELECT CASE CAST(strftime('%w', datetime(started_at, 'localtime')) AS INTEGER)
       WHEN 0 THEN 'Sunday' WHEN 1 THEN 'Monday' WHEN 2 THEN 'Tuesday'
       WHEN 3 THEN 'Wednesday' WHEN 4 THEN 'Thursday' WHEN 5 THEN 'Friday'
       WHEN 6 THEN 'Saturday' END as day_name,

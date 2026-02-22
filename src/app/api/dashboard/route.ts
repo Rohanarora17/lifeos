@@ -6,7 +6,7 @@ import { getLevel, getStreakCount, getAccountabilityScore } from '@/lib/scoring'
 export async function GET(request: NextRequest) {
     try {
         const db = getDb();
-        const today = new Date().toISOString().split('T')[0];
+        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
         // Today's activity stats
         const activityStats = db.prepare(`
@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60, 0) as neutral_minutes,
         COALESCE(SUM(duration_seconds) / 60, 0) as total_minutes,
         COUNT(*) as total_activities
-      FROM activities WHERE date(started_at) = ?
+      FROM activities WHERE date(started_at, 'localtime') = ?
     `).get(today) as Record<string, number>;
 
         // Today's tasks
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
         // Today's top domains
         const topDomains = db.prepare(`
       SELECT domain, SUM(duration_seconds) / 60 as minutes, category
-      FROM activities WHERE date(started_at) = ?
+      FROM activities WHERE date(started_at, 'localtime') = ?
       GROUP BY domain ORDER BY minutes DESC LIMIT 5
     `).all(today) as { domain: string; minutes: number; category: string }[];
 
@@ -80,7 +80,7 @@ export async function GET(request: NextRequest) {
         // Recent activities (last 10)
         const recentActivities = db.prepare(`
       SELECT id, url, domain, title, category, subcategory, started_at, duration_seconds, youtube_video_id
-      FROM activities WHERE date(started_at) = ?
+      FROM activities WHERE date(started_at, 'localtime') = ?
       ORDER BY started_at DESC LIMIT 10
     `).all(today);
 

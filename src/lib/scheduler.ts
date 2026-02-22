@@ -39,7 +39,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Daily summary — runs every day at configured time
     const summaryTime = getSetting('daily_summary_time') || '23:00';
     registerDailyJob('daily_summary', summaryTime, async () => {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
     });
 
@@ -106,7 +106,7 @@ function registerDailyJob(name: string, time: string, fn: () => Promise<void>) {
             console.log(`[Scheduler] Running ${name}...`);
             try {
                 await fn();
-                job.lastRun = new Date().toISOString();
+                job.lastRun = new Date(Date.now() + 19800000).toISOString();
                 job.nextRun = getNextRunTime(time);
                 console.log(`[Scheduler] ${name} completed`);
             } catch (err) {
@@ -143,7 +143,7 @@ function registerIntervalJob(name: string, intervalMs: number, fn: () => Promise
             job.running = true;
             try {
                 await fn();
-                job.lastRun = new Date().toISOString();
+                job.lastRun = new Date(Date.now() + 19800000).toISOString();
             } catch (err) {
                 console.error(`[Scheduler] ${name} initial run failed:`, err);
             }
@@ -157,7 +157,7 @@ function registerIntervalJob(name: string, intervalMs: number, fn: () => Promise
         console.log(`[Scheduler] Running ${name}...`);
         try {
             await fn();
-            job.lastRun = new Date().toISOString();
+            job.lastRun = new Date(Date.now() + 19800000).toISOString();
             job.nextRun = new Date(Date.now() + intervalMs).toISOString();
             console.log(`[Scheduler] ${name} completed`);
         } catch (err) {
@@ -197,7 +197,7 @@ export async function triggerJob(name: string, baseUrl: string = 'http://localho
                 await fetch(`${baseUrl}/api/summary?type=morning`);
                 break;
             case 'daily_summary':
-                await fetch(`${baseUrl}/api/summary?type=daily&date=${new Date().toISOString().slice(0, 10)}`);
+                await fetch(`${baseUrl}/api/summary?type=daily&date=${new Date(Date.now() + 19800000).toISOString().slice(0, 10)}`);
                 break;
             case 'deep_analysis':
                 await fetch(`${baseUrl}/api/behavior`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -214,7 +214,7 @@ export async function triggerJob(name: string, baseUrl: string = 'http://localho
             default:
                 return { success: false, error: `Unknown job: ${name}` };
         }
-        job.lastRun = new Date().toISOString();
+        job.lastRun = new Date(Date.now() + 19800000).toISOString();
         return { success: true };
     } catch (err) {
         return { success: false, error: String(err) };

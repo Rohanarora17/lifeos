@@ -23,7 +23,7 @@ function extractYouTubeVideoId(url: string): string | null {
 export async function classifyActivityBatch(activities: any[]): Promise<(CategoryResult & { reasoning?: string })[]> {
     const results: (CategoryResult & { reasoning?: string })[] = new Array(activities.length);
     const toClassifyIndices: number[] = [];
-    const itemsToClassify: { id: number, url: string, domain: string, title?: string, youtube_channel?: string | null }[] = [];
+    const itemsToClassify: { id: number, url: string, domain: string, title?: string, youtube_channel?: string | null, meta_description?: string, h1_text?: string }[] = [];
     const missingDomains = new Set<string>();
 
     const db = getDb();
@@ -76,7 +76,9 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
                 url: act.url,
                 domain: act.domain,
                 title: act.title,
-                youtube_channel: act.youtube_channel
+                youtube_channel: act.youtube_channel,
+                meta_description: act.meta_description,
+                h1_text: act.h1_text
             });
         }
     }
@@ -318,12 +320,15 @@ Date: ${date}
 Calendar events today:
 ${data.calendarEvents.length > 0 ? data.calendarEvents.map(e => `- ${e.title} (${e.start_time} - ${e.end_time})`).join('\n') : '- No meetings scheduled'}
 
-Pending tasks:
+Pending tasks (Zeigarnik Open Loops):
 ${data.pendingTasks.map(t => `- [${t.status}] ${t.title}`).join('\n')}
 
 Yesterday's score: ${data.yesterdayScore}/100
 Current streak: ${data.streak} days
 Yesterday's distraction time: ${data.yesterdayDistractionMinutes} minutes
+
+CRITICAL INSTRUCTION: Based on the "Pending tasks", identify the single most important "Open Loop" (Zeigarnik Effect). To help the user close it, you MUST generate an "Implementation Intention" (Peter Gollwitzer's framework) using this exact format:
+"🎯 **Action Plan:** If [specific time/calendar event], then I will [specific tiny action to start the task]."
 
 Use the behavioral profile to personalize this briefing. Reference their typical patterns and known strengths/weaknesses. Include a motivating message tailored to their motivation style.`;
 
@@ -361,12 +366,55 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         if (cachedResult.category === 'productive') {
             return { shouldNudge: false, message: '' };
         }
-        if (cachedResult.category === 'distraction') {
+    }
+
+    // --- Phase 7: EMA / CUSUM Anomaly Detection (Yerkes-Dodson) ---
+    // If the user is on a distraction, instead of just checking raw minutes,
+    // let's check their 30-minute Exponential Moving Average.
+    const isDistraction = ruleResult?.category === 'distraction' || cachedResult?.category === 'distraction';
+
+    if (isDistraction) {
+        try {
+            const db = getDb();
+            // Calculate a baseline score for today (long-term EMA proxy)
+            const todayBaseline = db.prepare(`
+                SELECT 
+                    SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) * 1.0 / 
+                    MAX(SUM(duration_seconds), 1) as baseline_ratio
+                FROM activities WHERE date(started_at, 'localtime') = date('now')
+            `).get() as { baseline_ratio: number };
+
+            // Calculate short-term EMA (last 30 minutes)
+            const shortTerm = db.prepare(`
+                SELECT 
+                    SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) * 1.0 / 
+                    MAX(SUM(duration_seconds), 1) as recent_ratio
+                FROM activities WHERE started_at > datetime('now', '-30 minutes')
+            `).get() as { recent_ratio: number };
+
+            const baseline = todayBaseline?.baseline_ratio || 0.5;
+            const recent = shortTerm?.recent_ratio || 0;
+
+            // CUSUM Breach Logic: If recent productivity is significantly worse than baseline
+            // and they are currently distracted, trigger an overstimulation/anxiety nudge (Yerkes-Dodson)
+            if (recent < baseline - 0.2 && minutesOnSite >= 5) {
+                return {
+                    shouldNudge: true,
+                    message: `⚠️ Focus Anomaly Detected: Your productivity ratio just dropped sharply below your daily baseline. Overstimulated? Try a 5-minute Pomodoro break.`,
+                };
+            }
+        } catch (e) {
+            console.error('CUSUM anomaly calculation failed:', e);
+        }
+
+        // Standard threshold nudge
+        if (minutesOnSite >= threshold) {
             return {
                 shouldNudge: true,
-                message: `⚠️ ${cachedResult.reasoning || `You've been distracted on ${currentDomain}`}. (${minutesOnSite}min elapsed)`,
+                message: `⚠️ ${cachedResult?.reasoning || `You've been distracted on ${currentDomain}`}. (${minutesOnSite}min elapsed)`,
             };
         }
+        return { shouldNudge: false, message: '' };
     }
 
     // For YouTube and ambiguous sites, use AI
@@ -395,7 +443,7 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
                 if (parsed.nudge) {
                     return {
                         shouldNudge: true,
-                        message: `⚠️ ${parsed.reason} (${minutesOnSite}min on ${currentDomain})`,
+                        message: `⚠️ ${parsed.reason} (${minutesOnSite}min elapsed)`,
                     };
                 }
                 return { shouldNudge: false, message: '' };

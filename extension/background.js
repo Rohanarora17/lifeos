@@ -3,7 +3,7 @@
 
 const API_BASE = 'http://localhost:3000/api';
 const NUDGE_INTERVAL_MS = 60000; // Check nudges every 60s
-const IDLE_THRESHOLD_S = 300; // 5 minutes
+const IDLE_THRESHOLD_S = 60; // 1 minute (Stanford target)
 
 // Privacy & Scalability thresholds
 const MICRO_CONTEXT_THRESHOLD_S = 15; // Visits shorter than this are bundled
@@ -93,8 +93,16 @@ chrome.idle.onStateChanged.addListener((state) => {
     }
 });
 
-// Handle tab change
+// Handle tab change with 200ms debounce to prevent SPA navigation spam
+let handleTabChangeTimeout = null;
 function handleTabChange(tab) {
+    if (handleTabChangeTimeout) clearTimeout(handleTabChangeTimeout);
+    handleTabChangeTimeout = setTimeout(() => {
+        _handleTabChange(tab);
+    }, 200);
+}
+
+function _handleTabChange(tab) {
     if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
         return;
     }
@@ -339,6 +347,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             currentActivity.youtube_video_id = message.videoId || currentActivity.youtube_video_id;
             currentActivity.youtube_channel = message.channel || currentActivity.youtube_channel;
             if (message.title) currentActivity.title = message.title;
+        }
+        sendResponse({ ok: true });
+    }
+
+    if (message.type === 'PAGE_META_INFO') {
+        if (currentActivity && currentActivity.url === message.url) {
+            currentActivity.meta_description = message.metaDescription || '';
+            currentActivity.h1_text = message.h1Text || '';
         }
         sendResponse({ ok: true });
     }

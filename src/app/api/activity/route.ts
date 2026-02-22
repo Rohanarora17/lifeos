@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
         const params: (string | number)[] = [];
 
         if (date) {
-            query += ' AND date(started_at) = ?';
+            query += " AND date(started_at, 'localtime') = ?";
             params.push(date);
         }
         if (category) {
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
           SUM(CASE WHEN category = 'distraction' THEN duration_seconds ELSE 0 END) / 60 as distraction_minutes,
           SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60 as neutral_minutes,
           SUM(duration_seconds) / 60 as total_minutes
-        FROM activities WHERE date(started_at) = ?
+        FROM activities WHERE date(started_at, 'localtime') = ?
       `).get(date);
         }
 

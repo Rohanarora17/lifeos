@@ -28,7 +28,7 @@ interface Stats {
 export default function ActivityPage() {
     const [activities, setActivities] = useState<Activity[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
-    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [date, setDate] = useState(new Date(Date.now() + 19800000).toISOString().slice(0, 10));
     const [filter, setFilter] = useState<string>('all');
 
     useEffect(() => {

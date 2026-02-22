@@ -11,7 +11,7 @@ export async function GET(request: Request) {
     }
 
     if (action === 'range') {
-        const start = searchParams.get('start') || new Date().toISOString().slice(0, 10);
+        const start = searchParams.get('start') || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const end = searchParams.get('end') || start;
         return NextResponse.json({ events: getCalendarEvents(start, end) });
     }

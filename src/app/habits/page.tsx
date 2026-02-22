@@ -12,6 +12,8 @@ interface Habit {
     total_checkins: number;
     goal_metric: 'boolean' | 'time';
     goal_target: number;
+    current_streak: number;
+    automaticity_score: number;
 }
 
 interface HeatmapDay {
@@ -31,10 +33,11 @@ export default function HabitsPage() {
     const [newGoalMetric, setNewGoalMetric] = useState<'boolean' | 'time'>('boolean');
     const [newGoalTarget, setNewGoalTarget] = useState<number>(60);
 
-    useEffect(() => {
-        fetchHabits();
-        fetchHeatmap();
-    }, []);
+    const fetchHeatmap = async () => {
+        const res = await fetch('/api/habits?heatmap=true');
+        const data = await res.json();
+        setHeatmapData(data.heatmap || []);
+    };
 
     const fetchHabits = async () => {
         const res = await fetch('/api/habits');
@@ -43,11 +46,10 @@ export default function HabitsPage() {
         setStreakDates(data.streakDates || []);
     };
 
-    const fetchHeatmap = async () => {
-        const res = await fetch('/api/habits?heatmap=true');
-        const data = await res.json();
-        setHeatmapData(data.heatmap || []);
-    };
+    useEffect(() => {
+        fetchHabits();
+        fetchHeatmap();
+    }, []);
 
     const toggleCheckin = async (habitId: number) => {
         await fetch('/api/habits', {
@@ -88,8 +90,9 @@ export default function HabitsPage() {
     // Calculate streak
     const calculateStreak = () => {
         if (streakDates.length === 0) return 0;
+        // eslint-disable-next-line
+        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const sorted = [...streakDates].sort((a, b) => b.localeCompare(a));
-        const today = new Date().toISOString().split('T')[0];
         const diff = Math.round((new Date(today).getTime() - new Date(sorted[0]).getTime()) / 86400000);
         if (diff > 1) return 0;
         let streak = 1;
@@ -177,9 +180,21 @@ export default function HabitsPage() {
                                 </div>
                             )}
 
-                            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                                {habit.total_checkins} total check-ins
-                            </p>
+                            <div className="flex gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                                <span>{habit.total_checkins} total check-ins</span>
+
+                                {/* Lally Automaticity Score */}
+                                {habit.current_streak > 0 && (
+                                    <div className="flex gap-2 items-center">
+                                        <span>•</span>
+                                        <span className="flex items-center gap-1" title="Habit Automaticity (Lally's Curve)">
+                                            🤖 {habit.automaticity_score}% Automatic
+                                        </span>
+                                        <span>•</span>
+                                        <span>🔥 {habit.current_streak}</span>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                         <button onClick={() => deleteHabit(habit.id)} className="btn btn-ghost btn-sm">🗑️</button>
                     </div>
