@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { sanitizeText } from '@/lib/sanitize';
 
 // GET — List goals with linked tasks, habits, computed progress, TMT motivation, and self-efficacy
 export async function GET() {
@@ -110,7 +111,7 @@ export async function POST(request: Request) {
     const result = db.prepare(
         'INSERT INTO goals (title, description, type, metric, target_value, unit, category, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
-        title, description || '', type || 'general', metric || 'tasks',
+        sanitizeText(title, 300), sanitizeText(description || '', 2000), type || 'general', metric || 'tasks',
         target_value || 1, unit || 'tasks', category || 'productivity', deadline || null
     );
 
@@ -125,8 +126,11 @@ export async function PATCH(request: Request) {
 
     const db = getDb();
     const allowed = ['title', 'description', 'type', 'metric', 'target_value', 'unit', 'category', 'deadline', 'active'];
+    const textFields = ['title', 'description'];
     const fields = Object.keys(updates).filter(k => allowed.includes(k)).map(k => `${k} = ?`).join(', ');
-    const values = Object.keys(updates).filter(k => allowed.includes(k)).map(k => updates[k]);
+    const values = Object.keys(updates).filter(k => allowed.includes(k)).map(k =>
+        textFields.includes(k) ? sanitizeText(updates[k], k === 'title' ? 300 : 2000) : updates[k]
+    );
 
     if (fields) {
         db.prepare(`UPDATE goals SET ${fields} WHERE id = ?`).run(...values, id);

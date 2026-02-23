@@ -231,16 +231,27 @@ export interface EntropyResult {
  * Shannon entropy of domain distribution.
  * H = -Σ p(x) * log2(p(x))
  * Used by information theory to measure "surprise" — higher = more random attention.
+ * 
+ * @param date - The anchor date (YYYY-MM-DD)
+ * @param days - Number of days to look back (default 1 = single day, 7 = rolling week window)
  */
-export function computeAttentionEntropy(date: string): EntropyResult {
+export function computeAttentionEntropy(date: string, days: number = 1): EntropyResult {
   const db = getDb();
 
-  const activities = db.prepare(`
-    SELECT domain, duration_seconds, started_at
-    FROM activities
-    WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
-    ORDER BY started_at ASC
-  `).all(date) as { domain: string; duration_seconds: number; started_at: string }[];
+  const activities = days > 1
+    ? db.prepare(`
+        SELECT domain, duration_seconds, started_at
+        FROM activities
+        WHERE date(started_at, 'localtime') BETWEEN date(?, '-' || ? || ' days') AND ?
+        AND duration_seconds > 0
+        ORDER BY started_at ASC
+      `).all(date, days - 1, date) as { domain: string; duration_seconds: number; started_at: string }[]
+    : db.prepare(`
+        SELECT domain, duration_seconds, started_at
+        FROM activities
+        WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
+        ORDER BY started_at ASC
+      `).all(date) as { domain: string; duration_seconds: number; started_at: string }[];
 
   if (activities.length === 0) {
     return {
@@ -1008,7 +1019,7 @@ export async function runDeepAnalysis(): Promise<{
   // Run all analyses
   const sessions = computeFocusSessions(today);
   const focusScore = computeFocusScore(sessions);
-  const entropy = computeAttentionEntropy(today);
+  const entropy = computeAttentionEntropy(today, 7);  // 7-day rolling window for meaningful patterns
   const consistency = computeConsistencyIndex(30);
   const archetype = classifyArchetype(30);
   const goalAlignment = computeGoalAlignment();

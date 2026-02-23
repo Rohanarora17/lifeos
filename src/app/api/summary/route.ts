@@ -154,17 +154,17 @@ export async function GET(request: NextRequest) {
 
         // Save to daily_scores
         db.prepare(`
-      INSERT INTO daily_scores (date, xp_earned, productive_minutes, distraction_minutes, neutral_minutes, tasks_completed, habits_completed, total_habits, ai_summary, task_score, habit_score, tasks_assigned, tasks_pending)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO daily_scores (date, xp_earned, productive_minutes, distraction_minutes, neutral_minutes, tasks_completed, habits_completed, total_habits, ai_summary, task_score, habit_score, tasks_assigned, tasks_pending, accountability_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(date) DO UPDATE SET 
         xp_earned = ?, productive_minutes = ?, distraction_minutes = ?, neutral_minutes = ?,
         tasks_completed = ?, habits_completed = ?, total_habits = ?, ai_summary = ?,
-        task_score = ?, habit_score = ?, tasks_assigned = ?, tasks_pending = ?
+        task_score = ?, habit_score = ?, tasks_assigned = ?, tasks_pending = ?, accountability_score = ?
     `).run(
             date, xp, activityStats.productive_minutes || 0, activityStats.distraction_minutes || 0, activityStats.neutral_minutes || 0,
-            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending,
+            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending, score,
             xp, activityStats.productive_minutes || 0, activityStats.distraction_minutes || 0, activityStats.neutral_minutes || 0,
-            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending
+            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending, score
         );
 
         return NextResponse.json({

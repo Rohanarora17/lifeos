@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { sanitizeText } from '@/lib/sanitize';
 
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
@@ -89,6 +90,9 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'title is required' }, { status: 400 });
         }
 
+        const safeTitle = sanitizeText(title, 500);
+        const safeDesc = sanitizeText(description || '', 2000);
+
         const db = getDb();
 
         // Get max position for the target status column
@@ -102,8 +106,8 @@ export async function POST(request: NextRequest) {
     `);
 
         const result = stmt.run(
-            title,
-            description || '',
+            safeTitle,
+            safeDesc,
             status || 'backlog',
             due_date || null,
             maxPos.next_pos,
@@ -132,8 +136,8 @@ export async function PATCH(request: NextRequest) {
         const updates: string[] = [];
         const params: (string | number)[] = [];
 
-        if (title !== undefined) { updates.push('title = ?'); params.push(title); }
-        if (description !== undefined) { updates.push('description = ?'); params.push(description); }
+        if (title !== undefined) { updates.push('title = ?'); params.push(sanitizeText(title, 500)); }
+        if (description !== undefined) { updates.push('description = ?'); params.push(sanitizeText(description, 2000)); }
         if (status !== undefined) {
             updates.push('status = ?');
             params.push(status);

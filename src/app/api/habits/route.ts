@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAutomaticityScore, getStreakCount } from '@/lib/scoring';
+import { sanitizeText } from '@/lib/sanitize';
 
 // GET: Fetch all habits with today's checkin status, or a full year of checkins for heatmap
 export async function GET(request: NextRequest) {
@@ -167,7 +168,13 @@ export async function POST(request: NextRequest) {
                     return NextResponse.json({ checked: !!isCompleted, value });
                 } else {
                     db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
-                    try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(-20, 'Unchecked Habit (ID: ' + habit_id + ')'); } catch (e) { }
+                    // Only deduct coins if balance would remain >= 0
+                    try {
+                        const bal = db.prepare('SELECT COALESCE(SUM(amount), 0) as b FROM coin_ledger').get() as { b: number };
+                        if (bal.b >= 20) {
+                            db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(-20, 'Unchecked Habit (ID: ' + habit_id + ')');
+                        }
+                    } catch (e) { }
                     return NextResponse.json({ checked: false });
                 }
             } else {
@@ -187,9 +194,12 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'name is required' }, { status: 400 });
         }
 
+        const safeName = sanitizeText(name, 200);
+        const safeIcon = sanitizeText(icon || '✅', 10);
+
         const result = db.prepare(
             'INSERT INTO habits (name, icon, frequency, goal_metric, goal_target, goal_id) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(name, icon || '✅', frequency || 'daily', goal_metric || 'boolean', goal_target || 1, goal_id || null);
+        ).run(safeName, safeIcon, frequency || 'daily', goal_metric || 'boolean', goal_target || 1, goal_id || null);
 
         return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
     } catch (error) {

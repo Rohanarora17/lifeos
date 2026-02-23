@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { sanitizeText } from '@/lib/sanitize';
 
 export async function GET() {
     try {
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
         // Action: Create Custom Reward
         if (title && cost) {
             db.prepare('INSERT INTO rewards_store (title, cost, icon) VALUES (?, ?, ?)').run(
-                title,
+                sanitizeText(title, 200),
                 parseInt(cost),
                 icon || '🎁'
             );

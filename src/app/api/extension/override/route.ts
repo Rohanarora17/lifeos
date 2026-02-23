@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { extractDomain } from '@/lib/categories';
+import { sanitizeUrl, sanitizeText } from '@/lib/sanitize';
 
 // POST: Logs when a user overrides a distraction block.
 // This is a critical AI learning signal — repeated overrides on a domain
@@ -8,7 +9,9 @@ import { extractDomain } from '@/lib/categories';
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { url, title, reason } = body;
+        const url = sanitizeUrl(body.url);
+        const title = sanitizeText(body.title, 500);
+        const reason = sanitizeText(body.reason, 500);
 
         if (!url) {
             return NextResponse.json({ error: 'Missing URL' }, { status: 400 });
