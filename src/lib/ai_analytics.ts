@@ -13,13 +13,22 @@ export async function generateDeepCorrelations(): Promise<void> {
         const db = getDb();
 
         // 1. Gather 30-day activity logs (duration per category per day)
+        // UNION raw activities with the compressed `daily_domain_aggregates` to preserve older pruned data
         const activities = db.prepare(`
-            SELECT 
-                date(started_at, 'localtime') as day, 
-                category, 
-                SUM(duration_seconds) as total_seconds
-            FROM activities
-            WHERE started_at >= datetime('now', '-30 days', 'localtime')
+            SELECT day, category, SUM(total_seconds) as total_seconds
+            FROM (
+                SELECT date(started_at, 'localtime') as day, category, SUM(duration_seconds) as total_seconds
+                FROM activities
+                WHERE started_at >= datetime('now', '-30 days', 'localtime')
+                GROUP BY day, category
+                
+                UNION ALL
+                
+                SELECT date, category, SUM(total_duration) as total_seconds
+                FROM daily_domain_aggregates
+                WHERE date >= date('now', '-30 days', 'localtime')
+                GROUP BY date, category
+            )
             GROUP BY day, category
             ORDER BY day ASC
         `).all() as any[];
@@ -108,16 +117,22 @@ Keep insights specific, data-driven, and actionable. Only return the JSON array.
         const jsonMatch = text.match(/\\[[\\s\\S]*\\]/);
 
         if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]) as { type: string, insight: string }[];
+            try {
+                const parsed = JSON.parse(jsonMatch[0]) as { type: string, insight: string }[];
 
-            // Clear old insights and insert new
-            db.prepare('DELETE FROM ai_insights').run();
+                // Clear old insights and insert new
+                db.prepare('DELETE FROM ai_insights').run();
 
-            const insert = db.prepare('INSERT INTO ai_insights (insight, type) VALUES (?, ?)');
-            const insertMany = db.transaction((rows: any[]) => {
-                for (const row of rows) insert.run(row.insight, row.type);
-            });
-            insertMany(parsed);
+                const insert = db.prepare('INSERT INTO ai_insights (insight, type) VALUES (?, ?)');
+                const insertMany = db.transaction((rows: any[]) => {
+                    for (const row of rows) insert.run(row.insight, row.type);
+                });
+                insertMany(parsed);
+            } catch (parseError) {
+                console.error('[AI Analytics] Failed to parse Gemini JSON output:', text);
+            }
+        } else {
+            console.error('[AI Analytics] Gemini output did not contain valid JSON array:', text);
         }
 
     } catch (error) {

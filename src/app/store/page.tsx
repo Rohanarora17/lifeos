@@ -123,6 +123,39 @@ export default function StorePage() {
                         </div>
                     </section>
 
+                    {/* Add Custom Reward Section */}
+                    <section className="card" style={{ padding: '1.5rem', border: '1px dashed var(--accent-orange)' }}>
+                        <h3 className="text-lg font-bold mb-3 flex items-center gap-2">✨ Create Custom Reward</h3>
+                        <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+                            Set your own real-world rewards (e.g. "Buy a Video Game") to spend your coins on!
+                        </p>
+                        <form
+                            className="flex flex-col sm:flex-row gap-3"
+                            onSubmit={async (e) => {
+                                e.preventDefault();
+                                const form = e.target as HTMLFormElement;
+                                const title = (form.elements.namedItem('title') as HTMLInputElement).value;
+                                const cost = (form.elements.namedItem('cost') as HTMLInputElement).value;
+
+                                try {
+                                    const res = await fetch('/api/gamification', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ title, cost, icon: '🌟' })
+                                    });
+                                    if (res.ok) {
+                                        form.reset();
+                                        fetchGamificationData();
+                                    }
+                                } catch (err) { }
+                            }}
+                        >
+                            <input required name="title" type="text" placeholder="Reward Title..." className="input flex-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
+                            <input required name="cost" type="number" min="1" placeholder="Cost..." className="input w-32" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
+                            <button type="submit" className="btn btn-primary" style={{ background: 'var(--accent-orange)' }}>Add</button>
+                        </form>
+                    </section>
+
                     <section>
                         <h2 className="text-xl font-bold mb-4 flex items-center gap-2">🏆 Trophy Vault</h2>
                         <div className="card space-y-6" style={{ padding: '1.5rem' }}>

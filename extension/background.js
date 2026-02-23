@@ -8,16 +8,17 @@ const IDLE_THRESHOLD_S = 60; // 1 minute (Stanford target)
 // Privacy & Scalability thresholds
 const MICRO_CONTEXT_THRESHOLD_S = 15; // Visits shorter than this are bundled
 const PRIVACY_BLOCKLIST = [
-    /bank/i,
-    /finance/i,
-    /fidelity/i,
-    /chase/i,
-    /paypal/i,
-    /health/i,
-    /insurance/i,
-    /medical/i,
-    /localhost:3000/i,
-    /^file:\/\//i
+    // Finance
+    /bank/i, /finance/i, /fidelity/i, /chase/i, /paypal/i, /stripe/i, /crypto/i,
+    // Medical
+    /health/i, /insurance/i, /medical/i, /therapy/i, /clinic/i, /hospital/i, /doctor/i,
+    // Auth & Identity
+    /password/i, /auth/i, /login/i, /signup/i, /credentials/i, /sso/i,
+    // Communications (Private messages)
+    /mail/i, /inbox/i, /gmail/i, /outlook/i, /messages/i, /whatsapp/i, /telegram/i,
+    // Local & Internal
+    /localhost/i, /127\.0\.0\.1/i, /^file:\/\//i, /^chrome:\/\//i, /^chrome-extension:\/\//i,
+    /internal/i, /intranet/i
 ];
 
 let currentActivity = null;
@@ -28,6 +29,12 @@ chrome.runtime.onInstalled.addListener(() => {
     console.log('LifeOS Tracker installed');
     chrome.alarms.create('flushActivities', { periodInMinutes: 2 });
     chrome.alarms.create('checkNudge', { periodInMinutes: 1 });
+    // Phase 20: Context Menu
+    chrome.contextMenus.create({
+        id: "send-to-lifeos",
+        title: "Extract Task to LifeOS",
+        contexts: ["selection"]
+    });
 });
 
 // Track tab changes
@@ -381,3 +388,121 @@ function extractYouTubeVideoId(url) {
         return null;
     }
 }
+
+// ==========================================
+// Phase 20: TabAI Replacements (Context Engine, Tasks, Sidebar)
+// ==========================================
+
+// 1. Context Menu Task Extraction Listener
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId === "send-to-lifeos" && info.selectionText) {
+
+        // Ensure we don't accidentally extract tasks from sensitive domains
+        if (tab && tab.url) {
+            for (const pattern of PRIVACY_BLOCKLIST) {
+                if (pattern.test(tab.url)) {
+                    console.warn('LifeOS: Blocked attempt to extract task from sensitive domain.');
+                    return;
+                }
+            }
+        }
+
+        try {
+            const res = await fetch(`${API_BASE}/extension/tasks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: info.selectionText,
+                    url: tab?.url,
+                    title: tab?.title
+                })
+            });
+
+            if (res.ok) {
+                chrome.action.setBadgeText({ text: '✓', tabId: tab?.id });
+                chrome.action.setBadgeBackgroundColor({ color: '#22c55e', tabId: tab?.id });
+                setTimeout(() => chrome.action.setBadgeText({ text: '', tabId: tab?.id }), 2000);
+            }
+        } catch (e) {
+            console.error('Failed to send task to LifeOS:', e);
+            chrome.action.setBadgeText({ text: '!', tabId: tab?.id });
+            chrome.action.setBadgeBackgroundColor({ color: '#ef4444', tabId: tab?.id });
+        }
+    }
+});
+
+// 2. Context-Aware Blocking Engine
+let activeContext = { activeGoals: [], activeTasks: [] };
+let lastContextFetch = 0;
+
+async function refreshContext() {
+    if (Date.now() - lastContextFetch < 30000) return;
+    try {
+        const res = await fetch(`${API_BASE}/extension/session`);
+        if (res.ok) {
+            activeContext = await res.json();
+            lastContextFetch = Date.now();
+        }
+    } catch (e) {
+        console.warn('LifeOS backend unreachable. Context polling failed.');
+    }
+}
+
+// 3. Intercept new pages being loaded for Distraction AI
+const evaluationCache = new Map();
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
+        const riskyDomains = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'netflix.com'];
+        const isRisky = riskyDomains.some(d => tab.url.includes(d));
+
+        if (isRisky) {
+            await refreshContext();
+            if (activeContext.activeGoals && activeContext.activeGoals.length > 0) {
+                const cacheKey = `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
+
+                if (evaluationCache.has(cacheKey)) {
+                    const cached = evaluationCache.get(cacheKey);
+                    if (Date.now() - cached.timestamp < 3600000) {
+                        if (cached.isDistraction) {
+                            chrome.tabs.sendMessage(tabId, {
+                                type: 'BLOCK_PAGE',
+                                reason: cached.reason,
+                                goals: activeContext.activeGoals
+                            });
+                        }
+                        return;
+                    } else {
+                        evaluationCache.delete(cacheKey);
+                    }
+                }
+
+                try {
+                    const res = await fetch(`${API_BASE}/extension/evaluate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            url: tab.url,
+                            title: tab.title || '',
+                            activeGoals: activeContext.activeGoals
+                        })
+                    });
+
+                    if (res.ok) {
+                        const { isDistraction, reason } = await res.json();
+
+                        evaluationCache.set(cacheKey, { isDistraction, reason, timestamp: Date.now() });
+
+                        if (isDistraction) {
+                            chrome.tabs.sendMessage(tabId, {
+                                type: 'BLOCK_PAGE',
+                                reason: reason,
+                                goals: activeContext.activeGoals
+                            });
+                        }
+                    }
+                } catch (e) { }
+            }
+        }
+    }
+});

@@ -101,6 +101,19 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
+    // Nightly Database Backup — runs every day at 03:00
+    registerDailyJob('db_backup', '03:00', async () => {
+        await fetch(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
+    });
+
+    // Weekly Data Archiving (Lossless Compression) - runs every Sunday at 02:00
+    registerDailyJob('data_archiving', '02:00', async () => {
+        const dayOfWeek = new Date().getDay();
+        if (dayOfWeek === 0) { // Sunday
+            await fetch(`${baseUrl}/api/cron?action=archive`, { method: 'POST' });
+        }
+    });
+
     console.log(`[Scheduler] ${jobs.size} jobs registered`);
 }
 

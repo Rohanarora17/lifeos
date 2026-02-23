@@ -35,17 +35,28 @@ export async function GET() {
     }
 }
 
-// POST to buy a reward
+// POST to buy a reward or create a custom reward
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { reward_id } = body;
-
-        if (!reward_id) {
-            return NextResponse.json({ error: 'reward_id is required' }, { status: 400 });
-        }
+        const { reward_id, title, cost, icon } = body;
 
         const db = getDb();
+
+        // Action: Create Custom Reward
+        if (title && cost) {
+            db.prepare('INSERT INTO rewards_store (title, cost, icon) VALUES (?, ?, ?)').run(
+                title,
+                parseInt(cost),
+                icon || '🎁'
+            );
+            return NextResponse.json({ success: true, message: `Added custom reward: ${title}` });
+        }
+
+        // Action: Buy existing Reward
+        if (!reward_id) {
+            return NextResponse.json({ error: 'reward_id or new reward details are required' }, { status: 400 });
+        }
 
         const reward = db.prepare('SELECT * FROM rewards_store WHERE id = ?').get(reward_id) as any;
         if (!reward) return NextResponse.json({ error: 'Reward not found' }, { status: 404 });

@@ -49,7 +49,13 @@ User Query: "${query}"`;
         }
 
         const db = getDb();
-        const data = db.prepare(sql).all();
+        const stmt = db.prepare(sql);
+
+        if (!stmt.readonly) {
+            return NextResponse.json({ text: "Security Alert: The generated query attempted to modify data. Action blocked." });
+        }
+
+        const data = stmt.all();
 
         // Step 2: Feed data back to Gemini to generate natural language response
         const answerPrompt = `You are LifeOS, the user's personal assistant. 

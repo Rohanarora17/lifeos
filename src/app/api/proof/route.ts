@@ -83,6 +83,12 @@ Return EXACTLY a JSON object with this schema:
 
     } catch (error: any) {
         console.error('Proof API error:', error);
-        return NextResponse.json({ error: 'Vision processing failed: ' + error.message }, { status: 500 });
+
+        // Handle Gemini 503 Overloaded or API Key exhaustions gracefully
+        if (error.status === 503 || error.message?.includes('overloaded')) {
+            return NextResponse.json({ verified: false, reason: "Gemini Vision is currently rate-limited or overloaded. Please try again in 1 minute." });
+        }
+
+        return NextResponse.json({ verified: false, reason: 'Vision processing failed: ' + error.message });
     }
 }

@@ -136,10 +136,10 @@ ${goalsContext}
 ${taskContext}
 ${memoryContext}
 
-OUTPUT FORMAT (JSON ARRAY):
+OUTPUT FORMAT: Return a JSON array matching this schema:
 [
   {
-    "id": <input id>,
+    "id": <input id as number>,
     "category": "productive|neutral|distraction", 
     "subcategory": "coding|documentation|research|learning|youtube-educational|youtube-entertainment|youtube-music|social-media|news|shopping|gaming|entertainment|communication|productivity-tool|finance|other", 
     "confidence": "high|medium|low",
@@ -157,43 +157,43 @@ RULES:
 - Reddit programming/tech subreddits → productive / research
 - News sites → neutral / news`;
 
-            const result = await model.generateContent(prompt);
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: 'application/json'
+                }
+            });
             const text = result.response.text().trim();
-            const jsonMatch = text.match(/\[[\s\S]*\]/);
+            const parsedArray = JSON.parse(text);
 
-            if (jsonMatch) {
-                const parsedArray = JSON.parse(jsonMatch[0]);
-                for (const parsed of parsedArray) {
-                    const originalIdx = parsed.id;
-                    if (originalIdx !== undefined && originalIdx < results.length) {
-                        const aiResult = {
-                            category: parsed.category as Category,
-                            subcategory: parsed.subcategory as Subcategory,
-                            confidence: parsed.confidence || 'medium',
-                            reasoning: parsed.reasoning
-                        };
-                        results[originalIdx] = aiResult;
+            for (const parsed of parsedArray) {
+                const originalIdx = parsed.id;
+                if (originalIdx !== undefined && originalIdx < results.length) {
+                    const aiResult = {
+                        category: parsed.category as Category,
+                        subcategory: parsed.subcategory as Subcategory,
+                        confidence: parsed.confidence || 'medium',
+                        reasoning: parsed.reasoning
+                    };
+                    results[originalIdx] = aiResult;
 
-                        // 4. Update the Domain Cache for future use
-                        const act = activities[originalIdx];
-                        if (act && !act.domain.includes('youtube.com')) {
-                            try {
-                                const confScore = aiResult.confidence === 'high' ? 0.9 : (aiResult.confidence === 'medium' ? 0.7 : 0.4);
-                                db.prepare(`
+                    // 4. Update the Domain Cache for future use
+                    const act = activities[originalIdx];
+                    if (act && !act.domain.includes('youtube.com')) {
+                        try {
+                            const confScore = aiResult.confidence === 'high' ? 0.9 : (aiResult.confidence === 'medium' ? 0.7 : 0.4);
+                            db.prepare(`
                                     INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
                                     VALUES (?, ?, ?, ?, ?)
                                     ON CONFLICT(domain) DO UPDATE SET
                                         category = ?, subcategory = ?, confidence = ?, ai_reasoning = ?, updated_at = datetime('now')
                                 `).run(
-                                    act.domain, aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning,
-                                    aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning
-                                );
-                            } catch (e) { /* ignore */ }
-                        }
+                                act.domain, aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning,
+                                aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning
+                            );
+                        } catch (e) { /* ignore */ }
                     }
                 }
-            } else {
-                throw new Error("Invalid format returned by AI");
             }
         }
     } catch (err) {

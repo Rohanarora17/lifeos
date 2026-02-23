@@ -9,11 +9,18 @@
     "idle",
     "alarms",
     "notifications",
-    "storage"
+    "storage",
+    "contextMenus",
+    "sidePanel",
+    "scripting"
   ],
   "host_permissions": [
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "<all_urls>"
   ],
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": false
@@ -27,7 +34,8 @@
         "<all_urls>"
       ],
       "js": [
-        "content-meta.js"
+        "content-meta.js",
+        "content.js"
       ],
       "run_at": "document_idle"
     },
