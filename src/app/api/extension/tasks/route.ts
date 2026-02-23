@@ -38,15 +38,15 @@ Return JSON matching this schema:
   "goal_id": (number or null) The ID of the most relevant goal, or null if unrelated.
 }`;
 
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: {
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: prompt,
+            config: {
                 responseMimeType: 'application/json',
             }
         });
 
-        const extracted = JSON.parse(result.response.text());
+        const extracted = JSON.parse(result.text || '{}');
 
         // We append the URL context to the description automatically
         const finalDescription = (extracted.description || '') + '\n\nSource: [' + pageTitle + '](' + url + ')';

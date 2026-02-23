@@ -31,15 +31,15 @@ If they have no active goals, do not block it.
 
 Return JSON matching { "isDistraction": boolean, "reason": "1-sentence supportive explanation" }`;
 
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: {
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.0-flash',
+            contents: prompt,
+            config: {
                 responseMimeType: 'application/json',
             }
         });
 
-        const evaluation = JSON.parse(result.response.text());
+        const evaluation = JSON.parse(result.text || '{}');
 
         return NextResponse.json(evaluation);
     } catch (error) {

@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
 
         const ai = getGenAI();
         if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
 
         // Step 1: Ask Gemini to convert NL to SQL based on Schema
         const prompt = `You are an expert SQL translation layer for an SQLite database.
@@ -35,8 +35,11 @@ RULES:
 
 User Query: "${query}"`;
 
-        const sqlResult = await model.generateContent(prompt);
-        let sql = sqlResult.response.text().trim();
+        const sqlResult = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: prompt
+        });
+        let sql = (sqlResult.text || '').trim();
 
         // Remove markdown backticks if Gemini ignored instructions
         if (sql.startsWith('\`\`\`sql')) sql = sql.substring(6);
@@ -65,8 +68,11 @@ ${JSON.stringify(data).substring(0, 3000)}
 
 Provide a concise, conversational answer to the user based on this data. Do not show them the raw JSON.`;
 
-        const answerResult = await model.generateContent(answerPrompt);
-        return NextResponse.json({ text: answerResult.response.text().trim() });
+        const answerResult = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: answerPrompt
+        });
+        return NextResponse.json({ text: (answerResult.text || '').trim() });
 
     } catch (error: any) {
         console.error('Chat API error:', error);

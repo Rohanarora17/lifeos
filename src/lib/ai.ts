@@ -1,15 +1,26 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
 
-let genAI: GoogleGenerativeAI | null = null;
+let genAI: GoogleGenAI | null = null;
 
-export function getGenAI(): GoogleGenerativeAI | null {
-    const apiKey = getSetting('gemini_api_key');
-    if (!apiKey) return null;
+export function getGenAI(): GoogleGenAI | null {
     if (!genAI) {
-        genAI = new GoogleGenerativeAI(apiKey);
+        // First try Vertex AI setup (GCP project & location)
+        const projectId = process.env.GCP_PROJECT_ID || getSetting('gcp_project_id');
+        const location = process.env.GCP_LOCATION || getSetting('gcp_location') || 'us-central1';
+
+        // Fallback to standard Gemini API key
+        const apiKey = process.env.GEMINI_API_KEY || getSetting('gemini_api_key');
+
+        if (projectId) {
+            genAI = new GoogleGenAI({ vertexai: true, project: projectId, location: location });
+        } else if (apiKey) {
+            genAI = new GoogleGenAI({ apiKey });
+        } else {
+            return null;
+        }
     }
     return genAI;
 }
@@ -91,12 +102,7 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
     }
 
     try {
-        const model = ai.getGenerativeModel({
-            model: 'gemini-2.5-flash',
-            systemInstruction: "You are a precise productivity classification engine."
-        });
-
-        // Batch into chunks to avoid prompt limits
+        // Process in chunks to avoid prompt limits
         const CHUNK_SIZE = 50;
         for (let i = 0; i < itemsToClassify.length; i += CHUNK_SIZE) {
             const chunk = itemsToClassify.slice(i, i + CHUNK_SIZE);
@@ -157,13 +163,15 @@ RULES:
 - Reddit programming/tech subreddits → productive / research
 - News sites → neutral / news`;
 
-            const result = await model.generateContent({
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                generationConfig: {
+            const result = await ai.models.generateContent({
+                model: 'gemini-3.0-flash',
+                contents: prompt,
+                config: {
+                    systemInstruction: "You are a precise productivity classification engine.",
                     responseMimeType: 'application/json'
                 }
             });
-            const text = result.response.text().trim();
+            const text = (result.text || '').trim();
             const parsedArray = JSON.parse(text);
 
             for (const parsed of parsedArray) {
@@ -272,7 +280,6 @@ export async function generateDailySummary(date: string, stats: {
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const behaviorContext = buildBehaviorContext();
         const goalsContext = buildGoalsContext();
 
@@ -315,8 +322,12 @@ ${stats.topDomains.map(d => `- ${d.domain}: ${d.minutes}min (${d.category})`).jo
 
 Use the behavioral profile above to personalize this report. Reference their patterns, habit streaks, and known triggers. If habits were missed, give specific encouragement. Compare today to their usual behavior. Format as a clean report with sections.`;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text().trim();
+        // PRO: Deep synthesis and behavior reasoning
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: prompt
+        });
+        return (result.text || '').trim();
     } catch (err) {
         console.error('AI summary failed:', err);
         return buildFallbackSummary(date, stats);
@@ -336,7 +347,6 @@ export async function generateMorningBrief(date: string, data: {
     }
 
     try {
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
         const behaviorContext = buildBehaviorContext();
         const goalsContext = buildGoalsContext();
         const prompt = `Generate a brief, energizing morning briefing. Use emojis. Keep it under 150 words. Be motivating!
@@ -360,8 +370,12 @@ CRITICAL INSTRUCTION: Based on the "Pending tasks", identify the single most imp
 
 Use the behavioral profile to personalize this briefing. Reference their typical patterns and known strengths/weaknesses. Include a motivating message tailored to their motivation style.`;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text().trim();
+        // PRO: Strategic planning and motivation
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: prompt
+        });
+        return (result.text || '').trim();
     } catch (err) {
         console.error('AI morning brief failed:', err);
         return buildFallbackMorningBrief(date, data);
@@ -461,7 +475,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
     const ai = getGenAI();
     if (ai) {
         try {
-            const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
+            // FLASH: Fast context processing for real-time nudge
             const nudgeContext = getSmartNudgeContext();
             const behaviorContext = buildBehaviorContext();
             const goalsContext = buildGoalsContext();
@@ -503,8 +517,14 @@ Use their behavioral profile to decide. If this site matches their known distrac
 If an Implementation Intention matches their current distraction (e.g., they are on social media and have an intention for that), use that intention's THEN action as the nudge reason and include the Intention ID.
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
-            const result = await model.generateContent(prompt);
-            const text = result.response.text().trim();
+            const result = await ai.models.generateContent({
+                model: 'gemini-3.0-flash',
+                contents: prompt,
+                config: {
+                    responseMimeType: 'application/json'
+                }
+            });
+            const text = (result.text || '').trim();
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 const parsed = JSON.parse(jsonMatch[0]);

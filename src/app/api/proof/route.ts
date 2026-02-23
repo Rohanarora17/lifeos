@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+
 
 export const maxDuration = 60; // Allow 60s for Vision API processing
 
@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
 
         const ai = getGenAI();
         if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' }); // Flash supports Multimodal
+
 
         // Clean base64 string
         const base64Data = image_base64.replace(/^data:image\/(png|jpeg|jpg);base64,/, "");
@@ -49,8 +49,11 @@ Return EXACTLY a JSON object with this schema:
             },
         };
 
-        const result = await model.generateContent([prompt, imagePart]);
-        let text = result.response.text().trim();
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: [prompt, imagePart]
+        });
+        let text = (result.text || '').trim();
 
         // Remove markdown tags if any
         if (text.startsWith('\`\`\`json')) text = text.substring(7);

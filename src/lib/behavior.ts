@@ -7,7 +7,7 @@
 // Shannon entropy for attention scattering, and Atomic Habits consistency models.
 
 import { getDb, getSetting } from './db';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getGenAI } from './ai';
 
 // ============================================================
 //  1. FOCUS DEPTH SCORING
@@ -1114,11 +1114,9 @@ export async function runDeepAnalysis(): Promise<{
   let insights: { category: string; insight: string; tip: string; severity: string }[] = [];
   let summary = archetype.description;
 
-  const apiKey = getSetting('gemini_api_key');
-  if (apiKey) {
+  const ai = getGenAI();
+  if (ai) {
     try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
       // Gather calendar data for AI context
       let calendarContext = '';
@@ -1196,8 +1194,12 @@ Respond with:
 Generate 6-8 insights across ALL categories. Reference specific numbers. Be direct.
 Generate 3-5 behavioral_memories — these are durable patterns you want to remember for future analysis.`;
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text().trim();
+      const result = await ai.models.generateContent({
+        model: 'gemini-3.1-pro',
+        contents: prompt,
+        config: { responseMimeType: 'application/json' }
+      });
+      const text = (result.text || '').trim();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
 
       if (jsonMatch) {

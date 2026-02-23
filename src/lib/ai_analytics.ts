@@ -111,9 +111,11 @@ Analyze the data and return EXACTLY 3 powerful insights in JSON array format:
 
 Keep insights specific, data-driven, and actionable. Only return the JSON array.`;
 
-        const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await model.generateContent(prompt);
-        const text = result.response.text().trim();
+        const result = await ai.models.generateContent({
+            model: 'gemini-3.1-pro',
+            contents: prompt
+        });
+        const text = (result.text || '').trim();
         const jsonMatch = text.match(/\\[[\\s\\S]*\\]/);
 
         if (jsonMatch) {
