@@ -168,3 +168,37 @@ Habits POST error: SqliteError: FOREIGN KEY constraint failed
 [Scheduler] alert_engine completed
  GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 13ms (compile: 5ms, proxy.ts: 4ms, render: 4ms)
  POST /api/activity/batch 401 in 15ms (compile: 6ms, proxy.ts: 5ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=1&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 15ms (compile: 6ms, proxy.ts: 5ms, render: 5ms)
+ POST /api/activity/batch 401 in 15ms (compile: 1942µs, proxy.ts: 11ms, render: 1936µs)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 14ms (compile: 5ms, proxy.ts: 5ms, render: 3ms)
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+ POST /api/gamification/engine 200 in 11ms (compile: 5ms, proxy.ts: 3ms, render: 4ms)
+ POST /api/alerts/engine 200 in 18ms (compile: 12ms, proxy.ts: 4ms, render: 1900µs)
+[Scheduler] achievement_engine completed
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 12ms (compile: 6ms, proxy.ts: 4ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 16ms (compile: 6ms, proxy.ts: 4ms, render: 6ms)
+ POST /api/activity/batch 401 in 7ms (compile: 3ms, proxy.ts: 1861µs, render: 1771µs)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=1&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 7ms (compile: 3ms, proxy.ts: 1282µs, render: 2ms)
+ POST /api/behavior 200 in 15ms (compile: 4ms, proxy.ts: 6ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2Fhome&domain=x.com&minutes=0&title=(1)%20Notifications%20%2F%20X 200 in 12ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+ POST /api/activity/batch 401 in 12ms (compile: 2ms, proxy.ts: 8ms, render: 1740µs)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 16ms (compile: 9ms, proxy.ts: 3ms, render: 4ms)
+[Scheduler] alert_engine completed
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2Fhome&domain=x.com&minutes=0&title=Home%20%2F%20X 200 in 11ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2Faidanmantine%2Fstatus%2F2025986611713073439&domain=x.com&minutes=1&title=Home%20%2F%20X 200 in 11ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+ POST /api/activity/batch 401 in 17ms (compile: 8ms, proxy.ts: 7ms, render: 2ms)
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2FAnthropicAI%2Fstatus%2F2025997928242811253&domain=x.com&minutes=0&title=aidan%20on%20X%3A%20%22if%20you%E2%80%99ve%20ever%20asked%20yourself%20if%20like%2C%205%20guys%20could%E2%80%99ve%20invented%20and%20scaled%20gpt%2C%20from%20the%20data%20to%20the%20arch%20to%20the%20posttraining%2C%20you%E2%80%99ve%20got%20your%20answer.%20my%20friends%20at%20si%20really%20are%20that%20good.%20excited%20to%20see%20it%20scale!%22%20%2F%20X 200 in 12ms (compile: 4ms, proxy.ts: 5ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2FAnthropicAI%2Fstatus%2F2025997928242811253&domain=x.com&minutes=1&title=aidan%20on%20X%3A%20%22if%20you%E2%80%99ve%20ever%20asked%20yourself%20if%20like%2C%205%20guys%20could%E2%80%99ve%20invented%20and%20scaled%20gpt%2C%20from%20the%20data%20to%20the%20arch%20to%20the%20posttraining%2C%20you%E2%80%99ve%20got%20your%20answer.%20my%20friends%20at%20si%20really%20are%20that%20good.%20excited%20to%20see%20it%20scale!%22%20%2F%20X 200 in 12ms (compile: 4ms, proxy.ts: 5ms, render: 2ms)
+ POST /api/activity/batch 401 in 6ms (compile: 3ms, proxy.ts: 2ms, render: 1822µs)
+ GET /api/nudge?url=https%3A%2F%2Fx.com%2Fhome&domain=x.com&minutes=0&title=Home%20%2F%20X 200 in 13ms (compile: 6ms, proxy.ts: 4ms, render: 4ms)
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+ POST /api/gamification/engine 200 in 11ms (compile: 4ms, proxy.ts: 4ms, render: 3ms)
+[Scheduler] achievement_engine completed
+ POST /api/alerts/engine 200 in 17ms (compile: 12ms, proxy.ts: 3ms, render: 1877µs)
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 9ms (compile: 4ms, proxy.ts: 3ms, render: 2ms)
+ POST /api/activity/batch 401 in 18ms (compile: 6ms, proxy.ts: 8ms, render: 4ms)
