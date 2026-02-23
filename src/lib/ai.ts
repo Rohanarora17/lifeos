@@ -164,7 +164,7 @@ RULES:
 - News sites → neutral / news`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-3.0-flash',
+                model: 'gemini-flash-latest',
                 contents: prompt,
                 config: {
                     systemInstruction: "You are a precise productivity classification engine.",
@@ -518,7 +518,7 @@ If an Implementation Intention matches their current distraction (e.g., they are
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-3.0-flash',
+                model: 'gemini-flash-latest',
                 contents: prompt,
                 config: {
                     responseMimeType: 'application/json'

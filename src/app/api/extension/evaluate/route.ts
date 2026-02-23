@@ -32,7 +32,7 @@ If they have no active goals, do not block it.
 Return JSON matching { "isDistraction": boolean, "reason": "1-sentence supportive explanation" }`;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-3.0-flash',
+            model: 'gemini-flash-latest',
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',

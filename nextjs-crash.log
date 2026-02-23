@@ -202,3 +202,117 @@ Habits POST error: SqliteError: FOREIGN KEY constraint failed
 [Scheduler] alert_engine completed
  POST /api/activity/batch 401 in 9ms (compile: 4ms, proxy.ts: 3ms, render: 2ms)
  POST /api/activity/batch 401 in 18ms (compile: 6ms, proxy.ts: 8ms, render: 4ms)
+ POST /api/activity/batch 401 in 12ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 16ms (compile: 9ms, proxy.ts: 4ms, render: 3ms)
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 15ms (compile: 6ms, proxy.ts: 5ms, render: 4ms)
+ POST /api/behavior 200 in 23ms (compile: 10ms, proxy.ts: 7ms, render: 6ms)
+[Scheduler] Running data_archiving...
+[Scheduler] data_archiving completed
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fprofile&domain=github.com&minutes=0&title=Your%20profile 200 in 15ms (compile: 6ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/activity/batch 401 in 7ms (compile: 3ms, proxy.ts: 1931µs, render: 1752µs)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 17ms (compile: 8ms, proxy.ts: 6ms, render: 4ms)
+[Scheduler] Running screen_time...
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+
+⚠️  [ScreenTime] Native Mac App tracking paused.
+⚠️  To track native apps, grant "Full Disk Access" to your Terminal app in your Mac System Settings -> Privacy & Security.
+
+ POST /api/screentime 200 in 37ms (compile: 4ms, proxy.ts: 4ms, render: 28ms)
+ POST /api/gamification/engine 200 in 40ms (compile: 34ms, proxy.ts: 4ms, render: 1662µs)
+[Scheduler] screen_time completed
+ POST /api/alerts/engine 200 in 43ms (compile: 39ms, proxy.ts: 3ms, render: 1478µs)
+[Scheduler] achievement_engine completed
+[Scheduler] alert_engine completed
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens%2Fnew&domain=github.com&minutes=0&title=New%20Fine-grained%20Personal%20Access%20Token 200 in 12ms (compile: 6ms, proxy.ts: 3ms, render: 3ms)
+ POST /api/activity/batch 401 in 12ms (compile: 3ms, proxy.ts: 8ms, render: 1637µs)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens%2Fnew&domain=github.com&minutes=1&title=New%20Fine-grained%20Personal%20Access%20Token 200 in 12ms (compile: 4ms, proxy.ts: 5ms, render: 4ms)
+ POST /api/activity/batch 401 in 16ms (compile: 7ms, proxy.ts: 6ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens%2Fnew&domain=github.com&minutes=1&title=New%20Fine-grained%20Personal%20Access%20Token 200 in 11ms (compile: 4ms, proxy.ts: 5ms, render: 3ms)
+ POST /api/activity/batch 401 in 15ms (compile: 6ms, proxy.ts: 5ms, render: 3ms)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 14ms (compile: 6ms, proxy.ts: 4ms, render: 3ms)
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 20ms (compile: 6ms, proxy.ts: 8ms, render: 6ms)
+ POST /api/activity/batch 401 in 14ms (compile: 5ms, proxy.ts: 5ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 11ms (compile: 3ms, proxy.ts: 3ms, render: 4ms)
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+ POST /api/gamification/engine 200 in 15ms (compile: 5ms, proxy.ts: 7ms, render: 4ms)
+ POST /api/alerts/engine 200 in 19ms (compile: 14ms, proxy.ts: 3ms, render: 3ms)
+[Scheduler] achievement_engine completed
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 9ms (compile: 4ms, proxy.ts: 2ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 27ms (compile: 10ms, proxy.ts: 13ms, render: 4ms)
+ POST /api/activity/batch 401 in 23ms (compile: 14ms, proxy.ts: 7ms, render: 1554µs)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 17ms (compile: 7ms, proxy.ts: 6ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=2&title=Fine-grained%20Personal%20Access%20Tokens 200 in 12ms (compile: 5ms, proxy.ts: 3ms, render: 4ms)
+ POST /api/activity/batch 401 in 8ms (compile: 3ms, proxy.ts: 1947µs, render: 3ms)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 17ms (compile: 9ms, proxy.ts: 4ms, render: 4ms)
+[Scheduler] alert_engine completed
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 12ms (compile: 3ms, proxy.ts: 4ms, render: 5ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=2&title=Fine-grained%20Personal%20Access%20Tokens 200 in 15ms (compile: 7ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/activity/batch 401 in 7ms (compile: 3ms, proxy.ts: 1578µs, render: 2ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 15ms (compile: 7ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/activity/batch 401 in 15ms (compile: 5ms, proxy.ts: 5ms, render: 5ms)
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+ POST /api/gamification/engine 200 in 12ms (compile: 4ms, proxy.ts: 5ms, render: 3ms)
+ POST /api/alerts/engine 200 in 17ms (compile: 11ms, proxy.ts: 4ms, render: 1789µs)
+[Scheduler] achievement_engine completed
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 14ms (compile: 6ms, proxy.ts: 4ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=0&title=Fine-grained%20Personal%20Access%20Tokens 200 in 16ms (compile: 6ms, proxy.ts: 6ms, render: 5ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 26ms (compile: 12ms, proxy.ts: 8ms, render: 6ms)
+ POST /api/activity/batch 401 in 26ms (compile: 14ms, proxy.ts: 10ms, render: 1866µs)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 13ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=2&title=Fine-grained%20Personal%20Access%20Tokens 200 in 19ms (compile: 7ms, proxy.ts: 8ms, render: 4ms)
+ POST /api/activity/batch 401 in 16ms (compile: 3ms, proxy.ts: 12ms, render: 2ms)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 15ms (compile: 9ms, proxy.ts: 3ms, render: 3ms)
+[Scheduler] alert_engine completed
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 14ms (compile: 5ms, proxy.ts: 5ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=2&title=Fine-grained%20Personal%20Access%20Tokens 200 in 13ms (compile: 6ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/activity/batch 401 in 8ms (compile: 3ms, proxy.ts: 2ms, render: 2ms)
+ GET /api/nudge?url=https%3A%2F%2Fgithub.com%2Fsettings%2Fpersonal-access-tokens&domain=github.com&minutes=1&title=Fine-grained%20Personal%20Access%20Tokens 200 in 14ms (compile: 6ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/behavior 200 in 16ms (compile: 7ms, proxy.ts: 5ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fconsole.cloud.google.com%2Fvertex-ai%2Fstudio%2Fsettings%2Fapi-keys%3Fauthuser%3D1%26project%3Dgen-lang-client-0836312291&domain=console.cloud.google.com&minutes=0&title=Vertex%20AI%20Studio%20%7C%20Build%20with%20the%20latest%20models%20%E2%80%93%20Vertex%20AI%20%E2%80%93%20Default%20Gemini%20Proj%E2%80%A6%20%E2%80%93%20Google%20Cloud%20console 200 in 11ms (compile: 5ms, proxy.ts: 3ms, render: 3ms)
+ POST /api/activity/batch 401 in 6ms (compile: 3ms, proxy.ts: 1640µs, render: 1975µs)
+[Scheduler] Running screen_time...
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+
+⚠️  [ScreenTime] Native Mac App tracking paused.
+⚠️  To track native apps, grant "Full Disk Access" to your Terminal app in your Mac System Settings -> Privacy & Security.
+
+ POST /api/screentime 200 in 45ms (compile: 5ms, proxy.ts: 10ms, render: 31ms)
+ POST /api/gamification/engine 200 in 49ms (compile: 38ms, proxy.ts: 9ms, render: 1858µs)
+[Scheduler] screen_time completed
+[Scheduler] achievement_engine completed
+ POST /api/alerts/engine 200 in 15ms (compile: 6ms, proxy.ts: 6ms, render: 3ms)
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 11ms (compile: 5ms, proxy.ts: 3ms, render: 2ms)
+ GET /api/nudge?url=https%3A%2F%2Fresend.com%2Fapi-keys&domain=resend.com&minutes=0&title=API%20Keys%20%C2%B7%20Resend 200 in 17ms (compile: 4ms, proxy.ts: 6ms, render: 7ms)
+ POST /api/activity/batch 401 in 18ms (compile: 7ms, proxy.ts: 6ms, render: 4ms)
+ POST /api/behavior 200 in 17ms (compile: 9ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/behavior 200 in 19ms (compile: 11ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/behavior 200 in 12ms (compile: 5ms, proxy.ts: 2ms, render: 5ms)
+ POST /api/behavior 200 in 10ms (compile: 4ms, proxy.ts: 3ms, render: 3ms)
+ POST /api/activity/batch 401 in 12ms (compile: 5ms, proxy.ts: 4ms, render: 3ms)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 17ms (compile: 8ms, proxy.ts: 5ms, render: 4ms)
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 18ms (compile: 4ms, proxy.ts: 5ms, render: 9ms)
+ POST /api/activity/batch 401 in 17ms (compile: 5ms, proxy.ts: 9ms, render: 3ms)
+[Scheduler] Running achievement_engine...
+[Scheduler] Running alert_engine...
+ POST /api/gamification/engine 200 in 18ms (compile: 5ms, proxy.ts: 8ms, render: 6ms)
+ POST /api/alerts/engine 200 in 24ms (compile: 15ms, proxy.ts: 7ms, render: 1897µs)
+[Scheduler] achievement_engine completed
+[Scheduler] alert_engine completed
+ POST /api/activity/batch 401 in 10ms (compile: 4ms, proxy.ts: 3ms, render: 3ms)
+ GET /api/nudge?url=https%3A%2F%2Fgemini.google.com%2Fu%2F1%2Fapp%3Fandroid-min-version%3D301356232%26ios-min-version%3D322.0%26is_sa%3D1%26campaign_id%3Dgemini_overview_page%26utm_source%3Dgemini%26utm_medium%3Dweb%26utm_campaign%3Dgemini_overview_page%26pt%3D9008%26mt%3D8%26ct%3Dgemini_overview_page%26hl%3Den-IN%26_gl%3D1*shdh0c*_gcl_aw*R0NMLjE3NTUwMTE4NTIuQ2owS0NRand6T3ZFQmhEVkFSSXNBREhmSkpTZjg3TW1XcVRLWnRQVjlfT2c4YlowZ0t1OE5CTkRDM3Y5VUFfNVBMR1B6eWVrcnUySVJpc2FBakZaRUFMd193Y0I.*_gcl_dc*R0NMLjE3NTUwMTE4NTIuQ2owS0NRand6T3ZFQmhEVkFSSXNBREhmSkpTZjg3TW1XcVRLWnRQVjlfT2c4YlowZ0t1OE5CTkRDM3Y5VUFfNVBMR1B6eWVrcnUySVJpc2FBakZaRUFMd193Y0I.*_gcl_au*MTE3NTk1MTAyNi4xNzUyNjE5OTMz*_ga*NDgzOTI5ODAwLjE3NTMyNjU0MDY.*_ga_WC57KJ50ZZ*czE3NTUwMTE4NTIkbzQkZzAkdDE3NTUwMTE4NTIkajYwJGwwJGgw&domain=gemini.google.com&minutes=0&title=Google%20Gemini 200 in 110ms (compile: 97ms, proxy.ts: 8ms, render: 5ms)
+ POST /api/activity/batch 401 in 82ms (compile: 72ms, proxy.ts: 5ms, render: 5ms)
