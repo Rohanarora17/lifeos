@@ -1,5 +1,7 @@
 // Scoring & gamification utilities
 
+import { Database } from 'better-sqlite3';
+
 export interface ScoreConfig {
     xpPerTask: number;
     xpPerHabit: number;
@@ -119,4 +121,61 @@ export function getAccountabilityScore(stats: {
     const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * 30 : 15;
 
     return Math.min(100, Math.round(focusScore + taskScore + habitScore));
+}
+
+// -----------------------------------------------------------------------------
+// Omni-Device Overlap Deduplication
+// Maps every activity to an 86400 array (seconds in a day) to precisely calculate
+// total active time without double-counting when multiple devices track simultaneously.
+// Tie-breaks overlapping categories: Distraction > Productive > Neutral
+// -----------------------------------------------------------------------------
+export function getDailyActivityStats(db: Database, dateString: string) {
+    const activities = db.prepare(`SELECT category, started_at, ended_at, duration_seconds FROM activities WHERE date(started_at, 'localtime') = ?`).all(dateString) as any[];
+
+    // Array of 86400 elements representing each second of the day
+    const day = new Uint8Array(86400);
+    // 0 = none, 1 = neutral, 2 = productive, 3 = distraction
+    const categoryMap: Record<string, number> = { neutral: 1, productive: 2, distraction: 3 };
+
+    let totalActivities = activities.length;
+    if (totalActivities === 0) {
+        return { productive_minutes: 0, distraction_minutes: 0, neutral_minutes: 0, total_minutes: 0, total_activities: 0 };
+    }
+
+    const sysOffset = new Date().getTimezoneOffset() * 60000;
+    const midnightObj = new Date(dateString + 'T00:00:00');
+    // Account for local timezone offsets to correctly anchor midnight
+    const midnight = new Date(midnightObj.getTime() + midnightObj.getTimezoneOffset() * 60000 - sysOffset).getTime();
+
+    for (const a of activities) {
+        const start = new Date(a.started_at).getTime();
+        let end = a.ended_at ? new Date(a.ended_at).getTime() : start + (a.duration_seconds * 1000);
+        if (start === end) end += 1000; // Give it 1 second if empty
+
+        const startSec = Math.max(0, Math.floor((start - midnight) / 1000));
+        const endSec = Math.min(86399, Math.floor((end - midnight) / 1000));
+
+        const catVal = categoryMap[a.category] || 1;
+
+        for (let i = startSec; i <= endSec; i++) {
+            if (catVal > day[i]) {
+                day[i] = catVal;
+            }
+        }
+    }
+
+    let prod = 0, dist = 0, neut = 0;
+    for (let i = 0; i < 86400; i++) {
+        if (day[i] === 2) prod++;
+        else if (day[i] === 3) dist++;
+        else if (day[i] === 1) neut++;
+    }
+
+    return {
+        productive_minutes: Math.round(prod / 60),
+        distraction_minutes: Math.round(dist / 60),
+        neutral_minutes: Math.round(neut / 60),
+        total_minutes: Math.round((prod + dist + neut) / 60),
+        total_activities: totalActivities
+    };
 }

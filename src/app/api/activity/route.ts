@@ -7,7 +7,7 @@ import { extractDomain } from '@/lib/categories';
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { url, title, started_at, ended_at, duration_seconds, youtube_video_id, youtube_channel } = body;
+        const { url, title, started_at, ended_at, duration_seconds, youtube_video_id, youtube_channel, device_name } = body;
 
         if (!url || !started_at) {
             return NextResponse.json({ error: 'url and started_at are required' }, { status: 400 });
@@ -20,8 +20,8 @@ export async function POST(request: NextRequest) {
 
         const db = getDb();
         const stmt = db.prepare(`
-      INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
         const result = stmt.run(
@@ -35,7 +35,8 @@ export async function POST(request: NextRequest) {
             duration_seconds || 0,
             JSON.stringify(classification),
             youtube_video_id || null,
-            youtube_channel || null
+            youtube_channel || null,
+            device_name || 'Unknown Device'
         );
 
         return NextResponse.json({
@@ -81,18 +82,10 @@ export async function GET(request: NextRequest) {
 
         const activities = db.prepare(query).all(...params);
 
-        // Also get summary stats for the requested date
         let stats = null;
         if (date) {
-            stats = db.prepare(`
-        SELECT 
-          COUNT(*) as total_activities,
-          SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as productive_minutes,
-          SUM(CASE WHEN category = 'distraction' THEN duration_seconds ELSE 0 END) / 60 as distraction_minutes,
-          SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60 as neutral_minutes,
-          SUM(duration_seconds) / 60 as total_minutes
-        FROM activities WHERE date(started_at, 'localtime') = ?
-      `).get(date);
+            const { getDailyActivityStats } = require('@/lib/scoring');
+            stats = getDailyActivityStats(db, date);
         }
 
         return NextResponse.json({ activities, stats });

@@ -1,32 +1,41 @@
 // LifeOS — Popup Script
 
-const API_BASE = 'http://localhost:3000/api';
+let API_BASE = 'http://localhost:3000/api';
+let APP_URL = 'http://localhost:3000';
+
+chrome.storage.local.get('apiUrl', (data) => {
+  if (data.apiUrl) {
+    API_BASE = data.apiUrl;
+    APP_URL = data.apiUrl.replace(/\/api$/, '');
+  }
+  loadData();
+});
 
 document.getElementById('openDashboard').addEventListener('click', () => {
-    chrome.tabs.create({ url: 'http://localhost:3000' });
+  chrome.tabs.create({ url: APP_URL });
 });
 
 async function loadData() {
-    const content = document.getElementById('content');
+  const content = document.getElementById('content');
 
-    try {
-        // Fetch dashboard data
-        const res = await fetch(`${API_BASE}/dashboard`);
-        const data = await res.json();
-        const today = data.today;
+  try {
+    // Fetch dashboard data
+    const res = await fetch(`${API_BASE}/dashboard`);
+    const data = await res.json();
+    const today = data.today;
 
-        // Get current activity from background
-        const activityInfo = await new Promise((resolve) => {
-            chrome.runtime.sendMessage({ type: 'GET_CURRENT_ACTIVITY' }, resolve);
-        });
+    // Get current activity from background
+    const activityInfo = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'GET_CURRENT_ACTIVITY' }, resolve);
+    });
 
-        const formatTime = (mins) => {
-            if (!mins || mins === 0) return '0m';
-            if (mins < 60) return `${Math.round(mins)}m`;
-            return `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m`;
-        };
+    const formatTime = (mins) => {
+      if (!mins || mins === 0) return '0m';
+      if (mins < 60) return `${Math.round(mins)}m`;
+      return `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m`;
+    };
 
-        content.innerHTML = `
+    content.innerHTML = `
       <!-- Streak -->
       <div class="streak-bar">
         <span class="streak-fire">${today.streak > 0 ? '🔥' : '💤'}</span>
@@ -91,15 +100,14 @@ async function loadData() {
         </div>
       </div>
     `;
-    } catch (e) {
-        content.innerHTML = `
+  } catch (e) {
+    content.innerHTML = `
       <div class="loading" style="flex-direction: column; gap: 8px;">
         <div style="font-size: 24px;">⚡</div>
         <div>Can't reach LifeOS server</div>
         <div style="font-size: 11px; color: #555570;">Make sure the app is running at localhost:3000</div>
       </div>
     `;
-    }
+  }
 }
 
-loadData();

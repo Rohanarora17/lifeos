@@ -403,8 +403,8 @@ function generateActivities(db: Database.Database, profile: UserProfile, date: D
     const activities: any[] = [];
 
     const stmt = db.prepare(`
-        INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (let i = 0; i < Math.max(3, effectiveCount); i++) {
@@ -460,7 +460,8 @@ function generateActivities(db: Database.Database, profile: UserProfile, date: D
             act.url, act.domain, act.title, act.category, act.subcategory,
             act.started_at, act.ended_at, act.duration_seconds,
             JSON.stringify({ category: act.category, subcategory: act.subcategory, confidence: 'high' }),
-            act.youtube_video_id, act.youtube_channel
+            act.youtube_video_id, act.youtube_channel,
+            'Simulation'
         );
 
         activities.push(act);
@@ -606,9 +607,12 @@ function generateFocusSessions(db: Database.Database, profile: UserProfile, date
 }
 
 function generateDailyScore(db: Database.Database, dateStr: string, activities: any[], habitIds: number[], profile: UserProfile) {
-    const prodMin = Math.round(activities.filter(a => a.category === 'productive').reduce((s, a) => s + a.duration_seconds, 0) / 60);
-    const distMin = Math.round(activities.filter(a => a.category === 'distraction').reduce((s, a) => s + a.duration_seconds, 0) / 60);
-    const neutMin = Math.round(activities.filter(a => a.category === 'neutral').reduce((s, a) => s + a.duration_seconds, 0) / 60);
+    const { getDailyActivityStats } = require('../src/lib/scoring');
+    const stats = getDailyActivityStats(db, dateStr);
+
+    const prodMin = stats.productive_minutes;
+    const distMin = stats.distraction_minutes;
+    const neutMin = stats.neutral_minutes;
 
     const tasksCompleted = (db.prepare(
         `SELECT COUNT(*) as c FROM tasks WHERE status = 'done' AND date(completed_at) = ?`

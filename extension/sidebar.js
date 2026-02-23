@@ -2,10 +2,26 @@
 const iframe = document.getElementById('lifeos-frame');
 const errorScreen = document.getElementById('error-screen');
 
+let API_BASE = 'http://localhost:3000/api';
+let APP_URL = 'http://localhost:3000';
+
+chrome.storage.local.get('apiUrl', (data) => {
+    if (data.apiUrl) {
+        API_BASE = data.apiUrl;
+        APP_URL = data.apiUrl.replace(/\/api$/, '');
+    }
+    const expectedUrlEl = document.getElementById('expected-url');
+    if (expectedUrlEl) expectedUrlEl.innerText = APP_URL;
+    checkHealth();
+});
+
 async function checkHealth() {
     try {
-        const res = await fetch('http://localhost:3000/api/dashboard');
+        const res = await fetch(`${API_BASE}/dashboard`);
         if (res.ok) {
+            if (!iframe.src || iframe.src === 'about:blank' || document.location.href === iframe.src) {
+                iframe.src = APP_URL + '/extension/sidebar';
+            }
             iframe.style.display = 'block';
             errorScreen.classList.remove('visible');
         } else {
@@ -17,8 +33,7 @@ async function checkHealth() {
     }
 }
 
-// Initial check
-checkHealth();
+
 
 // Refresh frame on focus if there was an error
 window.addEventListener('focus', () => {
@@ -30,7 +45,7 @@ window.addEventListener('focus', () => {
 
 // Relay focus timer events from sidebar iframe to extension background
 window.addEventListener('message', (event) => {
-    if (event.origin !== 'http://localhost:3000') return;
+    if (event.origin !== APP_URL && event.origin !== 'http://localhost:3000') return;
 
     if (event.data && event.data.type === 'LIFEOS_FOCUS_START') {
         chrome.runtime.sendMessage({ type: 'START_FOCUS', duration: event.data.duration });

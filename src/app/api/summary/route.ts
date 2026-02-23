@@ -71,13 +71,8 @@ export async function GET(request: NextRequest) {
         }
 
         // Calculate stats
-        const activityStats = db.prepare(`
-      SELECT 
-        SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as productive_minutes,
-        SUM(CASE WHEN category = 'distraction' THEN duration_seconds ELSE 0 END) / 60 as distraction_minutes,
-        SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60 as neutral_minutes
-      FROM activities WHERE date(started_at, 'localtime') = ?
-    `).get(date) as { productive_minutes: number; distraction_minutes: number; neutral_minutes: number };
+        const { getDailyActivityStats } = require('@/lib/scoring');
+        const activityStats = getDailyActivityStats(db, date);
 
         const tasksCompleted = (db.prepare(
             "SELECT COUNT(*) as count FROM tasks WHERE status = 'done' AND date(completed_at) = ?"

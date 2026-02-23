@@ -10,16 +10,8 @@ export async function GET(request: NextRequest) {
     const db = getDb();
     const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
-    // Today's activity stats
-    const activityStats = db.prepare(`
-      SELECT 
-        COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60, 0) as productive_minutes,
-        COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds ELSE 0 END) / 60, 0) as distraction_minutes,
-        COALESCE(SUM(CASE WHEN category = 'neutral' THEN duration_seconds ELSE 0 END) / 60, 0) as neutral_minutes,
-        COALESCE(SUM(duration_seconds) / 60, 0) as total_minutes,
-        COUNT(*) as total_activities
-      FROM activities WHERE date(started_at, 'localtime') = ?
-    `).get(today) as Record<string, number>;
+    const { getDailyActivityStats } = require('@/lib/scoring');
+    const activityStats = getDailyActivityStats(db, today);
 
     // Today's tasks
     const taskStats = db.prepare(`

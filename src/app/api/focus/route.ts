@@ -27,8 +27,8 @@ export async function POST(request: NextRequest) {
 
         // Also add to activities as productive time
         db.prepare(`
-      INSERT INTO activities (url, domain, title, category, subcategory, duration_seconds, started_at, ended_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO activities (url, domain, title, category, subcategory, duration_seconds, started_at, ended_at, device_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
             'app://focus-mode',
             'Focus Mode',
@@ -37,7 +37,8 @@ export async function POST(request: NextRequest) {
             'deep_work',
             duration_minutes * 60,
             startTimeStr,
-            endTimeStr
+            endTimeStr,
+            'Local Server'
         );
 
         // Give +1 coin per minute focused

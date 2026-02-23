@@ -1,7 +1,20 @@
 // LifeOS — Background Service Worker
 // Tracks active tab, time on page, and polls for nudges
 
-const API_BASE = 'http://localhost:3000/api';
+let API_BASE = 'http://localhost:3000/api';
+let DEVICE_NAME = 'MacBook';
+
+chrome.storage.local.get(['apiUrl', 'deviceName'], (data) => {
+    if (data.apiUrl) API_BASE = data.apiUrl;
+    if (data.deviceName) DEVICE_NAME = data.deviceName;
+});
+
+chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === 'local') {
+        if (changes.apiUrl) API_BASE = changes.apiUrl.newValue || 'http://localhost:3000/api';
+        if (changes.deviceName) DEVICE_NAME = changes.deviceName.newValue || 'MacBook';
+    }
+});
 const NUDGE_INTERVAL_MS = 60000; // Check nudges every 60s
 const IDLE_THRESHOLD_S = 60; // 1 minute (Stanford target)
 
@@ -210,6 +223,7 @@ async function finalizeCurrentActivity() {
         ...currentActivity,
         ended_at: now,
         duration_seconds: durationSeconds,
+        device_name: DEVICE_NAME
     };
 
     if (durationSeconds <= MICRO_CONTEXT_THRESHOLD_S) {
