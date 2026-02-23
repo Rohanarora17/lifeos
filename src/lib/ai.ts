@@ -480,17 +480,28 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
                 }
             } catch { /* tasks table may not exist */ }
 
+            let intentionsContext = '';
+            try {
+                const intentions = db.prepare(`SELECT id, if_condition, then_action FROM intentions WHERE active = 1`).all() as any[];
+                if (intentions.length > 0) {
+                    intentionsContext = "\nUSER'S IMPLEMENTATION INTENTIONS (If one of these 'IF' conditions matches the current situation, you MUST use its 'THEN' action as the nudge reason):\n" +
+                        intentions.map(i => `- IF ${i.if_condition}, THEN ${i.then_action} (Intention ID: ${i.id})`).join('\n');
+                }
+            } catch { /* intentions table may not exist */ }
+
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
 ${behaviorContext}
 ${goalsContext}
 ${taskContext}
+${intentionsContext}
 ${nudgeContext}
 
 CRITICAL: If the page title or domain is clearly related to one of the user's ACTIVE TASKS, do NOT nudge — they are doing their work.
 Use their behavioral profile to decide. If this site matches their known distraction patterns, be more assertive. If they're usually productive at this hour, a gentle reminder is enough.
-Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns"}`;
+If an Implementation Intention matches their current distraction (e.g., they are on social media and have an intention for that), use that intention's THEN action as the nudge reason and include the Intention ID.
+Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
             const result = await model.generateContent(prompt);
             const text = result.response.text().trim();
@@ -498,6 +509,11 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
             if (jsonMatch) {
                 const parsed = JSON.parse(jsonMatch[0]);
                 if (parsed.nudge) {
+                    if (parsed.triggered_intention_id) {
+                        try {
+                            db.prepare('UPDATE intentions SET times_triggered = times_triggered + 1 WHERE id = ?').run(parsed.triggered_intention_id);
+                        } catch { /* ignore */ }
+                    }
                     return {
                         shouldNudge: true,
                         message: `⚠️ ${parsed.reason} (${minutesOnSite}min elapsed)`,

@@ -34,6 +34,7 @@ interface Goal {
     momentum: number | null;
     linkedTasks: LinkedTask[];
     linkedHabits: LinkedHabit[];
+    intentions: { id: number; if_condition: string; then_action: string; active: number; times_triggered: number }[];
 }
 
 export default function GoalsPage() {
@@ -49,6 +50,10 @@ export default function GoalsPage() {
     const [description, setDescription] = useState('');
     const [category, setCategory] = useState('productivity');
     const [deadline, setDeadline] = useState('');
+
+    // Intention form state
+    const [newIf, setNewIf] = useState('');
+    const [newThen, setNewThen] = useState('');
 
     useEffect(() => {
         fetchGoals();
@@ -124,10 +129,27 @@ export default function GoalsPage() {
         await fetch('/api/tasks', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: taskId, goal_id: null }),
+            body: JSON.stringify({ id: taskId, goal_id: null })
         });
         fetchGoals();
         fetchUnlinked();
+    };
+
+    const addIntention = async (goalId: number) => {
+        if (!newIf.trim() || !newThen.trim()) return;
+        await fetch('/api/intentions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ if_condition: newIf, then_action: newThen, goal_id: goalId })
+        });
+        setNewIf('');
+        setNewThen('');
+        fetchGoals();
+    };
+
+    const deleteIntention = async (id: number) => {
+        await fetch(`/api/intentions?id=${id}`, { method: 'DELETE' });
+        fetchGoals();
     };
 
     const getProgressColor = (p: number) => {
@@ -303,6 +325,37 @@ export default function GoalsPage() {
                                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No habits linked yet — link from the habits page</p>
                                     )}
                                 </div>
+
+                                {/* Implementation Intentions */}
+                                <h4 className="text-xs font-semibold mt-4 mb-2" style={{ color: 'var(--text-secondary)' }}>
+                                    ⚡ IMPLEMENTATION INTENTIONS ({goal.intentions?.length || 0})
+                                </h4>
+                                <div className="space-y-2 mb-3">
+                                    {(goal.intentions || []).map(int => (
+                                        <div key={int.id} className="text-sm py-2 px-3 rounded-lg flex items-start gap-2" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                                            <div className="flex-1">
+                                                <p><span className="font-bold text-xs" style={{ color: 'var(--accent-purple)' }}>IF</span> {int.if_condition}</p>
+                                                <p><span className="font-bold text-xs" style={{ color: 'var(--accent-blue)' }}>THEN</span> {int.then_action}</p>
+                                                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>Triggered {int.times_triggered} times</p>
+                                            </div>
+                                            <button onClick={() => deleteIntention(int.id)} className="text-xs ml-auto hover:text-red-400" style={{ color: 'var(--text-muted)' }}>✕</button>
+                                        </div>
+                                    ))}
+                                    {(!goal.intentions || goal.intentions.length === 0) && (
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No if-then plans defined. Define one to increase success rate.</p>
+                                    )}
+                                </div>
+                                <div className="flex flex-col gap-2 p-3 rounded-lg mt-2" style={{ background: 'rgba(157, 78, 221, 0.05)', border: '1px dashed var(--accent-purple)' }}>
+                                    <div className="flex gap-2 items-center">
+                                        <span className="font-bold text-xs w-10 text-right" style={{ color: 'var(--accent-purple)' }}>IF</span>
+                                        <input className="input w-full text-xs py-1" placeholder="I feel distracted by social media..." value={newIf} onChange={e => setNewIf(e.target.value)} />
+                                    </div>
+                                    <div className="flex gap-2 items-center">
+                                        <span className="font-bold text-xs w-10 text-right" style={{ color: 'var(--accent-blue)' }}>THEN</span>
+                                        <input className="input w-full text-xs py-1" placeholder="I will take a 5-minute break outside." value={newThen} onChange={e => setNewThen(e.target.value)} />
+                                    </div>
+                                    <button className="btn btn-sm shrink-0 self-end mt-1 text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }} onClick={() => addIntention(goal.id)}>Add Intention</button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -355,6 +408,6 @@ export default function GoalsPage() {
                     >+ New Goal</button>
                 )}
             </div>
-        </div>
+        </div >
     );
 }

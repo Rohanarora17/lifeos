@@ -46,6 +46,13 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [focusData, setFocusData] = useState<{
+    taskId: number | null;
+    taskTitle: string | null;
+    durationMins: number;
+    timeLeft: number;
+    isActive: boolean;
+  }>({ taskId: null, taskTitle: null, durationMins: 25, timeLeft: 0, isActive: false });
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -57,6 +64,39 @@ export default function DashboardPage() {
       .then(d => setAlerts(d.alerts || []))
       .catch(() => { });
   }, []);
+
+  useEffect(() => {
+    let int: NodeJS.Timeout;
+    if (focusData.isActive && focusData.timeLeft > 0) {
+      int = setInterval(() => {
+        setFocusData(prev => ({ ...prev, timeLeft: prev.timeLeft - 1 }));
+      }, 1000);
+    } else if (focusData.isActive && focusData.timeLeft === 0) {
+      setFocusData(prev => ({ ...prev, isActive: false }));
+
+      // Save session
+      fetch('/api/focus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task_id: focusData.taskId,
+          duration_minutes: focusData.durationMins
+        })
+      });
+
+      // Refresh stats
+      fetch('/api/dashboard').then(r => r.json()).then(d => setData(d));
+    }
+    return () => clearInterval(int);
+  }, [focusData.isActive, focusData.timeLeft]);
+
+  const startFocus = (taskId: number | null, taskTitle: string | null, mins: number = 25) => {
+    setFocusData({ taskId, taskTitle, durationMins: mins, timeLeft: mins * 60, isActive: true });
+  };
+
+  const cancelFocus = () => {
+    setFocusData(prev => ({ ...prev, isActive: false, timeLeft: 0 }));
+  };
 
   const markAllRead = async () => {
     await fetch('/api/alerts', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -92,11 +132,27 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+      {/* Focus Mode Active Banner */}
+      {focusData.isActive && (
+        <div className="card text-center relative overflow-hidden" style={{ borderColor: 'var(--accent-purple)', background: 'rgba(157, 78, 221, 0.05)' }}>
+          <div className="absolute top-0 left-0 h-1 bg-gradient-to-r from-[var(--accent-purple)] to-[var(--accent-blue)]"
+            style={{ width: `${((focusData.durationMins * 60 - focusData.timeLeft) / (focusData.durationMins * 60)) * 100}%`, transition: 'width 1s linear' }} />
+          <h2 className="text-xl font-bold mb-1">🎯 Focus Mode Active</h2>
+          <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+            {focusData.taskTitle ? `Focusing on: ${focusData.taskTitle}` : 'Deep Work Session'}
+          </p>
+          <div className="text-6xl font-mono font-bold tracking-wider mb-6" style={{ color: 'var(--accent-purple)' }}>
+            {Math.floor(focusData.timeLeft / 60).toString().padStart(2, '0')}:{(focusData.timeLeft % 60).toString().padStart(2, '0')}
+          </div>
+          <button className="btn btn-ghost text-xs" onClick={cancelFocus}>Cancel Session</button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Good {getTimeOfDay()}, Rohan 👋</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
           </p>
         </div>
@@ -293,7 +349,7 @@ export default function DashboardPage() {
             </h3>
             <div className="space-y-2">
               {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map((t, i) => (
-                <div key={t.id} className="flex items-start gap-2 py-1.5">
+                <div className="flex items-start gap-2 py-2 group">
                   <span className="text-xs font-bold mt-0.5" style={{
                     color: i === 0 ? 'var(--accent-green)' : 'var(--text-muted)',
                     minWidth: '1.2rem'
@@ -302,10 +358,20 @@ export default function DashboardPage() {
                     <p className="text-sm font-medium truncate">{t.title}</p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t.reason}</p>
                   </div>
-                  <span className="badge text-xs flex-shrink-0" style={{
-                    background: t.priority === 'critical' ? 'rgba(255,85,85,0.15)' : t.priority === 'high' ? 'rgba(255,165,0,0.15)' : 'rgba(102,126,234,0.15)',
-                    color: t.priority === 'critical' ? 'var(--accent-red)' : t.priority === 'high' ? 'var(--accent-orange)' : 'var(--accent-blue)',
-                  }}>{t.priority}</span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="badge text-xs flex-shrink-0" style={{
+                      background: t.priority === 'critical' ? 'rgba(255,85,85,0.15)' : t.priority === 'high' ? 'rgba(255,165,0,0.15)' : 'rgba(102,126,234,0.15)',
+                      color: t.priority === 'critical' ? 'var(--accent-red)' : t.priority === 'high' ? 'var(--accent-orange)' : 'var(--accent-blue)',
+                    }}>{t.priority}</span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-0.5 rounded cursor-pointer"
+                      style={{ background: 'var(--accent-purple)', color: 'white' }}
+                      onClick={() => startFocus(t.id, t.title)}
+                      disabled={focusData.isActive}
+                    >
+                      ⏱️ Focus
+                    </button>
+                  </div>
                 </div>
               )) : (
                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active tasks. Add some! 📝</p>

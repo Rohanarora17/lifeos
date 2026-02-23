@@ -77,8 +77,14 @@ export async function GET() {
             }
         }
 
+        const intentions = db.prepare(`
+            SELECT id, if_condition, then_action, active, times_triggered
+            FROM intentions WHERE goal_id = ? AND active = 1
+        `).all(goal.id);
+
         goal.linkedTasks = linkedTasks;
         goal.linkedHabits = linkedHabits;
+        goal.intentions = intentions;
         goal.progress = progress;
         goal.taskProgress = taskProgress;
         goal.habitHealth = habitHealth;
