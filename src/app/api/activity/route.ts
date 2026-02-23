@@ -7,7 +7,7 @@ import { extractDomain } from '@/lib/categories';
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { url, title, started_at, ended_at, duration_seconds, youtube_video_id, youtube_channel, device_name } = body;
+        const { url, title, started_at, ended_at, duration_seconds, youtube_video_id, youtube_channel, device_name, is_actively_interacting } = body;
 
         if (!url || !started_at) {
             return NextResponse.json({ error: 'url and started_at are required' }, { status: 400 });
@@ -20,8 +20,8 @@ export async function POST(request: NextRequest) {
 
         const db = getDb();
         const stmt = db.prepare(`
-      INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name, is_actively_interacting)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
         const result = stmt.run(
@@ -36,7 +36,8 @@ export async function POST(request: NextRequest) {
             JSON.stringify(classification),
             youtube_video_id || null,
             youtube_channel || null,
-            device_name || 'Unknown Device'
+            device_name || 'Unknown Device',
+            is_actively_interacting === false ? 0 : 1 // defaults to true if omitted
         );
 
         return NextResponse.json({

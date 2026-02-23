@@ -15,6 +15,7 @@ interface Activity {
     youtube_video_id: string | null;
     youtube_channel: string | null;
     ai_classification?: string;
+    device_name?: string;
 }
 
 interface Stats {
@@ -143,6 +144,11 @@ export default function ActivityPage() {
                                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{act.domain}</span>
                                         {act.youtube_channel && (
                                             <span className="text-xs" style={{ color: 'var(--accent-purple)' }}>📺 {act.youtube_channel}</span>
+                                        )}
+                                        {act.device_name && act.device_name !== 'Unknown Device' && (
+                                            <span className="text-xs ml-1" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+                                                💻 {act.device_name}
+                                            </span>
                                         )}
                                     </div>
                                 </div>

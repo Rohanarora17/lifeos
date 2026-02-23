@@ -179,6 +179,7 @@ function _handleTabChange(tab) {
         youtube_video_id: null,
         youtube_channel: null,
         _category: null, // filled by backend response
+        is_actively_interacting: true // Defaults to true on fresh tab load
     };
 
     // If YouTube, the content script will send video details
@@ -203,10 +204,10 @@ async function queueActivity(activity) {
 }
 
 // Finalize and send current activity
-async function finalizeCurrentActivity() {
+async function finalizeCurrentActivity(overrideEndTime = null, interactionOverride = null) {
     if (!currentActivity) return;
 
-    const now = new Date().toISOString();
+    const now = overrideEndTime || new Date().toISOString();
     const startTime = new Date(currentActivity.started_at).getTime();
     const endTime = new Date(now).getTime();
     const durationSeconds = Math.round((endTime - startTime) / 1000);
@@ -223,7 +224,8 @@ async function finalizeCurrentActivity() {
         ...currentActivity,
         ended_at: now,
         duration_seconds: durationSeconds,
-        device_name: DEVICE_NAME
+        device_name: DEVICE_NAME,
+        is_actively_interacting: interactionOverride !== null ? interactionOverride : (currentActivity.is_actively_interacting !== false)
     };
 
     if (durationSeconds <= MICRO_CONTEXT_THRESHOLD_S) {
@@ -405,6 +407,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CLOSE_TAB') {
         if (sender.tab && sender.tab.id) {
             chrome.tabs.remove(sender.tab.id);
+        }
+        sendResponse({ ok: true });
+    }
+
+    // Phase 24: Micro-Interaction Detection
+    if (message.type === 'MICRO_IDLE_STATE_CHANGED') {
+        if (currentActivity && sender.tab && sender.tab.active) {
+            // We transitioned from idle->active or active->idle
+            const transitionTime = new Date(message.lastInteraction + 60000).toISOString(); // roughly when the threshold was crossed
+
+            // Finalize the previous chunk (which was whatever the OPPOSITE of the new state is)
+            finalizeCurrentActivity(transitionTime, !message.isIdle);
+
+            // Start the new chunk tracking perfectly
+            chrome.tabs.get(sender.tab.id, (tab) => {
+                if (chrome.runtime.lastError) return;
+                handleTabChange(tab);
+                // Immediately fix the new chunk to reflect the current idle state
+                if (currentActivity) {
+                    currentActivity.started_at = transitionTime;
+                    currentActivity.is_actively_interacting = !message.isIdle;
+                }
+            });
         }
         sendResponse({ ok: true });
     }

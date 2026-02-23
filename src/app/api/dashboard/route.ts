@@ -47,7 +47,8 @@ export async function GET(request: NextRequest) {
     // Today's top domains
     const topDomains = db.prepare(`
       SELECT domain, SUM(duration_seconds) / 60 as minutes, category
-      FROM activities WHERE date(started_at, 'localtime') = ?
+      FROM activities 
+      WHERE date(started_at, 'localtime') = ? AND is_actively_interacting = 1
       GROUP BY domain ORDER BY minutes DESC LIMIT 5
     `).all(today) as { domain: string; minutes: number; category: string }[];
 
@@ -73,7 +74,7 @@ export async function GET(request: NextRequest) {
 
     // Recent activities (last 10)
     const recentActivities = db.prepare(`
-      SELECT id, url, domain, title, category, subcategory, started_at, duration_seconds, youtube_video_id
+      SELECT id, url, domain, title, category, subcategory, started_at, duration_seconds, youtube_video_id, device_name
       FROM activities WHERE date(started_at, 'localtime') = ?
       ORDER BY started_at DESC LIMIT 10
     `).all(today);

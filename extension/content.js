@@ -8,6 +8,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
+// --- Phase 24: Micro-Interaction Presence Tracking ---
+let lastInteraction = Date.now();
+const IDLE_THRESHOLD_MS = 60000; // 60 seconds
+let isCurrentlyIdle = false;
+let throttleTimer = null;
+
+function updateInteraction() {
+    if (throttleTimer) return;
+    throttleTimer = setTimeout(() => {
+        lastInteraction = Date.now();
+        throttleTimer = null;
+    }, 2000); // Max 1 update every 2 seconds to save CPU
+}
+
+// Listen to all interaction vectors
+const interactionEvents = ['mousemove', 'keydown', 'wheel', 'scroll', 'click', 'touchstart'];
+interactionEvents.forEach(event => {
+    window.addEventListener(event, updateInteraction, { passive: true, capture: true });
+});
+
+// Periodic check for idleness
+setInterval(() => {
+    const timeSinceLastInteraction = Date.now() - lastInteraction;
+
+    if (timeSinceLastInteraction > IDLE_THRESHOLD_MS && !isCurrentlyIdle) {
+        // We just crossed the threshold into IDLE
+        isCurrentlyIdle = true;
+        chrome.runtime.sendMessage({ type: 'MICRO_IDLE_STATE_CHANGED', isIdle: true, lastInteraction });
+    } else if (timeSinceLastInteraction <= IDLE_THRESHOLD_MS && isCurrentlyIdle) {
+        // We just crossed back into ACTIVE
+        isCurrentlyIdle = false;
+        chrome.runtime.sendMessage({ type: 'MICRO_IDLE_STATE_CHANGED', isIdle: false, lastInteraction });
+    }
+}, 5000); // Check every 5s
+
 function injectBlockOverlay(reason, goals) {
     // Prevent multiple overlays
     if (document.getElementById('lifeos-block-overlay')) return;

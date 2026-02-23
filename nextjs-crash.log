@@ -1,0 +1,163 @@
+
+> lifeos@0.1.0 dev
+> next dev
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.42.80.176:3000
+- Environments: .env
+
+✓ Starting...
+[Scheduler] Initializing LifeOS cron jobs...
+[Scheduler] 12 jobs registered
+✓ Ready in 945ms
+ GET /api/dashboard 200 in 159ms (compile: 100ms, proxy.ts: 48ms, render: 11ms)
+ GET /api/dashboard 200 in 8ms (compile: 3ms, proxy.ts: 1875µs, render: 3ms)
+ GET /api/dashboard 200 in 8ms (compile: 4ms, proxy.ts: 1592µs, render: 3ms)
+ GET /api/behavior?action=focus 200 in 92ms (compile: 88ms, proxy.ts: 1570µs, render: 2ms)
+ GET /api/behavior?action=consistency 200 in 6ms (compile: 1338µs, proxy.ts: 1895µs, render: 2ms)
+ GET /api/behavior?action=goals 200 in 4ms (compile: 1180µs, proxy.ts: 1059µs, render: 1328µs)
+ GET /api/behavior?action=archetype 200 in 4ms (compile: 1290µs, proxy.ts: 907µs, render: 1512µs)
+ GET /api/behavior?action=profile 200 in 4ms (compile: 1229µs, proxy.ts: 1198µs, render: 1216µs)
+ GET /api/behavior?action=insights 200 in 6ms (compile: 1571µs, proxy.ts: 1414µs, render: 3ms)
+ GET /api/behavior?action=memories 200 in 4ms (compile: 1149µs, proxy.ts: 1050µs, render: 1556µs)
+ GET /api/behavior 200 in 4ms (compile: 1083µs, proxy.ts: 682µs, render: 1845µs)
+ GET /api/habits 200 in 24ms (compile: 22ms, proxy.ts: 775µs, render: 1802µs)
+ GET /api/tasks 200 in 22ms (compile: 19ms, proxy.ts: 1081µs, render: 1723µs)
+ GET /api/goals 200 in 23ms (compile: 20ms, proxy.ts: 965µs, render: 1691µs)
+ GET /api/intentions 200 in 18ms (compile: 16ms, proxy.ts: 853µs, render: 1221µs)
+ GET /api/activity?date=2026-02-24 200 in 24ms (compile: 21ms, proxy.ts: 963µs, render: 1709µs)
+ GET /api/activity 200 in 3ms (compile: 1182µs, proxy.ts: 959µs, render: 1217µs)
+ GET /api/analytics/insights 200 in 21ms (compile: 19ms, proxy.ts: 927µs, render: 1306µs)
+ GET /api/nudge?domain=twitter.com&minutes=20&title=Twitter&url=https://twitter.com 200 in 21ms (compile: 18ms, proxy.ts: 1027µs, render: 2ms)
+ GET /api/nudge?domain=github.com&minutes=60&title=GitHub&url=https://github.com 200 in 3ms (compile: 1048µs, proxy.ts: 779µs, render: 849µs)
+ GET /api/alerts 200 in 21ms (compile: 19ms, proxy.ts: 720µs, render: 1249µs)
+ GET /api/gamification 200 in 19ms (compile: 17ms, proxy.ts: 851µs, render: 1517µs)
+ POST /api/focus 201 in 20ms (compile: 17ms, proxy.ts: 1546µs, render: 2ms)
+ GET /api/settings 200 in 18ms (compile: 16ms, proxy.ts: 872µs, render: 1159µs)
+ GET /api/extension/session 200 in 18ms (compile: 16ms, proxy.ts: 805µs, render: 1185µs)
+ GET /api/screentime 200 in 22ms (compile: 20ms, proxy.ts: 879µs, render: 1328µs)
+ GET /api/calendar 200 in 45ms (compile: 43ms, proxy.ts: 856µs, render: 1392µs)
+ GET /api/github 200 in 21ms (compile: 18ms, proxy.ts: 998µs, render: 1253µs)
+[Cron] Database backup created at /Users/rohan/.gemini/antigravity/scratch/lifeos/data/lifeos_backup_2026-02-23.db
+ POST /api/cron?action=backup 200 in 23ms (compile: 18ms, proxy.ts: 1094µs, render: 4ms)
+[Cron] Error: SqliteError: no such table: daily_domain_aggregates
+    at POST (src/app/api/cron/route.ts:43:16)
+  41 |
+  42 |             // Ensure no duplicate daily aggregates exist before inserting
+> 43 |             db.prepare(`DELETE FROM daily_domain_aggregates WHERE date <= ?`).run(archiveDate);
+     |                ^
+  44 |
+  45 |             // Group granular data by Day + Domain + Category, and SUM the duration
+  46 |             const archiveCount = db.prepare(` {
+  code: 'SQLITE_ERROR'
+}
+ POST /api/cron?action=archive 500 in 39ms (compile: 644µs, proxy.ts: 1126µs, render: 38ms)
+ POST /api/alerts/engine 200 in 18ms (compile: 15ms, proxy.ts: 1051µs, render: 1544µs)
+ POST /api/gamification/engine 200 in 17ms (compile: 14ms, proxy.ts: 1027µs, render: 1384µs)
+ POST /api/extension/override 200 in 17ms (compile: 14ms, proxy.ts: 952µs, render: 1481µs)
+ POST /api/activity/batch 401 in 27ms (compile: 25ms, proxy.ts: 1036µs, render: 1223µs)
+ POST /api/behavior 200 in 3ms (compile: 1130µs, proxy.ts: 1067µs, render: 1175µs)
+ POST /api/habits 201 in 2ms (compile: 597µs, proxy.ts: 830µs, render: 933µs)
+ GET /api/habits 200 in 3ms (compile: 1274µs, proxy.ts: 792µs, render: 1043µs)
+ POST /api/habits 200 in 3ms (compile: 517µs, proxy.ts: 947µs, render: 1198µs)
+ POST /api/habits 200 in 3ms (compile: 640µs, proxy.ts: 942µs, render: 1114µs)
+ POST /api/tasks 201 in 2ms (compile: 541µs, proxy.ts: 867µs, render: 981µs)
+ GET /api/tasks 200 in 1915µs (compile: 472µs, proxy.ts: 708µs, render: 735µs)
+ PATCH /api/tasks 200 in 2ms (compile: 504µs, proxy.ts: 806µs, render: 991µs)
+ POST /api/goals 200 in 2ms (compile: 514µs, proxy.ts: 781µs, render: 1116µs)
+ GET /api/goals 200 in 2ms (compile: 505µs, proxy.ts: 627µs, render: 1065µs)
+ POST /api/tasks 201 in 2ms (compile: 464µs, proxy.ts: 744µs, render: 934µs)
+[Alert] WARNING: efficacy_drop — Your task completion rate is 22% over the last 14 days. Try completing a few quick tasks to rebuild momentum. 💪
+ POST /api/alerts/engine 200 in 4ms (compile: 1900µs, proxy.ts: 1073µs, render: 1118µs)
+ POST /api/gamification/engine 200 in 3ms (compile: 684µs, proxy.ts: 991µs, render: 1170µs)
+ GET /api/gamification 200 in 2ms (compile: 473µs, proxy.ts: 736µs, render: 819µs)
+ GET /api/habits 200 in 2ms (compile: 484µs, proxy.ts: 709µs, render: 936µs)
+ GET /api/behavior?action=focus 200 in 3ms (compile: 992µs, proxy.ts: 733µs, render: 1146µs)
+ GET /api/behavior?action=focus 200 in 2ms (compile: 836µs, proxy.ts: 672µs, render: 774µs)
+ GET /api/behavior?action=focus 200 in 2ms (compile: 872µs, proxy.ts: 656µs, render: 810µs)
+ GET /api/behavior?action=consistency 200 in 3ms (compile: 917µs, proxy.ts: 802µs, render: 1226µs)
+ GET /api/behavior?action=archetype 200 in 3ms (compile: 986µs, proxy.ts: 878µs, render: 951µs)
+ GET /api/dashboard 200 in 5ms (compile: 2ms, proxy.ts: 765µs, render: 1738µs)
+ GET /api/dashboard 200 in 4ms (compile: 1787µs, proxy.ts: 795µs, render: 1420µs)
+ GET /api/dashboard 200 in 4ms (compile: 1766µs, proxy.ts: 799µs, render: 1409µs)
+ GET /api/dashboard 200 in 4ms (compile: 1995µs, proxy.ts: 744µs, render: 1725µs)
+ GET /api/dashboard 200 in 5ms (compile: 2ms, proxy.ts: 823µs, render: 1717µs)
+ GET /api/dashboard 200 in 4ms (compile: 1771µs, proxy.ts: 728µs, render: 1680µs)
+ GET /api/behavior?action=goals 200 in 3ms (compile: 1042µs, proxy.ts: 825µs, render: 891µs)
+ GET /api/goals 200 in 2ms (compile: 499µs, proxy.ts: 693µs, render: 1041µs)
+ GET /api/dashboard 200 in 4ms (compile: 1627µs, proxy.ts: 831µs, render: 1475µs)
+ POST /api/habits 400 in 3ms (compile: 781µs, proxy.ts: 1147µs, render: 1051µs)
+ POST /api/tasks 400 in 2ms (compile: 722µs, proxy.ts: 820µs, render: 904µs)
+ POST /api/goals 400 in 2ms (compile: 555µs, proxy.ts: 814µs, render: 971µs)
+ PATCH /api/tasks 400 in 3ms (compile: 687µs, proxy.ts: 1002µs, render: 941µs)
+ POST /api/focus 400 in 2ms (compile: 582µs, proxy.ts: 897µs, render: 775µs)
+ POST /api/chat 400 in 24ms (compile: 21ms, proxy.ts: 800µs, render: 3ms)
+ GET /api/activity?date=2099-12-31 200 in 3ms (compile: 1009µs, proxy.ts: 938µs, render: 1088µs)
+ GET /api/behavior?action=nonexistent_action 200 in 3ms (compile: 962µs, proxy.ts: 823µs, render: 1710µs)
+ GET /api/nudge?domain=youtube.com&minutes=0&title=YouTube&url=https://youtube.com 200 in 2ms (compile: 903µs, proxy.ts: 736µs, render: 694µs)
+ POST /api/habits 201 in 4ms (compile: 519µs, proxy.ts: 2ms, render: 889µs)
+Chat API error: Error [ApiError]: {"error":{"code":404,"message":"models/gemini-3.1-pro is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.","status":"NOT_FOUND"}}
+    at async POST (src/app/api/chat/route.ts:38:27)
+  36 | User Query: "${query}"`;
+  37 |
+> 38 |         const sqlResult = await ai.models.generateContent({
+     |                           ^
+  39 |             model: 'gemini-3.1-pro',
+  40 |             contents: prompt
+  41 |         }); {
+  status: 404
+}
+ POST /api/chat 200 in 830ms (compile: 977µs, proxy.ts: 839µs, render: 828ms)
+Tasks POST error: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+ POST /api/tasks 500 in 6ms (compile: 728µs, proxy.ts: 1056µs, render: 4ms)
+Override API Error: SyntaxError: Unexpected end of JSON input
+    at JSON.parse (<anonymous>)
+ POST /api/extension/override 500 in 3ms (compile: 558µs, proxy.ts: 800µs, render: 1719µs)
+Habits POST error: SqliteError: FOREIGN KEY constraint failed
+    at POST (src/app/api/habits/route.ts:183:113)
+  181 |                 const isCompleted = completed !== undefined ? completed : 1;
+  182 |                 const finalValue = value !== undefined ? value : 1;
+> 183 |                 db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, isCompleted ? 1 : 0, finalValue);
+      |                                                                                                                 ^
+  184 |                 if (isCompleted) {
+  185 |                     try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(20, 'Completed Habit (ID: ' + habit_id + ')'); } catch (e) { }
+  186 |                 } {
+  code: 'SQLITE_CONSTRAINT_FOREIGNKEY'
+}
+ POST /api/habits 500 in 30ms (compile: 490µs, proxy.ts: 794µs, render: 29ms)
+ PATCH /api/tasks 200 in 2ms (compile: 652µs, proxy.ts: 843µs, render: 935µs)
+ POST /api/extension/override 200 in 2ms (compile: 478µs, proxy.ts: 716µs, render: 1004µs)
+ POST /api/gamification 404 in 3ms (compile: 598µs, proxy.ts: 994µs, render: 986µs)
+ GET /api/dashboard 200 in 5ms (compile: 2ms, proxy.ts: 827µs, render: 1700µs)
+ GET /api/dashboard 200 in 10ms (compile: 5ms, proxy.ts: 3ms, render: 1838µs)
+ GET /api/dashboard 200 in 13ms (compile: 9ms, proxy.ts: 3ms, render: 1580µs)
+ GET /api/dashboard 200 in 24ms (compile: 19ms, proxy.ts: 3ms, render: 2ms)
+ GET /api/dashboard 200 in 27ms (compile: 23ms, proxy.ts: 3ms, render: 1560µs)
+ GET /api/dashboard 200 in 30ms (compile: 25ms, proxy.ts: 3ms, render: 1503µs)
+ GET /api/dashboard 200 in 32ms (compile: 14ms, proxy.ts: 16ms, render: 1303µs)
+ GET /api/dashboard 200 in 34ms (compile: 12ms, proxy.ts: 21ms, render: 1250µs)
+ GET /api/dashboard 200 in 36ms (compile: 11ms, proxy.ts: 24ms, render: 1267µs)
+ GET /api/dashboard 200 in 24ms (compile: 10ms, proxy.ts: 13ms, render: 1279µs)
+ GET /api/behavior 200 in 5ms (compile: 927µs, proxy.ts: 1372µs, render: 3ms)
+ GET /api/dashboard 200 in 10ms (compile: 4ms, proxy.ts: 3ms, render: 2ms)
+ GET /api/habits 200 in 11ms (compile: 7ms, proxy.ts: 3ms, render: 1161µs)
+ GET /api/tasks 200 in 13ms (compile: 8ms, proxy.ts: 3ms, render: 968µs)
+ GET /api/goals 200 in 14ms (compile: 10ms, proxy.ts: 3ms, render: 1175µs)
+ GET /api/alerts 200 in 21ms (compile: 16ms, proxy.ts: 3ms, render: 1617µs)
+ GET /api/gamification 200 in 22ms (compile: 18ms, proxy.ts: 3ms, render: 871µs)
+ GET /api/settings 200 in 23ms (compile: 19ms, proxy.ts: 3ms, render: 904µs)
+ GET /api/behavior?action=archetype 200 in 25ms (compile: 21ms, proxy.ts: 3ms, render: 992µs)
+ POST /api/activity/batch 401 in 13ms (compile: 4ms, proxy.ts: 6ms, render: 4ms)
+
+⚠️  [ScreenTime] Native Mac App tracking paused.
+⚠️  To track native apps, grant "Full Disk Access" to your Terminal app in your Mac System Settings -> Privacy & Security.
+
+ POST /api/screentime 200 in 23ms (compile: 2ms, proxy.ts: 3ms, render: 18ms)
+ POST /api/alerts/engine 200 in 26ms (compile: 22ms, proxy.ts: 3ms, render: 1368µs)
+ POST /api/gamification/engine 200 in 27ms (compile: 24ms, proxy.ts: 3ms, render: 963µs)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 17ms (compile: 7ms, proxy.ts: 6ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=1&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 16ms (compile: 5ms, proxy.ts: 6ms, render: 4ms)
+ POST /api/activity/batch 401 in 7ms (compile: 3ms, proxy.ts: 2ms, render: 1906µs)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 11ms (compile: 4ms, proxy.ts: 4ms, render: 4ms)

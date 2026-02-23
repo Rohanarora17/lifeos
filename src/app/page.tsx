@@ -25,6 +25,7 @@ interface DashboardData {
       id: number; url: string; domain: string; title: string;
       category: string; subcategory: string; started_at: string;
       duration_seconds: number; youtube_video_id: string | null;
+      device_name?: string;
     }[];
   };
   weekTrend: {
@@ -472,7 +473,14 @@ export default function DashboardPage() {
               <div className={`timeline-dot ${act.category}`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm truncate">{act.title || act.domain}</p>
-                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{act.domain}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{act.domain}</p>
+                  {act.device_name && act.device_name !== 'Unknown Device' && (
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)', opacity: 0.7 }}>
+                      💻 {act.device_name}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="text-right flex-shrink-0">
                 <span className={`badge ${act.category === 'productive' ? 'badge-green' : act.category === 'distraction' ? 'badge-red' : 'badge-yellow'}`}>

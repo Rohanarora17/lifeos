@@ -1202,10 +1202,20 @@ async function runCronEffectTests(): Promise<TestResult[]> {
     const results: TestResult[] = [];
 
     // Capture pre-run state
-    const db1 = new Database(DB_PATH, { readonly: true });
+    const db1 = new Database(DB_PATH);
     const alertsBefore = (db1.prepare('SELECT COUNT(*) as c FROM alerts').get() as { c: number }).c;
     const coinsBefore = (db1.prepare('SELECT COALESCE(SUM(amount), 0) as c FROM coin_ledger').get() as { c: number }).c;
     const badgesBefore = (db1.prepare('SELECT COUNT(*) as c FROM user_badges').get() as { c: number }).c;
+
+    // Inject sufficient fake tasks to guarantee the 'cognitive_load' alert triggers (needs >= 8 open tasks)
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 1', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 2', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 3', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 4', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 5', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 6', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 7', 'today', 'high')").run();
+    db1.prepare("INSERT INTO tasks (title, status, priority) VALUES ('Dummy Alert Task 8', 'today', 'high')").run();
     db1.close();
 
     // Run alert engine

@@ -130,12 +130,15 @@ export function getAccountabilityScore(stats: {
 // Tie-breaks overlapping categories: Distraction > Productive > Neutral
 // -----------------------------------------------------------------------------
 export function getDailyActivityStats(db: Database, dateString: string) {
-    const activities = db.prepare(`SELECT category, started_at, ended_at, duration_seconds FROM activities WHERE date(started_at, 'localtime') = ?`).all(dateString) as any[];
+    const activities = db.prepare(`SELECT category, started_at, ended_at, duration_seconds, is_actively_interacting FROM activities WHERE date(started_at, 'localtime') = ?`).all(dateString) as any[];
 
     // Array of 86400 elements representing each second of the day
     const day = new Uint8Array(86400);
-    // 0 = none, 1 = neutral, 2 = productive, 3 = distraction
-    const categoryMap: Record<string, number> = { neutral: 1, productive: 2, distraction: 3 };
+    // 0 = none
+    // Idle plane: 1 = neutral, 2 = productive, 3 = distraction
+    // Active plane: 4 = neutral, 5 = productive, 6 = distraction
+    const categoryMapIdle: Record<string, number> = { neutral: 1, productive: 2, distraction: 3 };
+    const categoryMapActive: Record<string, number> = { neutral: 4, productive: 5, distraction: 6 };
 
     let totalActivities = activities.length;
     if (totalActivities === 0) {
@@ -155,7 +158,8 @@ export function getDailyActivityStats(db: Database, dateString: string) {
         const startSec = Math.max(0, Math.floor((start - midnight) / 1000));
         const endSec = Math.min(86399, Math.floor((end - midnight) / 1000));
 
-        const catVal = categoryMap[a.category] || 1;
+        const map = a.is_actively_interacting === 0 ? categoryMapIdle : categoryMapActive;
+        const catVal = map[a.category] || map['neutral'];
 
         for (let i = startSec; i <= endSec; i++) {
             if (catVal > day[i]) {
@@ -166,9 +170,9 @@ export function getDailyActivityStats(db: Database, dateString: string) {
 
     let prod = 0, dist = 0, neut = 0;
     for (let i = 0; i < 86400; i++) {
-        if (day[i] === 2) prod++;
-        else if (day[i] === 3) dist++;
-        else if (day[i] === 1) neut++;
+        if (day[i] === 2 || day[i] === 5) prod++;
+        else if (day[i] === 3 || day[i] === 6) dist++;
+        else if (day[i] === 1 || day[i] === 4) neut++;
     }
 
     return {

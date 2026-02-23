@@ -443,6 +443,9 @@ function generateActivities(db: Database.Database, profile: UserProfile, date: D
         const videoId = isYouTube ? `dQw4w9WgXc${rand(0, 9)}` : null;
         const channel = isYouTube ? pick(['3Blue1Brown', 'Fireship', 'MrBeast', 'Veritasium', 'PewDiePie']) : null;
 
+        // Simulate 20% of distractions (like Netflix/YouTube) as completely passive/idle viewing
+        const isActivelyInteracting = (category === 'distraction' && Math.random() < 0.20) ? 0 : 1;
+
         const act = {
             url,
             domain: entry.domain,
@@ -454,14 +457,20 @@ function generateActivities(db: Database.Database, profile: UserProfile, date: D
             duration_seconds: duration,
             youtube_video_id: videoId,
             youtube_channel: channel,
+            is_actively_interacting: isActivelyInteracting
         };
+
+        const stmt = db.prepare(`
+            INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name, is_actively_interacting)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
 
         stmt.run(
             act.url, act.domain, act.title, act.category, act.subcategory,
             act.started_at, act.ended_at, act.duration_seconds,
             JSON.stringify({ category: act.category, subcategory: act.subcategory, confidence: 'high' }),
             act.youtube_video_id, act.youtube_channel,
-            'Simulation'
+            'Simulation', act.is_actively_interacting
         );
 
         activities.push(act);

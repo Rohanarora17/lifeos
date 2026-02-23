@@ -48,10 +48,13 @@ export function computeFocusSessions(date: string): FocusSession[] {
   const db = getDb();
 
   // Get all activities for the day, ordered chronologically
+  // We only consider active interactions to prevent zombie tabs from counting as "Focus"
   const activities = db.prepare(`
     SELECT id, domain, category, started_at, ended_at, duration_seconds
     FROM activities
-    WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
+    WHERE date(started_at, 'localtime') = ? 
+      AND duration_seconds > 0 
+      AND is_actively_interacting = 1
     ORDER BY started_at ASC
   `).all(date) as {
     id: number; domain: string; category: string;
@@ -244,12 +247,15 @@ export function computeAttentionEntropy(date: string, days: number = 1): Entropy
         FROM activities
         WHERE date(started_at, 'localtime') BETWEEN date(?, '-' || ? || ' days') AND ?
         AND duration_seconds > 0
+        AND is_actively_interacting = 1
         ORDER BY started_at ASC
       `).all(date, days - 1, date) as { domain: string; duration_seconds: number; started_at: string }[]
     : db.prepare(`
         SELECT domain, duration_seconds, started_at
         FROM activities
-        WHERE date(started_at, 'localtime') = ? AND duration_seconds > 0
+        WHERE date(started_at, 'localtime') = ? 
+        AND duration_seconds > 0
+        AND is_actively_interacting = 1
         ORDER BY started_at ASC
       `).all(date) as { domain: string; duration_seconds: number; started_at: string }[];
 
@@ -586,6 +592,7 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
         SELECT COALESCE(SUM(duration_seconds), 0) / 60 as v
         FROM activities WHERE category = 'productive'
         AND started_at >= ${start} AND started_at < ${end}
+        AND is_actively_interacting = 1
       `).get() as { v: number };
       return r.v;
     }
@@ -617,6 +624,7 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
         SELECT COALESCE(SUM(duration_seconds), 0) / 60 as v
         FROM activities WHERE category = 'distraction'
         AND started_at >= ${start} AND started_at < ${end}
+        AND is_actively_interacting = 1
       `).get() as { v: number };
       return r.v;
     }
@@ -660,7 +668,7 @@ export function classifyArchetype(days: number = 30): Archetype {
   // Chronotype: when is peak productivity?
   const hourly = db.prepare(`
     SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
-      SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) as prod
+      SUM(CASE WHEN category = 'productive' AND is_actively_interacting = 1 THEN duration_seconds ELSE 0 END) as prod
     FROM activities WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY h
   `).all() as { h: number; prod: number }[];

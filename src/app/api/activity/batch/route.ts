@@ -30,8 +30,8 @@ export async function POST(request: NextRequest) {
 
         const db = getDb();
         const stmt = db.prepare(`
-            INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO activities (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds, ai_classification, youtube_video_id, youtube_channel, device_name, is_actively_interacting)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertMany = db.transaction((acts: any[], classes: any[]) => {
@@ -50,7 +50,8 @@ export async function POST(request: NextRequest) {
                     JSON.stringify(c),
                     a.youtube_video_id || null,
                     a.youtube_channel || null,
-                    a.device_name || 'Unknown Batch Device'
+                    a.device_name || 'Unknown Batch Device',
+                    a.is_actively_interacting === false ? 0 : 1
                 );
             }
         });
