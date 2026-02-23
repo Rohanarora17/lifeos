@@ -167,12 +167,16 @@ export async function POST(request: NextRequest) {
                     return NextResponse.json({ checked: !!isCompleted, value });
                 } else {
                     db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
+                    try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(-20, 'Unchecked Habit (ID: ' + habit_id + ')'); } catch (e) { }
                     return NextResponse.json({ checked: false });
                 }
             } else {
                 const isCompleted = completed !== undefined ? completed : 1;
                 const finalValue = value !== undefined ? value : 1;
                 db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, isCompleted ? 1 : 0, finalValue);
+                if (isCompleted) {
+                    try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(20, 'Completed Habit (ID: ' + habit_id + ')'); } catch (e) { }
+                }
                 return NextResponse.json({ checked: !!isCompleted, value: finalValue });
             }
         }

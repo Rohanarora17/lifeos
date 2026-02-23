@@ -5,6 +5,8 @@ import { useEffect, useState } from 'react';
 export default function AnalyticsPage() {
     const [weekData, setWeekData] = useState<any[]>([]);
     const [topDomains, setTopDomains] = useState<any[]>([]);
+    const [insights, setInsights] = useState<{ id: number, insight: string, type: string, created_at: string }[]>([]);
+    const [generating, setGenerating] = useState(false);
 
     useEffect(() => {
         fetch('/api/dashboard')
@@ -13,7 +15,25 @@ export default function AnalyticsPage() {
                 setWeekData(data.weekTrend || []);
                 setTopDomains(data.today?.topDomains || []);
             });
+
+        fetch('/api/analytics/insights')
+            .then(r => r.json())
+            .then(data => setInsights(data.insights || []));
     }, []);
+
+    const generateInsights = async () => {
+        setGenerating(true);
+        try {
+            await fetch('/api/analytics/insights', { method: 'POST' });
+            const res = await fetch('/api/analytics/insights');
+            const data = await res.json();
+            setInsights(data.insights || []);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setGenerating(false);
+        }
+    };
 
     const maxMinutes = Math.max(...weekData.map(d => (d.productive_minutes || 0) + (d.distraction_minutes || 0)), 1);
 
@@ -21,6 +41,38 @@ export default function AnalyticsPage() {
         <div className="max-w-[1000px] mx-auto animate-fade-in">
             <h1 className="text-2xl font-bold mb-1">Analytics 📈</h1>
             <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>Your productivity trends and insights</p>
+
+            {/* AI Hidden Patterns */}
+            <div className="card mb-6" style={{ padding: '1.5rem', border: '2px solid var(--accent-purple)' }}>
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: 'var(--accent-purple)' }}>🧠 Hidden Pattern Analysis</h3>
+                    <button
+                        onClick={generateInsights}
+                        disabled={generating}
+                        className="btn btn-sm"
+                        style={{ background: 'var(--bg-secondary)', borderColor: 'var(--accent-purple)', color: 'var(--accent-purple)' }}
+                    >
+                        {generating ? 'Scanning 30 days of data...' : 'Run Deep Correlation Analysis'}
+                    </button>
+                </div>
+
+                {insights.length > 0 ? (
+                    <div className="space-y-3">
+                        {insights.map(insight => (
+                            <div key={insight.id} className="p-3 rounded-xl flex items-start gap-3" style={{ background: 'var(--bg-secondary)' }}>
+                                <span className="text-xl shrink-0 mt-0.5">
+                                    {insight.type === 'correlation' ? '🔗' : insight.type === 'warning' ? '⚠️' : '🎉'}
+                                </span>
+                                <p className="text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>{insight.insight}</p>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <p className="text-sm text-center py-4 italic" style={{ color: 'var(--text-muted)' }}>
+                        No deep insights generated yet. Run the analysis to find correlations between your habits and deep work.
+                    </p>
+                )}
+            </div>
 
             {/* 7-day bar chart */}
             <div className="card mb-6">

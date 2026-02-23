@@ -52,6 +52,14 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         });
     });
 
+    // Monthly deep correlation — runs on the 1st of every month at 01:00
+    registerDailyJob('monthly_correlation', '01:00', async () => {
+        const today = new Date();
+        if (today.getDate() === 1) { // Only run on the 1st of the month
+            await fetch(`${baseUrl}/api/analytics/insights`, { method: 'POST' });
+        }
+    });
+
     // GitHub sync — runs every 2 hours if PAT is configured
     registerIntervalJob('github_sync', 2 * 60 * 60 * 1000, async () => {
         const pat = getSetting('github_pat');
@@ -78,6 +86,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Alert engine — runs every 5 minutes, checks for triggers
     registerIntervalJob('alert_engine', 5 * 60 * 1000, async () => {
         await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+    });
+
+    // Achievement engine - runs every 10 minutes
+    registerIntervalJob('achievement_engine', 10 * 60 * 1000, async () => {
+        await fetch(`${baseUrl}/api/gamification/engine`, { method: 'POST' });
     });
 
     // Weekly review — runs every Sunday at 21:00

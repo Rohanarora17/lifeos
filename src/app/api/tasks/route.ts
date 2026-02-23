@@ -137,9 +137,22 @@ export async function PATCH(request: NextRequest) {
         if (status !== undefined) {
             updates.push('status = ?');
             params.push(status);
-            // If moving to 'done', set completed_at
+            // If moving to 'done', set completed_at and award coins based on priority
             if (status === 'done') {
                 updates.push("completed_at = datetime('now')");
+
+                // Get task priority to award coins
+                try {
+                    const task = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(id) as { priority: string };
+                    let coins = 20; // default medium
+                    if (task) {
+                        if (task.priority === 'low') coins = 10;
+                        if (task.priority === 'high') coins = 40;
+                        if (task.priority === 'critical') coins = 100;
+                    }
+                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(coins, 'Completed Task (ID: ' + id + ')');
+                } catch (e) { console.error('Error awarding task coins:', e); }
+
             } else {
                 updates.push('completed_at = NULL');
             }

@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { getStreakCount } from './scoring';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -232,4 +233,65 @@ export function detectGoalConflicts(): { goalA: string; goalB: string; message: 
     }
 
     return conflicts;
+}
+
+/**
+ * Achievement Engine — badge unlocking logic
+ * Run periodically to check milestones against current user stats.
+ */
+export function checkAchievements(): void {
+    const db = getDb();
+
+    // Get all locked badges for the user
+    const lockedBadges = db.prepare(`
+        SELECT id, name, metric, target, icon, description 
+        FROM badges 
+        WHERE id NOT IN (SELECT badge_id FROM user_badges)
+    `).all() as any[];
+
+    if (lockedBadges.length === 0) return;
+
+    let tasksDone = 0;
+    let focusSessions = 0;
+    let maxStreak = 0;
+
+    try { tasksDone = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done'").get() as any).c || 0; } catch (e) { console.error(e); }
+    try { focusSessions = (db.prepare('SELECT COUNT(*) as c FROM focus_sessions').get() as any).c || 0; } catch (e) { console.error(e); }
+
+    try {
+        const allCheckins = db.prepare('SELECT habit_id, date FROM habit_checkins WHERE completed = 1').all() as any[];
+        const habitsMap: Record<number, string[]> = {};
+        for (const c of allCheckins) {
+            if (!habitsMap[c.habit_id]) habitsMap[c.habit_id] = [];
+            habitsMap[c.habit_id].push(c.date);
+        }
+        for (const dates of Object.values(habitsMap)) {
+            const streak = getStreakCount(dates);
+            if (streak > maxStreak) maxStreak = streak;
+        }
+    } catch (e) { console.error(e); }
+
+    const stats: Record<string, number> = {
+        tasks_done: tasksDone,
+        focus_sessions: focusSessions,
+        streak_days: maxStreak,
+    };
+
+    // Check unlocks
+    for (const badge of lockedBadges) {
+        const currentValue = stats[badge.metric] || 0;
+        if (currentValue >= badge.target) {
+            try {
+                db.prepare('INSERT INTO user_badges (badge_id) VALUES (?)').run(badge.id);
+                // Award 500 bonus coins for unlocking a badge
+                db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(500, `Unlocked Badge: ${badge.name}`);
+
+                // Fire an alert so the user sees it in the bell icon
+                db.prepare(`
+                    INSERT INTO alerts (title, message, type, priority)
+                    VALUES (?, ?, ?, ?)
+                `).run('🏆 Achievement Unlocked!', `You earned the "${badge.name}" badge and +500 Life Coins!`, 'gamification', 'high');
+            } catch (e) { console.error('Error unlocking badge:', e); }
+        }
+    }
 }

@@ -31,6 +31,13 @@ export async function POST(request: NextRequest) {
             duration_minutes * 60
         );
 
+        // Give +1 coin per minute focused
+        try {
+            db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(duration_minutes, `Completed ${duration_minutes}m Focus Session`);
+        } catch (e) {
+            console.error('Error awarding focus coins:', e);
+        }
+
         return NextResponse.json({ id: result.lastInsertRowid, success: true }, { status: 201 });
     } catch (error) {
         console.error('Focus POST error:', error);

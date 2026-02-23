@@ -5,7 +5,7 @@ import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from '.
 
 let genAI: GoogleGenerativeAI | null = null;
 
-function getGenAI(): GoogleGenerativeAI | null {
+export function getGenAI(): GoogleGenerativeAI | null {
     const apiKey = getSetting('gemini_api_key');
     if (!apiKey) return null;
     if (!genAI) {
