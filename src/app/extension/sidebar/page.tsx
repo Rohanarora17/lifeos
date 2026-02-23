@@ -12,6 +12,7 @@ export default function ExtensionSidebar() {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [timeLeft, setTimeLeft] = useState(0); // in seconds
     const [isFocusing, setIsFocusing] = useState(false);
+    const [focusDuration, setFocusDuration] = useState(25); // track chosen duration
     const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
 
     // Fetch active session / tasks
@@ -46,19 +47,34 @@ export default function ExtensionSidebar() {
 
     const startFocus = (minutes: number) => {
         setTimeLeft(minutes * 60);
+        setFocusDuration(minutes);
         setIsFocusing(true);
+
+        // Notify extension background script to log focus start
+        try {
+            if (window.parent !== window) {
+                // We're inside the extension sidebar iframe — post to parent
+                window.parent.postMessage({ type: 'LIFEOS_FOCUS_START', duration: minutes }, '*');
+            }
+        } catch (e) { /* not in extension context */ }
     };
 
     const finishFocusSession = async () => {
+        // Notify extension background script
+        try {
+            if (window.parent !== window) {
+                window.parent.postMessage({ type: 'LIFEOS_FOCUS_STOP', duration: focusDuration }, '*');
+            }
+        } catch (e) { /* not in extension context */ }
+
         await fetch('/api/focus', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 task_id: activeTaskId,
-                duration_minutes: 25 // Default pomodoro
+                duration_minutes: focusDuration
             })
         });
-        alert('Focus Session Complete! Coins awarded in LifeOS.');
     };
 
     const formatTime = (seconds: number) => {

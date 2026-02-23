@@ -1,6 +1,9 @@
 // Listener from background script telling us to block this tab
+let _blockContext = null; // Store context for override logging
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'BLOCK_PAGE') {
+        _blockContext = { reason: request.reason, goals: request.goals, url: window.location.href, title: document.title };
         injectBlockOverlay(request.reason, request.goals);
     }
 });
@@ -58,12 +61,20 @@ function injectBlockOverlay(reason, goals) {
 
     // Event Listeners
     document.getElementById('lifeos-btn-close').addEventListener('click', () => {
-        // Try to close tab if possible, otherwise just go back
-        window.history.back();
+        // Ask background script to close this tab
+        chrome.runtime.sendMessage({ type: 'CLOSE_TAB' });
     });
 
     document.getElementById('lifeos-btn-override').addEventListener('click', () => {
-        // (Optional Phase 21: Log this override as a penalty in the SQLite DB)
+        // Log override to LifeOS backend for AI learning
+        if (_blockContext) {
+            chrome.runtime.sendMessage({
+                type: 'LOG_OVERRIDE',
+                url: _blockContext.url,
+                title: _blockContext.title,
+                reason: _blockContext.reason
+            });
+        }
         const overlay = document.getElementById('lifeos-block-overlay');
         overlay.remove();
         document.body.style.overflow = 'auto'; // Restore scrolling

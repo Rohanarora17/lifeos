@@ -14,11 +14,6 @@ export async function POST(request: NextRequest) {
         const ai = getGenAI();
         if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
 
-        // Skip AI evaluation for local or safe domains
-        if (url.includes('localhost') || url.includes('github.com') || url.includes('google.com')) {
-            return NextResponse.json({ isDistraction: false, reason: 'Safe domain' });
-        }
-
         const goalsList = activeGoals.map((g: any) => `- ${g.title}: ${g.description}`).join('\n');
 
         const prompt = `You are a strict but fair productivity AI built into the user's browser.

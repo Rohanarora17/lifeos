@@ -27,3 +27,15 @@ window.addEventListener('focus', () => {
         iframe.src = iframe.src; // Reload
     }
 });
+
+// Relay focus timer events from sidebar iframe to extension background
+window.addEventListener('message', (event) => {
+    if (event.origin !== 'http://localhost:3000') return;
+
+    if (event.data && event.data.type === 'LIFEOS_FOCUS_START') {
+        chrome.runtime.sendMessage({ type: 'START_FOCUS', duration: event.data.duration });
+    }
+    if (event.data && event.data.type === 'LIFEOS_FOCUS_STOP') {
+        chrome.runtime.sendMessage({ type: 'STOP_FOCUS', duration: event.data.duration });
+    }
+});

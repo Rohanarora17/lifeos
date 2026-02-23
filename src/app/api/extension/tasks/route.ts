@@ -49,7 +49,7 @@ Return JSON matching this schema:
         const extracted = JSON.parse(result.response.text());
 
         // We append the URL context to the description automatically
-        const finalDescription = (extracted.description || '') + '\\n\\nSource: [' + pageTitle + '](' + url + ')';
+        const finalDescription = (extracted.description || '') + '\n\nSource: [' + pageTitle + '](' + url + ')';
 
         const insert = db.prepare(`
             INSERT INTO tasks(title, description, priority, goal_id, status)

@@ -369,6 +369,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'GET_CURRENT_ACTIVITY') {
         sendResponse({ activity: currentActivity, isActive: isUserActive });
     }
+
+    // Phase 21: Override Logging — AI Learning Signal
+    if (message.type === 'LOG_OVERRIDE') {
+        chrome.storage.local.get('apiKey', (data) => {
+            const apiKey = data.apiKey;
+            fetch(`${API_BASE}/extension/override`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                body: JSON.stringify({
+                    url: message.url,
+                    title: message.title,
+                    reason: message.reason
+                })
+            }).catch(() => { });
+        });
+        sendResponse({ ok: true });
+    }
+
+    // Phase 21: Close Tab from block overlay
+    if (message.type === 'CLOSE_TAB') {
+        if (sender.tab && sender.tab.id) {
+            chrome.tabs.remove(sender.tab.id);
+        }
+        sendResponse({ ok: true });
+    }
+
+    // Phase 21: Sidebar Focus Timer Integration
+    if (message.type === 'START_FOCUS') {
+        chrome.storage.local.get('apiKey', (data) => {
+            const apiKey = data.apiKey;
+            fetch(`${API_BASE}/focus`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                body: JSON.stringify({ duration: message.duration, action: 'start' })
+            }).catch(() => { });
+        });
+        sendResponse({ ok: true });
+    }
+
+    if (message.type === 'STOP_FOCUS') {
+        chrome.storage.local.get('apiKey', (data) => {
+            const apiKey = data.apiKey;
+            fetch(`${API_BASE}/focus`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                body: JSON.stringify({ duration: message.duration, action: 'complete' })
+            }).catch(() => { });
+        });
+        sendResponse({ ok: true });
+    }
+
+    return true; // Keep message channel open for async responses
 });
 
 // Utilities
@@ -408,9 +460,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         }
 
         try {
+            const dataInfo = await chrome.storage.local.get('apiKey');
+            const apiKey = dataInfo.apiKey;
             const res = await fetch(`${API_BASE}/extension/tasks`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
                 body: JSON.stringify({
                     text: info.selectionText,
                     url: tab?.url,
@@ -453,56 +507,58 @@ const evaluationCache = new Map();
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
-        const riskyDomains = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com', 'tiktok.com', 'netflix.com'];
-        const isRisky = riskyDomains.some(d => tab.url.includes(d));
+        // Skip privacy-sensitive domains — never send to AI
+        for (const pattern of PRIVACY_BLOCKLIST) {
+            if (pattern.test(tab.url)) return;
+        }
 
-        if (isRisky) {
-            await refreshContext();
-            if (activeContext.activeGoals && activeContext.activeGoals.length > 0) {
-                const cacheKey = `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
+        await refreshContext();
+        if (activeContext.activeGoals && activeContext.activeGoals.length > 0) {
+            const cacheKey = `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
 
-                if (evaluationCache.has(cacheKey)) {
-                    const cached = evaluationCache.get(cacheKey);
-                    if (Date.now() - cached.timestamp < 3600000) {
-                        if (cached.isDistraction) {
-                            chrome.tabs.sendMessage(tabId, {
-                                type: 'BLOCK_PAGE',
-                                reason: cached.reason,
-                                goals: activeContext.activeGoals
-                            });
-                        }
-                        return;
-                    } else {
-                        evaluationCache.delete(cacheKey);
+            if (evaluationCache.has(cacheKey)) {
+                const cached = evaluationCache.get(cacheKey);
+                if (Date.now() - cached.timestamp < 3600000) {
+                    if (cached.isDistraction) {
+                        chrome.tabs.sendMessage(tabId, {
+                            type: 'BLOCK_PAGE',
+                            reason: cached.reason,
+                            goals: activeContext.activeGoals
+                        });
+                    }
+                    return;
+                } else {
+                    evaluationCache.delete(cacheKey);
+                }
+            }
+
+            try {
+                const dataInfo = await chrome.storage.local.get('apiKey');
+                const apiKey = dataInfo.apiKey;
+                const res = await fetch(`${API_BASE}/extension/evaluate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                    body: JSON.stringify({
+                        url: tab.url,
+                        title: tab.title || '',
+                        activeGoals: activeContext.activeGoals
+                    })
+                });
+
+                if (res.ok) {
+                    const { isDistraction, reason } = await res.json();
+
+                    evaluationCache.set(cacheKey, { isDistraction, reason, timestamp: Date.now() });
+
+                    if (isDistraction) {
+                        chrome.tabs.sendMessage(tabId, {
+                            type: 'BLOCK_PAGE',
+                            reason: reason,
+                            goals: activeContext.activeGoals
+                        });
                     }
                 }
-
-                try {
-                    const res = await fetch(`${API_BASE}/extension/evaluate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            url: tab.url,
-                            title: tab.title || '',
-                            activeGoals: activeContext.activeGoals
-                        })
-                    });
-
-                    if (res.ok) {
-                        const { isDistraction, reason } = await res.json();
-
-                        evaluationCache.set(cacheKey, { isDistraction, reason, timestamp: Date.now() });
-
-                        if (isDistraction) {
-                            chrome.tabs.sendMessage(tabId, {
-                                type: 'BLOCK_PAGE',
-                                reason: reason,
-                                goals: activeContext.activeGoals
-                            });
-                        }
-                    }
-                } catch (e) { }
-            }
+            } catch (e) { }
         }
     }
 });
