@@ -2,37 +2,75 @@
 
 import { useEffect, useState } from 'react';
 
+interface LinkedTask {
+    id: number;
+    title: string;
+    status: string;
+    completed_at: string | null;
+}
+
+interface LinkedHabit {
+    id: number;
+    name: string;
+    icon: string;
+    total_checkins: number;
+    week_checkins: number;
+}
+
 interface Goal {
     id: number;
     title: string;
-    type: 'daily' | 'weekly' | 'custom';
-    metric: 'duration' | 'count';
-    target_value: number;
-    unit: string;
-    category: 'productivity' | 'learning' | 'health' | 'finance' | 'other';
+    description: string;
+    type: string;
+    category: string;
+    deadline: string | null;
     active: number;
+    progress: number;
+    taskProgress: number;
+    habitHealth: number | null;
+    completedTasks: number;
+    totalTasks: number;
+    tmtScore: number | null;
+    momentum: number | null;
+    linkedTasks: LinkedTask[];
+    linkedHabits: LinkedHabit[];
 }
 
 export default function GoalsPage() {
     const [goals, setGoals] = useState<Goal[]>([]);
+    const [selfEfficacy, setSelfEfficacy] = useState(50);
     const [showNewGoal, setShowNewGoal] = useState(false);
+    const [expandedGoal, setExpandedGoal] = useState<number | null>(null);
+    const [allTasks, setAllTasks] = useState<{ id: number; title: string; status: string; goal_id: number | null }[]>([]);
+    const [allHabits, setAllHabits] = useState<{ id: number; name: string; icon: string; goal_id: number | null }[]>([]);
 
     // Form state
     const [title, setTitle] = useState('');
-    const [type, setType] = useState<'daily' | 'weekly' | 'custom'>('daily');
-    const [metric, setMetric] = useState<'duration' | 'count'>('duration');
-    const [targetValue, setTargetValue] = useState(60);
-    const [unit, setUnit] = useState('minutes');
-    const [category, setCategory] = useState<'productivity' | 'learning'>('productivity');
+    const [description, setDescription] = useState('');
+    const [category, setCategory] = useState('productivity');
+    const [deadline, setDeadline] = useState('');
 
     useEffect(() => {
         fetchGoals();
+        fetchUnlinked();
     }, []);
 
     const fetchGoals = async () => {
         const res = await fetch('/api/goals');
         const data = await res.json();
         setGoals(data.goals || []);
+        setSelfEfficacy(data.selfEfficacy ?? 50);
+    };
+
+    const fetchUnlinked = async () => {
+        const [tasksRes, habitsRes] = await Promise.all([
+            fetch('/api/tasks'),
+            fetch('/api/habits')
+        ]);
+        const tasksData = await tasksRes.json();
+        const habitsData = await habitsRes.json();
+        setAllTasks((tasksData.tasks || []).filter((t: any) => !t.goal_id));
+        setAllHabits((habitsData.habits || []).filter((h: any) => !h.goal_id));
     };
 
     const addGoal = async () => {
@@ -40,18 +78,9 @@ export default function GoalsPage() {
         await fetch('/api/goals', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: title.trim(),
-                type,
-                metric,
-                target_value: targetValue,
-                unit,
-                category
-            }),
+            body: JSON.stringify({ title: title.trim(), description, category, deadline: deadline || null }),
         });
-
-        setTitle('');
-        setTargetValue(60);
+        setTitle(''); setDescription(''); setDeadline('');
         setShowNewGoal(false);
         fetchGoals();
     };
@@ -59,15 +88,61 @@ export default function GoalsPage() {
     const deleteGoal = async (id: number) => {
         await fetch(`/api/goals?id=${id}`, { method: 'DELETE' });
         fetchGoals();
+        fetchUnlinked();
     };
 
     const toggleActive = async (goal: Goal) => {
-        await fetch(`/api/goals`, {
+        await fetch('/api/goals', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: goal.id, active: goal.active ? 0 : 1 }),
         });
         fetchGoals();
+    };
+
+    const linkTask = async (taskId: number, goalId: number) => {
+        await fetch('/api/tasks', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: taskId, goal_id: goalId }),
+        });
+        fetchGoals();
+        fetchUnlinked();
+    };
+
+    const linkHabit = async (habitId: number, goalId: number) => {
+        // habits don't have a PATCH for goal_id yet, use the DB directly
+        await fetch('/api/goals', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: goalId }), // triggers a refetch
+        });
+        // For now, we'll do this through a custom endpoint - let's add it via tasks API pattern
+    };
+
+    const unlinkTask = async (taskId: number) => {
+        await fetch('/api/tasks', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: taskId, goal_id: null }),
+        });
+        fetchGoals();
+        fetchUnlinked();
+    };
+
+    const getProgressColor = (p: number) => {
+        if (p >= 80) return 'var(--accent-green)';
+        if (p >= 50) return 'var(--accent-yellow)';
+        if (p >= 25) return 'var(--accent-orange)';
+        return 'var(--accent-red)';
+    };
+
+    const daysUntil = (dateStr: string) => {
+        const d = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
+        if (d < 0) return `${Math.abs(d)}d overdue`;
+        if (d === 0) return 'Today';
+        if (d === 1) return 'Tomorrow';
+        return `${d} days`;
     };
 
     return (
@@ -77,78 +152,197 @@ export default function GoalsPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Goals 🎯</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        Define what success looks like. The AI will use these to guide you.
+                        Goals drive tasks. Tasks build habits. Habits sustain progress.
+                    </p>
+                </div>
+                <div className="text-center">
+                    <div className="text-2xl">{selfEfficacy >= 70 ? '💪' : selfEfficacy >= 40 ? '📊' : '🔄'}</div>
+                    <p className="text-xs font-semibold" style={{ color: getProgressColor(selfEfficacy) }}>
+                        {selfEfficacy}% Efficacy
                     </p>
                 </div>
             </div>
 
             {/* Goals List */}
-            <div className="space-y-3">
+            <div className="space-y-4">
                 {goals.map(goal => (
-                    <div key={goal.id} className={`card flex items-center gap-4 transition-all ${!goal.active ? 'opacity-50 grayscale' : ''}`}>
-                        <button
-                            onClick={() => toggleActive(goal)}
-                            className="w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all flex-shrink-0"
-                            style={{
-                                background: goal.active ? 'var(--accent-green-glow)' : 'var(--bg-secondary)',
-                                border: `2px solid ${goal.active ? 'var(--accent-green)' : 'var(--border)'}`,
-                            }}
-                        >
-                            {goal.active ? '✓' : 'zzz'}
-                        </button>
-                        <div className="flex-1">
-                            <p className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                                {goal.title}
-                            </p>
-                            <p className="text-xs mt-1 space-x-2" style={{ color: 'var(--text-muted)' }}>
-                                <span className="px-2 py-0.5 rounded-full bg-[#1e1e1e] border border-[#333] capitalize">{goal.type}</span>
-                                <span className="px-2 py-0.5 rounded-full bg-[#1e1e1e] border border-[#333]">{goal.target_value} {goal.unit}</span>
-                                <span className="px-2 py-0.5 rounded-full bg-[#1e1e1e] border border-[#333] capitalize">{goal.category}</span>
-                            </p>
+                    <div
+                        key={goal.id}
+                        className={`card transition-all ${!goal.active ? 'opacity-50 grayscale' : ''}`}
+                        style={{ padding: '1.25rem' }}
+                    >
+                        {/* Header Row */}
+                        <div className="flex items-start gap-3">
+                            <button
+                                onClick={() => toggleActive(goal)}
+                                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg transition-all flex-shrink-0 mt-0.5"
+                                style={{
+                                    background: goal.active ? 'var(--accent-green-glow)' : 'var(--bg-secondary)',
+                                    border: `2px solid ${goal.active ? 'var(--accent-green)' : 'var(--border)'}`,
+                                }}
+                            >
+                                {goal.progress >= 100 ? '🏆' : goal.active ? '🎯' : '💤'}
+                            </button>
+
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <h3 className="font-semibold text-lg">{goal.title}</h3>
+                                    {goal.deadline && (
+                                        <span className="badge text-xs" style={{
+                                            background: new Date(goal.deadline) < new Date() ? 'rgba(255,85,85,0.15)' : 'rgba(255,165,0,0.15)',
+                                            color: new Date(goal.deadline) < new Date() ? 'var(--accent-red)' : 'var(--accent-orange)',
+                                        }}>
+                                            ⏰ {daysUntil(goal.deadline)}
+                                        </span>
+                                    )}
+                                    {goal.tmtScore !== null && (
+                                        <span className="badge text-xs" style={{
+                                            background: goal.tmtScore > 20 ? 'rgba(76,175,80,0.15)' : 'rgba(255,85,85,0.15)',
+                                            color: goal.tmtScore > 20 ? 'var(--accent-green)' : 'var(--accent-red)',
+                                        }} title="TMT Motivation Score — higher = more motivated">
+                                            {goal.tmtScore > 20 ? '🔋' : '⚡'} TMT {goal.tmtScore}%
+                                        </span>
+                                    )}
+                                    {goal.momentum !== null && goal.momentum !== 0 && (
+                                        <span className="badge text-xs" style={{
+                                            background: goal.momentum > 0 ? 'rgba(76,175,80,0.15)' : 'rgba(255,165,0,0.15)',
+                                            color: goal.momentum > 0 ? 'var(--accent-green)' : 'var(--accent-orange)',
+                                        }}>
+                                            {goal.momentum > 0 ? '📈' : '📉'} {goal.momentum > 0 ? '+' : ''}{goal.momentum}%
+                                        </span>
+                                    )}
+                                </div>
+                                {goal.description && (
+                                    <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>{goal.description}</p>
+                                )}
+
+                                {/* Progress Bar */}
+                                <div className="mt-3 flex items-center gap-3">
+                                    <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+                                        <div
+                                            className="h-full rounded-full transition-all"
+                                            style={{
+                                                width: `${Math.min(goal.progress, 100)}%`,
+                                                background: getProgressColor(goal.progress),
+                                            }}
+                                        />
+                                    </div>
+                                    <span className="text-sm font-bold tabular-nums" style={{ color: getProgressColor(goal.progress), minWidth: '3rem', textAlign: 'right' }}>
+                                        {goal.progress}%
+                                    </span>
+                                </div>
+
+                                {/* Mini Stats */}
+                                <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+                                    <span>✅ {goal.completedTasks}/{goal.totalTasks} tasks</span>
+                                    {goal.habitHealth !== null && <span>🔥 Habit health: {goal.habitHealth}%</span>}
+                                    <span className="px-2 py-0.5 rounded-full bg-[#1e1e1e] border border-[#333] capitalize">{goal.category}</span>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                                <button
+                                    onClick={() => setExpandedGoal(expandedGoal === goal.id ? null : goal.id)}
+                                    className="btn btn-ghost btn-sm"
+                                >{expandedGoal === goal.id ? '▲' : '▼'}</button>
+                                <button onClick={() => deleteGoal(goal.id)} className="btn btn-ghost btn-sm">🗑️</button>
+                            </div>
                         </div>
-                        <button onClick={() => deleteGoal(goal.id)} className="btn btn-ghost btn-sm">🗑️</button>
+
+                        {/* Expanded: Linked Tasks & Habits + Link New */}
+                        {expandedGoal === goal.id && (
+                            <div className="mt-4 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+                                {/* Linked Tasks */}
+                                <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+                                    📋 LINKED TASKS ({goal.linkedTasks.length})
+                                </h4>
+                                <div className="space-y-1 mb-3">
+                                    {goal.linkedTasks.map(t => (
+                                        <div key={t.id} className="flex items-center gap-2 text-sm py-1">
+                                            <span>{t.status === 'done' ? '✅' : t.status === 'doing' ? '⚡' : '○'}</span>
+                                            <span className={t.status === 'done' ? 'line-through' : ''} style={{ color: t.status === 'done' ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+                                                {t.title}
+                                            </span>
+                                            <button onClick={() => unlinkTask(t.id)} className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>✕</button>
+                                        </div>
+                                    ))}
+                                    {goal.linkedTasks.length === 0 && (
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No tasks linked yet</p>
+                                    )}
+                                </div>
+
+                                {/* Link Unlinked Task */}
+                                {allTasks.length > 0 && (
+                                    <select
+                                        className="input text-sm mb-4 w-full"
+                                        onChange={(e) => { if (e.target.value) { linkTask(parseInt(e.target.value), goal.id); e.target.value = ''; } }}
+                                        defaultValue=""
+                                    >
+                                        <option value="" disabled>+ Link an existing task...</option>
+                                        {allTasks.map(t => (
+                                            <option key={t.id} value={t.id}>{t.title} ({t.status})</option>
+                                        ))}
+                                    </select>
+                                )}
+
+                                {/* Linked Habits */}
+                                <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+                                    🔥 LINKED HABITS ({goal.linkedHabits.length})
+                                </h4>
+                                <div className="space-y-1">
+                                    {goal.linkedHabits.map(h => (
+                                        <div key={h.id} className="flex items-center gap-2 text-sm py-1">
+                                            <span>{h.icon}</span>
+                                            <span>{h.name}</span>
+                                            <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>
+                                                {h.week_checkins}/7 this week
+                                            </span>
+                                        </div>
+                                    ))}
+                                    {goal.linkedHabits.length === 0 && (
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No habits linked yet — link from the habits page</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 ))}
 
                 {/* New goal form */}
                 {showNewGoal ? (
-                    <div className="card space-y-4">
+                    <div className="card space-y-3" style={{ padding: '1.25rem' }}>
                         <input
                             className="input w-full font-medium"
-                            placeholder="Goal Title (e.g., Code Every Day)..."
+                            placeholder="Goal Title (e.g., Build ZK Proof System)..."
                             value={title}
                             onChange={e => setTitle(e.target.value)}
                             autoFocus
                         />
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                            <select className="input text-sm" value={type} onChange={(e: any) => setType(e.target.value)}>
-                                <option value="daily">Daily</option>
-                                <option value="weekly">Weekly</option>
-                            </select>
+                        <input
+                            className="input w-full text-sm"
+                            placeholder="Description (optional)"
+                            value={description}
+                            onChange={e => setDescription(e.target.value)}
+                        />
+                        <div className="grid grid-cols-2 gap-3">
                             <select className="input text-sm" value={category} onChange={(e: any) => setCategory(e.target.value)}>
-                                <option value="productivity">Productivity</option>
-                                <option value="learning">Learning</option>
-                                <option value="health">Health</option>
-                                <option value="finance">Finance</option>
+                                <option value="productivity">🔧 Productivity</option>
+                                <option value="learning">📚 Learning</option>
+                                <option value="health">💪 Health</option>
+                                <option value="finance">💰 Finance</option>
+                                <option value="other">🌟 Other</option>
                             </select>
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="number"
-                                    className="input w-full text-sm"
-                                    value={targetValue}
-                                    onChange={(e) => setTargetValue(Math.max(1, parseInt(e.target.value) || 1))}
-                                />
-                            </div>
-                            <select className="input text-sm" value={unit} onChange={(e: any) => setUnit(e.target.value)}>
-                                <option value="minutes">Minutes</option>
-                                <option value="hours">Hours</option>
-                                <option value="times">Times</option>
-                                <option value="modules">Modules</option>
-                            </select>
+                            <input
+                                type="date"
+                                className="input text-sm"
+                                value={deadline}
+                                onChange={e => setDeadline(e.target.value)}
+                                placeholder="Deadline (optional)"
+                            />
                         </div>
                         <div className="flex justify-end gap-2 pt-2 border-t border-[#333]">
                             <button className="btn btn-ghost btn-sm" onClick={() => setShowNewGoal(false)}>Cancel</button>
-                            <button className="btn btn-primary btn-sm" onClick={addGoal}>Save Goal</button>
+                            <button className="btn btn-primary btn-sm" onClick={addGoal}>Create Goal</button>
                         </div>
                     </div>
                 ) : (
@@ -158,7 +352,7 @@ export default function GoalsPage() {
                         onClick={() => setShowNewGoal(true)}
                         onMouseOver={e => { (e.target as HTMLElement).style.borderColor = 'rgba(102,126,234,0.4)'; (e.target as HTMLElement).style.color = 'var(--text-primary)'; }}
                         onMouseOut={e => { (e.target as HTMLElement).style.borderColor = 'var(--border)'; (e.target as HTMLElement).style.color = 'var(--text-muted)'; }}
-                    >+ New Core Goal</button>
+                    >+ New Goal</button>
                 )}
             </div>
         </div>

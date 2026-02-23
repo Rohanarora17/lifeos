@@ -11,6 +11,49 @@ export async function GET(request: NextRequest) {
 
         const db = getDb();
 
+        // Day-by-day habit history with daily scores
+        if (searchParams.get('history') === 'true') {
+            const days = parseInt(searchParams.get('days') || '14');
+            const totalHabits = (db.prepare('SELECT COUNT(*) as c FROM habits WHERE archived = 0').get() as { c: number }).c;
+
+            const dailyHistory = db.prepare(`
+                WITH RECURSIVE dates(d) AS (
+                    SELECT date('now', '-${days} days')
+                    UNION ALL SELECT date(d, '+1 day') FROM dates WHERE d < date('now', '+1 day')
+                )
+                SELECT 
+                    dates.d as date,
+                    COALESCE(completed.count, 0) as habits_completed,
+                    ${totalHabits} as total_habits
+                FROM dates
+                LEFT JOIN (
+                    SELECT hc.date as d, COUNT(DISTINCT hc.habit_id) as count
+                    FROM habit_checkins hc
+                    JOIN habits h ON h.id = hc.habit_id AND h.archived = 0
+                    WHERE hc.completed = 1
+                    GROUP BY hc.date
+                ) completed ON completed.d = dates.d
+                ORDER BY dates.d ASC
+            `).all() as { date: string; habits_completed: number; total_habits: number }[];
+
+            // Calculate daily habit score and add per-habit breakdown
+            const historyWithScores = dailyHistory.map(day => {
+                const score = day.total_habits > 0 ? Math.round((day.habits_completed / day.total_habits) * 100) : null;
+                return { ...day, habit_score: score };
+            });
+
+            // Per-habit breakdown with names
+            const habitBreakdown = db.prepare(`
+                SELECT h.id, h.name, h.icon, hc.date, hc.completed, COALESCE(hc.value, 0) as value
+                FROM habits h
+                LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date >= date('now', '-${days} days')
+                WHERE h.archived = 0
+                ORDER BY h.created_at ASC, hc.date ASC
+            `).all();
+
+            return NextResponse.json({ history: historyWithScores, habitBreakdown, totalHabits });
+        }
+
         if (heatmap) {
             // Return 365 days of checkin data for heatmap
             const startDate = new Date();
@@ -135,14 +178,14 @@ export async function POST(request: NextRequest) {
         }
 
         // Create new habit
-        const { name, icon, frequency, goal_metric, goal_target } = body;
+        const { name, icon, frequency, goal_metric, goal_target, goal_id } = body;
         if (!name) {
             return NextResponse.json({ error: 'name is required' }, { status: 400 });
         }
 
         const result = db.prepare(
-            'INSERT INTO habits (name, icon, frequency, goal_metric, goal_target) VALUES (?, ?, ?, ?, ?)'
-        ).run(name, icon || '✅', frequency || 'daily', goal_metric || 'boolean', goal_target || 1);
+            'INSERT INTO habits (name, icon, frequency, goal_metric, goal_target, goal_id) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(name, icon || '✅', frequency || 'daily', goal_metric || 'boolean', goal_target || 1, goal_id || null);
 
         return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
     } catch (error) {

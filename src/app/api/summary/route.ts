@@ -144,18 +144,27 @@ export async function GET(request: NextRequest) {
             xp,
         });
 
+        // Calculate daily sub-scores
+        const taskScore = totalTasks > 0 ? Math.min(100, Math.round((tasksCompleted / totalTasks) * 100)) : 0;
+        const habitScore = totalHabits > 0 ? Math.min(100, Math.round((habitsCompleted / totalHabits) * 100)) : 0;
+
+        // Count tasks that were assigned (today/doing status) for the day
+        const tasksAssigned = totalTasks;
+        const tasksPending = totalTasks - tasksCompleted;
+
         // Save to daily_scores
         db.prepare(`
-      INSERT INTO daily_scores (date, xp_earned, productive_minutes, distraction_minutes, neutral_minutes, tasks_completed, habits_completed, total_habits, ai_summary)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO daily_scores (date, xp_earned, productive_minutes, distraction_minutes, neutral_minutes, tasks_completed, habits_completed, total_habits, ai_summary, task_score, habit_score, tasks_assigned, tasks_pending)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(date) DO UPDATE SET 
         xp_earned = ?, productive_minutes = ?, distraction_minutes = ?, neutral_minutes = ?,
-        tasks_completed = ?, habits_completed = ?, total_habits = ?, ai_summary = ?
+        tasks_completed = ?, habits_completed = ?, total_habits = ?, ai_summary = ?,
+        task_score = ?, habit_score = ?, tasks_assigned = ?, tasks_pending = ?
     `).run(
             date, xp, activityStats.productive_minutes || 0, activityStats.distraction_minutes || 0, activityStats.neutral_minutes || 0,
-            tasksCompleted, habitsCompleted, totalHabits, summaryText,
+            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending,
             xp, activityStats.productive_minutes || 0, activityStats.distraction_minutes || 0, activityStats.neutral_minutes || 0,
-            tasksCompleted, habitsCompleted, totalHabits, summaryText
+            tasksCompleted, habitsCompleted, totalHabits, summaryText, taskScore, habitScore, tasksAssigned, tasksPending
         );
 
         return NextResponse.json({

@@ -2,6 +2,22 @@
 
 import { useEffect, useState } from 'react';
 
+interface DayHabitHistory {
+    date: string;
+    habits_completed: number;
+    total_habits: number;
+    habit_score: number | null;
+}
+
+interface HabitBreakdownEntry {
+    id: number;
+    name: string;
+    icon: string;
+    date: string | null;
+    completed: number | null;
+    value: number;
+}
+
 interface Habit {
     id: number;
     name: string;
@@ -32,6 +48,9 @@ export default function HabitsPage() {
     const [newIcon, setNewIcon] = useState('✅');
     const [newGoalMetric, setNewGoalMetric] = useState<'boolean' | 'time'>('boolean');
     const [newGoalTarget, setNewGoalTarget] = useState<number>(60);
+    const [showHistory, setShowHistory] = useState(false);
+    const [habitHistory, setHabitHistory] = useState<DayHabitHistory[]>([]);
+    const [habitBreakdown, setHabitBreakdown] = useState<HabitBreakdownEntry[]>([]);
 
     const fetchHeatmap = async () => {
         const res = await fetch('/api/habits?heatmap=true');
@@ -50,6 +69,17 @@ export default function HabitsPage() {
         fetchHabits();
         fetchHeatmap();
     }, []);
+
+    useEffect(() => {
+        if (showHistory) fetchHistory();
+    }, [showHistory]);
+
+    const fetchHistory = async () => {
+        const res = await fetch('/api/habits?history=true&days=14');
+        const data = await res.json();
+        setHabitHistory(data.history || []);
+        setHabitBreakdown(data.habitBreakdown || []);
+    };
 
     const toggleCheckin = async (habitId: number) => {
         await fetch('/api/habits', {
@@ -116,11 +146,103 @@ export default function HabitsPage() {
                         Every action is a vote for the person you wish to become.
                     </p>
                 </div>
-                <div className="text-center">
-                    <div className="text-3xl">{streak > 0 ? '🔥' : '💤'}</div>
-                    <p className="text-sm font-bold">{streak} day streak</p>
+                <div className="flex items-center gap-3">
+                    <button
+                        className="btn btn-ghost"
+                        onClick={() => setShowHistory(!showHistory)}
+                        style={{ fontSize: '0.85rem' }}
+                    >
+                        {showHistory ? '🔥 Today\'s View' : '📊 History'}
+                    </button>
+                    <div className="text-center">
+                        <div className="text-3xl">{streak > 0 ? '🔥' : '💤'}</div>
+                        <p className="text-sm font-bold">{streak} day streak</p>
+                    </div>
                 </div>
             </div>
+
+            {/* Habit History Section */}
+            {showHistory && (
+                <div className="mb-6">
+                    {/* Daily Score Chart */}
+                    <div className="card mb-4" style={{ padding: '1.5rem' }}>
+                        <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-secondary)' }}>
+                            Habit Score — Last 14 Days
+                        </h3>
+                        <div className="flex items-end gap-1" style={{ height: '100px' }}>
+                            {habitHistory.map(day => (
+                                <div key={day.date} className="flex-1 flex flex-col items-center justify-end">
+                                    <div
+                                        className="w-full rounded-t"
+                                        style={{
+                                            height: `${Math.max(day.habit_score ?? 0, 4)}%`,
+                                            background: day.habit_score !== null
+                                                ? day.habit_score >= 80 ? 'var(--accent-green)'
+                                                    : day.habit_score >= 50 ? 'var(--accent-yellow)'
+                                                        : day.habit_score >= 25 ? 'var(--accent-orange)'
+                                                            : 'var(--accent-red)'
+                                                : 'var(--border)',
+                                            minHeight: day.total_habits > 0 ? '4px' : '0',
+                                        }}
+                                    />
+                                    <span className="text-xs mt-1" style={{ color: 'var(--text-muted)', fontSize: '0.6rem' }}>
+                                        {new Date(day.date + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric' })}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Per-Habit Grid */}
+                    {(() => {
+                        const uniqueHabits = [...new Map(habitBreakdown.map(h => [h.id, { id: h.id, name: h.name, icon: h.icon }])).values()];
+                        const dates = habitHistory.map(h => h.date);
+                        return (
+                            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead>
+                                        <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                            <th style={{ padding: '0.5rem 1rem', textAlign: 'left', color: 'var(--text-secondary)', fontSize: '0.75rem', fontWeight: 600, position: 'sticky', left: 0, background: 'var(--bg-card)' }}>Habit</th>
+                                            {dates.map(d => (
+                                                <th key={d} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.6rem', fontWeight: 500 }}>
+                                                    {new Date(d + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {uniqueHabits.map(habit => (
+                                            <tr key={habit.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                                <td style={{ padding: '0.5rem 1rem', fontSize: '0.8rem', whiteSpace: 'nowrap', position: 'sticky', left: 0, background: 'var(--bg-card)' }}>
+                                                    {habit.icon} {habit.name}
+                                                </td>
+                                                {dates.map(d => {
+                                                    const entry = habitBreakdown.find(b => b.id === habit.id && b.date === d);
+                                                    const done = entry?.completed === 1;
+                                                    return (
+                                                        <td key={d} style={{ padding: '0.25rem', textAlign: 'center' }}>
+                                                            <span style={{ fontSize: '0.85rem' }}>{entry?.date ? (done ? '✅' : '❌') : '—'}</span>
+                                                        </td>
+                                                    );
+                                                })}
+                                            </tr>
+                                        ))}
+                                        {/* Score row */}
+                                        <tr style={{ background: 'var(--bg-secondary)' }}>
+                                            <td style={{ padding: '0.5rem 1rem', fontSize: '0.75rem', fontWeight: 700, position: 'sticky', left: 0, background: 'var(--bg-secondary)' }}>Score</td>
+                                            {habitHistory.map(day => (
+                                                <td key={day.date} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', fontSize: '0.7rem', fontWeight: 700, color: day.habit_score !== null ? (day.habit_score >= 80 ? 'var(--accent-green)' : day.habit_score >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)') : 'var(--text-muted)' }}>
+                                                    {day.habit_score !== null ? `${day.habit_score}%` : '—'}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    })()}
+                </div>
+            )}
 
             {/* Heatmap */}
             <div className="card mb-6">

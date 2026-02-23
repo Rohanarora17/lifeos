@@ -409,6 +409,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   const habitScore = Math.round(avgHabitRate * 60 + Math.min(streakCurrent / days, 1) * 40);
 
   // ── Task consistency ──
+  // Only count tasks in active statuses (not backlog/next — those are planning, not commitments)
   const tasksByDay = db.prepare(`
     SELECT date(completed_at) as d, COUNT(*) as c
     FROM tasks
@@ -417,11 +418,13 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   `).all() as { d: string; c: number }[];
 
   const taskValues = tasksByDay.map(t => t.c);
+
+  // Only count tasks that were actually committed to (today/doing/done/this_week)
   const taskTotal = (db.prepare(
-    `SELECT COUNT(*) as c FROM tasks WHERE created_at >= datetime('now', '-${days} days')`
+    `SELECT COUNT(*) as c FROM tasks WHERE status IN ('today', 'doing', 'done', 'this_week') AND created_at >= datetime('now', '-${days} days')`
   ).get() as { c: number }).c;
   const taskCompleted = taskValues.reduce((a, b) => a + b, 0);
-  const taskCompletionRate = taskTotal > 0 ? taskCompleted / taskTotal : 0;
+  const taskCompletionRate = taskTotal > 0 ? Math.min(1, taskCompleted / taskTotal) : 0;
   const taskScore = Math.round(taskCompletionRate * 70 + Math.min(cvToScore(coefficientOfVariation(taskValues)) * 0.3, 30));
 
   // ── Focus consistency (daily deep work minutes) ──
@@ -1336,25 +1339,53 @@ function computeHabitStreak(days: number): { current: number; longest: number } 
 }
 
 /**
- * Builds a formatted string of the user's active goals and habits to feed to the AI context.
+ * Builds a formatted string of the user's active goals with linked tasks/habits, progress, and motivation context.
  */
 export function buildGoalsContext(): string {
   try {
     const db = getDb();
-    const activeGoals = db.prepare('SELECT title, type, target_value, unit FROM goals WHERE active = 1').all() as any[];
+    const activeGoals = db.prepare('SELECT * FROM goals WHERE active = 1').all() as any[];
+
+    if (activeGoals.length === 0) return '';
+
+    // Compute self-efficacy (rolling task success rate)
+    const efficacyRow = db.prepare(`
+      SELECT COUNT(CASE WHEN status = 'done' THEN 1 END) as completed, COUNT(*) as total
+      FROM tasks WHERE status IN ('today', 'doing', 'done', 'this_week') AND created_at >= datetime('now', '-14 days')
+    `).get() as { completed: number; total: number };
+    const selfEfficacy = efficacyRow.total > 0 ? Math.round((efficacyRow.completed / efficacyRow.total) * 100) : 50;
+
+    let context = `USER GOALS & PROGRESS (Self-Efficacy: ${selfEfficacy}%):\n`;
+
+    for (const g of activeGoals) {
+      const linkedTasks = db.prepare(
+        "SELECT title, status FROM tasks WHERE goal_id = ?"
+      ).all(g.id) as { title: string; status: string }[];
+      const totalTasks = linkedTasks.length;
+      const completedTasks = linkedTasks.filter(t => t.status === 'done').length;
+      const progress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+      let goalLine = `- ${g.title} [${progress}% complete, ${completedTasks}/${totalTasks} tasks done]`;
+
+      if (g.deadline) {
+        const daysLeft = Math.ceil((new Date(g.deadline).getTime() - Date.now()) / 86400000);
+        goalLine += ` (Deadline: ${daysLeft > 0 ? `${daysLeft} days left` : `${Math.abs(daysLeft)} days overdue`})`;
+      }
+
+      const activeTasks = linkedTasks.filter(t => t.status !== 'done').map(t => t.title);
+      if (activeTasks.length > 0) {
+        goalLine += `\n  Active tasks: ${activeTasks.slice(0, 5).join(', ')}`;
+      }
+
+      context += goalLine + '\n';
+    }
+
     const activeHabits = db.prepare('SELECT name, frequency FROM habits WHERE archived = 0').all() as any[];
-
-    if (activeGoals.length === 0 && activeHabits.length === 0) return '';
-
-    let context = 'USER LONG-TERM GOALS & HABITS:\n';
-    if (activeGoals.length > 0) {
-      context += 'Core Goals:\n' + activeGoals.map(g => `- ${g.title} (${g.target_value} ${g.unit} ${g.type})`).join('\n') + '\n';
-    }
     if (activeHabits.length > 0) {
-      context += 'Daily Habits:\n' + activeHabits.map(h => `- ${h.name} (${h.frequency})`).join('\n') + '\n';
+      context += '\nDaily Habits:\n' + activeHabits.map(h => `- ${h.name} (${h.frequency})`).join('\n') + '\n';
     }
 
-    context += '\nCRITICAL RULE: Always prioritize classifying websites that align with the user\'s listed Core Goals and Habits as "productive". Provide nudges against highly distracting pages that contradict these goals.\n';
+    context += '\nCRITICAL RULE: Always prioritize classifying websites that align with the user\'s listed Goals and Habits as "productive". If the user is making progress on a goal (high %), encourage them. If a goal is stalling or overdue, address it in summaries.\n';
 
     return context;
   } catch (err) {
