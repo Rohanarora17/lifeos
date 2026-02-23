@@ -12,7 +12,7 @@ export async function GET() {
         const activeGoals = db.prepare(`
             SELECT id, title, description 
             FROM goals 
-            WHERE active = 1 AND status != 'completed'
+            WHERE active = 1
         `).all();
 
         // Fetch active/today tasks

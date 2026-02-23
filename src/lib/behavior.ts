@@ -817,11 +817,11 @@ export function recallMemories(type?: string, limit: number = 20): BehavioralMem
   const db = getDb();
   if (type) {
     return db.prepare(
-      'SELECT * FROM behavioral_memory WHERE memory_type = ? AND superseded = 0 ORDER BY confidence DESC, reinforcement_count DESC LIMIT ?'
+      'SELECT * FROM behavioral_memory WHERE memory_type = ? ORDER BY confidence DESC, reinforcement_count DESC LIMIT ?'
     ).all(type, limit) as BehavioralMemory[];
   }
   return db.prepare(
-    'SELECT * FROM behavioral_memory WHERE superseded = 0 ORDER BY confidence DESC, reinforcement_count DESC LIMIT ?'
+    'SELECT * FROM behavioral_memory ORDER BY confidence DESC, reinforcement_count DESC LIMIT ?'
   ).all(limit) as BehavioralMemory[];
 }
 

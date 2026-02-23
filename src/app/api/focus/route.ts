@@ -11,24 +11,33 @@ export async function POST(request: NextRequest) {
         }
 
         const db = getDb();
+        const now = new Date(Date.now() + 19800000);
+        const dateStr = now.toISOString().slice(0, 10);
+        const startTimeStr = now.toISOString().replace('T', ' ').slice(0, 19);
+        const endTime = new Date(now.getTime() + duration_minutes * 60000);
+        const endTimeStr = endTime.toISOString().replace('T', ' ').slice(0, 19);
+
         const stmt = db.prepare(`
-      INSERT INTO focus_sessions (task_id, duration_minutes)
-      VALUES (?, ?)
+      INSERT INTO focus_sessions (session_date, start_time, end_time, duration_minutes, focus_type, primary_domain, primary_category)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-        const result = stmt.run(task_id || null, duration_minutes);
+        const focusType = duration_minutes >= 45 ? 'deep' : duration_minutes >= 25 ? 'moderate' : 'shallow';
+        const result = stmt.run(dateStr, startTimeStr, endTimeStr, duration_minutes, focusType, 'Focus Mode', 'productive');
 
         // Also add to activities as productive time
         db.prepare(`
-      INSERT INTO activities (url, domain, title, category, subcategory, duration_seconds)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO activities (url, domain, title, category, subcategory, duration_seconds, started_at, ended_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
             'app://focus-mode',
             'Focus Mode',
             task_id ? `Focused on Task #${task_id}` : 'Pomodoro Session',
             'productive',
             'deep_work',
-            duration_minutes * 60
+            duration_minutes * 60,
+            startTimeStr,
+            endTimeStr
         );
 
         // Give +1 coin per minute focused
