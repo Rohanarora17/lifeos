@@ -161,3 +161,10 @@ Habits POST error: SqliteError: FOREIGN KEY constraint failed
  GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=1&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 16ms (compile: 5ms, proxy.ts: 6ms, render: 4ms)
  POST /api/activity/batch 401 in 7ms (compile: 3ms, proxy.ts: 2ms, render: 1906µs)
  GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 11ms (compile: 4ms, proxy.ts: 4ms, render: 4ms)
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=1&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 20ms (compile: 8ms, proxy.ts: 7ms, render: 5ms)
+ POST /api/activity/batch 401 in 18ms (compile: 3ms, proxy.ts: 13ms, render: 1979µs)
+[Scheduler] Running alert_engine...
+ POST /api/alerts/engine 200 in 13ms (compile: 8ms, proxy.ts: 2ms, render: 2ms)
+[Scheduler] alert_engine completed
+ GET /api/nudge?url=https%3A%2F%2Fcourses.iitm.ac.in%2Fmod%2Fassign%2Fview.php%3Fid%3D75266&domain=courses.iitm.ac.in&minutes=0&title=CS7111%3AJAN-MAY%202026%3A%20Assignment%201%20Task%205 200 in 13ms (compile: 5ms, proxy.ts: 4ms, render: 4ms)
+ POST /api/activity/batch 401 in 15ms (compile: 6ms, proxy.ts: 5ms, render: 4ms)

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 
 interface Task {
     id: number;
@@ -50,30 +50,30 @@ export default function TasksPage() {
     const [newTaskPriority, setNewTaskPriority] = useState('medium');
     const inputRef = useRef<HTMLInputElement>(null);
 
+    const fetchTasks = useCallback(async () => {
+        const res = await fetch('/api/tasks');
+        const data = await res.json();
+        setTasks(data.tasks || []);
+    }, []);
+
     useEffect(() => {
         fetchTasks();
-    }, []);
+    }, [fetchTasks]);
 
     useEffect(() => {
         if (newTaskCol && inputRef.current) inputRef.current.focus();
     }, [newTaskCol]);
 
-    useEffect(() => {
-        if (showHistory) fetchHistory();
-    }, [showHistory]);
-
-    const fetchTasks = async () => {
-        const res = await fetch('/api/tasks');
-        const data = await res.json();
-        setTasks(data.tasks || []);
-    };
-
-    const fetchHistory = async () => {
+    const fetchHistory = useCallback(async () => {
         const res = await fetch('/api/tasks?history=true&days=14');
         const data = await res.json();
         setHistory(data.history || []);
         setCompletedTasks(data.completedTasks || []);
-    };
+    }, []);
+
+    useEffect(() => {
+        if (showHistory) fetchHistory();
+    }, [showHistory, fetchHistory]);
 
     const addTask = async (status: string) => {
         if (!newTaskTitle.trim()) return;
