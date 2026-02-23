@@ -289,8 +289,8 @@ export default function SettingsPage() {
 
                 {/* Domain Lists */}
                 <div className="card">
-                    <h3 className="font-semibold mb-1">🌐 Domain Classification</h3>
-                    <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Override AI classification for specific domains</p>
+                    <h3 className="font-semibold mb-1">🌐 Domain Hints (Optional)</h3>
+                    <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Optional hints for the AI classifier. The AI classifies ALL domains dynamically — use these only to force overrides.</p>
                     <div className="space-y-4">
                         <div>
                             <label className="text-sm font-medium block mb-1.5" style={{ color: 'var(--accent-red)' }}>

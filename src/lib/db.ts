@@ -79,15 +79,8 @@ function initSchema(db: Database.Database) {
     xp_per_productive_hour: '30',
     xp_per_commit: '10',
     level_xp_base: '500',
-    distraction_domains: JSON.stringify([
-      'twitter.com', 'x.com', 'instagram.com', 'facebook.com',
-      'reddit.com', 'tiktok.com', 'netflix.com', 'twitch.tv'
-    ]),
-    productive_domains: JSON.stringify([
-      'github.com', 'stackoverflow.com', 'developer.mozilla.org',
-      'docs.google.com', 'notion.so', 'figma.com', 'vercel.com',
-      'linear.app', 'arxiv.org', 'scholar.google.com'
-    ]),
+    distraction_domains: '[]',
+    productive_domains: '[]',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
