@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { title, description, status, due_date, goal_id } = body;
+        const { title, description, status, due_date, goal_id, priority } = body;
 
         if (!title) {
             return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -97,8 +97,8 @@ export async function POST(request: NextRequest) {
         ).get(status || 'backlog') as { next_pos: number };
 
         const stmt = db.prepare(`
-      INSERT INTO tasks (title, description, status, due_date, position, goal_id)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (title, description, status, due_date, position, goal_id, priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
         const result = stmt.run(
@@ -107,7 +107,8 @@ export async function POST(request: NextRequest) {
             status || 'backlog',
             due_date || null,
             maxPos.next_pos,
-            goal_id || null
+            goal_id || null,
+            priority || 'medium'
         );
 
         return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
@@ -121,7 +122,7 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
     try {
         const body = await request.json();
-        const { id, title, description, status, due_date, position, goal_id } = body;
+        const { id, title, description, status, due_date, position, goal_id, priority } = body;
 
         if (!id) {
             return NextResponse.json({ error: 'id is required' }, { status: 400 });
@@ -146,6 +147,7 @@ export async function PATCH(request: NextRequest) {
         if (due_date !== undefined) { updates.push('due_date = ?'); params.push(due_date); }
         if (position !== undefined) { updates.push('position = ?'); params.push(position); }
         if (goal_id !== undefined) { updates.push('goal_id = ?'); params.push(goal_id); }
+        if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
 
         if (updates.length === 0) {
             return NextResponse.json({ error: 'No fields to update' }, { status: 400 });

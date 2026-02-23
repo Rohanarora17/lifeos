@@ -8,6 +8,18 @@ export interface ScoreConfig {
     levelXpBase: number;
 }
 
+// Priority-weighted XP for tasks
+export const PRIORITY_XP: Record<string, number> = {
+    low: 25,
+    medium: 50,
+    high: 75,
+    critical: 100,
+};
+
+export function getPriorityXp(priority: string): number {
+    return PRIORITY_XP[priority] || PRIORITY_XP.medium;
+}
+
 export function getLevel(totalXp: number, base: number = 500): { level: number; currentXp: number; nextLevelXp: number; progress: number } {
     // Each level requires progressively more XP: base * level
     let level = 1;

@@ -75,6 +75,19 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         });
     });
 
+    // Alert engine — runs every 5 minutes, checks for triggers
+    registerIntervalJob('alert_engine', 5 * 60 * 1000, async () => {
+        await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+    });
+
+    // Weekly review — runs every Sunday at 21:00
+    registerDailyJob('weekly_review', '21:00', async () => {
+        const dayOfWeek = new Date().getDay();
+        if (dayOfWeek === 0) { // Sunday
+            await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
+        }
+    });
+
     console.log(`[Scheduler] ${jobs.size} jobs registered`);
 }
 
@@ -210,6 +223,12 @@ export async function triggerJob(name: string, baseUrl: string = 'http://localho
                 break;
             case 'screen_time':
                 await fetch(`${baseUrl}/api/screentime`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                break;
+            case 'alert_engine':
+                await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+                break;
+            case 'weekly_review':
+                await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
                 break;
             default:
                 return { success: false, error: `Unknown job: ${name}` };

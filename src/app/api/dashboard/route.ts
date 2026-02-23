@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getLevel, getStreakCount, getAccountabilityScore } from '@/lib/scoring';
+import { getCognitiveLoadAudit, getSmartPrioritization, getSelfEfficacyMode, detectGoalConflicts } from '@/lib/intelligence';
+import { getUnreadAlerts } from '@/lib/notifications';
 
 // GET: Dashboard overview data
 export async function GET(request: NextRequest) {
@@ -94,6 +96,29 @@ export async function GET(request: NextRequest) {
       ORDER BY date ASC
     `).all();
 
+    // Phase 12: Intelligence layer
+    const cognitiveLoad = getCognitiveLoadAudit();
+    const recommendedTasks = getSmartPrioritization();
+    const efficacyMode = getSelfEfficacyMode();
+    const goalConflicts = detectGoalConflicts();
+
+    // Top 3 active goals with progress
+    const topGoals = db.prepare(`
+      SELECT g.id, g.title, g.deadline, g.category,
+        (SELECT COUNT(*) FROM tasks WHERE goal_id = g.id) as total_tasks,
+        (SELECT COUNT(*) FROM tasks WHERE goal_id = g.id AND status = 'done') as done_tasks
+      FROM goals g WHERE g.active = 1
+      ORDER BY g.created_at DESC LIMIT 3
+    `).all() as any[];
+
+    const goalsWithProgress = topGoals.map(g => ({
+      ...g,
+      progress: g.total_tasks > 0 ? Math.round((g.done_tasks / g.total_tasks) * 100) : 0,
+    }));
+
+    // Unread alerts count
+    const unreadAlerts = getUnreadAlerts(100).length;
+
     return NextResponse.json({
       today: {
         date: today,
@@ -110,6 +135,14 @@ export async function GET(request: NextRequest) {
         recentActivities,
       },
       weekTrend,
+      intelligence: {
+        cognitiveLoad,
+        recommendedTasks,
+        efficacyMode,
+        goalConflicts,
+        topGoals: goalsWithProgress,
+        unreadAlerts,
+      },
     });
   } catch (error) {
     console.error('Dashboard GET error:', error);

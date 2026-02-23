@@ -31,18 +31,38 @@ interface DashboardData {
     date: string; xp_earned: number; productive_minutes: number;
     distraction_minutes: number; tasks_completed: number;
   }[];
+  intelligence?: {
+    cognitiveLoad: { openTaskCount: number; mentalBandwidth: number; status: string; quickWins: any[] };
+    recommendedTasks: { id: number; title: string; priority: string; goalTitle: string | null; score: number; reason: string }[];
+    efficacyMode: { rate: number; isRecoveryMode: boolean; message: string; suggestedActions: string[] };
+    goalConflicts: { goalA: string; goalB: string; message: string }[];
+    topGoals: { id: number; title: string; deadline: string | null; category: string; total_tasks: number; done_tasks: number; progress: number }[];
+    unreadAlerts: number;
+  };
 }
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
+  const [showAlerts, setShowAlerts] = useState(false);
 
   useEffect(() => {
     fetch('/api/dashboard')
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
+    fetch('/api/alerts')
+      .then(r => r.json())
+      .then(d => setAlerts(d.alerts || []))
+      .catch(() => { });
   }, []);
+
+  const markAllRead = async () => {
+    await fetch('/api/alerts', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    setAlerts([]);
+    setShowAlerts(false);
+  };
 
   if (loading) {
     return (
@@ -81,6 +101,45 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {/* Notification Bell */}
+          <div className="relative">
+            <button
+              onClick={() => setShowAlerts(!showAlerts)}
+              className="w-10 h-10 rounded-xl flex items-center justify-center transition-all"
+              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+            >
+              🔔
+              {alerts.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold"
+                  style={{ background: 'var(--accent-red)', color: 'white', fontSize: '0.65rem' }}>
+                  {alerts.length}
+                </span>
+              )}
+            </button>
+            {showAlerts && (
+              <div className="absolute right-0 top-12 w-80 max-h-96 overflow-y-auto card z-50 shadow-2xl" style={{ padding: '0' }}>
+                <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border)' }}>
+                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Notifications</span>
+                  {alerts.length > 0 && <button onClick={markAllRead} className="text-xs" style={{ color: 'var(--accent-blue)' }}>Mark all read</button>}
+                </div>
+                {alerts.length > 0 ? alerts.slice(0, 10).map(a => (
+                  <div key={a.id} className="px-3 py-2 border-b text-sm" style={{ borderColor: 'var(--border)' }}>
+                    <div className="flex items-start gap-2">
+                      <span>{a.severity === 'urgent' ? '🚨' : a.severity === 'warning' ? '⚠️' : 'ℹ️'}</span>
+                      <div>
+                        <p style={{ color: 'var(--text-primary)', fontSize: '0.8rem' }}>{a.message}</p>
+                        <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                          {new Date(a.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )) : (
+                  <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>No new notifications ✨</p>
+                )}
+              </div>
+            )}
+          </div>
           <div className="text-center">
             <div className="streak-fire">{today.streak > 0 ? '🔥' : '💤'}</div>
             <p className="text-sm font-bold">{today.streak} day streak</p>
@@ -220,6 +279,117 @@ export default function DashboardPage() {
           </h3>
           <div className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>
             {today.morningBrief}
+          </div>
+        </div>
+      )}
+
+      {/* Intelligence Row: What to Work On + Goal Progress + Brain Health */}
+      {data?.intelligence && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* What to Work on Next */}
+          <div className="card" style={{ borderColor: 'rgba(102, 126, 234, 0.2)' }}>
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <span>🧠</span> What to Work on Next
+            </h3>
+            <div className="space-y-2">
+              {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map((t, i) => (
+                <div key={t.id} className="flex items-start gap-2 py-1.5">
+                  <span className="text-xs font-bold mt-0.5" style={{
+                    color: i === 0 ? 'var(--accent-green)' : 'var(--text-muted)',
+                    minWidth: '1.2rem'
+                  }}>{i + 1}.</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{t.title}</p>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t.reason}</p>
+                  </div>
+                  <span className="badge text-xs flex-shrink-0" style={{
+                    background: t.priority === 'critical' ? 'rgba(255,85,85,0.15)' : t.priority === 'high' ? 'rgba(255,165,0,0.15)' : 'rgba(102,126,234,0.15)',
+                    color: t.priority === 'critical' ? 'var(--accent-red)' : t.priority === 'high' ? 'var(--accent-orange)' : 'var(--accent-blue)',
+                  }}>{t.priority}</span>
+                </div>
+              )) : (
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active tasks. Add some! 📝</p>
+              )}
+            </div>
+            {data.intelligence.efficacyMode.isRecoveryMode && (
+              <div className="mt-3 p-2 rounded-lg text-xs" style={{ background: 'rgba(255,165,0,0.1)', color: 'var(--accent-orange)' }}>
+                💡 Recovery Mode: {data.intelligence.efficacyMode.suggestedActions[0]}
+              </div>
+            )}
+          </div>
+
+          {/* Goal Progress */}
+          <div className="card">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <span>🎯</span> Goal Progress
+            </h3>
+            <div className="space-y-3">
+              {data.intelligence.topGoals.length > 0 ? data.intelligence.topGoals.map(g => (
+                <div key={g.id}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm truncate mr-2">{g.title}</span>
+                    <span className="text-xs font-bold tabular-nums" style={{
+                      color: g.progress >= 80 ? 'var(--accent-green)' : g.progress >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)'
+                    }}>{g.progress}%</span>
+                  </div>
+                  <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+                    <div className="h-full rounded-full transition-all" style={{
+                      width: `${g.progress}%`,
+                      background: g.progress >= 80 ? 'var(--accent-green)' : g.progress >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)'
+                    }} />
+                  </div>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                    {g.done_tasks}/{g.total_tasks} tasks {g.deadline && `· due ${new Date(g.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
+                  </p>
+                </div>
+              )) : (
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active goals. Set one! 🎯</p>
+              )}
+            </div>
+          </div>
+
+          {/* Brain Health */}
+          <div className="card">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <span>🧩</span> Brain Health
+            </h3>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Mental Bandwidth</span>
+                <span className="text-sm font-bold" style={{
+                  color: data.intelligence.cognitiveLoad.status === 'clear' ? 'var(--accent-green)'
+                    : data.intelligence.cognitiveLoad.status === 'moderate' ? 'var(--accent-yellow)'
+                      : 'var(--accent-red)'
+                }}>
+                  {data.intelligence.cognitiveLoad.mentalBandwidth}%
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
+                <div className="h-full rounded-full" style={{
+                  width: `${data.intelligence.cognitiveLoad.mentalBandwidth}%`,
+                  background: data.intelligence.cognitiveLoad.status === 'clear' ? 'var(--accent-green)'
+                    : data.intelligence.cognitiveLoad.status === 'moderate' ? 'var(--accent-yellow)'
+                      : 'var(--accent-red)'
+                }} />
+              </div>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {data.intelligence.cognitiveLoad.openTaskCount} open tasks · {data.intelligence.cognitiveLoad.status === 'overloaded' ? 'Consider deferring some' : data.intelligence.cognitiveLoad.status === 'moderate' ? 'Manageable load' : 'Clear headspace'}
+              </p>
+              <div className="flex items-center justify-between pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
+                <span className="text-sm">Self-Efficacy</span>
+                <span className="text-sm font-bold" style={{
+                  color: data.intelligence.efficacyMode.rate >= 70 ? 'var(--accent-green)'
+                    : data.intelligence.efficacyMode.rate >= 40 ? 'var(--accent-yellow)'
+                      : 'var(--accent-red)'
+                }}>{data.intelligence.efficacyMode.rate}%</span>
+              </div>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{data.intelligence.efficacyMode.message}</p>
+              {data.intelligence.goalConflicts.length > 0 && (
+                <div className="mt-2 p-2 rounded-lg text-xs" style={{ background: 'rgba(255,85,85,0.1)', color: 'var(--accent-red)' }}>
+                  ⚠️ {data.intelligence.goalConflicts[0].message}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

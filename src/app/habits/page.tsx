@@ -314,6 +314,16 @@ export default function HabitsPage() {
                                         </span>
                                         <span>•</span>
                                         <span>🔥 {habit.current_streak}</span>
+
+                                        {/* Habit Progression Suggestion */}
+                                        {habit.automaticity_score > 80 && (
+                                            <>
+                                                <span>•</span>
+                                                <span className="badge badge-purple text-[0.65rem] px-1.5 py-0">
+                                                    ⭐ Level Up Suggested
+                                                </span>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>

@@ -147,6 +147,15 @@ export default function SettingsPage() {
                 { key: 'morning_brief_time', label: 'Morning brief time', type: 'text', placeholder: '08:00' },
             ]
         },
+        {
+            title: '✉️ Email Notifications',
+            description: 'Receive alerts via email (powered by Resend)',
+            fields: [
+                { key: 'resend_api_key', label: 'Resend API Key', type: 'password', placeholder: 're_...' },
+                { key: 'notification_email', label: 'Notification Email', type: 'text', placeholder: 'you@email.com' },
+                { key: 'email_alerts_enabled', label: 'Email Alerts Enabled (true/false)', type: 'text', placeholder: 'true' },
+            ]
+        },
     ];
 
     const jobLabels: Record<string, { icon: string; label: string }> = {
@@ -156,6 +165,8 @@ export default function SettingsPage() {
         github_sync: { icon: '🐙', label: 'GitHub Sync' },
         calendar_sync: { icon: '📅', label: 'Calendar Sync' },
         screen_time: { icon: '🖥️', label: 'Screen Time' },
+        alert_engine: { icon: '🔔', label: 'Alert Engine' },
+        weekly_review: { icon: '📊', label: 'Weekly Review' },
     };
 
     return (

@@ -7,10 +7,12 @@ interface Task {
     title: string;
     description: string;
     status: string;
+    priority: string;
     due_date: string | null;
     created_at: string;
     completed_at: string | null;
     position: number;
+    goal_id: number | null;
 }
 
 interface DayHistory {
@@ -45,6 +47,7 @@ export default function TasksPage() {
     const [history, setHistory] = useState<DayHistory[]>([]);
     const [completedTasks, setCompletedTasks] = useState<CompletedTask[]>([]);
     const [selectedDay, setSelectedDay] = useState<string | null>(null);
+    const [newTaskPriority, setNewTaskPriority] = useState('medium');
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -77,9 +80,10 @@ export default function TasksPage() {
         await fetch('/api/tasks', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: newTaskTitle.trim(), status }),
+            body: JSON.stringify({ title: newTaskTitle.trim(), status, priority: newTaskPriority }),
         });
         setNewTaskTitle('');
+        setNewTaskPriority('medium');
         setNewTaskCol(null);
         fetchTasks();
     };
@@ -291,7 +295,15 @@ export default function TasksPage() {
                                             onDragEnd={() => setDraggedTask(null)}
                                         >
                                             <div className="flex items-start justify-between gap-2">
-                                                <p className="text-sm font-medium leading-snug">{task.title}</p>
+                                                <div className="flex items-start gap-2">
+                                                    <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{
+                                                        background: task.priority === 'critical' ? 'var(--accent-red)'
+                                                            : task.priority === 'high' ? 'var(--accent-orange)'
+                                                                : task.priority === 'low' ? 'var(--text-muted)'
+                                                                    : 'var(--accent-blue)'
+                                                    }} />
+                                                    <p className="text-sm font-medium leading-snug">{task.title}</p>
+                                                </div>
                                                 <button
                                                     onClick={() => deleteTask(task.id)}
                                                     className="text-xs opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
@@ -331,6 +343,12 @@ export default function TasksPage() {
                                                 }}
                                             />
                                             <div className="flex gap-2">
+                                                <select className="input text-xs" style={{ width: '5rem' }} value={newTaskPriority} onChange={e => setNewTaskPriority(e.target.value)}>
+                                                    <option value="low">Low</option>
+                                                    <option value="medium">Medium</option>
+                                                    <option value="high">High</option>
+                                                    <option value="critical">Critical</option>
+                                                </select>
                                                 <button className="btn btn-primary btn-sm flex-1" onClick={() => addTask(col.id)}>Add</button>
                                                 <button className="btn btn-ghost btn-sm" onClick={() => { setNewTaskCol(null); setNewTaskTitle(''); }}>Cancel</button>
                                             </div>
