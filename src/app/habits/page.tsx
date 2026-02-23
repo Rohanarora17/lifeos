@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import exifr from 'exifr';
 
 interface DayHabitHistory {
     date: string;
@@ -51,6 +52,10 @@ export default function HabitsPage() {
     const [showHistory, setShowHistory] = useState(false);
     const [habitHistory, setHabitHistory] = useState<DayHabitHistory[]>([]);
     const [habitBreakdown, setHabitBreakdown] = useState<HabitBreakdownEntry[]>([]);
+
+    const [proofHabitId, setProofHabitId] = useState<number | null>(null);
+    const [verifying, setVerifying] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchHeatmap = async () => {
         const res = await fetch('/api/habits?heatmap=true');
@@ -136,6 +141,71 @@ export default function HabitsPage() {
 
     const streak = calculateStreak();
 
+    const triggerPhotoProof = (habitId: number) => {
+        setProofHabitId(habitId);
+        if (fileInputRef.current) fileInputRef.current.click();
+    };
+
+    const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !proofHabitId) return;
+
+        setVerifying(true);
+        try {
+            // Extract EXIF data locally before sending
+            let metadata = {};
+            try {
+                const exifData = await exifr.parse(file, true);
+                if (exifData) {
+                    metadata = {
+                        latitude: exifData.latitude,
+                        longitude: exifData.longitude,
+                        dateTimeOriginal: exifData.DateTimeOriginal,
+                        make: exifData.Make,
+                    };
+                }
+            } catch (err) {
+                console.log('No EXIF data found or parse error');
+            }
+
+            // Convert to base64
+            const reader = new FileReader();
+            reader.onload = async () => {
+                const base64 = reader.result as string;
+                const timestampDate = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+
+                const res = await fetch('/api/proof', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        habit_id: proofHabitId,
+                        image_base64: base64,
+                        metadata,
+                        date: timestampDate
+                    })
+                });
+
+                const data = await res.json();
+                if (data.verified) {
+                    alert(`✅ Verified! ${data.reason}\n\nEarned +50 Coins!`);
+                    fetchHabits();
+                    fetchHeatmap();
+                } else {
+                    alert(`❌ Rejected: ${data.reason}`);
+                }
+                setVerifying(false);
+                setProofHabitId(null);
+                if (fileInputRef.current) fileInputRef.current.value = '';
+            };
+            reader.readAsDataURL(file);
+        } catch (error) {
+            console.error(error);
+            alert('Failed to process photo proof.');
+            setVerifying(false);
+            setProofHabitId(null);
+        }
+    };
+
     return (
         <div className="max-w-[1000px] mx-auto animate-fade-in">
             {/* Header */}
@@ -175,7 +245,7 @@ export default function HabitsPage() {
                                     <div
                                         className="w-full rounded-t"
                                         style={{
-                                            height: `${Math.max(day.habit_score ?? 0, 4)}%`,
+                                            height: `${Math.max(day.habit_score ?? 0, 4)} % `,
                                             background: day.habit_score !== null
                                                 ? day.habit_score >= 80 ? 'var(--accent-green)'
                                                     : day.habit_score >= 50 ? 'var(--accent-yellow)'
@@ -232,7 +302,7 @@ export default function HabitsPage() {
                                             <td style={{ padding: '0.5rem 1rem', fontSize: '0.75rem', fontWeight: 700, position: 'sticky', left: 0, background: 'var(--bg-secondary)' }}>Score</td>
                                             {habitHistory.map(day => (
                                                 <td key={day.date} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', fontSize: '0.7rem', fontWeight: 700, color: day.habit_score !== null ? (day.habit_score >= 80 ? 'var(--accent-green)' : day.habit_score >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)') : 'var(--text-muted)' }}>
-                                                    {day.habit_score !== null ? `${day.habit_score}%` : '—'}
+                                                    {day.habit_score !== null ? `${day.habit_score} % ` : '—'}
                                                 </td>
                                             ))}
                                         </tr>
@@ -269,7 +339,7 @@ export default function HabitsPage() {
                     <div key={habit.id} className="card flex items-center gap-4">
                         <button
                             onClick={() => toggleCheckin(habit.id)}
-                            className="w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all flex-shrink-0"
+                            className="w-10 h-10 rounded-xl flex items-center justify-center text-xl transition-all flex-shrink-0 relative overflow-hidden group"
                             style={{
                                 background: habit.checked_today ? 'var(--accent-green-glow)' : 'var(--bg-secondary)',
                                 border: `2px solid ${habit.checked_today ? 'var(--accent-green)' : 'var(--border)'}`,
@@ -277,9 +347,18 @@ export default function HabitsPage() {
                         >
                             {habit.checked_today ? '✓' : habit.icon}
                         </button>
+
+                        <button
+                            onClick={() => triggerPhotoProof(habit.id)}
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-sm transition-transform hover:scale-110 shrink-0"
+                            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                            title="Upload Photo Proof"
+                        >
+                            📸
+                        </button>
                         <div className="flex-1 space-y-1">
                             <div className="flex justify-between items-center">
-                                <p className={`font-medium ${habit.checked_today ? 'line-through' : ''}`}
+                                <p className={`font - medium ${habit.checked_today ? 'line-through' : ''}`}
                                     style={{ color: habit.checked_today ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                                     {habit.name}
                                 </p>
@@ -295,7 +374,7 @@ export default function HabitsPage() {
                                     <div
                                         className="h-full transition-all"
                                         style={{
-                                            width: `${Math.min((habit.today_value / habit.goal_target) * 100, 100)}%`,
+                                            width: `${Math.min((habit.today_value / habit.goal_target) * 100, 100)} % `,
                                             backgroundColor: habit.checked_today ? 'var(--accent-green)' : 'var(--accent-purple)'
                                         }}
                                     />
@@ -391,6 +470,26 @@ export default function HabitsPage() {
                     >+ New habit</button>
                 )}
             </div>
+
+            {/* Hidden File Input for Photo Proof */}
+            <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handlePhotoUpload}
+            />
+
+            {verifying && (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+                    <div className="card p-8 text-center max-w-sm" style={{ background: 'var(--bg-secondary)', border: '2px solid var(--accent-purple)' }}>
+                        <div className="text-4xl mb-4 animate-spin">🤖</div>
+                        <h3 className="text-lg font-bold mb-2">Analyzing Proof...</h3>
+                        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>Gemini Vision is inspecting your photo and metadata.</p>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -451,7 +550,7 @@ function Heatmap({ data }: { data: HeatmapDay[] }) {
                                 {week.map((day, di) => (
                                     <div
                                         key={di}
-                                        className={`heatmap-cell ${day.level > 0 ? `level-${day.level}` : ''}`}
+                                        className={`heatmap - cell ${day.level > 0 ? `level-${day.level}` : ''}`}
                                         title={`${day.date}: ${day.level > 0 ? `Level ${day.level}` : 'No check-ins'}`}
                                     />
                                 ))}

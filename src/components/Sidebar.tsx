@@ -9,6 +9,7 @@ const navItems = [
     { href: '/tasks', label: 'Tasks', icon: '📋' },
     { href: '/habits', label: 'Habits', icon: '🔥' },
     { href: '/goals', label: 'Goals', icon: '🎯' },
+    { href: '/chat', label: 'Jarvis', icon: '💬' },
     { href: '/store', label: 'Store & Badges', icon: '💎' },
     { href: '/analytics', label: 'Analytics', icon: '📈' },
     { href: '/calendar', label: 'Calendar', icon: '📅' },
