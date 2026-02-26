@@ -1,4 +1,4 @@
-// LifeOS — Popup Script
+// LifeOS — Popup Script (Enhanced)
 
 let API_BASE = 'http://localhost:3000/api';
 let APP_URL = 'http://localhost:3000';
@@ -16,6 +16,24 @@ document.getElementById('openDashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: APP_URL });
 });
 
+// --- Live time-on-site counter ---
+let liveTimerInterval = null;
+
+function startLiveTimer(startedAt) {
+  if (liveTimerInterval) clearInterval(liveTimerInterval);
+  const el = document.getElementById('live-time');
+  if (!el) return;
+
+  const update = () => {
+    const secs = Math.round((Date.now() - new Date(startedAt).getTime()) / 1000);
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    el.textContent = m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+  };
+  update();
+  liveTimerInterval = setInterval(update, 1000);
+}
+
 // --- Focus Session UI ---
 let focusUpdateInterval = null;
 
@@ -23,7 +41,6 @@ async function loadFocusSection() {
   const focusEl = document.getElementById('focus-section');
   if (!focusEl) return;
 
-  // Check if a focus session is active
   const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' }, r));
 
   if (status && status.active) {
@@ -34,7 +51,6 @@ async function loadFocusSection() {
 }
 
 async function renderFocusStarter(el) {
-  // Fetch goals and tasks for the selector
   let goals = [], tasks = [];
   try {
     const res = await fetch(`${API_BASE}/extension/session`);
@@ -47,7 +63,7 @@ async function renderFocusStarter(el) {
   const taskOptions = tasks.map(t => `<option value="task-${t.id}" data-title="${t.title}">${t.title}</option>`).join('');
 
   el.innerHTML = `
-    <div class="focus-panel">
+    <div class="focus-panel" style="margin: 0 10px 0;">
       <h3>🎯 Focus Session</h3>
       <select class="focus-select" id="focus-target">
         <option value="">Select a goal or task...</option>
@@ -89,7 +105,6 @@ async function renderFocusStarter(el) {
       durationMinutes: duration,
     });
 
-    // Brief delay then reload
     setTimeout(loadFocusSection, 1000);
   });
 }
@@ -104,7 +119,7 @@ function renderActiveFocusSession(el, status) {
   const target = status.taskTitle || status.goalTitle || 'Focus Session';
 
   el.innerHTML = `
-    <div class="focus-panel active">
+    <div class="focus-panel active" style="margin: 0 10px 0;">
       <h3>🎯 Focus Active</h3>
       <div class="focus-meta">${target}</div>
       <div class="focus-timer" id="focus-countdown">${formatTimer(status.remainingSeconds)}</div>
@@ -130,14 +145,13 @@ function renderActiveFocusSession(el, status) {
     setTimeout(loadFocusSection, 1500);
   });
 
-  // Live countdown update
   let remaining = status.remainingSeconds;
   if (focusUpdateInterval) clearInterval(focusUpdateInterval);
   focusUpdateInterval = setInterval(() => {
     remaining--;
     if (remaining <= 0) {
       clearInterval(focusUpdateInterval);
-      loadFocusSection(); // Reload to show starter
+      loadFocusSection();
       return;
     }
     const timerEl = document.getElementById('focus-countdown');
@@ -145,19 +159,18 @@ function renderActiveFocusSession(el, status) {
   }, 1000);
 }
 
+// --- Main Data Load ---
 async function loadData() {
   const content = document.getElementById('content');
 
   try {
-    // Fetch dashboard data
-    const res = await fetch(`${API_BASE}/dashboard`);
-    const data = await res.json();
-    const today = data.today;
+    // Fetch dashboard data + current activity in parallel
+    const [dashRes, activityInfo] = await Promise.all([
+      fetch(`${API_BASE}/dashboard`).then(r => r.json()),
+      new Promise((resolve) => chrome.runtime.sendMessage({ type: 'GET_CURRENT_ACTIVITY' }, resolve)),
+    ]);
 
-    // Get current activity from background
-    const activityInfo = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'GET_CURRENT_ACTIVITY' }, resolve);
-    });
+    const today = dashRes.today;
 
     const formatTime = (mins) => {
       if (!mins || mins === 0) return '0m';
@@ -165,76 +178,136 @@ async function loadData() {
       return `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m`;
     };
 
-    content.innerHTML = `
-      <!-- Streak -->
-      <div class="streak-bar">
-        <span class="streak-fire">${today.streak > 0 ? '🔥' : '💤'}</span>
-        <span class="streak-count">${today.streak}</span>
-        <span class="streak-label">day streak</span>
-      </div>
+    // --- Mini Donut SVG ---
+    const prod = today.productive_minutes || 0;
+    const dist = today.distraction_minutes || 0;
+    const neut = today.neutral_minutes || 0;
+    const total = prod + dist + neut || 1;
+    const r = 28;
+    const circ = 2 * Math.PI * r;
+    const prodArc = (prod / total) * circ;
+    const distArc = (dist / total) * circ;
+    const neutArc = (neut / total) * circ;
+    const prodOffset = 0;
+    const distOffset = prodArc;
+    const neutOffset = prodArc + distArc;
 
-      <!-- Stats Grid -->
-      <div class="stats-grid">
-        <div class="stat-box">
-          <div class="stat-value purple">${today.score}</div>
-          <div class="stat-label">Score /100</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value blue">Lv.${today.level.level}</div>
-          <div class="stat-label">${today.totalXp} XP</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value green">${formatTime(today.productive_minutes)}</div>
-          <div class="stat-label">Productive</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-value red">${formatTime(today.distraction_minutes)}</div>
-          <div class="stat-label">Distraction</div>
-        </div>
-      </div>
+    const donutSvg = `
+      <svg viewBox="0 0 68 68">
+        <circle cx="34" cy="34" r="${r}" fill="none" stroke="#12121a" stroke-width="7"/>
+        <circle cx="34" cy="34" r="${r}" fill="none" stroke="#22c55e" stroke-width="7"
+          stroke-dasharray="${prodArc} ${circ - prodArc}" stroke-dashoffset="${-prodOffset}" stroke-linecap="round"/>
+        <circle cx="34" cy="34" r="${r}" fill="none" stroke="#ef4444" stroke-width="7"
+          stroke-dasharray="${distArc} ${circ - distArc}" stroke-dashoffset="${-distOffset}"/>
+        <circle cx="34" cy="34" r="${r}" fill="none" stroke="#eab308" stroke-width="7"
+          stroke-dasharray="${neutArc} ${circ - neutArc}" stroke-dashoffset="${-neutOffset}"/>
+      </svg>
+    `;
 
-      <!-- Level Progress -->
-      <div class="section">
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: ${today.level.progress}%"></div>
-        </div>
-        <div class="level-info">
-          <span>Level ${today.level.level}</span>
-          <span>${today.level.currentXp}/${today.level.nextLevelXp} XP</span>
-        </div>
-      </div>
+    // --- Streak ---
+    const streakPill = document.getElementById('streak-pill');
+    const streakCount = document.getElementById('streak-count');
+    if (streakPill && streakCount) {
+      streakPill.querySelector('.fire').textContent = today.streak > 0 ? '🔥' : '💤';
+      streakCount.textContent = today.streak;
+    }
 
-      <!-- Current Site -->
-      ${activityInfo?.activity ? `
-        <div class="section">
-          <h3>Currently Tracking</h3>
-          <div class="current-site">
-            <div class="site-dot neutral"></div>
-            <div class="site-info">
-              <div class="site-name">${activityInfo.activity.domain}</div>
-              <div class="site-time">${activityInfo.activity.title || 'Unknown page'}</div>
-              ${activityInfo.activity.tab_group_title ? `
-                <div class="workspace-badge" style="background: ${getGroupBg(activityInfo.activity.tab_group_color)}; color: ${getGroupFg(activityInfo.activity.tab_group_color)};">
-                  <span class="workspace-dot" style="background: ${getGroupFg(activityInfo.activity.tab_group_color)};"></span>
-                  ${activityInfo.activity.tab_group_title}
+    // --- Currently tracking ---
+    let trackingHtml = '';
+    if (activityInfo?.activity) {
+      const act = activityInfo.activity;
+      const catClass = act._category || 'neutral';
+      const originalStart = act._originalStartedAt || act.started_at;
+
+      trackingHtml = `
+        <div class="section-header">Currently Tracking</div>
+        <div class="tracking-card">
+          <div class="tracking-row">
+            <div class="cat-dot ${catClass}"></div>
+            <div class="tracking-info">
+              <div class="tracking-domain">${act.domain}</div>
+              <div class="tracking-title">${act.title || 'Unknown page'}</div>
+              ${act.tab_group_title ? `
+                <div class="workspace-badge" style="background: ${getGroupBg(act.tab_group_color)}; color: ${getGroupFg(act.tab_group_color)};">
+                  <span class="workspace-dot" style="background: ${getGroupFg(act.tab_group_color)};"></span>
+                  ${act.tab_group_title}
                 </div>
               ` : ''}
             </div>
+            <div class="tracking-time" id="live-time">0s</div>
           </div>
         </div>
-      ` : ''}
+      `;
 
-      <!-- Tasks & Habits -->
-      <div class="stats-grid">
-        <div class="stat-box">
-          <div class="stat-value green">${today.tasks.completed_today}</div>
-          <div class="stat-label">Tasks Done</div>
+      // Start live timer after render
+      setTimeout(() => startLiveTimer(originalStart), 0);
+    }
+
+    // --- Top 3 sites ---
+    let topSitesHtml = '';
+    const topDomains = today.topDomains || [];
+    if (topDomains.length > 0) {
+      const sitesRows = topDomains.slice(0, 4).map((d, i) => `
+        <div class="site-row">
+          <span class="site-rank">${i + 1}</span>
+          <div class="cat-dot ${d.category}" style="width:6px;height:6px;"></div>
+          <span class="site-domain">${d.domain}</span>
+          <span class="site-time">${formatTime(d.minutes)}</span>
         </div>
-        <div class="stat-box">
-          <div class="stat-value yellow">${today.habits.completed_today}/${today.habits.total_habits}</div>
-          <div class="stat-label">Habits</div>
+      `).join('');
+
+      topSitesHtml = `
+        <div class="section-header">Top Sites Today</div>
+        <div class="top-sites">${sitesRows}</div>
+      `;
+    }
+
+    content.innerHTML = `
+      <!-- Score Row: Donut + Quick Stats -->
+      <div class="score-row">
+        <div class="mini-donut">
+          ${donutSvg}
+          <div class="center-label">
+            <div class="score-num purple">${today.score}</div>
+            <div class="score-sub">/ 100</div>
+          </div>
+        </div>
+        <div class="stats-col">
+          <div class="mini-stat">
+            <div class="val green">${formatTime(today.productive_minutes)}</div>
+            <div class="lbl">Productive</div>
+          </div>
+          <div class="mini-stat">
+            <div class="val red">${formatTime(today.distraction_minutes)}</div>
+            <div class="lbl">Distraction</div>
+          </div>
+          <div class="mini-stat">
+            <div class="val green">${today.tasks?.completed_today || 0}</div>
+            <div class="lbl">Tasks Done</div>
+          </div>
+          <div class="mini-stat">
+            <div class="val yellow">${today.habits?.completed_today || 0}/${today.habits?.total_habits || 0}</div>
+            <div class="lbl">Habits</div>
+          </div>
         </div>
       </div>
+
+      <!-- XP Bar -->
+      <div class="xp-bar-wrap">
+        <div class="xp-bar-header">
+          <span>Lv.${today.level.level} · ${today.totalXp} XP</span>
+          <span>${today.level.currentXp}/${today.level.nextLevelXp} XP</span>
+        </div>
+        <div class="xp-bar">
+          <div class="xp-fill" style="width: ${today.level.progress}%"></div>
+        </div>
+      </div>
+
+      <!-- Currently Tracking -->
+      ${trackingHtml}
+
+      <!-- Top Sites -->
+      ${topSitesHtml}
     `;
   } catch (e) {
     content.innerHTML = `
@@ -247,7 +320,7 @@ async function loadData() {
   }
 }
 
-// Chrome tab group color mappings for workspace badge
+// Chrome tab group color mappings
 const GROUP_COLORS = {
   grey: { bg: 'rgba(154,160,166,0.15)', fg: '#9aa0a6' },
   blue: { bg: 'rgba(66,133,244,0.15)', fg: '#4285f4' },

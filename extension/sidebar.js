@@ -1,4 +1,4 @@
-// Simple health check mechanism
+// LifeOS Sidebar — Extension Shell Script
 const iframe = document.getElementById('lifeos-frame');
 const errorScreen = document.getElementById('error-screen');
 
@@ -33,8 +33,6 @@ async function checkHealth() {
     }
 }
 
-
-
 // Refresh frame on focus if there was an error
 window.addEventListener('focus', () => {
     if (errorScreen.classList.contains('visible')) {
@@ -43,14 +41,23 @@ window.addEventListener('focus', () => {
     }
 });
 
-// Relay focus timer events from sidebar iframe to extension background
+// Relay focus session events from sidebar iframe to extension background
 window.addEventListener('message', (event) => {
     if (event.origin !== APP_URL && event.origin !== 'http://localhost:3000') return;
 
     if (event.data && event.data.type === 'LIFEOS_FOCUS_START') {
-        chrome.runtime.sendMessage({ type: 'START_FOCUS', duration: event.data.duration });
+        // Relay full focus context to background script
+        chrome.runtime.sendMessage({
+            type: 'START_FOCUS',
+            goalId: event.data.goalId || null,
+            goalTitle: event.data.goalTitle || null,
+            taskId: event.data.taskId || null,
+            taskTitle: event.data.taskTitle || null,
+            durationMinutes: event.data.durationMinutes || 60,
+        });
     }
+
     if (event.data && event.data.type === 'LIFEOS_FOCUS_STOP') {
-        chrome.runtime.sendMessage({ type: 'STOP_FOCUS', duration: event.data.duration });
+        chrome.runtime.sendMessage({ type: 'STOP_FOCUS' });
     }
 });

@@ -47,6 +47,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [focusSessions, setFocusSessions] = useState<any[]>([]);
   const [focusData, setFocusData] = useState<{
     taskId: number | null;
     taskTitle: string | null;
@@ -64,6 +65,10 @@ export default function DashboardPage() {
       .then(r => r.json())
       .then(d => setAlerts(d.alerts || []))
       .catch(() => { });
+    fetch('/api/focus-session')
+      .then(r => r.json())
+      .then(d => setFocusSessions(d.sessions || []))
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -75,18 +80,23 @@ export default function DashboardPage() {
     } else if (focusData.isActive && focusData.timeLeft === 0) {
       setFocusData(prev => ({ ...prev, isActive: false }));
 
-      // Save session
-      fetch('/api/focus', {
+      // Save session via new focus-session API
+      fetch('/api/focus-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          task_id: focusData.taskId,
-          duration_minutes: focusData.durationMins
+          action: 'complete',
+          sessionId: focusData.taskId, // placeholder
+          actualDurationMinutes: focusData.durationMins,
+          activities: [],
+          blockedCount: 0,
+          overrideCount: 0,
         })
       });
 
-      // Refresh stats
+      // Refresh stats + sessions
       fetch('/api/dashboard').then(r => r.json()).then(d => setData(d));
+      fetch('/api/focus-session').then(r => r.json()).then(d => setFocusSessions(d.sessions || []));
     }
     return () => clearInterval(int);
   }, [focusData.isActive, focusData.timeLeft]);
@@ -457,6 +467,52 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Focus Session History */}
+      {focusSessions.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>🎯 Recent Focus Sessions</h3>
+          </div>
+          <div className="space-y-2">
+            {focusSessions.slice(0, 5).map((s: any, i: number) => {
+              const duration = s.actual_duration_minutes || s.planned_duration_minutes || 0;
+              const score = s.report ? JSON.parse(s.report)?.score : null;
+              return (
+                <div key={i} className="timeline-item" style={{ padding: '0.5rem 0.75rem' }}>
+                  <div className={`timeline-dot ${s.status === 'completed' ? 'productive' : 'neutral'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {s.task_title || s.goal_title || 'Focus Session'}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {formatTime(duration)} · {new Date(s.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </p>
+                      {s.blocked_count > 0 && (
+                        <span className="text-[10px]" style={{ color: 'var(--accent-red)' }}>
+                          🛑 {s.blocked_count} blocked
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    {score && (
+                      <span className="badge text-xs" style={{
+                        background: score >= 70 ? 'rgba(34,197,94,0.15)' : score >= 40 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
+                        color: score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                      }}>{score}/100</span>
+                    )}
+                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {s.status === 'completed' ? '✅' : s.status === 'abandoned' ? '⏹️' : '🔄'}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
