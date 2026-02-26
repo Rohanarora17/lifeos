@@ -19,29 +19,60 @@ const NUDGE_INTERVAL_MS = 60000; // Check nudges every 60s
 const IDLE_THRESHOLD_S = 60; // 1 minute (Stanford target)
 
 // Privacy & Scalability thresholds
-const MICRO_CONTEXT_THRESHOLD_S = 15; // Visits shorter than this are bundled
-const PRIVACY_BLOCKLIST = [
+const MICRO_CONTEXT_THRESHOLD_S = 12; // Visits shorter than this are bundled
+
+// Privacy blocklist — domain-level matching only (no false positives on substrings)
+const PRIVACY_BLOCKED_DOMAINS = new Set([
     // Finance
-    /bank/i, /finance/i, /fidelity/i, /chase/i, /paypal/i, /stripe/i, /crypto/i,
+    'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'fidelity.com',
+    'paypal.com', 'venmo.com', 'robinhood.com', 'coinbase.com',
     // Medical
-    /health/i, /insurance/i, /medical/i, /therapy/i, /clinic/i, /hospital/i, /doctor/i,
-    // Auth & Identity
-    /password/i, /auth/i, /login/i, /signup/i, /credentials/i, /sso/i,
-    // Communications (Private messages)
-    /mail/i, /inbox/i, /gmail/i, /outlook/i, /messages/i, /whatsapp/i, /telegram/i,
-    // Local & Internal
-    /localhost/i, /127\.0\.0\.1/i, /^file:\/\//i, /^chrome:\/\//i, /^chrome-extension:\/\//i,
-    /internal/i, /intranet/i
+    'mychart.com', 'myhealth.va.gov', 'patient.info',
+    // Auth pages (standalone auth providers)
+    'accounts.google.com', 'login.microsoftonline.com', 'auth0.com',
+    // Private messaging (NOT Slack/Discord — those are work tools)
+    'web.whatsapp.com', 'web.telegram.org',
+]);
+
+// URL patterns that should never be tracked (protocol-level)
+const PRIVACY_URL_PATTERNS = [
+    /^chrome:\/\//i,
+    /^chrome-extension:\/\//i,
+    /^about:/i,
+    /^file:\/\//i,
 ];
+
+function isPrivacyBlocked(url, domain) {
+    // Check URL protocol patterns
+    for (const pattern of PRIVACY_URL_PATTERNS) {
+        if (pattern.test(url)) return true;
+    }
+    // Check exact domain matches
+    if (PRIVACY_BLOCKED_DOMAINS.has(domain)) return true;
+    // Check if any blocked domain is a suffix (e.g. 'online.chase.com' matches 'chase.com')
+    for (const blocked of PRIVACY_BLOCKED_DOMAINS) {
+        if (domain.endsWith('.' + blocked)) return true;
+    }
+    return false;
+}
 
 let currentActivity = null;
 let isUserActive = true;
 
+// Ensure alarms exist (called on install AND startup)
+function ensureAlarms() {
+    chrome.alarms.get('flushActivities', (alarm) => {
+        if (!alarm) chrome.alarms.create('flushActivities', { periodInMinutes: 0.5 });
+    });
+    chrome.alarms.get('checkNudge', (alarm) => {
+        if (!alarm) chrome.alarms.create('checkNudge', { periodInMinutes: 1 });
+    });
+}
+
 // Initialize
 chrome.runtime.onInstalled.addListener(() => {
     console.log('LifeOS Tracker installed');
-    chrome.alarms.create('flushActivities', { periodInMinutes: 2 });
-    chrome.alarms.create('checkNudge', { periodInMinutes: 1 });
+    ensureAlarms();
     // Phase 20: Context Menu
     chrome.contextMenus.create({
         id: "send-to-lifeos",
@@ -49,6 +80,14 @@ chrome.runtime.onInstalled.addListener(() => {
         contexts: ["selection"]
     });
 });
+
+// Re-create alarms on service worker startup (Chrome kills workers aggressively)
+chrome.runtime.onStartup.addListener(() => {
+    ensureAlarms();
+});
+
+// Also ensure alarms on every activation (belt and suspenders)
+ensureAlarms();
 
 // Track tab changes
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -116,9 +155,11 @@ chrome.idle.onStateChanged.addListener((state) => {
 // Handle tab change with 200ms debounce to prevent SPA navigation spam
 let handleTabChangeTimeout = null;
 function handleTabChange(tab) {
+    // Capture tab properties immediately (tab object may become stale)
+    const snapshot = { url: tab.url, title: tab.title, id: tab.id, active: tab.active, audible: tab.audible };
     if (handleTabChangeTimeout) clearTimeout(handleTabChangeTimeout);
     handleTabChangeTimeout = setTimeout(() => {
-        _handleTabChange(tab);
+        _handleTabChange(snapshot);
     }, 200);
 }
 
@@ -127,17 +168,14 @@ function _handleTabChange(tab) {
         return;
     }
 
-    // 1. Check Privacy Blocklist immediately
-    for (const pattern of PRIVACY_BLOCKLIST) {
-        if (pattern.test(tab.url)) {
-            // Drop tracking entirely if it hits blacklisted sensitive domains
-            finalizeCurrentActivity();
-            currentActivity = null;
-            return;
-        }
-    }
-
     const newDomain = extractDomain(tab.url);
+
+    // 1. Check Privacy Blocklist (domain-level, not substring)
+    if (isPrivacyBlocked(tab.url, newDomain)) {
+        finalizeCurrentActivity();
+        currentActivity = null;
+        return;
+    }
 
     // Track tab switch for focus/entropy analysis
     if (currentActivity && currentActivity.domain !== newDomain) {
@@ -490,11 +528,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
         // Ensure we don't accidentally extract tasks from sensitive domains
         if (tab && tab.url) {
-            for (const pattern of PRIVACY_BLOCKLIST) {
-                if (pattern.test(tab.url)) {
-                    console.warn('LifeOS: Blocked attempt to extract task from sensitive domain.');
-                    return;
-                }
+            const taskDomain = extractDomain(tab.url);
+            if (isPrivacyBlocked(tab.url, taskDomain)) {
+                console.warn('LifeOS: Blocked attempt to extract task from sensitive domain.');
+                return;
             }
         }
 
@@ -547,9 +584,8 @@ const evaluationCache = new Map();
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
         // Skip privacy-sensitive domains — never send to AI
-        for (const pattern of PRIVACY_BLOCKLIST) {
-            if (pattern.test(tab.url)) return;
-        }
+        const evalDomain = extractDomain(tab.url);
+        if (isPrivacyBlocked(tab.url, evalDomain)) return;
 
         await refreshContext();
         if (activeContext.activeGoals && activeContext.activeGoals.length > 0) {

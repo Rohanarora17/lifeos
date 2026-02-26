@@ -203,7 +203,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
       FROM activities WHERE started_at >= datetime('now', '-2 hours')
     `).get() as { prod: number; dist: number; total: number };
 
-        if (todayStats.total > 1800 && todayStats.dist > todayStats.prod) {
+        if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
             const sent = await sendAlert(
                 'focus_drop',
                 `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,

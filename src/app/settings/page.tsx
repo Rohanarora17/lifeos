@@ -2,14 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-interface SchedulerJob {
-    name: string;
-    schedule: string;
-    lastRun: string | null;
-    nextRun: string | null;
-    enabled: boolean;
-    running: boolean;
-}
+
 
 export default function SettingsPage() {
     const [settings, setSettings] = useState<Record<string, string>>({});
@@ -17,7 +10,6 @@ export default function SettingsPage() {
     const [saved, setSaved] = useState(false);
     const [syncing, setSyncing] = useState<string | null>(null);
     const [syncResult, setSyncResult] = useState<string | null>(null);
-    const [schedulerJobs, setSchedulerJobs] = useState<SchedulerJob[]>([]);
 
     useEffect(() => {
         fetch('/api/settings')
@@ -26,10 +18,6 @@ export default function SettingsPage() {
                 setSettings(data.settings || {});
                 setEditValues(data.settings || {});
             });
-        fetch('/api/cron')
-            .then(r => r.json())
-            .then(data => setSchedulerJobs(data.jobs || []))
-            .catch(() => { });
     }, []);
 
     const saveSettings = async () => {
@@ -94,22 +82,6 @@ export default function SettingsPage() {
         setTimeout(() => setSyncResult(null), 5000);
     };
 
-    const triggerJob = async (jobName: string) => {
-        setSyncing(jobName);
-        try {
-            await fetch('/api/cron', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ job: jobName }),
-            });
-            // Refresh status
-            const res = await fetch('/api/cron');
-            const data = await res.json();
-            setSchedulerJobs(data.jobs || []);
-        } catch { /* ignore */ }
-        setSyncing(null);
-    };
-
     const groups = [
         {
             title: '🔑 API Keys & Accounts',
@@ -157,17 +129,6 @@ export default function SettingsPage() {
             ]
         },
     ];
-
-    const jobLabels: Record<string, { icon: string; label: string }> = {
-        morning_brief: { icon: '🌅', label: 'Morning Brief' },
-        daily_summary: { icon: '📝', label: 'Daily Summary' },
-        deep_analysis: { icon: '🧠', label: 'Deep Analysis' },
-        github_sync: { icon: '🐙', label: 'GitHub Sync' },
-        calendar_sync: { icon: '📅', label: 'Calendar Sync' },
-        screen_time: { icon: '🖥️', label: 'Screen Time' },
-        alert_engine: { icon: '🔔', label: 'Alert Engine' },
-        weekly_review: { icon: '📊', label: 'Weekly Review' },
-    };
 
     return (
         <div className="max-w-[700px] mx-auto animate-fade-in">
@@ -240,51 +201,6 @@ export default function SettingsPage() {
                             {syncResult}
                         </p>
                     )}
-                </div>
-
-                {/* Scheduler Status */}
-                <div className="card">
-                    <h3 className="font-semibold mb-1">⚡ Scheduler</h3>
-                    <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>Automated background jobs</p>
-                    <div className="space-y-3">
-                        {schedulerJobs.length > 0 ? schedulerJobs.map(job => {
-                            const info = jobLabels[job.name] || { icon: '⚙️', label: job.name };
-                            return (
-                                <div key={job.name} style={{
-                                    display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
-                                    background: '#0a0a12', borderRadius: 8, border: '1px solid #1a1a2e'
-                                }}>
-                                    <span style={{ fontSize: 18 }}>{info.icon}</span>
-                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                            <span className="text-sm font-medium">{info.label}</span>
-                                            <span className="text-xs" style={{ color: '#555570' }}>{job.schedule}</span>
-                                        </div>
-                                        <p className="text-xs" style={{ color: '#555570' }}>
-                                            {job.lastRun
-                                                ? `Last: ${new Date(job.lastRun).toLocaleTimeString()}`
-                                                : 'Never run'}
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={() => triggerJob(job.name)}
-                                        disabled={syncing === job.name || job.running}
-                                        style={{
-                                            padding: '4px 12px', fontSize: 11, borderRadius: 4,
-                                            background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)',
-                                            color: '#818cf8', cursor: 'pointer',
-                                        }}
-                                    >
-                                        {job.running || syncing === job.name ? '⏳' : '▶ Run'}
-                                    </button>
-                                </div>
-                            );
-                        }) : (
-                            <p className="text-xs" style={{ color: '#555570' }}>
-                                Scheduler will initialize on first API call. Visit any page to start.
-                            </p>
-                        )}
-                    </div>
                 </div>
 
                 {/* Domain Lists */}
