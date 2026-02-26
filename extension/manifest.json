@@ -5,6 +5,7 @@
   "description": "Track your browsing, YouTube, and screen time. Stay accountable.",
   "permissions": [
     "tabs",
+    "tabGroups",
     "activeTab",
     "idle",
     "alarms",

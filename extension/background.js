@@ -156,7 +156,11 @@ chrome.idle.onStateChanged.addListener((state) => {
 let handleTabChangeTimeout = null;
 function handleTabChange(tab) {
     // Capture tab properties immediately (tab object may become stale)
-    const snapshot = { url: tab.url, title: tab.title, id: tab.id, active: tab.active, audible: tab.audible };
+    const snapshot = {
+        url: tab.url, title: tab.title, id: tab.id,
+        active: tab.active, audible: tab.audible,
+        groupId: tab.groupId ?? -1  // -1 = ungrouped
+    };
     if (handleTabChangeTimeout) clearTimeout(handleTabChangeTimeout);
     handleTabChangeTimeout = setTimeout(() => {
         _handleTabChange(snapshot);
@@ -191,6 +195,8 @@ function _handleTabChange(tab) {
                         to_domain: newDomain,
                         from_category: currentActivity._category || '',
                         to_category: '',
+                        from_workspace: currentActivity.tab_group_title || null,
+                        to_workspace_group_id: tab.groupId !== -1 ? tab.groupId : null,
                     }),
                 }).catch(() => { });
             } catch (e) { }
@@ -217,7 +223,10 @@ function _handleTabChange(tab) {
         youtube_video_id: null,
         youtube_channel: null,
         _category: null, // filled by backend response
-        is_actively_interacting: true // Defaults to true on fresh tab load
+        is_actively_interacting: true, // Defaults to true on fresh tab load
+        tab_group_id: -1,
+        tab_group_title: null,
+        tab_group_color: null,
     };
 
     // If YouTube, the content script will send video details
@@ -226,6 +235,21 @@ function _handleTabChange(tab) {
         if (videoId) {
             currentActivity.youtube_video_id = videoId;
         }
+    }
+
+    // Resolve tab group (workspace) info
+    if (tab.groupId && tab.groupId !== -1 && chrome.tabGroups) {
+        try {
+            chrome.tabGroups.get(tab.groupId, (group) => {
+                if (chrome.runtime.lastError || !group) return;
+                if (currentActivity && currentActivity.url === tab.url) {
+                    currentActivity.tab_group_id = group.id;
+                    currentActivity.tab_group_title = group.title || null;
+                    currentActivity.tab_group_color = group.color || null;
+                    chrome.storage.local.set({ currentActivity });
+                }
+            });
+        } catch (e) { /* tabGroups API not available */ }
     }
 
     // Save to local storage
@@ -501,6 +525,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Utilities
+
+// Track tab group renames/recoloring in real-time
+if (chrome.tabGroups && chrome.tabGroups.onUpdated) {
+    chrome.tabGroups.onUpdated.addListener((group) => {
+        if (currentActivity && currentActivity.tab_group_id === group.id) {
+            currentActivity.tab_group_title = group.title || null;
+            currentActivity.tab_group_color = group.color || null;
+            chrome.storage.local.set({ currentActivity });
+        }
+    });
+}
+
 function extractDomain(url) {
     try {
         return new URL(url).hostname.replace(/^www\./, '');

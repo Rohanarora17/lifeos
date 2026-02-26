@@ -83,6 +83,12 @@ async function loadData() {
             <div class="site-info">
               <div class="site-name">${activityInfo.activity.domain}</div>
               <div class="site-time">${activityInfo.activity.title || 'Unknown page'}</div>
+              ${activityInfo.activity.tab_group_title ? `
+                <div class="workspace-badge" style="background: ${getGroupBg(activityInfo.activity.tab_group_color)}; color: ${getGroupFg(activityInfo.activity.tab_group_color)};">
+                  <span class="workspace-dot" style="background: ${getGroupFg(activityInfo.activity.tab_group_color)};"></span>
+                  ${activityInfo.activity.tab_group_title}
+                </div>
+              ` : ''}
             </div>
           </div>
         </div>
@@ -111,3 +117,23 @@ async function loadData() {
   }
 }
 
+// Chrome tab group color mappings for workspace badge
+const GROUP_COLORS = {
+  grey: { bg: 'rgba(154,160,166,0.15)', fg: '#9aa0a6' },
+  blue: { bg: 'rgba(66,133,244,0.15)', fg: '#4285f4' },
+  red: { bg: 'rgba(234,67,53,0.15)', fg: '#ea4335' },
+  yellow: { bg: 'rgba(251,188,4,0.15)', fg: '#fbbc04' },
+  green: { bg: 'rgba(52,168,83,0.15)', fg: '#34a853' },
+  pink: { bg: 'rgba(227,100,163,0.15)', fg: '#e364a3' },
+  purple: { bg: 'rgba(168,100,247,0.15)', fg: '#a864f7' },
+  cyan: { bg: 'rgba(36,188,208,0.15)', fg: '#24bcd0' },
+  orange: { bg: 'rgba(250,123,23,0.15)', fg: '#fa7b17' },
+};
+
+function getGroupBg(color) {
+  return (GROUP_COLORS[color] || GROUP_COLORS.grey).bg;
+}
+
+function getGroupFg(color) {
+  return (GROUP_COLORS[color] || GROUP_COLORS.grey).fg;
+}
