@@ -150,6 +150,104 @@
       color: #8888a0;
     }
 
+    /* Focus Session Styles */
+    .focus-panel {
+      margin: 0 12px 12px;
+      background: #1a1a2e;
+      border: 1px solid #2a2a40;
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .focus-panel.active {
+      border-color: rgba(59, 130, 246, 0.5);
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(139, 92, 246, 0.08));
+    }
+
+    .focus-panel h3 {
+      font-size: 11px;
+      color: #8888a0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .focus-select {
+      width: 100%;
+      padding: 8px;
+      background: #0a0a12;
+      color: #f0f0f5;
+      border: 1px solid #2a2a40;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-bottom: 6px;
+      cursor: pointer;
+    }
+
+    .focus-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .focus-btn {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .focus-btn-start {
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      color: white;
+    }
+
+    .focus-btn-start:hover {
+      transform: translateY(-1px);
+    }
+
+    .focus-btn-stop {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #ef4444;
+    }
+
+    .focus-timer {
+      font-size: 28px;
+      font-weight: 900;
+      text-align: center;
+      color: #3b82f6;
+      font-variant-numeric: tabular-nums;
+      margin: 8px 0;
+    }
+
+    .focus-meta {
+      text-align: center;
+      font-size: 11px;
+      color: #8888a0;
+    }
+
+    .focus-stats-row {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: 11px;
+    }
+
+    .focus-stat {
+      text-align: center;
+    }
+
+    .focus-stat .val {
+      font-weight: 700;
+      font-size: 14px;
+    }
+
     .streak-bar {
       background: #1a1a2e;
       border: 1px solid #2a2a40;
@@ -263,6 +361,8 @@
   <div id="content">
     <div class="loading">Loading...</div>
   </div>
+
+  <div id="focus-section"></div>
 
   <div class="footer">
     <button class="open-dashboard" id="openDashboard">Open Dashboard</button>

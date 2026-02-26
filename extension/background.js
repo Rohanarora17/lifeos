@@ -59,13 +59,16 @@ function isPrivacyBlocked(url, domain) {
 let currentActivity = null;
 let isUserActive = true;
 
+// --- Focus Session State ---
+let focusSession = null; // { active, sessionId, goalId, goalTitle, taskId, taskTitle, startedAt, durationMinutes, activitiesLog, blockedCount, overrideCount, tabGroupId }
+
 // Ensure alarms exist (called on install AND startup)
 function ensureAlarms() {
     chrome.alarms.get('flushActivities', (alarm) => {
-        if (!alarm) chrome.alarms.create('flushActivities', { periodInMinutes: 0.5 });
+        if (!alarm) chrome.alarms.create('flushActivities', { periodInMinutes: 0.167 });
     });
     chrome.alarms.get('checkNudge', (alarm) => {
-        if (!alarm) chrome.alarms.create('checkNudge', { periodInMinutes: 1 });
+        if (!alarm) chrome.alarms.create('checkNudge', { periodInMinutes: 0.5 });
     });
 }
 
@@ -301,6 +304,23 @@ async function finalizeCurrentActivity(overrideEndTime = null, interactionOverri
     currentActivity = null;
     chrome.storage.local.remove('currentActivity');
 
+    // Log activity to focus session if active
+    if (focusSession && focusSession.active && actualActivity.domain !== 'context-switch') {
+        focusSession.activitiesLog.push({
+            url: actualActivity.url,
+            domain: actualActivity.domain,
+            title: actualActivity.title,
+            category: actualActivity._category || 'neutral',
+            duration_seconds: actualActivity.duration_seconds,
+            started_at: actualActivity.started_at,
+        });
+        // Cap log size to prevent memory issues
+        if (focusSession.activitiesLog.length > 200) {
+            focusSession.activitiesLog.splice(0, focusSession.activitiesLog.length - 200);
+        }
+        chrome.storage.local.set({ focusSession });
+    }
+
     // Attempt to merge with the last pending activity if it's identical
     const data = await chrome.storage.local.get('pendingActivities');
     const pending = data.pendingActivities || [];
@@ -392,7 +412,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
     }
 
-    if (alarm.name === 'checkNudge') {
+    if (alarm.name === 'focusSessionEnd') {
+        // Focus session timer expired — auto-complete
+        console.log('[LifeOS] Focus session timer expired, completing...');
+        await endFocusSession('completed');
+    }
+
+    if (alarm.name === 'checkNudge' || alarm.name === 'focusNudge') {
         if (!currentActivity || !isUserActive) return;
 
         const domain = currentActivity.domain;
@@ -400,23 +426,127 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             (Date.now() - new Date(currentActivity.started_at).getTime()) / 60000
         );
 
+        const inFocus = focusSession && focusSession.active;
+
+        // --- 🎯 Focus Session Drift Detection (runs every 30s during focus) ---
+        if (inFocus && alarm.name === 'focusNudge') {
+            const sessionGoal = focusSession.taskTitle || focusSession.goalTitle || 'your task';
+            const log = focusSession.activitiesLog || [];
+            const now = Date.now();
+
+            // Deduplication: don't spam the same alert type within 3 minutes
+            if (!focusSession._lastAlerts) focusSession._lastAlerts = {};
+            const canAlert = (type) => {
+                const last = focusSession._lastAlerts[type] || 0;
+                if (now - last < 180000) return false; // 3 min cooldown
+                focusSession._lastAlerts[type] = now;
+                return true;
+            };
+
+            // Known tool domains that should NEVER trigger "you're off-task" alerts
+            // (these are allowed even if you've been there a while)
+            const TOOL_DOMAINS = new Set([
+                'google.com', 'github.com', 'gitlab.com', 'stackoverflow.com',
+                'stackexchange.com', 'developer.mozilla.org', 'wikipedia.org',
+                'en.wikipedia.org', 'localhost', 'notion.so', 'docs.google.com',
+                'chat.openai.com', 'chatgpt.com', 'claude.ai', 'gemini.google.com',
+                'npmjs.com', 'pypi.org', 'drive.google.com', 'figma.com',
+            ]);
+            const isToolDomain = (d) => {
+                if (TOOL_DOMAINS.has(d)) return true;
+                for (const tool of TOOL_DOMAINS) { if (d.endsWith('.' + tool)) return true; }
+                return false;
+            };
+
+            // ── CHECK 1: Time-on-current-site (catches "stayed on YouTube 15 min") ──
+            // If you've been on a single non-tool site for 3+ minutes, alert.
+            // This is the KEY check the old system missed entirely.
+            if (minutesOnSite >= 3 && !isToolDomain(domain)) {
+                // Check if evaluate cache flagged this domain as distraction
+                const wasFlaggedDistraction = [...evaluationCache.values()].some(
+                    v => v.isDistraction && new URL(currentActivity.url).hostname.includes(domain)
+                );
+
+                if (wasFlaggedDistraction && canAlert('time-on-distraction')) {
+                    chrome.notifications.create('focus-time-distraction', {
+                        type: 'basic',
+                        iconUrl: 'icons/icon128.png',
+                        title: '🎯 You\'ve been distracted for ' + minutesOnSite + ' minutes!',
+                        message: `You're still on ${domain}. Your focus: "${sessionGoal}". Close this tab and get back to work!`,
+                        priority: 2,
+                    });
+                } else if (minutesOnSite >= 8 && !wasFlaggedDistraction && canAlert('time-on-unknown')) {
+                    // Even if not flagged, 8+ min on a single non-tool site is suspicious
+                    chrome.notifications.create('focus-long-visit', {
+                        type: 'basic',
+                        iconUrl: 'icons/icon128.png',
+                        title: '⏰ ' + minutesOnSite + ' minutes on ' + domain,
+                        message: `Is this still related to "${sessionGoal}"? If not, time to refocus.`,
+                        priority: 1,
+                    });
+                }
+            }
+
+            // ── CHECK 2: Rapid context-switching (many domains in short time) ──
+            // Count unique domains visited in the last 3 minutes (time-based, not count-based)
+            const threeMinAgo = new Date(now - 180000).toISOString();
+            const recentVisits = log.filter(a => a.started_at > threeMinAgo);
+            if (recentVisits.length >= 4) {
+                const uniqueRecentDomains = new Set(recentVisits.map(a => a.domain)).size;
+                if (uniqueRecentDomains >= 4 && canAlert('context-switching')) {
+                    chrome.notifications.create('focus-context-switch', {
+                        type: 'basic',
+                        iconUrl: 'icons/icon128.png',
+                        title: '🔄 Slow down — ' + uniqueRecentDomains + ' sites in 3 minutes',
+                        message: `You're jumping between tabs too fast. Deep work on "${sessionGoal}" needs sustained attention.`,
+                        priority: 2,
+                    });
+                }
+            }
+
+            // ── CHECK 3: Override abuse (3+ overrides in a session) ──
+            if (focusSession.overrideCount >= 3 && canAlert('override-abuse')) {
+                chrome.notifications.create('focus-override-warn', {
+                    type: 'basic',
+                    iconUrl: 'icons/icon128.png',
+                    title: '⚠️ ' + focusSession.overrideCount + ' overrides used',
+                    message: `You've bypassed ${focusSession.overrideCount} blocks. Are these sites really needed for "${sessionGoal}"?`,
+                    priority: 2,
+                });
+            }
+
+            // ── CHECK 4: Blocked-to-time ratio (if getting blocked a lot) ──
+            // If 3+ pages were blocked in the session, you're clearly trying to go off-task
+            const sessionMinutes = Math.round((now - focusSession.startedAt) / 60000);
+            if (focusSession.blockedCount >= 3 && sessionMinutes >= 5 && canAlert('blocked-ratio')) {
+                chrome.notifications.create('focus-blocked-warn', {
+                    type: 'basic',
+                    iconUrl: 'icons/icon128.png',
+                    title: '� ' + focusSession.blockedCount + ' distractions blocked!',
+                    message: `Your brain is resisting focus. Take a 30-second breath, then commit to "${sessionGoal}" for the next 10 minutes.`,
+                    priority: 2,
+                });
+            }
+        }
+
+        // --- General nudge (AI-driven, runs every 1 min) ---
         try {
             const dataInfo = await chrome.storage.local.get('apiKey');
             const apiKey = dataInfo.apiKey;
 
             const videoIdParam = currentActivity.youtube_video_id ? `&videoId=${encodeURIComponent(currentActivity.youtube_video_id)}` : '';
+            const focusParam = inFocus ? `&focusMode=true&focusGoal=${encodeURIComponent(focusSession.goalTitle || focusSession.taskTitle || '')}` : '';
             const res = await fetch(
-                `${API_BASE}/nudge?url=${encodeURIComponent(currentActivity.url)}&domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}${videoIdParam}`,
+                `${API_BASE}/nudge?url=${encodeURIComponent(currentActivity.url)}&domain=${encodeURIComponent(domain)}&minutes=${minutesOnSite}&title=${encodeURIComponent(currentActivity.title || '')}${videoIdParam}${focusParam}`,
                 { headers: { ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) } }
             );
             const data = await res.json();
 
             if (data.nudge && data.message) {
-                // Show notification
                 chrome.notifications.create('lifeos-nudge', {
                     type: 'basic',
                     iconUrl: 'icons/icon128.png',
-                    title: '⚡ LifeOS — Refocus!',
+                    title: inFocus ? '🎯 Focus Session — Refocus!' : '⚡ LifeOS — Refocus!',
                     message: data.message,
                     priority: 2,
                 });
@@ -496,28 +626,124 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
     }
 
-    // Phase 21: Sidebar Focus Timer Integration
+    // Phase 21: Focus Session Management
     if (message.type === 'START_FOCUS') {
-        chrome.storage.local.get('apiKey', (data) => {
-            const apiKey = data.apiKey;
-            fetch(`${API_BASE}/focus`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-                body: JSON.stringify({ duration: message.duration, action: 'start' })
-            }).catch(() => { });
-        });
+        (async () => {
+            try {
+                const dataInfo = await chrome.storage.local.get('apiKey');
+                const apiKey = dataInfo.apiKey;
+
+                // Start session on backend
+                const res = await fetch(`${API_BASE}/focus-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                    body: JSON.stringify({
+                        action: 'start',
+                        goalId: message.goalId || null,
+                        goalTitle: message.goalTitle || null,
+                        taskId: message.taskId || null,
+                        taskTitle: message.taskTitle || null,
+                        durationMinutes: message.durationMinutes || 60,
+                    })
+                });
+
+                const data = await res.json();
+
+                // Initialize focus session state
+                focusSession = {
+                    active: true,
+                    sessionId: data.sessionId,
+                    goalId: message.goalId || null,
+                    goalTitle: message.goalTitle || null,
+                    taskId: message.taskId || null,
+                    taskTitle: message.taskTitle || null,
+                    startedAt: Date.now(),
+                    durationMinutes: message.durationMinutes || 60,
+                    activitiesLog: [],
+                    blockedCount: 0,
+                    overrideCount: 0,
+                    tabGroupId: -1,
+                };
+
+                // Clear evaluation cache so all pages get re-evaluated in focus context
+                evaluationCache.clear();
+
+                // Auto-create a Chrome tab group for this session
+                try {
+                    const tabs = await chrome.tabs.query({ currentWindow: true, active: true });
+                    if (tabs[0]) {
+                        const groupId = await chrome.tabs.group({ tabIds: [tabs[0].id] });
+                        const groupTitle = message.taskTitle || message.goalTitle || 'Focus Session';
+                        await chrome.tabGroups.update(groupId, {
+                            title: `🎯 ${groupTitle}`,
+                            color: 'blue',
+                            collapsed: false,
+                        });
+                        focusSession.tabGroupId = groupId;
+                    }
+                } catch (e) { console.warn('Could not create focus tab group:', e); }
+
+                // Set a timer alarm for session expiry
+                chrome.alarms.create('focusSessionEnd', {
+                    delayInMinutes: message.durationMinutes || 60
+                });
+
+                // Set a fast nudge alarm for focus drift detection (every 30s)
+                chrome.alarms.create('focusNudge', {
+                    periodInMinutes: 0.5
+                });
+
+                // Update badge to show focus mode
+                chrome.action.setBadgeText({ text: '🎯' });
+                chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
+
+                // Persist to storage
+                chrome.storage.local.set({ focusSession });
+
+                console.log('[LifeOS] Focus session started:', focusSession);
+            } catch (e) {
+                console.error('[LifeOS] Failed to start focus session:', e);
+            }
+        })();
         sendResponse({ ok: true });
     }
 
     if (message.type === 'STOP_FOCUS') {
-        chrome.storage.local.get('apiKey', (data) => {
-            const apiKey = data.apiKey;
-            fetch(`${API_BASE}/focus`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-                body: JSON.stringify({ duration: message.duration, action: 'complete' })
-            }).catch(() => { });
-        });
+        (async () => {
+            try {
+                await endFocusSession('completed');
+            } catch (e) {
+                console.error('[LifeOS] Failed to stop focus session:', e);
+            }
+        })();
+        sendResponse({ ok: true });
+    }
+
+    if (message.type === 'GET_FOCUS_STATUS') {
+        if (focusSession && focusSession.active) {
+            const elapsed = Math.round((Date.now() - focusSession.startedAt) / 1000);
+            const remaining = (focusSession.durationMinutes * 60) - elapsed;
+            sendResponse({
+                active: true,
+                goalTitle: focusSession.goalTitle,
+                taskTitle: focusSession.taskTitle,
+                durationMinutes: focusSession.durationMinutes,
+                elapsedSeconds: elapsed,
+                remainingSeconds: Math.max(0, remaining),
+                blockedCount: focusSession.blockedCount,
+                overrideCount: focusSession.overrideCount,
+                tabGroupId: focusSession.tabGroupId,
+            });
+        } else {
+            sendResponse({ active: false });
+        }
+    }
+
+    if (message.type === 'FOCUS_OVERRIDE_LOGGED') {
+        if (focusSession && focusSession.active) {
+            focusSession.overrideCount++;
+            chrome.storage.local.set({ focusSession });
+        }
         sendResponse({ ok: true });
     }
 
@@ -623,53 +849,143 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const evalDomain = extractDomain(tab.url);
         if (isPrivacyBlocked(tab.url, evalDomain)) return;
 
-        await refreshContext();
-        if (activeContext.activeGoals && activeContext.activeGoals.length > 0) {
-            const cacheKey = `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
+        // Determine if we should evaluate for blocking
+        const inFocus = focusSession && focusSession.active;
 
-            if (evaluationCache.has(cacheKey)) {
-                const cached = evaluationCache.get(cacheKey);
-                if (Date.now() - cached.timestamp < 3600000) {
-                    if (cached.isDistraction) {
-                        chrome.tabs.sendMessage(tabId, {
-                            type: 'BLOCK_PAGE',
-                            reason: cached.reason,
-                            goals: activeContext.activeGoals
-                        });
+        // In non-focus mode, still need active goals to evaluate
+        if (!inFocus) {
+            await refreshContext();
+            if (!activeContext.activeGoals || activeContext.activeGoals.length === 0) return;
+        }
+
+        const cacheKey = inFocus
+            ? `focus::${focusSession.sessionId}::${tab.url}`
+            : `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
+
+        if (evaluationCache.has(cacheKey)) {
+            const cached = evaluationCache.get(cacheKey);
+            if (Date.now() - cached.timestamp < 3600000) {
+                if (cached.isDistraction) {
+                    chrome.tabs.sendMessage(tabId, {
+                        type: 'BLOCK_PAGE',
+                        reason: cached.reason,
+                        goals: inFocus ? [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }] : activeContext.activeGoals,
+                        focusMode: inFocus,
+                        focusGoalTitle: inFocus ? focusSession.goalTitle : null,
+                        focusTaskTitle: inFocus ? focusSession.taskTitle : null,
+                        remainingMinutes: inFocus ? Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)) : null,
+                    });
+                }
+                return;
+            } else {
+                evaluationCache.delete(cacheKey);
+            }
+        }
+
+        try {
+            const dataInfo = await chrome.storage.local.get('apiKey');
+            const apiKey = dataInfo.apiKey;
+
+            const evalBody = {
+                url: tab.url,
+                title: tab.title || '',
+                activeGoals: inFocus ? [] : activeContext.activeGoals,
+                focusMode: inFocus,
+                focusGoalTitle: inFocus ? focusSession.goalTitle : undefined,
+                focusTaskTitle: inFocus ? focusSession.taskTitle : undefined,
+            };
+
+            const res = await fetch(`${API_BASE}/extension/evaluate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                body: JSON.stringify(evalBody)
+            });
+
+            if (res.ok) {
+                const { isDistraction, reason, confidence } = await res.json();
+
+                evaluationCache.set(cacheKey, { isDistraction, reason, timestamp: Date.now() });
+
+                if (isDistraction) {
+                    // Track blocked count during focus sessions
+                    if (inFocus) {
+                        focusSession.blockedCount++;
+                        chrome.storage.local.set({ focusSession });
                     }
-                    return;
-                } else {
-                    evaluationCache.delete(cacheKey);
+
+                    chrome.tabs.sendMessage(tabId, {
+                        type: 'BLOCK_PAGE',
+                        reason: reason,
+                        goals: inFocus ? [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }] : activeContext.activeGoals,
+                        focusMode: inFocus,
+                        focusGoalTitle: inFocus ? focusSession.goalTitle : null,
+                        focusTaskTitle: inFocus ? focusSession.taskTitle : null,
+                        remainingMinutes: inFocus ? Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)) : null,
+                    });
                 }
             }
-
-            try {
-                const dataInfo = await chrome.storage.local.get('apiKey');
-                const apiKey = dataInfo.apiKey;
-                const res = await fetch(`${API_BASE}/extension/evaluate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-                    body: JSON.stringify({
-                        url: tab.url,
-                        title: tab.title || '',
-                        activeGoals: activeContext.activeGoals
-                    })
-                });
-
-                if (res.ok) {
-                    const { isDistraction, reason } = await res.json();
-
-                    evaluationCache.set(cacheKey, { isDistraction, reason, timestamp: Date.now() });
-
-                    if (isDistraction) {
-                        chrome.tabs.sendMessage(tabId, {
-                            type: 'BLOCK_PAGE',
-                            reason: reason,
-                            goals: activeContext.activeGoals
-                        });
-                    }
-                }
-            } catch (e) { }
-        }
+        } catch (e) { }
     }
 });
+
+// --- Focus Session Helper: End Session ---
+async function endFocusSession(status = 'completed') {
+    if (!focusSession || !focusSession.active) return;
+
+    const actualDurationSeconds = Math.round((Date.now() - focusSession.startedAt) / 1000);
+    focusSession.active = false;
+
+    // Cancel the timer alarm
+    chrome.alarms.clear('focusSessionEnd');
+    chrome.alarms.clear('focusNudge');
+
+    // Clear focus badge
+    chrome.action.setBadgeText({ text: '' });
+
+    try {
+        const dataInfo = await chrome.storage.local.get('apiKey');
+        const apiKey = dataInfo.apiKey;
+
+        // Send session data to backend for AI report generation
+        const res = await fetch(`${API_BASE}/focus-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+            body: JSON.stringify({
+                action: 'complete',
+                sessionId: focusSession.sessionId,
+                activities: focusSession.activitiesLog,
+                blockedCount: focusSession.blockedCount,
+                overrideCount: focusSession.overrideCount,
+                actualDurationSeconds,
+            })
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            // Show notification with session summary
+            chrome.notifications.create('focus-complete', {
+                type: 'basic',
+                iconUrl: 'icons/icon128.png',
+                title: '🎯 Focus Session Complete!',
+                message: `${Math.round(actualDurationSeconds / 60)} minutes focused on "${focusSession.goalTitle || focusSession.taskTitle || 'Session'}". Open LifeOS for your detailed report.`,
+            });
+
+            // Store report ID for popup to link to
+            chrome.storage.local.set({
+                lastFocusReport: {
+                    sessionId: focusSession.sessionId,
+                    report: data.report,
+                    stats: data.stats,
+                    timestamp: Date.now(),
+                }
+            });
+        }
+    } catch (e) {
+        console.error('[LifeOS] Failed to complete focus session on backend:', e);
+    }
+
+    // Clear focus session state
+    focusSession = null;
+    chrome.storage.local.remove('focusSession');
+    evaluationCache.clear();
+}

@@ -9,11 +9,141 @@ chrome.storage.local.get('apiUrl', (data) => {
     APP_URL = data.apiUrl.replace(/\/api$/, '');
   }
   loadData();
+  loadFocusSection();
 });
 
 document.getElementById('openDashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: APP_URL });
 });
+
+// --- Focus Session UI ---
+let focusUpdateInterval = null;
+
+async function loadFocusSection() {
+  const focusEl = document.getElementById('focus-section');
+  if (!focusEl) return;
+
+  // Check if a focus session is active
+  const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' }, r));
+
+  if (status && status.active) {
+    renderActiveFocusSession(focusEl, status);
+  } else {
+    renderFocusStarter(focusEl);
+  }
+}
+
+async function renderFocusStarter(el) {
+  // Fetch goals and tasks for the selector
+  let goals = [], tasks = [];
+  try {
+    const res = await fetch(`${API_BASE}/extension/session`);
+    const data = await res.json();
+    goals = data.activeGoals || [];
+    tasks = data.activeTasks || [];
+  } catch { }
+
+  const goalOptions = goals.map(g => `<option value="goal-${g.id}" data-title="${g.title}">${g.title}</option>`).join('');
+  const taskOptions = tasks.map(t => `<option value="task-${t.id}" data-title="${t.title}">${t.title}</option>`).join('');
+
+  el.innerHTML = `
+    <div class="focus-panel">
+      <h3>🎯 Focus Session</h3>
+      <select class="focus-select" id="focus-target">
+        <option value="">Select a goal or task...</option>
+        ${goalOptions ? `<optgroup label="Goals">${goalOptions}</optgroup>` : ''}
+        ${taskOptions ? `<optgroup label="Active Tasks">${taskOptions}</optgroup>` : ''}
+      </select>
+      <div class="focus-row">
+        <select class="focus-select" id="focus-duration" style="flex:1;">
+          <option value="25">25 min</option>
+          <option value="45">45 min</option>
+          <option value="60" selected>60 min</option>
+          <option value="90">90 min</option>
+          <option value="120">2 hours</option>
+        </select>
+        <button class="focus-btn focus-btn-start" id="focus-start-btn">Start Focus</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('focus-start-btn').addEventListener('click', async () => {
+    const targetEl = document.getElementById('focus-target');
+    const durationEl = document.getElementById('focus-duration');
+    const selected = targetEl.value;
+    const selectedOption = targetEl.options[targetEl.selectedIndex];
+    const duration = parseInt(durationEl.value);
+
+    let goalId = null, goalTitle = null, taskId = null, taskTitle = null;
+    if (selected.startsWith('goal-')) {
+      goalId = parseInt(selected.replace('goal-', ''));
+      goalTitle = selectedOption.dataset.title;
+    } else if (selected.startsWith('task-')) {
+      taskId = parseInt(selected.replace('task-', ''));
+      taskTitle = selectedOption.dataset.title;
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'START_FOCUS',
+      goalId, goalTitle, taskId, taskTitle,
+      durationMinutes: duration,
+    });
+
+    // Brief delay then reload
+    setTimeout(loadFocusSection, 1000);
+  });
+}
+
+function renderActiveFocusSession(el, status) {
+  const formatTimer = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const target = status.taskTitle || status.goalTitle || 'Focus Session';
+
+  el.innerHTML = `
+    <div class="focus-panel active">
+      <h3>🎯 Focus Active</h3>
+      <div class="focus-meta">${target}</div>
+      <div class="focus-timer" id="focus-countdown">${formatTimer(status.remainingSeconds)}</div>
+      <div class="focus-stats-row">
+        <div class="focus-stat">
+          <div class="val red">${status.blockedCount}</div>
+          <div>Blocked</div>
+        </div>
+        <div class="focus-stat">
+          <div class="val yellow">${status.overrideCount}</div>
+          <div>Overrides</div>
+        </div>
+      </div>
+      <div style="margin-top: 10px;">
+        <button class="focus-btn focus-btn-stop" id="focus-stop-btn" style="width: 100%;">End Session</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('focus-stop-btn').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'STOP_FOCUS' });
+    clearInterval(focusUpdateInterval);
+    setTimeout(loadFocusSection, 1500);
+  });
+
+  // Live countdown update
+  let remaining = status.remainingSeconds;
+  if (focusUpdateInterval) clearInterval(focusUpdateInterval);
+  focusUpdateInterval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(focusUpdateInterval);
+      loadFocusSection(); // Reload to show starter
+      return;
+    }
+    const timerEl = document.getElementById('focus-countdown');
+    if (timerEl) timerEl.textContent = formatTimer(remaining);
+  }, 1000);
+}
 
 async function loadData() {
   const content = document.getElementById('content');
