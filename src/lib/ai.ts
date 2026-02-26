@@ -382,8 +382,8 @@ Use the behavioral profile to personalize this briefing. Reference their typical
     }
 }
 
-export async function shouldNudge(url: string, currentDomain: string, minutesOnSite: number, currentTitle: string, videoId?: string | null): Promise<{ shouldNudge: boolean; message: string }> {
-    const threshold = parseInt(getSetting('nudge_threshold_minutes') || '15');
+export async function shouldNudge(url: string, currentDomain: string, minutesOnSite: number, currentTitle: string, videoId?: string | null, focusGoal?: string, thresholdOverride?: number): Promise<{ shouldNudge: boolean; message: string }> {
+    const threshold = thresholdOverride || parseInt(getSetting('nudge_threshold_minutes') || '15');
 
     if (minutesOnSite < threshold) {
         return { shouldNudge: false, message: '' };
@@ -503,6 +503,11 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
                 }
             } catch { /* intentions table may not exist */ }
 
+            // Focus session context
+            const focusContext = focusGoal
+                ? `\n\n⚠️ FOCUS SESSION ACTIVE: The user is in a focus session for "${focusGoal}". They should NOT be on ${currentDomain} unless it's directly relevant to this goal. Be assertive — they chose to focus.`
+                : '';
+
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
@@ -511,6 +516,7 @@ ${goalsContext}
 ${taskContext}
 ${intentionsContext}
 ${nudgeContext}
+${focusContext}
 
 CRITICAL: If the page title or domain is clearly related to one of the user's ACTIVE TASKS, do NOT nudge — they are doing their work.
 Use their behavioral profile to decide. If this site matches their known distraction patterns, be more assertive. If they're usually productive at this hour, a gentle reminder is enough.

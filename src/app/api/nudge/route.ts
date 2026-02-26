@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { shouldNudge } from '@/lib/ai';
 
-// GET: Check if user should be nudged (called by extension)
+// GET: Check if user should be nudged (called by extension every 30s)
 export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
@@ -11,12 +11,21 @@ export async function GET(request: NextRequest) {
         const title = searchParams.get('title') || '';
         const url = searchParams.get('url') || '';
         const videoId = searchParams.get('videoId');
+        const focusMode = searchParams.get('focusMode') === 'true';
+        const focusGoal = searchParams.get('focusGoal') || '';
 
         if (!domain || minutes === 0) {
             return NextResponse.json({ nudge: false });
         }
 
-        const nudgeResult = await shouldNudge(url, domain, minutes, title, videoId);
+        // During focus sessions, lower the threshold significantly
+        // (the shouldNudge function uses a configurable threshold, default 15 min)
+        // For focus mode, we want to nudge much earlier — 3 minutes is enough
+        const nudgeResult = await shouldNudge(
+            url, domain, minutes, title, videoId,
+            focusMode ? focusGoal : undefined,
+            focusMode ? 3 : undefined  // 3 min threshold during focus vs default 15 min
+        );
 
         if (nudgeResult.shouldNudge) {
             // Log the nudge

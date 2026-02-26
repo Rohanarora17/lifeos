@@ -223,6 +223,7 @@ function _handleTabChange(tab) {
         domain: newDomain,
         title: tab.title || '',
         started_at: new Date().toISOString(),
+        _originalStartedAt: new Date().toISOString(), // Preserved across flush resets for accurate total time-on-site
         youtube_video_id: null,
         youtube_channel: null,
         _category: null, // filled by backend response
@@ -386,7 +387,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
                     await queueActivity(activityCheckpoint);
                 }
 
+                // Reset started_at for next checkpoint window, but keep _originalStartedAt
                 currentActivity.started_at = now;
+                // _originalStartedAt stays the same — tracks true start of this site visit
                 await chrome.storage.local.set({ currentActivity });
             }
         }
@@ -422,8 +425,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         if (!currentActivity || !isUserActive) return;
 
         const domain = currentActivity.domain;
+        // Use _originalStartedAt for accurate total time on site (started_at is reset every 10s flush)
+        const actualStart = currentActivity._originalStartedAt || currentActivity.started_at;
         const minutesOnSite = Math.round(
-            (Date.now() - new Date(currentActivity.started_at).getTime()) / 60000
+            (Date.now() - new Date(actualStart).getTime()) / 60000
         );
 
         const inFocus = focusSession && focusSession.active;
