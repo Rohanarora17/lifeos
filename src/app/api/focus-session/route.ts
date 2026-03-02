@@ -243,7 +243,7 @@ Generate a comprehensive focus session report with these sections:
 Keep the total report under 400 words. Be specific to this session's data — no generic advice.`;
 
     const result = await ai.models.generateContent({
-        model: 'gemini-3.1-pro',
+        model: 'gemini-pro-latest',
         contents: prompt,
     });
 

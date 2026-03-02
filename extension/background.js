@@ -101,9 +101,14 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 });
 
 // Track URL changes within same tab
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === 'complete' && tab.active) {
         handleTabChange(tab);
+    }
+    // Auto-group into focus group when a tab finishes loading during a focus session
+    if (changeInfo.status === 'complete' && tab.url && focusSession && focusSession.active && focusSession.tabGroupId > 0) {
+        // Small delay to let the page settle
+        setTimeout(() => addTabToFocusGroupIfRelevant(tab), 800);
     }
 });
 
@@ -433,6 +438,19 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
         const inFocus = focusSession && focusSession.active;
 
+        // Helper: send alert to server for DB + email via Resend
+        const sendServerAlert = async (type, message, severity = 'warning') => {
+            try {
+                const dataInfo = await chrome.storage.local.get('apiKey');
+                const apiKey = dataInfo.apiKey;
+                await fetch(`${API_BASE}/alerts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
+                    body: JSON.stringify({ type, message, severity }),
+                });
+            } catch (e) { /* non-critical */ }
+        };
+
         // --- 🎯 Focus Session Drift Detection (runs every 30s during focus) ---
         if (inFocus && alarm.name === 'focusNudge') {
             const sessionGoal = focusSession.taskTitle || focusSession.goalTitle || 'your task';
@@ -473,22 +491,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
                 );
 
                 if (wasFlaggedDistraction && canAlert('time-on-distraction')) {
+                    const msg = `You're still on ${domain}. Your focus: "${sessionGoal}". Close this tab and get back to work!`;
                     chrome.notifications.create('focus-time-distraction', {
                         type: 'basic',
                         iconUrl: 'icons/icon128.png',
                         title: '🎯 You\'ve been distracted for ' + minutesOnSite + ' minutes!',
-                        message: `You're still on ${domain}. Your focus: "${sessionGoal}". Close this tab and get back to work!`,
+                        message: msg,
                         priority: 2,
                     });
+                    sendServerAlert('focus_drop', `${domain} (${minutesOnSite}min) — ${msg}`, 'urgent');
                 } else if (minutesOnSite >= 8 && !wasFlaggedDistraction && canAlert('time-on-unknown')) {
                     // Even if not flagged, 8+ min on a single non-tool site is suspicious
+                    const msg = `Is this still related to "${sessionGoal}"? If not, time to refocus.`;
                     chrome.notifications.create('focus-long-visit', {
                         type: 'basic',
                         iconUrl: 'icons/icon128.png',
                         title: '⏰ ' + minutesOnSite + ' minutes on ' + domain,
-                        message: `Is this still related to "${sessionGoal}"? If not, time to refocus.`,
+                        message: msg,
                         priority: 1,
                     });
+                    sendServerAlert('focus_drop', `${domain} (${minutesOnSite}min) — ${msg}`, 'warning');
                 }
             }
 
@@ -499,38 +521,44 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             if (recentVisits.length >= 4) {
                 const uniqueRecentDomains = new Set(recentVisits.map(a => a.domain)).size;
                 if (uniqueRecentDomains >= 4 && canAlert('context-switching')) {
+                    const msg = `You're jumping between tabs too fast. Deep work on "${sessionGoal}" needs sustained attention.`;
                     chrome.notifications.create('focus-context-switch', {
                         type: 'basic',
                         iconUrl: 'icons/icon128.png',
                         title: '🔄 Slow down — ' + uniqueRecentDomains + ' sites in 3 minutes',
-                        message: `You're jumping between tabs too fast. Deep work on "${sessionGoal}" needs sustained attention.`,
+                        message: msg,
                         priority: 2,
                     });
+                    sendServerAlert('focus_drop', `Context switching: ${uniqueRecentDomains} sites in 3min — ${msg}`, 'warning');
                 }
             }
 
             // ── CHECK 3: Override abuse (3+ overrides in a session) ──
             if (focusSession.overrideCount >= 3 && canAlert('override-abuse')) {
+                const msg = `You've bypassed ${focusSession.overrideCount} blocks. Are these sites really needed for "${sessionGoal}"?`;
                 chrome.notifications.create('focus-override-warn', {
                     type: 'basic',
                     iconUrl: 'icons/icon128.png',
                     title: '⚠️ ' + focusSession.overrideCount + ' overrides used',
-                    message: `You've bypassed ${focusSession.overrideCount} blocks. Are these sites really needed for "${sessionGoal}"?`,
+                    message: msg,
                     priority: 2,
                 });
+                sendServerAlert('focus_drop', `Override abuse: ${focusSession.overrideCount} overrides — ${msg}`, 'urgent');
             }
 
             // ── CHECK 4: Blocked-to-time ratio (if getting blocked a lot) ──
             // If 3+ pages were blocked in the session, you're clearly trying to go off-task
             const sessionMinutes = Math.round((now - focusSession.startedAt) / 60000);
             if (focusSession.blockedCount >= 3 && sessionMinutes >= 5 && canAlert('blocked-ratio')) {
+                const msg = `Your brain is resisting focus. Take a 30-second breath, then commit to "${sessionGoal}" for the next 10 minutes.`;
                 chrome.notifications.create('focus-blocked-warn', {
                     type: 'basic',
                     iconUrl: 'icons/icon128.png',
-                    title: '� ' + focusSession.blockedCount + ' distractions blocked!',
-                    message: `Your brain is resisting focus. Take a 30-second breath, then commit to "${sessionGoal}" for the next 10 minutes.`,
+                    title: '🛡 ' + focusSession.blockedCount + ' distractions blocked!',
+                    message: msg,
                     priority: 2,
                 });
+                sendServerAlert('focus_drop', `${focusSession.blockedCount} blocks in ${sessionMinutes}min — ${msg}`, 'warning');
             }
         }
 
@@ -670,23 +698,81 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     tabGroupId: -1,
                 };
 
-                // Clear evaluation cache so all pages get re-evaluated in focus context
-                evaluationCache.clear();
-
-                // Auto-create a Chrome tab group for this session
+                // Auto-create and populate a Chrome tab group for this focus session
+                // NOTE: We scan tabs BEFORE clearing the evaluation cache so we have classification data
                 try {
-                    const tabs = await chrome.tabs.query({ currentWindow: true, active: true });
-                    if (tabs[0]) {
-                        const groupId = await chrome.tabs.group({ tabIds: [tabs[0].id] });
-                        const groupTitle = message.taskTitle || message.goalTitle || 'Focus Session';
-                        await chrome.tabGroups.update(groupId, {
-                            title: `🎯 ${groupTitle}`,
-                            color: 'blue',
-                            collapsed: false,
-                        });
-                        focusSession.tabGroupId = groupId;
+                    if (chrome.tabGroups) {
+                        const allTabs = await chrome.tabs.query({ currentWindow: true });
+                        const goal = message.goalTitle || message.taskTitle || '';
+
+                        // Score each tab: group it if it looks productive/relevant to the goal
+                        const tabsToGroup = [];
+                        for (const tab of allTabs) {
+                            if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) continue;
+                            if (isPrivacyBlocked(tab.url, extractDomain(tab.url))) continue;
+
+                            const domain = extractDomain(tab.url);
+                            const cached = evaluationCache.get(domain + '|' + (tab.url || ''));
+
+                            // Always include: if cached as not-distraction
+                            let shouldGroup = cached && !cached.isDistraction;
+
+                            // Also include: if keywords from goal appear in title or URL
+                            if (!shouldGroup && goal) {
+                                const goalWords = goal.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+                                const tabText = ((tab.title || '') + ' ' + (tab.url || '')).toLowerCase();
+                                shouldGroup = goalWords.some(w => tabText.includes(w));
+                            }
+
+                            // Always include known learning/tool domains
+                            const toolDomains = ['github.com', 'stackoverflow.com', 'youtube.com', 'docs.', 'mdn.', 'localhost',
+                                'ocw.mit.edu', 'coursera.org', 'edx.org', 'khanacademy.org', 'notion.so', 'figma.com',
+                                'linear.app', 'vercel.com', 'supabase.com', 'google.com', 'chat.openai.com', 'chatgpt.com',
+                                'claude.ai', 'gemini.google.com', 'replit.com', 'codepen.io', 'codesandbox.io',
+                                'perplexity.ai', 'udemy.com', 'medium.com', 'dev.to', 'npmjs.com', 'devdocs.io',
+                                'scholar.google.com', 'arxiv.org', 'wikipedia.org'];
+                            if (!shouldGroup && toolDomains.some(t => domain.includes(t))) shouldGroup = true;
+
+                            // Always include .edu domains (university sites)
+                            if (!shouldGroup && domain.endsWith('.edu')) shouldGroup = true;
+
+                            // Title-based heuristic for academic/learning content
+                            if (!shouldGroup) {
+                                const title = (tab.title || '').toLowerCase();
+                                const academicKeywords = ['lecture', 'course', 'tutorial', 'documentation', 'handbook',
+                                    'textbook', 'chapter', 'proof', 'algorithm', 'research', 'paper', 'thesis'];
+                                if (academicKeywords.some(k => title.includes(k))) shouldGroup = true;
+                            }
+
+                            if (shouldGroup) tabsToGroup.push(tab.id);
+                        }
+
+                        if (tabsToGroup.length > 0) {
+                            const groupId = await chrome.tabs.group({ tabIds: tabsToGroup });
+                            const groupTitle = message.taskTitle || message.goalTitle || 'Focus';
+                            await chrome.tabGroups.update(groupId, {
+                                title: `🎯 ${groupTitle.slice(0, 30)}`,
+                                color: 'blue',
+                                collapsed: false,
+                            });
+                            focusSession.tabGroupId = groupId;
+                        } else {
+                            // Fallback: group at least the current active tab
+                            const activeTabs = await chrome.tabs.query({ currentWindow: true, active: true });
+                            if (activeTabs[0]) {
+                                const groupId = await chrome.tabs.group({ tabIds: [activeTabs[0].id] });
+                                await chrome.tabGroups.update(groupId, {
+                                    title: `🎯 ${(message.taskTitle || message.goalTitle || 'Focus').slice(0, 30)}`,
+                                    color: 'blue',
+                                });
+                                focusSession.tabGroupId = groupId;
+                            }
+                        }
                     }
-                } catch (e) { console.warn('Could not create focus tab group:', e); }
+                } catch (e) { console.warn('[LifeOS] Could not create focus tab group:', e); }
+
+                // NOW clear evaluation cache so all pages get re-evaluated in focus context
+                evaluationCache.clear();
 
                 // Set a timer alarm for session expiry
                 chrome.alarms.create('focusSessionEnd', {
@@ -789,7 +875,72 @@ function extractYouTubeVideoId(url) {
 // Phase 20: TabAI Replacements (Context Engine, Tasks, Sidebar)
 // ==========================================
 
+// Smart tab grouping: auto-add a tab to the focus group if it's productive/relevant
+async function addTabToFocusGroupIfRelevant(tab) {
+    if (!focusSession || !focusSession.active || focusSession.tabGroupId <= 0) return;
+    if (!tab || !tab.url || !tab.id) return;
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
+
+    const domain = extractDomain(tab.url);
+    if (isPrivacyBlocked(tab.url, domain)) return;
+
+    // Skip if tab is already in the focus group
+    if (tab.groupId === focusSession.tabGroupId) return;
+
+    // Skip if tab is in another group (respect user's manual grouping)
+    if (tab.groupId > 0 && tab.groupId !== focusSession.tabGroupId) return;
+
+    let shouldGroup = false;
+
+    // Check evaluate cache (blocking engine already classified it)
+    const cached = evaluationCache.get(domain + '|' + tab.url) ||
+        evaluationCache.get(domain + '|' + tab.url.split('?')[0]);
+    if (cached && !cached.isDistraction) shouldGroup = true;
+
+    // Check goal keyword match in title/URL
+    if (!shouldGroup) {
+        const goal = (focusSession.goalTitle || focusSession.taskTitle || '').toLowerCase();
+        const goalWords = goal.split(/\s+/).filter(w => w.length > 3);
+        if (goalWords.length > 0) {
+            const tabText = ((tab.title || '') + ' ' + (tab.url || '')).toLowerCase();
+            if (goalWords.some(w => tabText.includes(w))) shouldGroup = true;
+        }
+    }
+
+    // Check known tool/learning domains
+    if (!shouldGroup) {
+        const TOOL_DOMAINS = ['github.com', 'stackoverflow.com', 'youtube.com', 'docs.', 'mdn.',
+            'localhost', 'ocw.mit.edu', 'coursera.org', 'edx.org', 'khanacademy.org',
+            'notion.so', 'figma.com', 'linear.app', 'vercel.com', 'supabase.com',
+            'google.com', 'chat.openai.com', 'chatgpt.com', 'claude.ai', 'gemini.google.com',
+            'replit.com', 'codepen.io', 'codesandbox.io', 'npmjs.com', 'devdocs.io',
+            'perplexity.ai', 'udemy.com', 'medium.com', 'dev.to',
+            'scholar.google.com', 'arxiv.org', 'wikipedia.org'];
+        if (TOOL_DOMAINS.some(t => domain.includes(t))) shouldGroup = true;
+    }
+
+    // Always include .edu domains (university sites)
+    if (!shouldGroup && domain.endsWith('.edu')) shouldGroup = true;
+
+    // Title-based heuristic for academic/learning content
+    if (!shouldGroup) {
+        const title = (tab.title || '').toLowerCase();
+        const academicKeywords = ['lecture', 'course', 'tutorial', 'documentation', 'handbook',
+            'textbook', 'chapter', 'proof', 'algorithm', 'research', 'paper', 'thesis'];
+        if (academicKeywords.some(k => title.includes(k))) shouldGroup = true;
+    }
+
+    if (shouldGroup) {
+        try {
+            await chrome.tabs.group({ tabIds: [tab.id], groupId: focusSession.tabGroupId });
+        } catch (e) {
+            // Group may have been dissolved — ignore silently
+        }
+    }
+}
+
 // 1. Context Menu Task Extraction Listener
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "send-to-lifeos" && info.selectionText) {
 

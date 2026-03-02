@@ -1075,7 +1075,7 @@ export async function runDeepAnalysis(): Promise<{
 
   // Save snapshot
   const analysisData = { focusScore, entropy, consistency, archetype, goalAlignment, peakHours };
-  db.prepare("INSERT INTO behavior_snapshots (snapshot_date, type, data) VALUES (?, 'deep_analysis', ?)").run(today, JSON.stringify(analysisData));
+  db.prepare("INSERT OR REPLACE INTO behavior_snapshots (snapshot_date, type, data) VALUES (?, 'deep_analysis', ?)").run(today, JSON.stringify(analysisData));
 
   // ── Gather historical context for AI (the learning loop) ──
   const pastInsights = getRecentInsights(10);
@@ -1203,7 +1203,7 @@ Generate 6-8 insights across ALL categories. Reference specific numbers. Be dire
 Generate 3-5 behavioral_memories — these are durable patterns you want to remember for future analysis.`;
 
       const result = await ai.models.generateContent({
-        model: 'gemini-3.1-pro',
+        model: 'gemini-pro-latest',
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });

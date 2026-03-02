@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getUnreadAlerts, getRecentAlerts, markAlertsRead } from '@/lib/notifications';
+import { getUnreadAlerts, getRecentAlerts, markAlertsRead, sendAlert, AlertType, Severity } from '@/lib/notifications';
 import { getDb } from '@/lib/db';
 
 // GET — Fetch alerts (unread by default, or all recent)
@@ -11,6 +11,29 @@ export async function GET(request: NextRequest) {
     const unreadCount = getUnreadAlerts(100).length;
 
     return NextResponse.json({ alerts, unreadCount });
+}
+
+// POST — Create a new alert (used by extension for focus session alerts)
+export async function POST(request: NextRequest) {
+    try {
+        const body = await request.json();
+        const { type, message, severity } = body;
+
+        if (!type || !message) {
+            return NextResponse.json({ error: 'type and message required' }, { status: 400 });
+        }
+
+        const sent = await sendAlert(
+            type as AlertType,
+            message,
+            (severity || 'warning') as Severity
+        );
+
+        return NextResponse.json({ ok: true, sent });
+    } catch (error) {
+        console.error('Alert POST error:', error);
+        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
 }
 
 // PATCH — Mark alerts as read

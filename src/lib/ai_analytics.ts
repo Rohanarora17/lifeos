@@ -128,7 +128,7 @@ Analyze the data and return EXACTLY 3 powerful insights in JSON array format:
 Keep insights specific, data-driven, and actionable. Only return the JSON array.`;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: prompt
         });
         const text = (result.text || '').trim();

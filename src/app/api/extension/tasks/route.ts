@@ -39,7 +39,7 @@ Return JSON matching this schema:
 }`;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',

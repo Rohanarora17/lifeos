@@ -324,7 +324,7 @@ Use the behavioral profile above to personalize this report. Reference their pat
 
         // PRO: Deep synthesis and behavior reasoning
         const result = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: prompt
         });
         return (result.text || '').trim();
@@ -372,7 +372,7 @@ Use the behavioral profile to personalize this briefing. Reference their typical
 
         // PRO: Strategic planning and motivation
         const result = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: prompt
         });
         return (result.text || '').trim();

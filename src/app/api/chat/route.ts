@@ -36,7 +36,7 @@ RULES:
 User Query: "${query}"`;
 
         const sqlResult = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: prompt
         });
         let sql = (sqlResult.text || '').trim();
@@ -69,7 +69,7 @@ ${JSON.stringify(data).substring(0, 3000)}
 Provide a concise, conversational answer to the user based on this data. Do not show them the raw JSON.`;
 
         const answerResult = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: answerPrompt
         });
         return NextResponse.json({ text: (answerResult.text || '').trim() });

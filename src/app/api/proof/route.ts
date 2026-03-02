@@ -50,7 +50,7 @@ Return EXACTLY a JSON object with this schema:
         };
 
         const result = await ai.models.generateContent({
-            model: 'gemini-3.1-pro',
+            model: 'gemini-pro-latest',
             contents: [prompt, imagePart]
         });
         let text = (result.text || '').trim();

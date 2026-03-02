@@ -61,6 +61,30 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE habits ADD COLUMN goal_target INTEGER DEFAULT 1').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE habit_checkins ADD COLUMN value INTEGER DEFAULT 1').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE behavior_insights ADD COLUMN feedback TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE behavioral_memory ADD COLUMN superseded INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE behavioral_memory ADD COLUMN source TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN title TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN priority TEXT DEFAULT NULL').run(); } catch (e) { }
+  // Backfill focus_sessions columns missing from the old 003 schema (014 migration no-ops when table already exists)
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN goal_id INTEGER DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN goal_title TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN task_id INTEGER DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN task_title TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN actual_duration_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN productive_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN distraction_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN neutral_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_opened INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_blocked INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_overridden INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN top_domains TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN ai_report TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN status TEXT DEFAULT "completed"').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN ended_at TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN duration_minutes INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN started_at TEXT DEFAULT NULL').run(); } catch (e) { }
+  // Backfill started_at from old start_time column if it exists
+  try { db.prepare("UPDATE focus_sessions SET started_at = start_time WHERE started_at IS NULL AND start_time IS NOT NULL").run(); } catch (e) { }
 
   // Insert default settings if not present
   const insertSetting = db.prepare(
