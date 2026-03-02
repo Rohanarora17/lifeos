@@ -67,7 +67,35 @@ export default function DashboardPage() {
       .catch(() => { });
     fetch('/api/focus-session')
       .then(r => r.json())
-      .then(d => setFocusSessions(d.sessions || []))
+      .then(d => {
+        const sessions = d.sessions || [];
+        // Helper: parse SQLite datetime string safely as UTC
+        const parseUtc = (s: string) => {
+          if (!s) return NaN;
+          // SQLite datetime('now') returns '2026-03-02 21:01:15' without T/Z — treat as UTC
+          const normalized = s.includes('T') ? s : s.replace(' ', 'T') + 'Z';
+          return new Date(normalized).getTime();
+        };
+
+        setFocusSessions(sessions);
+        // Hydrate active focus session started from extension popup
+        const active = sessions.find((s: any) => s.status === 'active');
+        if (active && !focusData.isActive) {
+          const startedMs = parseUtc(active.started_at);
+          const totalSecs = (active.duration_minutes || 60) * 60;
+          const elapsed = Math.round((Date.now() - startedMs) / 1000);
+          const remaining = Math.max(0, totalSecs - elapsed);
+          if (remaining > 0) {
+            setFocusData({
+              taskId: active.id,
+              taskTitle: active.task_title || active.goal_title || null,
+              durationMins: active.duration_minutes || 60,
+              timeLeft: remaining,
+              isActive: true,
+            });
+          }
+        }
+      })
       .catch(() => { });
   }, []);
 
@@ -105,8 +133,25 @@ export default function DashboardPage() {
     setFocusData({ taskId, taskTitle, durationMins: mins, timeLeft: mins * 60, isActive: true });
   };
 
-  const cancelFocus = () => {
+  const cancelFocus = async () => {
+    // Call the API to properly end the session
+    try {
+      await fetch('/api/focus-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'complete',
+          sessionId: focusData.taskId,
+          actualDurationMinutes: Math.round((focusData.durationMins * 60 - focusData.timeLeft) / 60),
+          activities: [],
+          blockedCount: 0,
+          overrideCount: 0,
+        })
+      });
+    } catch { }
     setFocusData(prev => ({ ...prev, isActive: false, timeLeft: 0 }));
+    // Refresh sessions
+    fetch('/api/focus-session').then(r => r.json()).then(d => setFocusSessions(d.sessions || [])).catch(() => { });
   };
 
   const markAllRead = async () => {
@@ -141,21 +186,151 @@ export default function DashboardPage() {
     return `${Math.floor(mins / 60)}h ${mins % 60}m`;
   };
 
+  const elapsedSecs = focusData.durationMins * 60 - focusData.timeLeft;
+  const progressPct = focusData.durationMins > 0 ? Math.round((elapsedSecs / (focusData.durationMins * 60)) * 100) : 0;
+
   return (
     <div className="max-w-[1400px] mx-auto space-y-6 animate-fade-in">
-      {/* Focus Mode Active Banner */}
-      {focusData.isActive && (
-        <div className="card text-center relative overflow-hidden" style={{ borderColor: 'var(--accent-purple)', background: 'rgba(157, 78, 221, 0.05)' }}>
+      {/* Focus Session Panel — Active or Start */}
+      {focusData.isActive ? (
+        <div className="card relative overflow-hidden" style={{ borderColor: 'var(--accent-purple)', background: 'rgba(157, 78, 221, 0.05)' }}>
+          {/* Progress bar at top */}
           <div className="absolute top-0 left-0 h-1 bg-gradient-to-r from-[var(--accent-purple)] to-[var(--accent-blue)]"
-            style={{ width: `${((focusData.durationMins * 60 - focusData.timeLeft) / (focusData.durationMins * 60)) * 100}%`, transition: 'width 1s linear' }} />
-          <h2 className="text-xl font-bold mb-1">🎯 Focus Mode Active</h2>
-          <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-            {focusData.taskTitle ? `Focusing on: ${focusData.taskTitle}` : 'Deep Work Session'}
-          </p>
-          <div className="text-6xl font-mono font-bold tracking-wider mb-6" style={{ color: 'var(--accent-purple)' }}>
-            {Math.floor(focusData.timeLeft / 60).toString().padStart(2, '0')}:{(focusData.timeLeft % 60).toString().padStart(2, '0')}
+            style={{ width: `${progressPct}%`, transition: 'width 1s linear' }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '8px 0' }}>
+            {/* Left: Timer */}
+            <div style={{ textAlign: 'center', minWidth: '160px' }}>
+              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--accent-purple)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>🎯 Focus Active</p>
+              <div className="font-mono font-bold tracking-wider" style={{ fontSize: '48px', lineHeight: 1, color: 'var(--accent-purple)' }}>
+                {Math.floor(focusData.timeLeft / 60).toString().padStart(2, '0')}:{(focusData.timeLeft % 60).toString().padStart(2, '0')}
+              </div>
+              <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>remaining</p>
+            </div>
+
+            {/* Center: Details */}
+            <div style={{ flex: 1 }}>
+              <p className="text-base font-semibold mb-2">
+                {focusData.taskTitle || 'Deep Work Session'}
+              </p>
+              {/* Progress bar */}
+              <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '4px', height: '8px', overflow: 'hidden', marginBottom: '8px' }}>
+                <div style={{
+                  width: `${progressPct}%`,
+                  height: '100%',
+                  background: 'linear-gradient(90deg, var(--accent-purple), var(--accent-blue))',
+                  borderRadius: '4px',
+                  transition: 'width 1s linear',
+                }} />
+              </div>
+              <div className="flex gap-4" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                <span>⏱️ Elapsed: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.round(elapsedSecs / 60))}</strong></span>
+                <span>⏳ Remaining: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.ceil(focusData.timeLeft / 60))}</strong></span>
+                <span>📊 {progressPct}% done</span>
+              </div>
+            </div>
+
+            {/* Right: Stop button */}
+            <div style={{ flexShrink: 0 }}>
+              <button
+                onClick={cancelFocus}
+                style={{
+                  padding: '10px 20px',
+                  background: 'rgba(239,68,68,0.15)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >⏹ Stop Session</button>
+            </div>
           </div>
-          <button className="btn btn-ghost text-xs" onClick={cancelFocus}>Cancel Session</button>
+        </div>
+      ) : (
+        <div className="card" style={{ borderColor: 'rgba(157,78,221,0.2)' }}>
+          <h3 className="text-sm font-semibold mb-3" style={{ color: 'var(--text-secondary)' }}>🎯 Start Focus Session</h3>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
+            {/* Goal/Task selector */}
+            <div style={{ flex: 1 }}>
+              <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>What are you working on?</label>
+              <select
+                id="dashboard-focus-target"
+                style={{
+                  width: '100%', padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px',
+                  color: 'var(--text-primary)', fontSize: '13px',
+                }}
+              >
+                <option value="">General focus session</option>
+                {data?.intelligence?.topGoals?.map(g => (
+                  <option key={`goal-${g.id}`} value={`goal-${g.id}`} data-title={g.title}>🎯 {g.title}</option>
+                ))}
+                {data?.intelligence?.recommendedTasks?.map(t => (
+                  <option key={`task-${t.id}`} value={`task-${t.id}`} data-title={t.title}>📋 {t.title}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Duration picker */}
+            <div>
+              <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Duration</label>
+              <select
+                id="dashboard-focus-duration"
+                style={{
+                  padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px',
+                  color: 'var(--text-primary)', fontSize: '13px',
+                }}
+                defaultValue="60"
+              >
+                <option value="25">25 min</option>
+                <option value="45">45 min</option>
+                <option value="60">1 hour</option>
+                <option value="90">90 min</option>
+                <option value="120">2 hours</option>
+              </select>
+            </div>
+
+            {/* Start button */}
+            <button
+              onClick={() => {
+                const targetEl = document.getElementById('dashboard-focus-target') as HTMLSelectElement;
+                const durationEl = document.getElementById('dashboard-focus-duration') as HTMLSelectElement;
+                const selected = targetEl?.value || '';
+                const selectedOption = targetEl?.options[targetEl.selectedIndex];
+                const mins = parseInt(durationEl?.value || '60');
+                let taskId = null, taskTitle = null;
+                if (selected.startsWith('goal-') || selected.startsWith('task-')) {
+                  taskId = parseInt(selected.split('-')[1]);
+                  taskTitle = selectedOption?.dataset?.title || selectedOption?.textContent?.replace(/^[🎯📋]\s*/, '') || null;
+                }
+                // Start locally
+                startFocus(taskId, taskTitle, mins);
+                // Also start on backend
+                fetch('/api/focus-session', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    action: 'start',
+                    goalTitle: selected.startsWith('goal-') ? taskTitle : null,
+                    taskTitle: selected.startsWith('task-') ? taskTitle : null,
+                    durationMinutes: mins,
+                  })
+                }).catch(() => { });
+              }}
+              style={{
+                padding: '8px 24px',
+                background: 'linear-gradient(135deg, #9d4edd, #667eea)',
+                border: 'none', borderRadius: '8px',
+                color: 'white', fontWeight: 600, fontSize: '13px',
+                cursor: 'pointer', whiteSpace: 'nowrap',
+                transition: 'all 0.15s',
+              }}
+            >▶ Start Focus</button>
+          </div>
         </div>
       )}
 
@@ -477,38 +652,82 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>🎯 Recent Focus Sessions</h3>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-3">
             {focusSessions.slice(0, 5).map((s: any, i: number) => {
-              const duration = s.actual_duration_minutes || s.planned_duration_minutes || 0;
-              const score = s.report ? JSON.parse(s.report)?.score : null;
+              const duration = s.actual_duration_seconds ? Math.round(s.actual_duration_seconds / 60) : (s.duration_minutes || 0);
+              const prodMin = s.productive_seconds ? Math.round(s.productive_seconds / 60) : 0;
+              const distMin = s.distraction_seconds ? Math.round(s.distraction_seconds / 60) : 0;
+              const neutMin = s.neutral_seconds ? Math.round(s.neutral_seconds / 60) : 0;
+              const totalSecs = (s.productive_seconds || 0) + (s.distraction_seconds || 0) + (s.neutral_seconds || 0);
+              const prodPct = totalSecs > 0 ? Math.round((s.productive_seconds / totalSecs) * 100) : 0;
+              const distPct = totalSecs > 0 ? Math.round((s.distraction_seconds / totalSecs) * 100) : 0;
+              const neutPct = totalSecs > 0 ? Math.round((s.neutral_seconds / totalSecs) * 100) : 0;
+              const score = s.ai_report ? (() => { try { return JSON.parse(s.ai_report)?.score; } catch { return null; } })() : null;
+              const startTime = s.started_at ? new Date(s.started_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
+              const endTime = s.ended_at ? new Date(s.ended_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
+              const dateStr = s.started_at ? new Date(s.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+              const topDomains = s.top_domains ? (() => { try { return JSON.parse(s.top_domains); } catch { return []; } })() : [];
+
               return (
-                <div key={i} className="timeline-item" style={{ padding: '0.5rem 0.75rem' }}>
-                  <div className={`timeline-dot ${s.status === 'completed' ? 'productive' : 'neutral'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {s.task_title || s.goal_title || 'Focus Session'}
-                    </p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        {formatTime(duration)} · {new Date(s.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                <div key={i} style={{
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: '10px',
+                  padding: '12px',
+                }}>
+                  {/* Header: Title + Score + Status */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">
+                        {s.task_title || s.goal_title || s.primary_domain || 'Focus Session'}
                       </p>
-                      {s.blocked_count > 0 && (
-                        <span className="text-[10px]" style={{ color: 'var(--accent-red)' }}>
-                          🛑 {s.blocked_count} blocked
+                      <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        {dateStr}{startTime && ` · ${startTime}`}{endTime && ` → ${endTime}`} · {formatTime(duration)}
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0 ml-3">
+                      {score ? (
+                        <span className="badge text-xs" style={{
+                          background: score >= 70 ? 'rgba(34,197,94,0.15)' : score >= 40 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
+                          color: score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                        }}>{score}/100</span>
+                      ) : (
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                          {s.status === 'completed' ? '✅' : s.status === 'abandoned' ? '⏹️' : '🔄'}
                         </span>
                       )}
                     </div>
                   </div>
-                  <div className="text-right flex-shrink-0">
-                    {score && (
-                      <span className="badge text-xs" style={{
-                        background: score >= 70 ? 'rgba(34,197,94,0.15)' : score >= 40 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
-                        color: score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-yellow)' : 'var(--accent-red)',
-                      }}>{score}/100</span>
+
+                  {/* Time Breakdown Bar */}
+                  {totalSecs > 0 && (
+                    <div style={{ marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'rgba(255,255,255,0.05)' }}>
+                        {prodPct > 0 && <div style={{ width: `${prodPct}%`, background: '#22c55e' }} />}
+                        {neutPct > 0 && <div style={{ width: `${neutPct}%`, background: '#eab308' }} />}
+                        {distPct > 0 && <div style={{ width: `${distPct}%`, background: '#ef4444' }} />}
+                      </div>
+                      <div className="flex gap-3 mt-1" style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                        <span>🟢 {prodMin}m productive</span>
+                        <span>🟡 {neutMin}m neutral</span>
+                        <span>🔴 {distMin}m distracted</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Stats Row */}
+                  <div className="flex gap-4" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                    {(s.tabs_blocked > 0 || s.tabs_overridden > 0) && (
+                      <>
+                        {s.tabs_blocked > 0 && <span>🛑 {s.tabs_blocked} blocked</span>}
+                        {s.tabs_overridden > 0 && <span>⚠️ {s.tabs_overridden} overrides</span>}
+                      </>
                     )}
-                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                      {s.status === 'completed' ? '✅' : s.status === 'abandoned' ? '⏹️' : '🔄'}
-                    </p>
+                    {topDomains.length > 0 && (
+                      <span className="truncate">
+                        🌐 {topDomains.slice(0, 3).map((d: any) => typeof d === 'string' ? d : d.domain).join(', ')}
+                      </span>
+                    )}
                   </div>
                 </div>
               );

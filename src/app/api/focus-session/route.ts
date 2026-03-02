@@ -18,8 +18,8 @@ export async function POST(request: NextRequest) {
             db.prepare(`UPDATE focus_sessions SET status = 'abandoned', ended_at = datetime('now') WHERE status = 'active'`).run();
 
             const result = db.prepare(`
-                INSERT INTO focus_sessions (goal_id, goal_title, task_id, task_title, started_at, duration_minutes, status)
-                VALUES (?, ?, ?, ?, datetime('now'), ?, 'active')
+                INSERT INTO focus_sessions (session_date, start_time, end_time, goal_id, goal_title, task_id, task_title, started_at, duration_minutes, status)
+                VALUES (date('now'), strftime('%Y-%m-%dT%H:%M:%SZ','now'), '', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, 'active')
             `).run(goalId || null, goalTitle || null, taskId || null, taskTitle || null, durationMinutes || 60);
 
             return NextResponse.json({
@@ -142,6 +142,53 @@ export async function POST(request: NextRequest) {
             });
         }
 
+        // Generate (or regenerate) an AI report for an existing session
+        if (action === 'generate-report') {
+            const { sessionId } = body;
+            const session = db.prepare('SELECT * FROM focus_sessions WHERE id = ?').get(sessionId) as any;
+            if (!session) {
+                return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+            }
+
+            // Parse existing top_domains if any
+            let topDomains: any[] = [];
+            try { topDomains = session.top_domains ? JSON.parse(session.top_domains) : []; } catch { }
+
+            let aiReport = '';
+            try {
+                aiReport = await generateFocusReport({
+                    goalTitle: session.goal_title,
+                    taskTitle: session.task_title,
+                    durationMinutes: session.duration_minutes || 0,
+                    actualDurationSeconds: session.actual_duration_seconds || (session.duration_minutes * 60) || 0,
+                    productiveSeconds: session.productive_seconds || 0,
+                    distractionSeconds: session.distraction_seconds || 0,
+                    neutralSeconds: session.neutral_seconds || 0,
+                    topDomains,
+                    blockedCount: session.tabs_blocked || 0,
+                    overrideCount: session.tabs_overridden || 0,
+                    activities: [],
+                });
+            } catch (e) {
+                console.error('[FocusSession] Report generation failed:', e);
+                aiReport = buildFallbackReport({
+                    goalTitle: session.goal_title,
+                    taskTitle: session.task_title,
+                    actualDurationSeconds: session.actual_duration_seconds || session.duration_minutes * 60,
+                    productiveSeconds: session.productive_seconds || 0,
+                    distractionSeconds: session.distraction_seconds || 0,
+                    topDomains,
+                    blockedCount: session.tabs_blocked || 0,
+                    overrideCount: session.tabs_overridden || 0,
+                });
+            }
+
+            db.prepare('UPDATE focus_sessions SET ai_report = ?, status = ? WHERE id = ?')
+                .run(aiReport, session.status === 'active' ? 'completed' : session.status, sessionId);
+
+            return NextResponse.json({ success: true, report: aiReport });
+        }
+
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     } catch (error) {
         console.error('Focus Session API Error:', error);
@@ -150,18 +197,20 @@ export async function POST(request: NextRequest) {
 }
 
 // GET: Fetch recent focus session reports
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
         const db = getDb();
+        const { searchParams } = new URL(request.url);
+        const limit = Math.min(parseInt(searchParams.get('limit') || '20'), 200);
         const sessions = db.prepare(`
             SELECT id, goal_title, task_title, started_at, ended_at, duration_minutes,
                    actual_duration_seconds, productive_seconds, distraction_seconds,
                    neutral_seconds, tabs_opened, tabs_blocked, tabs_overridden,
-                   top_domains, ai_report, status
+                   top_domains, ai_report, status, primary_domain
             FROM focus_sessions
             ORDER BY created_at DESC
-            LIMIT 20
-        `).all();
+            LIMIT ?
+        `).all(limit);
 
         return NextResponse.json({ sessions });
     } catch (error) {
