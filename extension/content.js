@@ -49,17 +49,38 @@ setInterval(() => {
 
 function injectBlockOverlay(data) {
     if (document.getElementById('lifeos-block-overlay')) return;
-    document.body.style.overflow = 'hidden';
 
     const isFocus = data.focusMode;
+    const target = data.focusTaskTitle || data.focusGoalTitle || '';
+
+    // --- 🚀 Auto-Unblock Logic: Smart Context Detection ---
+    if (isFocus && target) {
+        const pageText = document.title.toLowerCase();
+        const targetWords = target.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+
+        // If the page title matches any significant words from the goal, auto-unblock it!
+        if (targetWords.length > 0 && targetWords.some(w => pageText.includes(w))) {
+            console.log("LifeOS: Auto-unblocking because topic matches study subject.");
+            chrome.runtime.sendMessage({
+                type: 'LOG_OVERRIDE',
+                url: window.location.href,
+                title: document.title,
+                reason: "Auto-unblocked: Topic matches study subject (" + target + ")"
+            });
+            chrome.runtime.sendMessage({ type: 'FOCUS_OVERRIDE_LOGGED' });
+            return; // Skip rendering the block overlay entirely
+        }
+    }
+
+    document.body.style.overflow = 'hidden';
+
     const accentColor = isFocus ? '#3b82f6' : '#ff6e27';
     const borderColor = isFocus ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 100, 0, 0.3)';
     const icon = isFocus ? '🎯' : '🛑';
     const headline = isFocus ? 'Focus Session Active' : 'Context Violation Detected';
 
     let contextBlock = '';
-    if (isFocus && (data.focusTaskTitle || data.focusGoalTitle)) {
-        const target = data.focusTaskTitle || data.focusGoalTitle;
+    if (isFocus && target) {
         const timeInfo = data.remainingMinutes ? `${data.remainingMinutes} min remaining` : '';
         contextBlock = `
             <div style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 10px; margin-bottom: 30px; text-align: center;">

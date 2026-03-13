@@ -1,0 +1,155 @@
+'use client';
+
+import { useState } from 'react';
+import Header from '@/components/Header';
+
+interface StudyBlock {
+    title: string;
+    duration: number;
+    type: 'study' | 'break';
+    description: string;
+}
+
+interface StudyPlan {
+    topic: string;
+    overview: string;
+    blocks: StudyBlock[];
+}
+
+export default function StudyPlanPage() {
+    const [topic, setTopic] = useState('');
+    const [duration, setDuration] = useState(60);
+    const [difficulty, setDifficulty] = useState('intermediate');
+    const [plan, setPlan] = useState<StudyPlan | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const generatePlan = async () => {
+        if (!topic) return;
+        setLoading(true);
+        setError('');
+        try {
+            const res = await fetch('/api/study-plan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ topic, durationMinutes: duration, difficulty })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setPlan(data);
+            } else {
+                setError(data.error || 'Failed to generate plan');
+            }
+        } catch (e) {
+            setError('Error connecting to server');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex-1 flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-main)' }}>
+            <Header title="Study Session Planning" />
+            <div className="flex-1 overflow-y-auto p-6">
+                <div className="max-w-4xl mx-auto space-y-6">
+                    {/* Header Section */}
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h2 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>AI Study Architect</h2>
+                            <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>Generate optimized Pomodoro-style study sessions for any topic.</p>
+                        </div>
+                    </div>
+
+                    {/* Generator Form */}
+                    <div className="card p-6 border rounded-xl" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                            <div className="md:col-span-3">
+                                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>What do you want to study?</label>
+                                <input
+                                    type="text"
+                                    className="w-full input-field"
+                                    placeholder="e.g., Quantum Computing, Rust Ownership, React Hooks"
+                                    value={topic}
+                                    onChange={(e) => setTopic(e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Time Available (min)</label>
+                                <input
+                                    type="number"
+                                    className="w-full input-field"
+                                    value={duration}
+                                    onChange={(e) => setDuration(parseInt(e.target.value) || 60)}
+                                    min={10} max={480}
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Current Skill Level</label>
+                                <select
+                                    className="w-full input-field"
+                                    value={difficulty}
+                                    onChange={(e) => setDifficulty(e.target.value)}
+                                >
+                                    <option value="beginner">Beginner</option>
+                                    <option value="intermediate">Intermediate</option>
+                                    <option value="advanced">Advanced</option>
+                                </select>
+                            </div>
+                            <div className="flex items-end">
+                                <button
+                                    className="w-full btn-primary h-[42px] flex items-center justify-center gap-2"
+                                    onClick={generatePlan}
+                                    disabled={loading || !topic}
+                                >
+                                    {loading ? 'Generating...' : '✨ Generate Plan'}
+                                </button>
+                            </div>
+                        </div>
+                        {error && <p className="text-red-500 text-sm">{error}</p>}
+                    </div>
+
+                    {/* Generated Plan */}
+                    {plan && (
+                        <div className="space-y-6 animate-fade-in section-slide-up">
+                            <div className="card p-6 border rounded-xl" style={{ borderColor: 'rgba(59, 130, 246, 0.3)', background: 'linear-gradient(to bottom right, rgba(59, 130, 246, 0.05), transparent)' }}>
+                                <h3 className="text-xl font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                                    <span>🧠</span> {plan.topic}
+                                </h3>
+                                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{plan.overview}</p>
+                            </div>
+
+                            <div className="relative">
+                                {/* Timeline line */}
+                                <div className="absolute left-6 top-0 bottom-0 w-0.5" style={{ background: 'var(--border)' }}></div>
+
+                                <div className="space-y-4">
+                                    {plan.blocks.map((block, idx) => (
+                                        <div key={idx} className="relative z-10 flex gap-4">
+                                            <div className="flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center border-4 border-[var(--bg-main)]"
+                                                style={{
+                                                    background: block.type === 'study' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                                                    color: block.type === 'study' ? '#3b82f6' : '#10b981'
+                                                }}>
+                                                {block.type === 'study' ? '📚' : '☕'}
+                                            </div>
+                                            <div className="flex-1 card p-4 border rounded-xl" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+                                                <div className="flex justify-between items-start mb-1">
+                                                    <h4 className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{block.title}</h4>
+                                                    <span className="text-xs font-bold px-2 py-1 rounded" style={{
+                                                        background: block.type === 'study' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                                                        color: block.type === 'study' ? '#3b82f6' : '#10b981'
+                                                    }}>{block.duration} min</span>
+                                                </div>
+                                                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{block.description}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}

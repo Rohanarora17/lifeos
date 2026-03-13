@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import ScoreRing from '@/components/ScoreRing';
 import DonutChart from '@/components/DonutChart';
+import AICoach from '@/components/AICoach';
 
 interface DashboardData {
   today: {
@@ -577,18 +578,37 @@ export default function DashboardPage() {
       {/* Intelligence Row: What to Work On + Goal Progress + Brain Health */}
       {data?.intelligence && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* What to Work on Next */}
-          <div className="card" style={{ borderColor: 'rgba(102, 126, 234, 0.2)' }}>
+          {/* Daily Plan */}
+          <div className="card" style={{ borderColor: 'rgba(102, 126, 234, 0.4)', background: 'linear-gradient(to bottom, rgba(102,126,234,0.05), transparent)' }}>
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-              <span>🧠</span> What to Work on Next
+              <span>📋</span> Daily Plan (AI Curated)
             </h3>
             <div className="space-y-2">
               {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map((t, i) => (
-                <div className="flex items-start gap-2 py-2 group">
-                  <span className="text-xs font-bold mt-0.5" style={{
-                    color: i === 0 ? 'var(--accent-green)' : 'var(--text-muted)',
-                    minWidth: '1.2rem'
-                  }}>{i + 1}.</span>
+                <div key={t.id} className="flex items-start gap-3 py-2 group">
+                  <button
+                    onClick={() => {
+                      // Optimistic remove
+                      setData(prev => {
+                        if (!prev || !prev.intelligence) return prev;
+                        return {
+                          ...prev,
+                          intelligence: {
+                            ...prev.intelligence,
+                            recommendedTasks: prev.intelligence.recommendedTasks.filter(rt => rt.id !== t.id)
+                          }
+                        };
+                      });
+                      // API Call
+                      fetch('/api/tasks/' + t.id, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'done' })
+                      }).catch(() => { });
+                    }}
+                    title="Mark task as done"
+                    className="w-5 h-5 rounded-full mt-0.5 border-2 flex-shrink-0 border-slate-500 hover:border-green-500 hover:bg-green-500/10 transition-colors"
+                  />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{t.title}</p>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t.reason}</p>
@@ -822,6 +842,7 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+      <AICoach />
     </div>
   );
 }

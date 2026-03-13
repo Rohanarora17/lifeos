@@ -562,6 +562,33 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             }
         }
 
+        // --- 🚀 Auto-Start Focus Session Detection ---
+        if (!inFocus && alarm.name === 'checkNudge') {
+            const TOOL_DOMAINS = ['github.com', 'stackoverflow.com', 'docs.', 'mdn.',
+                'localhost', 'coursera.org', 'edx.org', 'replit.com', 'figma.com',
+                'chat.openai.com', 'claude.ai', 'gemini.google.com', 'cursor.com', 'vercel.com'];
+
+            const isToolDomain = TOOL_DOMAINS.some(t => domain.includes(t)) || domain.endsWith('.edu');
+
+            if (isToolDomain && minutesOnSite >= 5) {
+                // Auto-trigger focus mode via message passing to itself
+                chrome.runtime.sendMessage({
+                    type: 'START_FOCUS',
+                    taskTitle: `Deep Work: ${domain}`,
+                    durationMinutes: 60
+                });
+
+                chrome.notifications.create('lifeos-autofocus', {
+                    type: 'basic',
+                    iconUrl: 'icons/icon128.png',
+                    title: '🎯 Focus Auto-Started!',
+                    message: `You've been on ${domain} for ${minutesOnSite} minutes. I've automatically started a 60m focus session to block distractions. Keep it up!`,
+                    priority: 2,
+                });
+                return; // Skip general nudge
+            }
+        }
+
         // --- General nudge (AI-driven, runs every 1 min) ---
         try {
             const dataInfo = await chrome.storage.local.get('apiKey');
@@ -661,141 +688,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Phase 21: Focus Session Management
     if (message.type === 'START_FOCUS') {
-        (async () => {
-            try {
-                const dataInfo = await chrome.storage.local.get('apiKey');
-                const apiKey = dataInfo.apiKey;
-
-                // Start session on backend
-                const res = await fetch(`${API_BASE}/focus-session`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-                    body: JSON.stringify({
-                        action: 'start',
-                        goalId: message.goalId || null,
-                        goalTitle: message.goalTitle || null,
-                        taskId: message.taskId || null,
-                        taskTitle: message.taskTitle || null,
-                        durationMinutes: message.durationMinutes || 60,
-                    })
-                });
-
-                const data = await res.json();
-
-                // Initialize focus session state
-                focusSession = {
-                    active: true,
-                    sessionId: data.sessionId,
-                    goalId: message.goalId || null,
-                    goalTitle: message.goalTitle || null,
-                    taskId: message.taskId || null,
-                    taskTitle: message.taskTitle || null,
-                    startedAt: Date.now(),
-                    durationMinutes: message.durationMinutes || 60,
-                    activitiesLog: [],
-                    blockedCount: 0,
-                    overrideCount: 0,
-                    tabGroupId: -1,
-                };
-
-                // Auto-create and populate a Chrome tab group for this focus session
-                // NOTE: We scan tabs BEFORE clearing the evaluation cache so we have classification data
-                try {
-                    if (chrome.tabGroups) {
-                        const allTabs = await chrome.tabs.query({ currentWindow: true });
-                        const goal = message.goalTitle || message.taskTitle || '';
-
-                        // Score each tab: group it if it looks productive/relevant to the goal
-                        const tabsToGroup = [];
-                        for (const tab of allTabs) {
-                            if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) continue;
-                            if (isPrivacyBlocked(tab.url, extractDomain(tab.url))) continue;
-
-                            const domain = extractDomain(tab.url);
-                            const cached = evaluationCache.get(domain + '|' + (tab.url || ''));
-
-                            // Always include: if cached as not-distraction
-                            let shouldGroup = cached && !cached.isDistraction;
-
-                            // Also include: if keywords from goal appear in title or URL
-                            if (!shouldGroup && goal) {
-                                const goalWords = goal.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-                                const tabText = ((tab.title || '') + ' ' + (tab.url || '')).toLowerCase();
-                                shouldGroup = goalWords.some(w => tabText.includes(w));
-                            }
-
-                            // Always include known learning/tool domains
-                            const toolDomains = ['github.com', 'stackoverflow.com', 'youtube.com', 'docs.', 'mdn.', 'localhost',
-                                'ocw.mit.edu', 'coursera.org', 'edx.org', 'khanacademy.org', 'notion.so', 'figma.com',
-                                'linear.app', 'vercel.com', 'supabase.com', 'google.com', 'chat.openai.com', 'chatgpt.com',
-                                'claude.ai', 'gemini.google.com', 'replit.com', 'codepen.io', 'codesandbox.io',
-                                'perplexity.ai', 'udemy.com', 'medium.com', 'dev.to', 'npmjs.com', 'devdocs.io',
-                                'scholar.google.com', 'arxiv.org', 'wikipedia.org'];
-                            if (!shouldGroup && toolDomains.some(t => domain.includes(t))) shouldGroup = true;
-
-                            // Always include .edu domains (university sites)
-                            if (!shouldGroup && domain.endsWith('.edu')) shouldGroup = true;
-
-                            // Title-based heuristic for academic/learning content
-                            if (!shouldGroup) {
-                                const title = (tab.title || '').toLowerCase();
-                                const academicKeywords = ['lecture', 'course', 'tutorial', 'documentation', 'handbook',
-                                    'textbook', 'chapter', 'proof', 'algorithm', 'research', 'paper', 'thesis'];
-                                if (academicKeywords.some(k => title.includes(k))) shouldGroup = true;
-                            }
-
-                            if (shouldGroup) tabsToGroup.push(tab.id);
-                        }
-
-                        if (tabsToGroup.length > 0) {
-                            const groupId = await chrome.tabs.group({ tabIds: tabsToGroup });
-                            const groupTitle = message.taskTitle || message.goalTitle || 'Focus';
-                            await chrome.tabGroups.update(groupId, {
-                                title: `🎯 ${groupTitle.slice(0, 30)}`,
-                                color: 'blue',
-                                collapsed: false,
-                            });
-                            focusSession.tabGroupId = groupId;
-                        } else {
-                            // Fallback: group at least the current active tab
-                            const activeTabs = await chrome.tabs.query({ currentWindow: true, active: true });
-                            if (activeTabs[0]) {
-                                const groupId = await chrome.tabs.group({ tabIds: [activeTabs[0].id] });
-                                await chrome.tabGroups.update(groupId, {
-                                    title: `🎯 ${(message.taskTitle || message.goalTitle || 'Focus').slice(0, 30)}`,
-                                    color: 'blue',
-                                });
-                                focusSession.tabGroupId = groupId;
-                            }
-                        }
-                    }
-                } catch (e) { console.warn('[LifeOS] Could not create focus tab group:', e); }
-
-                // NOW clear evaluation cache so all pages get re-evaluated in focus context
-                evaluationCache.clear();
-
-                // Set a timer alarm for session expiry
-                chrome.alarms.create('focusSessionEnd', {
-                    delayInMinutes: message.durationMinutes || 60
-                });
-
-                // Set a fast nudge alarm for focus drift detection (every 30s)
-                chrome.alarms.create('focusNudge', {
-                    periodInMinutes: 0.5
-                });
-
-                // Update badge to show focus mode
-                chrome.action.setBadgeText({ text: '🎯' });
-                chrome.action.setBadgeBackgroundColor({ color: '#3b82f6' });
-
-                // Persist to storage
-                chrome.storage.local.set({ focusSession });
-
-                console.log('[LifeOS] Focus session started:', focusSession);
-            } catch (e) {
-                console.error('[LifeOS] Failed to start focus session:', e);
-            }
-        })();
+        startFocusSessionLocal(message.goalTitle, message.taskTitle, message.taskId, message.goalId, message.durationMinutes);
         sendResponse({ ok: true });
     }
 
