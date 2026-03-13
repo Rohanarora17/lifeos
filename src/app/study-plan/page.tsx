@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Header from '@/components/Header';
 
 interface StudyBlock {
     title: string;
@@ -48,18 +47,19 @@ export default function StudyPlanPage() {
     };
 
     return (
-        <div className="flex-1 flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-main)' }}>
-            <Header title="Study Session Planning" />
-            <div className="flex-1 overflow-y-auto p-6">
-                <div className="max-w-4xl mx-auto space-y-6">
-                    {/* Header Section */}
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h2 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>AI Study Architect</h2>
-                            <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>Generate optimized Pomodoro-style study sessions for any topic.</p>
-                        </div>
-                    </div>
+        <div className="max-w-[1000px] mx-auto animate-fade-in p-6">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6">
+                <div>
+                    <h1 className="text-2xl font-bold">Study Plans 📚</h1>
+                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                        Generate optimized Pomodoro-style study sessions for any topic.
+                    </p>
+                </div>
+            </div>
 
+            <div className="flex-1 overflow-y-auto">
+                <div className="max-w-4xl mx-auto space-y-6">
                     {/* Generator Form */}
                     <div className="card p-6 border rounded-xl" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">

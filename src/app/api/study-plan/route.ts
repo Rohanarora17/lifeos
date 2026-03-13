@@ -49,7 +49,7 @@ CRITICAL RULES:
             }
         });
 
-        const text = result.text();
+        const text = result.text || '';
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
             const plan = JSON.parse(jsonMatch[0]);
