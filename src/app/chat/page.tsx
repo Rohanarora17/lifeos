@@ -38,14 +38,18 @@ export default function ChatPage() {
 
         const val = input.trim();
         setInput('');
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: val }]);
+
+        const newUserMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: val };
+        const updatedMessages = [...messages, newUserMsg];
+        setMessages(updatedMessages);
         setLoading(true);
 
         try {
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: val })
+                // Send the entire conversation history to the API for memory context
+                body: JSON.stringify({ messages: updatedMessages.map(m => ({ role: m.role, content: m.content })) })
             });
             const data = await res.json();
 

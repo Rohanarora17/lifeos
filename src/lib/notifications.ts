@@ -8,6 +8,7 @@ export type AlertType =
     | 'cognitive_load'    // Too many open tasks (Zeigarnik)
     | 'focus_drop'        // CUSUM anomaly / distraction spike
     | 'habit_streak'      // Habit at risk of breaking streak
+    | 'midday_checkin'    // Pulse check
     | 'goal_gradient'     // Goal near completion — push!
     | 'goal_deadline'     // Goal deadline approaching
     | 'task_reminder'     // Task due today/tomorrow
@@ -33,6 +34,7 @@ const DEDUP_MINUTES: Record<string, number> = {
     cognitive_load: 60,
     focus_drop: 30,
     habit_streak: 120,
+    midday_checkin: 120,
     goal_gradient: 240,
     goal_deadline: 720,
     task_reminder: 360,
@@ -212,11 +214,11 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (sent) triggered.push('focus_drop');
         }
 
-        // 3. Habit Streak at Risk
+        // 3. Habit Streak at Risk (runs at 10am, 3pm, 8pm)
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const hour = new Date(Date.now() + 19800000).getHours();
 
-        if (hour >= 20) { // After 8 PM
+        if (hour === 10 || hour === 15 || hour >= 20) {
             const uncheckedHabits = db.prepare(`
         SELECT h.name, h.icon FROM habits h
         WHERE h.archived = 0
@@ -234,6 +236,16 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
                 );
                 if (sent) triggered.push('habit_streak');
             }
+        }
+
+        // 3.5 Mid-day check-in pulse
+        if (hour === 13) {
+            const sent = await sendAlert(
+                'midday_checkin',
+                `Mid-day pulse check! How is your focus so far today? Take 5 minutes to review your active tasks.`,
+                'info'
+            );
+            if (sent) triggered.push('midday_checkin');
         }
 
         // 4. Goal Gradient — goals near completion
