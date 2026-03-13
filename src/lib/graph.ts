@@ -132,21 +132,22 @@ export function propagateMastery(taskId: number | null, studySessionId: number |
  * Update a single node's mastery using the asymptotic BKT formula,
  * then propagate forward (to dependents) with discounted weight.
  */
-function updateNodeMastery(nodeId: number, contribution: number, depth: number = 0): void {
+function updateNodeMastery(nodeId: number, contribution: number, depth: number = 0, studyMinutes: number = 30, qualityMultiplier: number = 1.0): void {
     if (depth > 4) return; // max propagation depth
 
     const db = getDb();
     const node = db.prepare(`SELECT id, mastery FROM knowledge_nodes WHERE id = ?`).get(nodeId) as { id: number; mastery: number } | undefined;
     if (!node) return;
 
-    // BKT asymptotic formula: new_mastery = prev + contribution * (1 - prev) * 0.5
-    const delta = contribution * (1 - node.mastery) * 0.5;
-    const newMastery = Math.min(1.0, node.mastery + delta);
+    // Quality-weighted mastery formula
+    const BASE_INCREMENT = 0.10; // Assume note_taking equivalent for now
+    const increment = BASE_INCREMENT * qualityMultiplier * Math.min(studyMinutes / 30, 2.0);
+
+    const newMastery = Math.min(1.0, node.mastery + increment);
 
     db.prepare(`UPDATE knowledge_nodes SET mastery = ? WHERE id = ?`).run(newMastery, nodeId);
 
     // Forward propagation to dependent nodes via prerequisite edges
-    // Only propagates meaningful boost if the node mastery crosses 0.6 (threshold for "ready")
     const edges = db.prepare(
         `SELECT * FROM knowledge_edges WHERE from_node_id = ? AND edge_type = 'prerequisite'`
     ).all(nodeId) as KnowledgeEdge[];
@@ -155,7 +156,7 @@ function updateNodeMastery(nodeId: number, contribution: number, depth: number =
         for (const edge of edges) {
             const priorBoost = (newMastery - 0.6) * edge.weight * 0.2;
             if (priorBoost > 0.01) {
-                updateNodeMastery(edge.to_node_id, priorBoost * 0.3, depth + 1);
+                updateNodeMastery(edge.to_node_id, priorBoost * 0.3, depth + 1, studyMinutes, qualityMultiplier);
             }
         }
     }
