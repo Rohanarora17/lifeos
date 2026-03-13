@@ -918,15 +918,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // Determine if we should evaluate for blocking
         const inFocus = focusSession && focusSession.active;
 
-        // In non-focus mode, still need active goals to evaluate
-        if (!inFocus) {
-            await refreshContext();
-            if (!activeContext.activeGoals || activeContext.activeGoals.length === 0) return;
-        }
+        // Only enforce context-aware blocking during active focus sessions
+        if (!inFocus) return;
 
-        const cacheKey = inFocus
-            ? `focus::${focusSession.sessionId}::${tab.url}`
-            : `${tab.url}::${activeContext.activeGoals.map(g => g.id).join('-')}`;
+        const cacheKey = `focus::${focusSession.sessionId}::${tab.url}`;
 
         if (evaluationCache.has(cacheKey)) {
             const cached = evaluationCache.get(cacheKey);
@@ -935,11 +930,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                     chrome.tabs.sendMessage(tabId, {
                         type: 'BLOCK_PAGE',
                         reason: cached.reason,
-                        goals: inFocus ? [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }] : activeContext.activeGoals,
+                        goals: [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }],
                         focusMode: inFocus,
-                        focusGoalTitle: inFocus ? focusSession.goalTitle : null,
-                        focusTaskTitle: inFocus ? focusSession.taskTitle : null,
-                        remainingMinutes: inFocus ? Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)) : null,
+                        focusGoalTitle: focusSession.goalTitle,
+                        focusTaskTitle: focusSession.taskTitle,
+                        remainingMinutes: Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)),
                     });
                 }
                 return;
@@ -955,10 +950,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             const evalBody = {
                 url: tab.url,
                 title: tab.title || '',
-                activeGoals: inFocus ? [] : activeContext.activeGoals,
+                activeGoals: [],
                 focusMode: inFocus,
-                focusGoalTitle: inFocus ? focusSession.goalTitle : undefined,
-                focusTaskTitle: inFocus ? focusSession.taskTitle : undefined,
+                focusGoalTitle: focusSession.goalTitle,
+                focusTaskTitle: focusSession.taskTitle,
             };
 
             const res = await fetch(`${API_BASE}/extension/evaluate`, {
@@ -974,19 +969,17 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
                 if (isDistraction) {
                     // Track blocked count during focus sessions
-                    if (inFocus) {
-                        focusSession.blockedCount++;
-                        chrome.storage.local.set({ focusSession });
-                    }
+                    focusSession.blockedCount++;
+                    chrome.storage.local.set({ focusSession });
 
                     chrome.tabs.sendMessage(tabId, {
                         type: 'BLOCK_PAGE',
                         reason: reason,
-                        goals: inFocus ? [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }] : activeContext.activeGoals,
+                        goals: [{ title: focusSession.goalTitle || focusSession.taskTitle || 'Focus Session' }],
                         focusMode: inFocus,
-                        focusGoalTitle: inFocus ? focusSession.goalTitle : null,
-                        focusTaskTitle: inFocus ? focusSession.taskTitle : null,
-                        remainingMinutes: inFocus ? Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)) : null,
+                        focusGoalTitle: focusSession.goalTitle,
+                        focusTaskTitle: focusSession.taskTitle,
+                        remainingMinutes: Math.max(0, Math.round(((focusSession.durationMinutes * 60) - (Date.now() - focusSession.startedAt) / 1000) / 60)),
                     });
                 }
             }
