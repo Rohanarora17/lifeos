@@ -112,15 +112,17 @@ export function getAccountabilityScore(stats: {
     totalTasks: number;
     habitsCompleted: number;
     totalHabits: number;
+    knowledgeMasteryBonus?: number; // 0-15 pts from knowledge graph
 }): number {
-    const { productiveMinutes, distractionMinutes, tasksCompleted, totalTasks, habitsCompleted, totalHabits } = stats;
+    const { productiveMinutes, distractionMinutes, tasksCompleted, totalTasks, habitsCompleted, totalHabits, knowledgeMasteryBonus = 0 } = stats;
 
     const totalActive = productiveMinutes + distractionMinutes;
     const focusScore = totalActive > 0 ? (productiveMinutes / totalActive) * 40 : 20;
     const taskScore = totalTasks > 0 ? (tasksCompleted / totalTasks) * 30 : 15;
-    const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * 30 : 15;
+    const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * 15 : 7.5;
+    const masteryBonus = Math.min(15, knowledgeMasteryBonus);
 
-    return Math.min(100, Math.round(focusScore + taskScore + habitScore));
+    return Math.min(100, Math.round(focusScore + taskScore + habitScore + masteryBonus));
 }
 
 // -----------------------------------------------------------------------------

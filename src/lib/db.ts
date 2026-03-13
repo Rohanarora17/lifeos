@@ -86,6 +86,38 @@ function initSchema(db: Database.Database) {
   // Backfill started_at from old start_time column if it exists
   try { db.prepare("UPDATE focus_sessions SET started_at = start_time WHERE started_at IS NULL AND start_time IS NOT NULL").run(); } catch (e) { }
 
+  // === Knowledge Graph Tables ===
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS knowledge_nodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT,
+        goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+        node_type TEXT NOT NULL DEFAULT 'concept' CHECK(node_type IN ('concept', 'skill', 'topic')),
+        mastery REAL NOT NULL DEFAULT 0.0 CHECK(mastery >= 0.0 AND mastery <= 1.0),
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
+      );
+
+      CREATE TABLE IF NOT EXISTS knowledge_edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+        to_node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+        edge_type TEXT NOT NULL DEFAULT 'prerequisite' CHECK(edge_type IN ('prerequisite', 'related')),
+        weight REAL NOT NULL DEFAULT 0.5 CHECK(weight > 0.0 AND weight <= 1.0),
+        UNIQUE(from_node_id, to_node_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS node_task_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+        task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        study_session_id INTEGER REFERENCES focus_sessions(id) ON DELETE SET NULL,
+        contribution REAL NOT NULL DEFAULT 0.4 CHECK(contribution > 0.0 AND contribution <= 1.0)
+      );
+    `);
+  } catch (e) { /* tables may already exist */ }
+
   // Insert default settings if not present
   const insertSetting = db.prepare(
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'

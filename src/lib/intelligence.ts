@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import { getStreakCount } from './scoring';
+import { getUnblockedNextConcepts } from './graph';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -78,6 +79,20 @@ export function getSmartPrioritization(): RecommendedTask[] {
     const now = Date.now();
     const priorityWeight: Record<string, number> = { critical: 40, high: 30, medium: 20, low: 10 };
 
+    // Graph-aware: Boost tasks linked to unblocked, undermastered concepts
+    let graphBoostTaskIds: Set<number> = new Set();
+    try {
+        const activeGoals = db.prepare(`SELECT DISTINCT goal_id FROM tasks WHERE status IN ('today','doing','this_week') AND goal_id IS NOT NULL`).all() as { goal_id: number }[];
+        for (const { goal_id } of activeGoals) {
+            const unblocked = getUnblockedNextConcepts(goal_id);
+            for (const concept of unblocked) {
+                for (const task of concept.linked_tasks) {
+                    if (task.status !== 'done') graphBoostTaskIds.add(task.id);
+                }
+            }
+        }
+    } catch (e) { /* non-critical */ }
+
     const scored = activeTasks.map(t => {
         let score = 0;
         let reasons: string[] = [];
@@ -86,6 +101,12 @@ export function getSmartPrioritization(): RecommendedTask[] {
         const pw = priorityWeight[t.priority] || 20;
         score += pw;
         if (pw >= 30) reasons.push(`${t.priority} priority`);
+
+        // Knowledge graph boost: task directly addresses an unblocked concept
+        if (graphBoostTaskIds.has(t.id)) {
+            score += 18;
+            reasons.push('addresses knowledge gap');
+        }
 
         // Deadline urgency (TMT-inspired: closer deadline = higher score)
         if (t.due_date) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sanitizeText } from '@/lib/sanitize';
+import { propagateMastery } from '@/lib/graph';
 
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
@@ -155,6 +156,9 @@ export async function PATCH(request: NextRequest) {
                         if (task.priority === 'critical') coins = 100;
                     }
                     db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(coins, 'Completed Task (ID: ' + id + ')');
+
+                    // Propagate mastery through knowledge graph for this task
+                    try { propagateMastery(id, null); } catch (e) { /* non-critical */ }
                 } catch (e) { console.error('Error awarding task coins:', e); }
 
             } else {

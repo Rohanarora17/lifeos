@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { getLevel, getStreakCount, getAccountabilityScore } from '@/lib/scoring';
 import { getCognitiveLoadAudit, getSmartPrioritization, getSelfEfficacyMode, detectGoalConflicts } from '@/lib/intelligence';
 import { getUnreadAlerts } from '@/lib/notifications';
+import { getKnowledgeMasteryBonus } from '@/lib/graph';
 
 // GET: Dashboard overview data
 export async function GET(request: NextRequest) {
@@ -57,7 +58,8 @@ export async function GET(request: NextRequest) {
       "SELECT COUNT(*) as count FROM github_activity WHERE date(created_at) = ?"
     ).get(today) as { count: number }).count;
 
-    // Accountability score
+    // Accountability score with knowledge graph mastery bonus
+    const knowledgeMasteryBonus = getKnowledgeMasteryBonus();
     const score = getAccountabilityScore({
       productiveMinutes: activityStats.productive_minutes || 0,
       distractionMinutes: activityStats.distraction_minutes || 0,
@@ -65,6 +67,7 @@ export async function GET(request: NextRequest) {
       totalTasks: Math.max((taskStats.active_today || 0) + (taskStats.completed_today || 0), 1),
       habitsCompleted: habitStats.completed_today || 0,
       totalHabits: Math.max(habitStats.total_habits || 1, 1),
+      knowledgeMasteryBonus,
     });
 
     // Latest morning brief

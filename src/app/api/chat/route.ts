@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
 import { MODEL_PRO } from '@/lib/models';
 import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
+import { getKnowledgeGapSummary } from '@/lib/graph';
 import { Type } from '@google/genai';
 
 const DB_SCHEMA = `
@@ -105,14 +106,17 @@ export async function POST(request: NextRequest) {
 
         const behaviorContext = buildBehaviorContext();
         const goalsContext = typeof buildGoalsContext === 'function' ? buildGoalsContext() : '';
+        const knowledgeContext = getKnowledgeGapSummary();
 
         const systemInstruction = "You are Jarvis, the core intelligence engine and personal assistant of LifeOS.\\n" +
             "You have direct access to the user's LifeOS database via tools.\\n" +
             "Always be proactive, concise, and hold the user accountable.\\n\\n" +
             "Behavioral Context:\\n" + behaviorContext + "\\n\\n" +
             "Goals Context:\\n" + goalsContext + "\\n\\n" +
+            (knowledgeContext ? "Knowledge Graph:\\n" + knowledgeContext + "\\n\\n" : "") +
             "When users ask questions about their data, use the queryDatabase tool to fetch it.\\n" +
             "When users ask to create a task, check a habit, or start a focus session, use the respective tool.\\n" +
+            "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain data naturally.";
 
         // Format history for @google/genai SDK v3
