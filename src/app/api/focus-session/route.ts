@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
 import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
+import { MODEL_PRO } from '@/lib/models';
 
 // POST: Start or complete a focus session
 export async function POST(request: NextRequest) {
@@ -292,7 +293,7 @@ Generate a comprehensive focus session report with these sections:
 Keep the total report under 400 words. Be specific to this session's data — no generic advice.`;
 
     const result = await ai.models.generateContent({
-        model: 'gemini-pro-latest',
+        model: MODEL_PRO,
         contents: prompt,
     });
 

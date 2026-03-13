@@ -8,6 +8,7 @@
 
 import { getDb, getSetting } from './db';
 import { getGenAI } from './ai';
+import { MODEL_PRO } from './models';
 
 // ============================================================
 //  1. FOCUS DEPTH SCORING
@@ -629,8 +630,13 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
       return r.v;
     }
     case 'focus_score': {
-      // Average focus score over the period
-      return 50; // computed separately
+      // Average focus/accountability score over the period
+      const r = db.prepare(`
+        SELECT COALESCE(AVG(accountability_score), 0) as v
+        FROM daily_scores
+        WHERE date >= date('now', '${range}', '${offset}') AND date < date('now', '${baseOffset}')
+      `).get() as { v: number };
+      return Math.round(r.v);
     }
     case 'github_commits': {
       const r = db.prepare(`
@@ -1203,7 +1209,7 @@ Generate 6-8 insights across ALL categories. Reference specific numbers. Be dire
 Generate 3-5 behavioral_memories — these are durable patterns you want to remember for future analysis.`;
 
       const result = await ai.models.generateContent({
-        model: 'gemini-pro-latest',
+        model: MODEL_PRO,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });

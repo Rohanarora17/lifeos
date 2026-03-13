@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
+import { MODEL_FLASH } from '@/lib/models';
 
 // POST: Accepts highlighted text from the Chrome Extension context menu,
 // passes it through Gemini with the user's active goals, and inserts a Task.
@@ -39,7 +40,7 @@ Return JSON matching this schema:
 }`;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_FLASH,
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',

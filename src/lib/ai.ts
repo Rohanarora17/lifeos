@@ -2,23 +2,32 @@ import { GoogleGenAI } from '@google/genai';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
+import { MODEL_PRO, MODEL_FLASH } from './models';
 
 let genAI: GoogleGenAI | null = null;
 
 export function getGenAI(): GoogleGenAI | null {
     if (!genAI) {
-        // First try Vertex AI setup (GCP project & location)
+        const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY || getSetting('gemini_api_key');
         const projectId = process.env.GCP_PROJECT_ID || getSetting('gcp_project_id');
         const location = process.env.GCP_LOCATION || getSetting('gcp_location') || 'us-central1';
 
-        // Fallback to standard Gemini API key
-        const apiKey = process.env.GEMINI_API_KEY || getSetting('gemini_api_key');
+        console.log(`[getGenAI] hasApiKey: ${!!apiKey}, projectId: ${projectId || 'none'}`);
 
-        if (projectId) {
-            genAI = new GoogleGenAI({ vertexai: true, project: projectId, location: location });
-        } else if (apiKey) {
+        if (apiKey) {
+            // Standard Gemini Developer API (works with GCP API keys and AI Studio keys).
+            // Gemini 3 models are available on this path.
+            // NOTE: Vertex AI (aiplatform.googleapis.com) does NOT accept API keys —
+            //       it requires OAuth2 / Application Default Credentials (service account).
+            //       Only use Vertex AI mode when no API key is present (ADC path).
             genAI = new GoogleGenAI({ apiKey });
+        } else if (projectId) {
+            // Vertex AI mode via Application Default Credentials (no API key).
+            // Requires: gcloud auth application-default login OR a service account.
+            // @ts-ignore
+            genAI = new GoogleGenAI({ vertexai: { project: projectId, location } });
         } else {
+            console.log('[getGenAI] No credentials found — returning null');
             return null;
         }
     }
@@ -164,7 +173,7 @@ RULES:
 - News sites → neutral / news`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-flash-latest',
+                model: MODEL_FLASH,
                 contents: prompt,
                 config: {
                     systemInstruction: "You are a precise productivity classification engine.",
@@ -324,7 +333,7 @@ Use the behavioral profile above to personalize this report. Reference their pat
 
         // PRO: Deep synthesis and behavior reasoning
         const result = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_PRO,
             contents: prompt
         });
         return (result.text || '').trim();
@@ -372,7 +381,7 @@ Use the behavioral profile to personalize this briefing. Reference their typical
 
         // PRO: Strategic planning and motivation
         const result = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_PRO,
             contents: prompt
         });
         return (result.text || '').trim();
@@ -524,7 +533,7 @@ If an Implementation Intention matches their current distraction (e.g., they are
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-flash-latest',
+                model: MODEL_FLASH,
                 contents: prompt,
                 config: {
                     responseMimeType: 'application/json'

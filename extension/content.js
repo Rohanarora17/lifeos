@@ -78,16 +78,30 @@ function injectBlockOverlay(data) {
 
     const overrideLabel = isFocus ? 'I need this for my task' : 'Override Block';
 
+    // Friction: Calculate delay based on whether it's a focus session and how long is left
+    let delaySeconds = 5; // Default 5s delay
+    if (isFocus) {
+        if (data.remainingMinutes > 30) delaySeconds = 15;
+        else if (data.remainingMinutes > 10) delaySeconds = 10;
+        else delaySeconds = 5;
+    }
+
     const overlayHTML = `
         <div id="lifeos-block-overlay" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(10, 10, 12, 0.98); z-index: 2147483647; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif; color: #fff; backdrop-filter: blur(10px);">
-            <div style="max-width: 500px; text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.05); border: 1px solid ${borderColor}; border-radius: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+            <div style="max-width: 500px; width: 100%; text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.05); border: 1px solid ${borderColor}; border-radius: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
                 <div style="font-size: 48px; margin-bottom: 20px;">${icon}</div>
                 <h1 style="font-size: 24px; font-weight: 900; margin: 0 0 10px 0; letter-spacing: -0.5px; color: ${accentColor};">${headline}</h1>
                 <p style="font-size: 16px; color: #aaa; margin-bottom: 30px; line-height: 1.5;">${data.reason}</p>
                 ${contextBlock}
+                
+                <div id="lifeos-override-section" style="margin-bottom: 25px; text-align: left; display: none;">
+                    <label style="display: block; font-size: 12px; text-transform: uppercase; color: #888; margin-bottom: 8px;">Why do you need to override? (Required)</label>
+                    <input type="text" id="lifeos-override-reason" placeholder="Type reason here (min 10 chars)..." style="width: 100%; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid #444; border-radius: 8px; color: #fff; font-size: 14px; box-sizing: border-box;">
+                </div>
+
                 <div style="display: flex; gap: 15px; justify-content: center;">
-                    <button id="lifeos-btn-close" style="padding: 12px 24px; background: ${accentColor}; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer;">Close Tab</button>
-                    <button id="lifeos-btn-override" style="padding: 12px 24px; background: transparent; color: #888; border: 1px solid #444; border-radius: 8px; font-size: 14px; cursor: pointer;">${overrideLabel}</button>
+                    <button id="lifeos-btn-close" style="padding: 12px 24px; background: ${accentColor}; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; flex: 1;">Close Tab</button>
+                    <button id="lifeos-btn-override" disabled style="padding: 12px 24px; background: rgba(255,255,255,0.05); color: #555; border: 1px solid #333; border-radius: 8px; font-size: 14px; cursor: not-allowed; flex: 1; transition: all 0.3s ease;">Wait ${delaySeconds}s...</button>
                 </div>
             </div>
             <p style="margin-top: 40px; font-size: 12px; color: #555;">LifeOS ${isFocus ? 'Focus Engine' : 'Context Engine'}</p>
@@ -102,13 +116,53 @@ function injectBlockOverlay(data) {
         chrome.runtime.sendMessage({ type: 'CLOSE_TAB' });
     });
 
-    document.getElementById('lifeos-btn-override').addEventListener('click', () => {
+    const overrideBtn = document.getElementById('lifeos-btn-override');
+    const overrideSection = document.getElementById('lifeos-override-section');
+    const reasonInput = document.getElementById('lifeos-override-reason');
+
+    // Countdown logic
+    let remaining = delaySeconds;
+    const timer = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+            overrideBtn.innerText = "Wait " + remaining + "s...";
+        } else {
+            clearInterval(timer);
+            overrideSection.style.display = 'block';
+            overrideBtn.innerText = overrideLabel;
+
+            // Check input to enable button
+            const checkInput = () => {
+                if (reasonInput.value.trim().length >= 10) {
+                    overrideBtn.disabled = false;
+                    overrideBtn.style.cursor = 'pointer';
+                    overrideBtn.style.color = '#fff';
+                    overrideBtn.style.borderColor = '#666';
+                    overrideBtn.style.background = 'transparent';
+                } else {
+                    overrideBtn.disabled = true;
+                    overrideBtn.style.cursor = 'not-allowed';
+                    overrideBtn.style.color = '#555';
+                    overrideBtn.style.borderColor = '#333';
+                    overrideBtn.style.background = 'rgba(255,255,255,0.05)';
+                }
+            };
+
+            reasonInput.addEventListener('input', checkInput);
+            checkInput(); // Initial check
+        }
+    }, 1000);
+
+    overrideBtn.addEventListener('click', () => {
+        if (overrideBtn.disabled) return;
+
+        const userReason = reasonInput.value.trim();
         if (_blockContext) {
             chrome.runtime.sendMessage({
                 type: 'LOG_OVERRIDE',
                 url: _blockContext.url,
                 title: _blockContext.title,
-                reason: _blockContext.reason,
+                reason: _blockContext.reason + ' | User Reason: ' + userReason,
             });
             if (_blockContext.focusMode) {
                 chrome.runtime.sendMessage({ type: 'FOCUS_OVERRIDE_LOGGED' });

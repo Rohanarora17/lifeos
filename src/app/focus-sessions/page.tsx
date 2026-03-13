@@ -320,6 +320,14 @@ export default function FocusSessionsPage() {
                                                     </pre>
                                                 )}
                                             </div>
+                                        ) : session.ai_report ? (
+                                            <div className="space-y-3">
+                                                <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                                    <pre style={{ fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: 0, lineHeight: 1.5 }}>
+                                                        {session.ai_report}
+                                                    </pre>
+                                                </div>
+                                            </div>
                                         ) : (
                                             <div style={{ textAlign: 'center', padding: '16px' }}>
                                                 <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '12px' }}>

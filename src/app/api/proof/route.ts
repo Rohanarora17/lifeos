@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
+import { MODEL_PRO } from '@/lib/models';
 
 
 export const maxDuration = 60; // Allow 60s for Vision API processing
@@ -50,7 +51,7 @@ Return EXACTLY a JSON object with this schema:
         };
 
         const result = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_PRO,
             contents: [prompt, imagePart]
         });
         let text = (result.text || '').trim();

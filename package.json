@@ -9,7 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@google/genai": "^1.42.0",
+    "@google/genai": "^1.45.0",
     "better-sqlite3": "^12.6.2",
     "debounce": "^3.0.0",
     "exifr": "^7.1.3",

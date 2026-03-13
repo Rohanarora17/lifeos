@@ -1,5 +1,6 @@
 import { getDb } from './db';
 import { getGenAI } from './ai';
+import { MODEL_PRO } from './models';
 
 /**
  * The Hidden Patterns Engine
@@ -128,7 +129,7 @@ Analyze the data and return EXACTLY 3 powerful insights in JSON array format:
 Keep insights specific, data-driven, and actionable. Only return the JSON array.`;
 
         const result = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_PRO,
             contents: prompt
         });
         const text = (result.text || '').trim();

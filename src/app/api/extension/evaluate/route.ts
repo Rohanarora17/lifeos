@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getGenAI } from '@/lib/ai';
+import { MODEL_FLASH } from '@/lib/models';
 
 // Domains that should NEVER be blocked during focus sessions to prevent false positives
 const ALWAYS_ALLOW_DOMAINS = new Set([
@@ -110,7 +111,7 @@ Return JSON: { "isDistraction": boolean, "reason": "1-sentence supportive explan
         }
 
         const result = await ai.models.generateContent({
-            model: 'gemini-flash-latest',
+            model: MODEL_FLASH,
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',

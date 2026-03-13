@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
+import { MODEL_PRO, MODEL_FLASH } from '@/lib/models';
 
 const DB_SCHEMA = `
 TABLE activities (id, url, domain, title, category, subcategory, duration_seconds, started_at, ended_at)
-TABLE habits (id, name, icon, frequency, streak_count, created_at, active, archived, goal_metric, goal_target, goal_id, current_streak, automaticity_score)
-TABLE habit_checkins (id, habit_id, date, completed, value, created_at)
-TABLE goals (id, title, description, deadline, color, category, active, created_at, status, tmt_score, priority)
-TABLE tasks (id, title, description, status ('todo', 'doing', 'done', 'today', 'this_week', 'backlog'), due_date, position, goal_id, priority ('low', 'medium', 'high', 'critical'), created_at, completed_at)
-TABLE focus_sessions (id, task_id, duration_minutes, created_at)
+TABLE tasks (id, title, description, status, due_date, created_at, completed_at, goal_id, priority)
+TABLE habits (id, name, icon, frequency, goal_metric, goal_target, created_at, archived, goal_id)
+TABLE habit_checkins (id, habit_id, date, completed, value)
+TABLE daily_scores (date, xp_earned, productive_minutes, distraction_minutes, tasks_completed, habits_completed, ai_summary, ai_morning_brief, level, task_score, habit_score, accountability_score)
+TABLE goals (id, title, type, target_value, unit, active, deadline, description, current_value, progress, metric, category)
+TABLE focus_sessions (id, session_date, duration_minutes, focus_type, primary_domain, goal_title, task_title, actual_duration_seconds, productive_seconds, distraction_seconds, ai_report, status, started_at, ended_at)
+TABLE behavioral_memory (id, memory_type, content, confidence, reinforcement_count, last_reinforced, superseded, source)
+TABLE behavior_insights (id, category, insight, actionable_tip, severity, feedback)
+TABLE alerts (id, type, message, severity, read, title, priority)
 TABLE coin_ledger (id, amount, reason, created_at)
 `;
 
@@ -36,7 +41,7 @@ RULES:
 User Query: "${query}"`;
 
         const sqlResult = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_FLASH,
             contents: prompt
         });
         let sql = (sqlResult.text || '').trim();
@@ -69,7 +74,7 @@ ${JSON.stringify(data).substring(0, 3000)}
 Provide a concise, conversational answer to the user based on this data. Do not show them the raw JSON.`;
 
         const answerResult = await ai.models.generateContent({
-            model: 'gemini-pro-latest',
+            model: MODEL_PRO,
             contents: answerPrompt
         });
         return NextResponse.json({ text: (answerResult.text || '').trim() });

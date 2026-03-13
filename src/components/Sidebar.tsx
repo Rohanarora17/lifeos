@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 const navItems = [
     { href: '/', label: 'Dashboard', icon: '🏠' },
@@ -20,6 +21,18 @@ const navItems = [
 
 export default function Sidebar() {
     const pathname = usePathname();
+    const [level, setLevel] = useState<number | null>(null);
+
+    useEffect(() => {
+        fetch('/api/user/level')
+            .then(res => res.json())
+            .then(data => {
+                if (data && typeof data.level === 'number') {
+                    setLevel(data.level);
+                }
+            })
+            .catch(err => console.error('Failed to fetch level:', err));
+    }, []);
 
     return (
         <aside className="fixed left-0 top-0 bottom-0 w-[260px] flex flex-col border-r"
@@ -61,7 +74,7 @@ export default function Sidebar() {
                     </div>
                     <div>
                         <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Rohan</p>
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Level —</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Level {level !== null ? level : '—'}</p>
                     </div>
                 </div>
             </div>

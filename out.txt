@@ -1,0 +1,10 @@
+Testing Vertex AI Express Auth with different model names...
+[FAILED] gemini-1.5-flash: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-1.5-flash` was not found or your project does not have access to it. Please en
+[FAILED] gemini-1.5-flash-002: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-1.5-flash-002` was not found or your project does not have access to it. Pleas
+[FAILED] gemini-1.5-pro: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-1.5-pro` was not found or your project does not have access to it. Please ensu
+[FAILED] gemini-2.5-pro-exp: {"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}
+[SUCCESS] gemini-2.5-pro: Hi there! How can I 
+[FAILED] gemini-flash-latest: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-flash-latest` was not found or your project does not have access to it. Please
+[FAILED] gemini-pro-latest: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-pro-latest` was not found or your project does not have access to it. Please e
+[FAILED] gemini-1.5-flash-latest: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-1.5-flash-latest` was not found or your project does not have access to it. Pl
+[FAILED] gemini-1.5-pro-latest: {"error":{"code":404,"message":"Publisher Model `projects/571696647/locations/us-central1/publishers/google/models/gemini-1.5-pro-latest` was not found or your project does not have access to it. Plea
