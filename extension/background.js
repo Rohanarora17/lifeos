@@ -814,6 +814,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (focusSession && focusSession.active) {
             const elapsed = Math.round((Date.now() - focusSession.startedAt) / 1000);
             const remaining = (focusSession.durationMinutes * 60) - elapsed;
+
+            let prod = 0;
+            let dist = 0;
+            focusSession.activitiesLog.forEach(a => {
+                if (a.category === 'productive') prod += a.duration_seconds || 0;
+                if (a.category === 'distraction') dist += a.duration_seconds || 0;
+            });
+
+            // Add current activity in progress if active tab
+            if (currentActivity && isUserActive) {
+                const curDur = Math.round((Date.now() - new Date(currentActivity.started_at).getTime()) / 1000);
+                if (currentActivity._category === 'productive') prod += curDur;
+                if (currentActivity._category === 'distraction') dist += curDur;
+            }
+
             sendResponse({
                 active: true,
                 goalTitle: focusSession.goalTitle,
@@ -821,6 +836,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 durationMinutes: focusSession.durationMinutes,
                 elapsedSeconds: elapsed,
                 remainingSeconds: Math.max(0, remaining),
+                productiveSeconds: prod,
+                distractionSeconds: dist,
                 blockedCount: focusSession.blockedCount,
                 overrideCount: focusSession.overrideCount,
                 tabGroupId: focusSession.tabGroupId,

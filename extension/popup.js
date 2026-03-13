@@ -125,11 +125,19 @@ function renderActiveFocusSession(el, status) {
       <div class="focus-timer" id="focus-countdown">${formatTimer(status.remainingSeconds)}</div>
       <div class="focus-stats-row">
         <div class="focus-stat">
-          <div class="val red">${status.blockedCount}</div>
+          <div class="val" style="color: #10b981;" id="focus-val-prod">${formatTimer(status.productiveSeconds || 0)}</div>
+          <div>Productive</div>
+        </div>
+        <div class="focus-stat">
+          <div class="val" style="color: #ef4444;" id="focus-val-dist">${formatTimer(status.distractionSeconds || 0)}</div>
+          <div>Distracted</div>
+        </div>
+        <div class="focus-stat">
+          <div class="val red" id="focus-val-block">${status.blockedCount}</div>
           <div>Blocked</div>
         </div>
         <div class="focus-stat">
-          <div class="val yellow">${status.overrideCount}</div>
+          <div class="val yellow" id="focus-val-over">${status.overrideCount}</div>
           <div>Overrides</div>
         </div>
       </div>
@@ -145,17 +153,24 @@ function renderActiveFocusSession(el, status) {
     setTimeout(loadFocusSection, 1500);
   });
 
-  let remaining = status.remainingSeconds;
   if (focusUpdateInterval) clearInterval(focusUpdateInterval);
-  focusUpdateInterval = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) {
+  focusUpdateInterval = setInterval(async () => {
+    const freshStatus = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' }, r));
+    if (!freshStatus || !freshStatus.active) {
       clearInterval(focusUpdateInterval);
       loadFocusSection();
       return;
     }
     const timerEl = document.getElementById('focus-countdown');
-    if (timerEl) timerEl.textContent = formatTimer(remaining);
+    if (timerEl) timerEl.textContent = formatTimer(freshStatus.remainingSeconds);
+    const prodEl = document.getElementById('focus-val-prod');
+    if (prodEl) prodEl.textContent = formatTimer(freshStatus.productiveSeconds || 0);
+    const distEl = document.getElementById('focus-val-dist');
+    if (distEl) distEl.textContent = formatTimer(freshStatus.distractionSeconds || 0);
+    const blockEl = document.getElementById('focus-val-block');
+    if (blockEl) blockEl.textContent = freshStatus.blockedCount;
+    const overEl = document.getElementById('focus-val-over');
+    if (overEl) overEl.textContent = freshStatus.overrideCount;
   }, 1000);
 }
 

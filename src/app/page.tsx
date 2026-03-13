@@ -55,6 +55,49 @@ export default function DashboardPage() {
     timeLeft: number;
     isActive: boolean;
   }>({ taskId: null, taskTitle: null, durationMins: 25, timeLeft: 0, isActive: false });
+  const [liveFocusStats, setLiveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
+
+  useEffect(() => {
+    const sse = new EventSource('/api/sse');
+
+    sse.addEventListener('activities_updated', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data && data.new_activities) {
+          setLiveFocusStats(prev => {
+            let prod = prev.productiveSeconds;
+            let dist = prev.distractionSeconds;
+            data.new_activities.forEach((a: any) => {
+              if (a.category === 'productive') prod += a.duration_seconds || 0;
+              if (a.category === 'distraction') dist += a.duration_seconds || 0;
+            });
+            return { productiveSeconds: prod, distractionSeconds: dist };
+          });
+        }
+      } catch (err) { }
+    });
+
+    sse.addEventListener('focus_session_started', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setFocusData({
+          taskId: data.taskId || null,
+          taskTitle: data.taskTitle || data.goalTitle || 'Deep Work Session',
+          durationMins: data.durationMinutes || 60,
+          timeLeft: (data.durationMinutes || 60) * 60,
+          isActive: true
+        });
+        setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
+      } catch (err) { }
+    });
+
+    sse.addEventListener('focus_session_completed', () => {
+      setFocusData(prev => ({ ...prev, isActive: false }));
+      setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
+    });
+
+    return () => sse.close();
+  }, []);
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -228,6 +271,12 @@ export default function DashboardPage() {
                 <span>⏳ Remaining: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.ceil(focusData.timeLeft / 60))}</strong></span>
                 <span>📊 {progressPct}% done</span>
               </div>
+              {liveFocusStats.productiveSeconds > 0 || liveFocusStats.distractionSeconds > 0 ? (
+                <div className="flex gap-4 mt-2" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  <span>🟢 Productive: <strong style={{ color: '#10b981' }}>{formatTime(Math.round(liveFocusStats.productiveSeconds / 60))}</strong></span>
+                  <span>🔴 Distracted: <strong style={{ color: '#ef4444' }}>{formatTime(Math.round(liveFocusStats.distractionSeconds / 60))}</strong></span>
+                </div>
+              ) : null}
             </div>
 
             {/* Right: Stop button */}

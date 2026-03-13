@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { classifyActivityBatch } from '@/lib/ai';
 import { extractDomain } from '@/lib/categories';
+import { broadcastEvent } from '@/lib/sse';
 
 export async function POST(request: NextRequest) {
     try {
@@ -59,6 +60,9 @@ export async function POST(request: NextRequest) {
         });
 
         insertMany(validActivities, classifications);
+
+        // Broadcast to Dashboard and Extension
+        broadcastEvent('activities_updated', { count: validActivities.length, new_activities: validActivities });
 
         return NextResponse.json({ success: true, count: validActivities.length }, { status: 201 });
     } catch (error) {

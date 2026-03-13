@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
 import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
 import { MODEL_PRO } from '@/lib/models';
+import { broadcastEvent } from '@/lib/sse';
 
 // POST: Start or complete a focus session
 export async function POST(request: NextRequest) {
@@ -23,9 +24,21 @@ export async function POST(request: NextRequest) {
                 VALUES (date('now'), strftime('%Y-%m-%dT%H:%M:%SZ','now'), '', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, 'active')
             `).run(goalId || null, goalTitle || null, taskId || null, taskTitle || null, durationMinutes || 60);
 
+            const sessionId = result.lastInsertRowid;
+
+            // Broadcast focus start
+            broadcastEvent('focus_session_started', {
+                sessionId,
+                goalId,
+                goalTitle,
+                taskId,
+                taskTitle,
+                durationMinutes
+            });
+
             return NextResponse.json({
                 success: true,
-                sessionId: result.lastInsertRowid,
+                sessionId,
             }, { status: 201 });
         }
 
@@ -128,6 +141,18 @@ export async function POST(request: NextRequest) {
                 aiReport,
                 sessionId
             );
+
+            // Broadcast focus complete
+            broadcastEvent('focus_session_completed', {
+                sessionId,
+                productiveSeconds,
+                distractionSeconds,
+                neutralSeconds,
+                topDomains,
+                blockedCount,
+                overrideCount,
+                aiReport
+            });
 
             return NextResponse.json({
                 success: true,

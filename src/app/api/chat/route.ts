@@ -140,20 +140,24 @@ export async function POST(request: NextRequest) {
             if (response.functionCalls && response.functionCalls.length > 0) {
                 const functionResponses: any[] = [];
 
-                // Append model's function calls to history
+                // Append model's exact response to history to preserve thoughts and signatures
                 contents.push({
                     role: 'model',
-                    parts: response.functionCalls.map(fc => ({ functionCall: fc }))
+                    parts: (response as any).candidates?.[0]?.content?.parts || []
                 });
 
                 // Execute each tool
                 for (const call of response.functionCalls) {
                     try {
                         const toolResult = executeTool(call.name || '', call.args);
+                        const safeResponse = (typeof toolResult === 'object' && toolResult !== null && !Array.isArray(toolResult))
+                            ? toolResult
+                            : { result: toolResult };
+
                         functionResponses.push({
                             functionResponse: {
                                 name: call.name || '',
-                                response: toolResult
+                                response: safeResponse
                             }
                         });
                     } catch (err: any) {
