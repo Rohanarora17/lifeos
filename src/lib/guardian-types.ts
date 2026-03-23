@@ -116,6 +116,22 @@ export interface GuardianState {
   activeOverrides: ActiveOverride[];
   emittedMilestones: string[];
   targetTitle: string;
+  personalBestFocusScore: number | null;
+}
+
+export interface SoftWatchCommitment {
+  id: string;
+  targetTitle: string;
+  goalId: number | null;
+  taskId: number | null;
+  intendedStartAt: number;
+  plannedMinutes: number;
+  source: 'voice' | 'dashboard' | 'calendar';
+  reminderSentAt: number | null;
+  checkInSentAt: number | null;
+  status: 'pending' | 'locked_in' | 'expired' | 'dismissed';
+  lockedInSessionId: string | null;
+  createdAt: number;
 }
 
 export interface GuardianStartRequest {
@@ -264,6 +280,14 @@ export interface GuardianSemanticProfile {
   updatedAt: string;
 }
 
+export interface GuardianSessionReflection {
+  id: number;
+  sessionId: string;
+  reflectionText: string;
+  focusQuality: 'excellent' | 'good' | 'neutral' | 'poor';
+  generatedAt: string;
+}
+
 export interface DayBriefing {
   recentSessions: number;
   avgFocusScore: number;
@@ -275,4 +299,6 @@ export interface DayBriefing {
   coachingStyle: 'gentle' | 'balanced' | 'direct';
   energyForecast: 'low' | 'medium' | 'high';
   openingMessage: string;
+  recentReflections: GuardianSessionReflection[];
+  upcomingCommitments: SoftWatchCommitment[];
 }

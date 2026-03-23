@@ -17,6 +17,7 @@ import {
   GuardianState,
   OverrideDecision,
   OverrideRequest,
+  SoftWatchCommitment,
 } from './guardian-types';
 
 const DISTRACTION_DOMAINS = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com'];
@@ -28,16 +29,20 @@ const globalGuardian = global as unknown as {
   guardianSessions?: Map<string, GuardianState>;
   guardianIntervals?: Map<string, ReturnType<typeof setInterval>>;
   guardianCommands?: Map<string, GuardianCommand[]>;
+  softWatchMap?: Map<string, SoftWatchCommitment>;
+  softWatchCheckerInterval?: ReturnType<typeof setInterval>;
 };
 
 const guardianSessions = globalGuardian.guardianSessions || new Map<string, GuardianState>();
 const guardianIntervals = globalGuardian.guardianIntervals || new Map<string, ReturnType<typeof setInterval>>();
 const guardianCommands = globalGuardian.guardianCommands || new Map<string, GuardianCommand[]>();
+const softWatchMap = globalGuardian.softWatchMap || new Map<string, SoftWatchCommitment>();
 
 if (process.env.NODE_ENV !== 'production') {
   globalGuardian.guardianSessions = guardianSessions;
   globalGuardian.guardianIntervals = guardianIntervals;
   globalGuardian.guardianCommands = guardianCommands;
+  globalGuardian.softWatchMap = softWatchMap;
 }
 
 function nowIso() {
@@ -94,6 +99,18 @@ function classifyUrl(url: string | undefined): 'on_topic' | 'distraction' | 'unk
   return 'unknown';
 }
 
+function queryPersonalBestFocusScore(): number | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT MAX(average_focus_score) as best FROM guardian_session_summaries
+    `).get() as { best: number | null } | undefined;
+    return row?.best ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function createSessionState(input: {
   sessionId: string;
   durationMinutes: number;
@@ -103,6 +120,7 @@ function createSessionState(input: {
   goalTitle?: string | null;
   conceptNodeId?: string | null;
   conceptNodeName?: string | null;
+  personalBestFocusScore?: number | null;
 }): GuardianState {
   return {
     sessionId: input.sessionId,
@@ -129,6 +147,7 @@ function createSessionState(input: {
     activeOverrides: [],
     emittedMilestones: [],
     targetTitle: input.targetTitle,
+    personalBestFocusScore: input.personalBestFocusScore ?? null,
   };
 }
 
@@ -330,6 +349,48 @@ function persistSessionSummary(session: GuardianState) {
     updateGuardianSemanticProfile('default');
   } catch (error) {
     console.error('[GuardianRuntime] Failed to persist session summary', error);
+  }
+}
+
+async function generateSessionReflection(session: GuardianState) {
+  try {
+    const db = getDb();
+    const focusScores = session.focusScoreHistory.length > 0 ? session.focusScoreHistory : [100];
+    const averageFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
+    const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
+    const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+    const distractionCount = session.tabEventLog.filter(
+      (e) => e.type === 'tab' && classifyUrl(e.url) === 'distraction'
+    ).length;
+
+    const focusQuality =
+      averageFocusScore >= 85 ? 'excellent' :
+      averageFocusScore >= 70 ? 'good' :
+      averageFocusScore >= 55 ? 'neutral' : 'poor';
+
+    const ai = getGenAI();
+    if (!ai) return;
+
+    const prompt = `You are the LifeOS guardian reflecting on a just-completed study session. Write 2–3 concise sentences (max 60 words total) as a personal coach speaking directly to the user. Be honest and specific. No filler phrases.
+
+Session: ${session.targetTitle}
+Planned: ${session.durationMinutes} min | Elapsed: ${elapsedMinutes} min
+Average focus: ${averageFocusScore}/100 | Final focus: ${finalFocusScore}/100
+Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distraction events: ${distractionCount}`;
+
+    const result = await ai.models.generateContent({ model: MODEL_FLASH, contents: prompt });
+    const reflectionText = (result.text ?? '').trim().slice(0, 400);
+
+    db.prepare(`
+      INSERT INTO guardian_session_reflections (session_id, reflection_text, focus_quality)
+      VALUES (?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        reflection_text = excluded.reflection_text,
+        focus_quality = excluded.focus_quality,
+        generated_at = datetime('now', 'localtime')
+    `).run(session.sessionId, reflectionText, focusQuality);
+  } catch (error) {
+    console.error('[GuardianRuntime] Failed to generate session reflection', error);
   }
 }
 
@@ -574,6 +635,23 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
     };
   }
 
+  if (
+    session.personalBestFocusScore !== null &&
+    focusScore > session.personalBestFocusScore &&
+    attentionCategory === 'productive_support' &&
+    cooldownPassed &&
+    !session.emittedMilestones.includes('personal_best')
+  ) {
+    session.emittedMilestones.push('personal_best');
+    return {
+      type: 'speak',
+      tone: 'personal_best',
+      text: `Personal best. Score ${focusScore}, up from your previous best of ${Math.round(session.personalBestFocusScore)}. Keep going.`,
+      reason: 'New personal best focus score',
+      explainability: `${explainabilityBase}; current score ${focusScore} exceeds historical best ${session.personalBestFocusScore}`,
+    };
+  }
+
   return { type: 'silence', reason: 'No intervention needed', explainability: explainabilityBase };
 }
 
@@ -652,9 +730,11 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     goalTitle: input.goalTitle,
     conceptNodeId: input.conceptNodeId,
     conceptNodeName: input.conceptNodeName || input.topic || null,
+    personalBestFocusScore: queryPersonalBestFocusScore(),
   });
 
   guardianSessions.set(sessionId, session);
+  linkSoftWatchToSession(sessionId, targetTitle);
 
   emitSessionEvent(sessionId, {
     type: 'session_state',
@@ -682,6 +762,7 @@ export function endGuardianSession(sessionId: string) {
   session.state = 'COMPLETE';
   clearHeartbeat(sessionId);
   persistSessionSummary(session);
+  void generateSessionReflection(session);
   emitSessionEvent(sessionId, {
     type: 'session_end',
     summary: {
@@ -978,4 +1059,193 @@ export function seedGuardianBaselineEval() {
     status: 'passed',
     summary: 'Initial guardian baseline seeded.',
   });
+}
+
+// ─── SOFT_WATCH ──────────────────────────────────────────────────────────────
+
+const SOFT_WATCH_REMINDER_WINDOW_MS = 5 * 60_000;    // remind within 5 min of intended start
+const SOFT_WATCH_CHECKIN_DELAY_MS = 30 * 60_000;     // check-in 30 min after intended start
+const SOFT_WATCH_EXPIRE_MS = 60 * 60_000;             // expire 60 min after intended start
+
+function persistSoftWatch(c: SoftWatchCommitment) {
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO soft_watch_commitments (
+        id, target_title, goal_id, task_id, intended_start_at, planned_minutes,
+        source, reminder_sent_at, check_in_sent_at, status, locked_in_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        reminder_sent_at = excluded.reminder_sent_at,
+        check_in_sent_at = excluded.check_in_sent_at,
+        locked_in_session_id = excluded.locked_in_session_id
+    `).run(
+      c.id, c.targetTitle, c.goalId, c.taskId, c.intendedStartAt, c.plannedMinutes,
+      c.source, c.reminderSentAt, c.checkInSentAt, c.status, c.lockedInSessionId, c.createdAt
+    );
+  } catch (error) {
+    console.error('[GuardianRuntime] Failed to persist soft watch', error);
+  }
+}
+
+function updateCommitmentFollowThroughRate() {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT status FROM soft_watch_commitments
+      WHERE status IN ('locked_in', 'expired')
+    `).all() as Array<{ status: string }>;
+    if (rows.length === 0) return;
+    const lockedIn = rows.filter((r) => r.status === 'locked_in').length;
+    const rate = lockedIn / rows.length;
+    db.prepare(`
+      UPDATE guardian_semantic_profiles
+      SET commitment_follow_through_rate = ?, updated_at = datetime('now', 'localtime')
+      WHERE user_id = 'default'
+    `).run(rate);
+  } catch (error) {
+    console.error('[GuardianRuntime] Failed to update follow-through rate', error);
+  }
+}
+
+function tickSoftWatchChecker() {
+  const now = Date.now();
+  for (const [id, commitment] of softWatchMap) {
+    if (commitment.status !== 'pending') continue;
+
+    const sincStart = now - commitment.intendedStartAt;
+
+    // Expire if more than 60 min past intended start
+    if (sincStart > SOFT_WATCH_EXPIRE_MS) {
+      commitment.status = 'expired';
+      softWatchMap.set(id, commitment);
+      persistSoftWatch(commitment);
+      updateCommitmentFollowThroughRate();
+      console.log(`[SoftWatch] Commitment ${id} expired: ${commitment.targetTitle}`);
+      continue;
+    }
+
+    // Reminder: fire once when within 5 min of intended start time
+    if (!commitment.reminderSentAt && Math.abs(now - commitment.intendedStartAt) <= SOFT_WATCH_REMINDER_WINDOW_MS) {
+      commitment.reminderSentAt = now;
+      softWatchMap.set(id, commitment);
+      persistSoftWatch(commitment);
+      void speak(
+        'soft_watch',
+        `Heads up — you planned to work on ${commitment.targetTitle} now. Ready to lock in?`,
+        'normal',
+        'midpoint_checkin'
+      );
+      continue;
+    }
+
+    // Check-in: fire once if 30 min past intended start and still pending
+    if (!commitment.checkInSentAt && sincStart >= SOFT_WATCH_CHECKIN_DELAY_MS) {
+      commitment.checkInSentAt = now;
+      softWatchMap.set(id, commitment);
+      persistSoftWatch(commitment);
+      void speak(
+        'soft_watch',
+        `Still here. You committed to ${commitment.targetTitle} about 30 minutes ago. Start now or let it go?`,
+        'normal',
+        'direct_push'
+      );
+    }
+  }
+}
+
+export function startSoftWatchChecker() {
+  if (globalGuardian.softWatchCheckerInterval) return;
+  // Load any pending commitments from DB on startup
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
+        intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
+        source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
+        status, locked_in_session_id as lockedInSessionId, created_at as createdAt
+      FROM soft_watch_commitments
+      WHERE status = 'pending'
+    `).all() as SoftWatchCommitment[];
+    for (const row of rows) {
+      softWatchMap.set(row.id, row);
+    }
+  } catch {
+    // Table may not exist yet; will be created on next DB init
+  }
+
+  const interval = setInterval(tickSoftWatchChecker, 5 * 60_000);
+  globalGuardian.softWatchCheckerInterval = interval;
+}
+
+export function createSoftWatchCommitment(input: {
+  targetTitle: string;
+  goalId?: number | null;
+  taskId?: number | null;
+  intendedStartAt: number;
+  plannedMinutes?: number;
+  source?: 'voice' | 'dashboard' | 'calendar';
+}): SoftWatchCommitment {
+  const commitment: SoftWatchCommitment = {
+    id: randomId('sw'),
+    targetTitle: input.targetTitle,
+    goalId: input.goalId ?? null,
+    taskId: input.taskId ?? null,
+    intendedStartAt: input.intendedStartAt,
+    plannedMinutes: input.plannedMinutes ?? 60,
+    source: input.source ?? 'voice',
+    reminderSentAt: null,
+    checkInSentAt: null,
+    status: 'pending',
+    lockedInSessionId: null,
+    createdAt: Date.now(),
+  };
+  softWatchMap.set(commitment.id, commitment);
+  persistSoftWatch(commitment);
+
+  // Start checker if not already running
+  startSoftWatchChecker();
+
+  void speak(
+    'soft_watch',
+    `Noted. I'll remind you to start ${commitment.targetTitle} at ${new Date(commitment.intendedStartAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+    'normal',
+    'neutral'
+  );
+
+  return { ...commitment };
+}
+
+export function listSoftWatchCommitments(): SoftWatchCommitment[] {
+  return Array.from(softWatchMap.values())
+    .filter((c) => c.status === 'pending' || c.status === 'locked_in')
+    .sort((a, b) => a.intendedStartAt - b.intendedStartAt)
+    .map((c) => ({ ...c }));
+}
+
+export function dismissSoftWatchCommitment(id: string): boolean {
+  const commitment = softWatchMap.get(id);
+  if (!commitment) return false;
+  commitment.status = 'dismissed';
+  softWatchMap.set(id, commitment);
+  persistSoftWatch(commitment);
+  return true;
+}
+
+function linkSoftWatchToSession(sessionId: string, targetTitle: string) {
+  for (const [id, commitment] of softWatchMap) {
+    if (commitment.status !== 'pending') continue;
+    if (commitment.targetTitle.toLowerCase() !== targetTitle.toLowerCase()) continue;
+    const now = Date.now();
+    // Link if intended start was within the last 90 minutes
+    if (now - commitment.intendedStartAt <= 90 * 60_000) {
+      commitment.status = 'locked_in';
+      commitment.lockedInSessionId = sessionId;
+      softWatchMap.set(id, commitment);
+      persistSoftWatch(commitment);
+      updateCommitmentFollowThroughRate();
+      break;
+    }
+  }
 }

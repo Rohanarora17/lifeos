@@ -5,6 +5,7 @@ import { MODEL_FLASH } from './models';
 import { speak } from './tts';
 import {
   adjudicateOverride,
+  createSoftWatchCommitment,
   getGuardianContext,
   getGuardianSession,
   listGuardianSessions,
@@ -14,6 +15,7 @@ import {
 
 type VoiceAction =
   | 'start_session'
+  | 'schedule_session'
   | 'guardian_status'
   | 'request_override'
   | 'day_briefing'
@@ -29,6 +31,7 @@ interface ParsedVoiceIntent {
   overrideReason?: string;
   requestedMinutes?: number;
   responseText?: string;
+  intendedStartAt?: number;
 }
 
 interface ProcessVoiceCommandInput {
@@ -39,6 +42,7 @@ interface ProcessVoiceCommandInput {
 interface VoiceActionResult {
   type:
     | 'session_started'
+    | 'session_scheduled'
     | 'guardian_status'
     | 'override_decision'
     | 'day_briefing'
@@ -95,6 +99,37 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
     return { action: 'tutor' };
   }
 
+  if (/(schedule|remind me|plan a session|set a session|i want to study|i'll work on|i plan to)/.test(lower)) {
+    // Parse "at 3pm", "at 15:30", "in 2 hours", "at 9 in the morning"
+    let intendedStartAt: number | undefined;
+    const atTimeMatch = lower.match(/at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+    const inHoursMatch = lower.match(/in\s+(\d+)\s*hours?/);
+    if (atTimeMatch) {
+      let hour = parseInt(atTimeMatch[1], 10);
+      const minute = atTimeMatch[2] ? parseInt(atTimeMatch[2], 10) : 0;
+      const meridiem = atTimeMatch[3];
+      if (meridiem === 'pm' && hour < 12) hour += 12;
+      if (meridiem === 'am' && hour === 12) hour = 0;
+      const d = new Date();
+      d.setHours(hour, minute, 0, 0);
+      if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1); // next day if past
+      intendedStartAt = d.getTime();
+    } else if (inHoursMatch) {
+      intendedStartAt = Date.now() + parseInt(inHoursMatch[1], 10) * 3_600_000;
+    }
+
+    const topic = transcript
+      .replace(/^(hey\s+lifeos[, ]*)/i, '')
+      .replace(/(schedule|remind me|plan a session|set a session|i want to study|i'll work on|i plan to)/gi, '')
+      .replace(/at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/gi, '')
+      .replace(/in\s+\d+\s*hours?/gi, '')
+      .replace(/for\s+\d+\s*(minute|min|hour|hr)s?/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim() || undefined;
+
+    return { action: 'schedule_session', topic, durationMinutes, intendedStartAt };
+  }
+
   if (/(lock in|start session|focus session|study session|we need to finish|today we have to finish)/.test(lower)) {
     const topic =
       transcript
@@ -130,13 +165,14 @@ Transcript: "${sanitizedTranscript}"
 
 Schema:
 {
-  "action": "start_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
+  "action": "start_session" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
   "topic": "string or empty",
   "durationMinutes": 60,
   "mood": "high" | "medium" | "low" | null,
   "overrideTarget": "string or empty",
   "overrideReason": "string or empty",
   "requestedMinutes": 10,
+  "intendedStartAt": "Unix ms timestamp for schedule_session, or 0 if not specified",
   "responseText": "only for tutor/unknown lightweight answers"
 }`,
       config: {
@@ -156,6 +192,7 @@ Schema:
       overrideTarget: parsed.overrideTarget || undefined,
       overrideReason: parsed.overrideReason || undefined,
       requestedMinutes: typeof parsed.requestedMinutes === 'number' ? parsed.requestedMinutes : undefined,
+      intendedStartAt: typeof parsed.intendedStartAt === 'number' && parsed.intendedStartAt > 0 ? parsed.intendedStartAt : undefined,
       responseText: parsed.responseText || undefined,
     };
   } catch {
@@ -186,6 +223,31 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (activeSessionId) {
     await emitVoiceEvent(activeSessionId, transcript);
+  }
+
+  if (intent.action === 'schedule_session') {
+    if (!intent.topic) {
+      return {
+        type: 'intent_only',
+        transcript,
+        intent,
+        responseText: 'What topic should I schedule the session for?',
+      };
+    }
+    const intendedStartAt = intent.intendedStartAt || Date.now() + 60 * 60_000; // default: 1 hour from now
+    const commitment = createSoftWatchCommitment({
+      targetTitle: intent.topic,
+      intendedStartAt,
+      plannedMinutes: intent.durationMinutes || 60,
+      source: 'voice',
+    });
+    return {
+      type: 'session_scheduled',
+      transcript,
+      intent,
+      session: commitment,
+      responseText: `Scheduled. I'll remind you to start ${commitment.targetTitle} at ${new Date(commitment.intendedStartAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+    };
   }
 
   if (intent.action === 'start_session' && intent.topic) {

@@ -85,6 +85,107 @@ const DEFAULT_GUARDIAN_EVAL_CASES: Array<{
     },
     expectedOutcome: 'Should nudge for scatter without blocking productive browsing.',
   },
+  // ─── Additional cases ────────────────────────────────────────────────────────
+  {
+    caseName: 'productive_url_never_blocked',
+    scenarioType: 'false_positive_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Algorithm Study',
+      events: [
+        { type: 'tab', url: 'https://leetcode.com/problems/two-sum', title: 'LeetCode', dwellSeconds: 300 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript', title: 'MDN', dwellSeconds: 240 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Dynamic_programming', title: 'Dynamic Programming', dwellSeconds: 180 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Guardian must never block a session that stays entirely on productive URLs.',
+  },
+  {
+    caseName: 'deep_focus_long_silence',
+    scenarioType: 'flow_protection',
+    inputPayload: {
+      durationMinutes: 90,
+      targetTitle: 'Linear Algebra Deep Dive',
+      events: [
+        { type: 'tab', url: 'https://khanacademy.org/math/linear-algebra', title: 'Khan Academy', dwellSeconds: 480 },
+        { type: 'heartbeat' },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Eigenvalues_and_eigenvectors', title: 'Eigenvalues', dwellSeconds: 360 },
+        { type: 'heartbeat' },
+        { type: 'heartbeat' },
+      ],
+      expected: { maxBlockCount: 0, maxSpeakCount: 1, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Guardian should stay silent during long deep-focus stretches on productive content.',
+  },
+  {
+    caseName: 'single_distraction_no_block',
+    scenarioType: 'over_intervention_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Operating Systems Assignment',
+      events: [
+        { type: 'tab', url: 'https://developer.mozilla.org', title: 'MDN', dwellSeconds: 300 },
+        { type: 'tab', url: 'https://youtube.com/watch?v=xyz', title: 'YouTube', dwellSeconds: 15 },
+        { type: 'tab', url: 'https://developer.mozilla.org', title: 'MDN', dwellSeconds: 240 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'A single brief distraction visit should not trigger a block — only speak at most.',
+  },
+  {
+    caseName: 'rapid_distraction_escalation_triggers_block',
+    scenarioType: 'realtime',
+    inputPayload: {
+      durationMinutes: 45,
+      targetTitle: 'Calculus Problem Set',
+      events: [
+        { type: 'tab', url: 'https://docs.python.org', title: 'Python Docs', dwellSeconds: 120 },
+        { type: 'tab', url: 'https://twitter.com/home', title: 'Twitter', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://docs.python.org', title: 'Python Docs', dwellSeconds: 40 },
+        { type: 'tab', url: 'https://twitter.com/home', title: 'Twitter', dwellSeconds: 25 },
+        { type: 'tab', url: 'https://twitter.com/notifications', title: 'Twitter', dwellSeconds: 20 },
+      ],
+      expected: { mustBlock: true, finalClassification: 'distraction' },
+    },
+    expectedOutcome: 'Rapid escalating revisits to same distraction domain must trigger a block.',
+  },
+  {
+    caseName: 'idle_then_return_no_block',
+    scenarioType: 'over_intervention_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Reading Sprint',
+      events: [
+        { type: 'tab', url: 'https://coursera.org/learn/ml', title: 'Coursera', dwellSeconds: 200 },
+        { type: 'idle', idleSeconds: 540 },
+        { type: 'tab', url: 'https://coursera.org/learn/ml', title: 'Coursera', dwellSeconds: 180 },
+      ],
+      expected: { mustSpeak: true, maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Idle followed by return to productive URL should prompt a check-in, not a block.',
+  },
+  {
+    caseName: 'mixed_session_proportionate_response',
+    scenarioType: 'realtime',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Data Structures',
+      events: [
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 300 },
+        { type: 'tab', url: 'https://reddit.com/r/programming', title: 'Reddit', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 200 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://reddit.com/r/programming', title: 'Reddit', dwellSeconds: 20 },
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 160 },
+      ],
+      expected: { mustSpeak: true, maxBlockCount: 1 },
+    },
+    expectedOutcome: 'Mixed session with moderate distraction should speak and block at most once.',
+  },
 ];
 
 export function ensureDefaultGuardianArtifacts(): PolicyArtifactVersion {
@@ -187,17 +288,14 @@ export function promoteGuardianPolicyVersion(versionId: number, reason: string):
 
 export function seedDefaultGuardianEvalCases(suiteName: string = DEFAULT_SUITE_NAME): number {
   const db = getDb();
-  const count = db.prepare('SELECT COUNT(*) as count FROM guardian_eval_cases WHERE suite_name = ?').get(suiteName) as { count: number };
-  if (count.count > 0) {
-    return count.count;
-  }
-
+  // INSERT OR IGNORE so new cases are added without re-inserting existing ones.
+  // Requires the UNIQUE index on (suite_name, case_name) created in db.ts.
   const insert = db.prepare(`
-    INSERT INTO guardian_eval_cases (suite_name, case_name, scenario_type, input_payload, expected_outcome)
+    INSERT OR IGNORE INTO guardian_eval_cases (suite_name, case_name, scenario_type, input_payload, expected_outcome)
     VALUES (?, ?, ?, ?, ?)
   `);
 
-  const tx = db.transaction(() => {
+  db.transaction(() => {
     for (const testCase of DEFAULT_GUARDIAN_EVAL_CASES) {
       insert.run(
         suiteName,
@@ -207,10 +305,10 @@ export function seedDefaultGuardianEvalCases(suiteName: string = DEFAULT_SUITE_N
         testCase.expectedOutcome
       );
     }
-  });
+  })();
 
-  tx();
-  return DEFAULT_GUARDIAN_EVAL_CASES.length;
+  const count = db.prepare('SELECT COUNT(*) as count FROM guardian_eval_cases WHERE suite_name = ?').get(suiteName) as { count: number };
+  return count.count;
 }
 
 export function listGuardianEvalCases(suiteName: string = DEFAULT_SUITE_NAME): GuardianEvalCaseRecord[] {

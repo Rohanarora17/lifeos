@@ -56,6 +56,7 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     activeOverrides: [],
     emittedMilestones: [],
     targetTitle: scenario.targetTitle,
+    personalBestFocusScore: null,
   };
 }
 
@@ -117,7 +118,11 @@ export function evaluateGuardianPolicyScenario(
       session.currentClassification = 'unknown';
     }
 
-    session.tabEventLog.push(event);
+    // Only tab and idle events go into tabEventLog — heartbeats drive ticks only.
+    // This matches real runtime behaviour where appendGuardianEvent is never called for heartbeats.
+    if (event.type !== 'heartbeat') {
+      session.tabEventLog.push(event);
+    }
     session.tick += 1;
     const focus = computeFocusScore(session, policy);
     session.focusScoreHistory.push(focus.score);
@@ -131,6 +136,14 @@ export function evaluateGuardianPolicyScenario(
   let score = 100;
   let passed = true;
   let hardFailure = false;
+
+  // Hard-fail: blocking while on a productive URL is a false-positive — never acceptable.
+  if (blockCount > 0 && session.currentClassification === 'on_topic') {
+    passed = false;
+    hardFailure = true;
+    score -= 60;
+    reasons.push(`Hard fail: guardian blocked while final classification was on_topic (false-positive block).`);
+  }
 
   if (scenario.expected.mustBlock && blockCount === 0) {
     passed = false;
