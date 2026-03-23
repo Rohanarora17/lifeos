@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { tickAgentLoop } from '@/lib/agent-loop';
+import { tickGuardianSession } from '@/lib/guardian-runtime';
 
 export async function POST(req: Request) {
     try {
@@ -8,10 +8,17 @@ export async function POST(req: Request) {
 
         if (!sessionId) return NextResponse.json({ error: 'Missing sessionId' }, { status: 400 });
 
-        const result = await tickAgentLoop(sessionId);
-        if (!result) return NextResponse.json({ error: 'Session not active' }, { status: 404 });
+        const result = await tickGuardianSession(sessionId, { sessionId, type: 'heartbeat', timestamp: Date.now() });
+        if (!result.session) return NextResponse.json({ error: 'Guardian session is not active' }, { status: 409 });
 
-        return NextResponse.json(result);
+        return NextResponse.json({
+            success: true,
+            focusScore: result.session.focusScoreHistory[result.session.focusScoreHistory.length - 1] ?? 100,
+            trend: 'stable',
+            actionTaken: result.decision.type,
+            decision: result.decision,
+            commands: result.commands,
+        });
     } catch (e) {
         return NextResponse.json({ error: String(e) }, { status: 500 });
     }
