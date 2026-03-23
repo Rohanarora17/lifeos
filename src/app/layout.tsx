@@ -5,6 +5,15 @@ import LayoutWrapper from "@/components/LayoutWrapper";
 export const metadata: Metadata = {
   title: "LifeOS — Your Personal Productivity OS",
   description: "Track everything. Stay accountable. Level up.",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "LifeOS",
+  },
+  other: {
+    "mobile-web-app-capable": "yes",
+  },
 };
 
 export default function RootLayout({
