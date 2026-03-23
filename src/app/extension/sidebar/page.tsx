@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import GuardianVoiceRoom from '@/components/GuardianVoiceRoom';
 
 interface Task {
     id: number;
@@ -20,6 +21,15 @@ interface DashStats {
     streak: number;
 }
 
+type ChromeRuntime = {
+    sendMessage: (message: unknown) => void;
+};
+
+function getChromeRuntime(): ChromeRuntime | undefined {
+    if (typeof window === 'undefined') return undefined;
+    return (window as Window & typeof globalThis & { chrome?: { runtime?: ChromeRuntime } }).chrome?.runtime;
+}
+
 export default function ExtensionSidebar() {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [goals, setGoals] = useState<Goal[]>([]);
@@ -33,6 +43,7 @@ export default function ExtensionSidebar() {
     const [timeLeft, setTimeLeft] = useState(0);
     const [blockedCount, setBlockedCount] = useState(0);
     const [overrideCount, setOverrideCount] = useState(0);
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
     const fetchContext = useCallback(async () => {
         try {
@@ -45,6 +56,12 @@ export default function ExtensionSidebar() {
 
             if (sessionData.activeTasks) setTasks(sessionData.activeTasks);
             if (sessionData.activeGoals) setGoals(sessionData.activeGoals);
+            if (sessionData.activeSession?.state === 'ACTIVE') {
+                setActiveSessionId(sessionData.activeSession.sessionId);
+                setFocusActive(true);
+                setFocusTargetLabel(sessionData.activeSession.targetTitle || 'Focus Session');
+                setFocusDuration(sessionData.activeSession.durationMinutes || 60);
+            }
             if (dashData.today) {
                 setStats({
                     score: dashData.today.score,
@@ -57,26 +74,65 @@ export default function ExtensionSidebar() {
     }, []);
 
     useEffect(() => {
-        fetchContext();
+        const bootstrapTimer = setTimeout(() => {
+            void fetchContext();
+        }, 0);
         const interval = setInterval(fetchContext, 30000);
-        return () => clearInterval(interval);
+        return () => {
+            clearTimeout(bootstrapTimer);
+            clearInterval(interval);
+        };
     }, [fetchContext]);
+
+    const endFocusSession = useCallback(async () => {
+        setFocusActive(false);
+        setTimeLeft(0);
+        const sessionId = activeSessionId;
+        setActiveSessionId(null);
+
+        if (sessionId) {
+            try {
+                await fetch('/api/guardian/session/end', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId }),
+                });
+            } catch { }
+        }
+
+        try {
+            const chromeRuntime = getChromeRuntime();
+            if (chromeRuntime) {
+                chromeRuntime.sendMessage({ type: 'STOP_GUARDIAN' });
+            } else if (window.parent !== window) {
+                window.parent.postMessage({ type: 'STOP_GUARDIAN' }, '*');
+            }
+        } catch { }
+
+        fetchContext();
+    }, [activeSessionId, fetchContext]);
 
     // Focus timer countdown
     useEffect(() => {
-        let timer: ReturnType<typeof setInterval>;
+        let tickTimer: ReturnType<typeof setInterval> | null = null;
+        let completionTimer: ReturnType<typeof setTimeout> | null = null;
         if (focusActive && timeLeft > 0) {
-            timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+            tickTimer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
         } else if (focusActive && timeLeft === 0) {
-            endFocusSession();
+            completionTimer = setTimeout(() => {
+                void endFocusSession();
+            }, 0);
         }
-        return () => clearInterval(timer);
-    }, [focusActive, timeLeft]);
+        return () => {
+            if (tickTimer) clearInterval(tickTimer);
+            if (completionTimer) clearTimeout(completionTimer);
+        };
+    }, [endFocusSession, focusActive, timeLeft]);
 
-    const startFocus = () => {
+    const startFocus = async () => {
         if (!focusTarget) return;
 
-        let goalId = null, goalTitle = null, taskId = null, taskTitle = null;
+        let goalId = null, goalTitle = null, taskTitle = null;
         const selectedOption = document.querySelector<HTMLOptionElement>(`#sidebar-focus-target option[value="${focusTarget}"]`);
         const label = selectedOption?.textContent || '';
 
@@ -84,39 +140,41 @@ export default function ExtensionSidebar() {
             goalId = parseInt(focusTarget.replace('goal-', ''));
             goalTitle = label;
         } else if (focusTarget.startsWith('task-')) {
-            taskId = parseInt(focusTarget.replace('task-', ''));
             taskTitle = label;
         }
 
-        setFocusTargetLabel(label);
-        setTimeLeft(focusDuration * 60);
-        setBlockedCount(0);
-        setOverrideCount(0);
-        setFocusActive(true);
-
-        // Notify extension background
         try {
-            if (window.parent !== window) {
-                window.parent.postMessage({
-                    type: 'LIFEOS_FOCUS_START',
-                    goalId, goalTitle, taskId, taskTitle,
+            const res = await fetch('/api/guardian/session/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    goalId: goalId ? String(goalId) : null,
+                    goalTitle,
+                    conceptNodeName: taskTitle || goalTitle || label,
                     durationMinutes: focusDuration,
-                }, '*');
+                    source: 'extension',
+                }),
+            });
+            const data = await res.json();
+            if (!data.session) return;
+
+            setActiveSessionId(data.session.sessionId);
+            setFocusTargetLabel(label);
+            setTimeLeft(focusDuration * 60);
+            setBlockedCount(0);
+            setOverrideCount(0);
+            setFocusActive(true);
+
+            const chromeRuntime = getChromeRuntime();
+            if (chromeRuntime) {
+                chromeRuntime.sendMessage({
+                    type: 'START_GUARDIAN',
+                    context: data.session,
+                });
+            } else if (window.parent !== window) {
+                window.parent.postMessage({ type: 'START_GUARDIAN', context: data.session }, '*');
             }
         } catch { }
-    };
-
-    const endFocusSession = () => {
-        setFocusActive(false);
-        setTimeLeft(0);
-
-        try {
-            if (window.parent !== window) {
-                window.parent.postMessage({ type: 'LIFEOS_FOCUS_STOP' }, '*');
-            }
-        } catch { }
-
-        fetchContext();
     };
 
     const formatTimer = (seconds: number) => {
@@ -243,6 +301,12 @@ export default function ExtensionSidebar() {
                             >
                                 End Session
                             </button>
+                            {activeSessionId ? (
+                                <GuardianVoiceRoom
+                                    sessionId={activeSessionId}
+                                    targetTitle={focusTargetLabel || 'Focus Session'}
+                                />
+                            ) : null}
                         </>
                     ) : (
                         <>

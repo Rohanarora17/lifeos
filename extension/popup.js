@@ -41,7 +41,7 @@ async function loadFocusSection() {
   const focusEl = document.getElementById('focus-section');
   if (!focusEl) return;
 
-  const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' }, r));
+  const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_GUARDIAN_STATUS' }, r));
 
   if (status && status.active) {
     renderActiveFocusSession(focusEl, status);
@@ -90,22 +90,36 @@ async function renderFocusStarter(el) {
     const selectedOption = targetEl.options[targetEl.selectedIndex];
     const duration = parseInt(durationEl.value);
 
-    let goalId = null, goalTitle = null, taskId = null, taskTitle = null;
+    let goalId = null, goalTitle = null, taskTitle = null;
     if (selected.startsWith('goal-')) {
       goalId = parseInt(selected.replace('goal-', ''));
       goalTitle = selectedOption.dataset.title;
     } else if (selected.startsWith('task-')) {
-      taskId = parseInt(selected.replace('task-', ''));
       taskTitle = selectedOption.dataset.title;
     }
 
-    chrome.runtime.sendMessage({
-      type: 'START_FOCUS',
-      goalId, goalTitle, taskId, taskTitle,
-      durationMinutes: duration,
-    });
+    try {
+      const res = await fetch(`${API_BASE}/guardian/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          goalId: goalId ? String(goalId) : null,
+          goalTitle,
+          conceptNodeName: taskTitle || goalTitle || selectedOption.dataset.title || 'Focus Session',
+          durationMinutes: duration,
+          source: 'extension',
+        }),
+      });
+      const data = await res.json();
+      if (!data?.session) return;
 
-    setTimeout(loadFocusSection, 1000);
+      chrome.runtime.sendMessage({
+        type: 'START_GUARDIAN',
+        context: data.session,
+      });
+
+      setTimeout(loadFocusSection, 1000);
+    } catch { }
   });
 }
 
@@ -116,7 +130,7 @@ function renderActiveFocusSession(el, status) {
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
-  const target = status.taskTitle || status.goalTitle || 'Focus Session';
+  const target = status.targetTitle || status.context?.targetTitle || status.context?.goalTitle || 'Focus Session';
 
   el.innerHTML = `
     <div class="focus-panel active" style="margin: 0 10px 0;">
@@ -148,14 +162,14 @@ function renderActiveFocusSession(el, status) {
   `;
 
   document.getElementById('focus-stop-btn').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'STOP_FOCUS' });
+    chrome.runtime.sendMessage({ type: 'STOP_GUARDIAN' });
     clearInterval(focusUpdateInterval);
     setTimeout(loadFocusSection, 1500);
   });
 
   if (focusUpdateInterval) clearInterval(focusUpdateInterval);
   focusUpdateInterval = setInterval(async () => {
-    const freshStatus = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' }, r));
+    const freshStatus = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_GUARDIAN_STATUS' }, r));
     if (!freshStatus || !freshStatus.active) {
       clearInterval(focusUpdateInterval);
       loadFocusSection();

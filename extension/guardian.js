@@ -5,6 +5,10 @@
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'BLOCK_TAB') {
         injectBlockOverlay(request);
+    } else if (request.type === 'UNBLOCK_TAB') {
+        removeBlockOverlay(request);
+    } else if (request.type === 'OVERRIDE_DECISION') {
+        showOverrideDecision(request.decision);
     } else if (request.type === 'CLASSIFY_TOAST') {
         injectClassifyToast(request);
     }
@@ -29,10 +33,24 @@ function injectBlockOverlay(data) {
                     <p style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #888; margin: 0 0 8px 0;">Currently Focused On</p>
                     <p style="font-size: 16px; font-weight: 700; color: #3b82f6; margin: 0;">${target}</p>
                 </div>
+                <div style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: 10px; margin-bottom: 18px; text-align: left;">
+                    <p style="font-size: 11px; color: #9ca3af; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">Why this block happened</p>
+                    <p style="font-size: 13px; color: #e5e7eb; margin: 0;">${data.explainability || reason}</p>
+                </div>
+                <textarea id="lifeos-override-reason" placeholder="If this site is actually needed, explain why and request a short override." style="width: 100%; min-height: 90px; background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; padding: 12px; resize: vertical; font-size: 13px; margin-bottom: 12px;"></textarea>
+                <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                    <select id="lifeos-override-minutes" style="flex: 1; padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.45); color: #fff; border: 1px solid rgba(255,255,255,0.08);">
+                        <option value="5">5 min override</option>
+                        <option value="10" selected>10 min override</option>
+                        <option value="15">15 min override</option>
+                    </select>
+                    <button id="lifeos-btn-request-override" style="flex: 1; padding: 12px 16px; background: rgba(59,130,246,0.12); color: #93c5fd; border: 1px solid rgba(59,130,246,0.35); border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer;">Ask For Override</button>
+                </div>
+                <div id="lifeos-override-status" style="min-height: 18px; font-size: 12px; color: #9ca3af; margin-bottom: 16px;"></div>
                 
                 <div style="display: flex; gap: 15px; justify-content: center;">
                     <button id="lifeos-btn-close-guardian" style="padding: 12px 24px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; flex: 1;">Close Tab</button>
-                    <!-- Strict mode: No bypass button. The agent block is absolute. -->
+                    <button id="lifeos-btn-stay-locked" style="padding: 12px 24px; background: transparent; color: #9ca3af; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; flex: 1;">Back To Work</button>
                 </div>
             </div>
             <p style="margin-top: 40px; font-size: 12px; color: #555;">LifeOS Autonomous Guardian</p>
@@ -46,6 +64,52 @@ function injectBlockOverlay(data) {
     document.getElementById('lifeos-btn-close-guardian').addEventListener('click', () => {
         chrome.runtime.sendMessage({ type: 'CLOSE_TAB' });
     });
+    document.getElementById('lifeos-btn-stay-locked').addEventListener('click', () => {
+        window.history.back();
+    });
+    document.getElementById('lifeos-btn-request-override').addEventListener('click', () => {
+        const reasonText = document.getElementById('lifeos-override-reason').value.trim();
+        const requestedMinutes = parseInt(document.getElementById('lifeos-override-minutes').value, 10);
+        const status = document.getElementById('lifeos-override-status');
+        if (!reasonText) {
+            status.textContent = 'Explain why this target is needed before requesting an override.';
+            return;
+        }
+
+        status.textContent = 'Reviewing override request...';
+        chrome.runtime.sendMessage({
+            type: 'REQUEST_OVERRIDE',
+            url: location.href,
+            title: document.title,
+            reason: reasonText,
+            requestedMinutes,
+        }, (response) => {
+            const decision = response?.decision;
+            if (!decision) {
+                status.textContent = 'Override review failed.';
+                return;
+            }
+            status.textContent = decision.approved
+                ? `Override approved for ${decision.ttlMinutes} minutes.`
+                : decision.explainability;
+        });
+    });
+}
+
+function removeBlockOverlay(data = {}) {
+    const overlay = document.getElementById('lifeos-guardian-block-overlay');
+    if (overlay) overlay.remove();
+    document.body.style.overflow = '';
+    if (data.reason) {
+        injectClassifyToast({ conceptTitle: data.reason });
+    }
+}
+
+function showOverrideDecision(decision) {
+    const status = document.getElementById('lifeos-override-status');
+    if (status && decision) {
+        status.textContent = decision.explainability || decision.reason;
+    }
 }
 
 function injectClassifyToast(data) {

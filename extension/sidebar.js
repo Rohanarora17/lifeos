@@ -41,23 +41,23 @@ window.addEventListener('focus', () => {
     }
 });
 
-// Relay focus session events from sidebar iframe to extension background
+// Relay guardian lifecycle events from the sidebar iframe to the background script.
 window.addEventListener('message', (event) => {
     if (event.origin !== APP_URL && event.origin !== 'http://localhost:3000') return;
 
-    if (event.data && event.data.type === 'LIFEOS_FOCUS_START') {
-        // Relay full focus context to background script
+    if (event.data && (event.data.type === 'START_GUARDIAN' || event.data.type === 'LIFEOS_FOCUS_START')) {
         chrome.runtime.sendMessage({
-            type: 'START_FOCUS',
-            goalId: event.data.goalId || null,
-            goalTitle: event.data.goalTitle || null,
-            taskId: event.data.taskId || null,
-            taskTitle: event.data.taskTitle || null,
-            durationMinutes: event.data.durationMinutes || 60,
+            type: 'START_GUARDIAN',
+            context: event.data.context || {
+                goalId: event.data.goalId ? String(event.data.goalId) : null,
+                goalTitle: event.data.goalTitle || null,
+                conceptNodeName: event.data.taskTitle || event.data.goalTitle || 'Focus Session',
+                durationMinutes: event.data.durationMinutes || 60,
+            },
         });
     }
 
-    if (event.data && event.data.type === 'LIFEOS_FOCUS_STOP') {
-        chrome.runtime.sendMessage({ type: 'STOP_FOCUS' });
+    if (event.data && (event.data.type === 'STOP_GUARDIAN' || event.data.type === 'LIFEOS_FOCUS_STOP')) {
+        chrome.runtime.sendMessage({ type: 'STOP_GUARDIAN' });
     }
 });

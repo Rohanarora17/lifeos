@@ -4,6 +4,30 @@
 let API_BASE = 'http://localhost:3000/api';
 let guardianActive = false;
 let sessionContext = null;
+let currentActiveTabId = null;
+
+function buildGuardianStatus() {
+    if (!guardianActive || !sessionContext?.sessionId) {
+        return { active: false, context: null };
+    }
+
+    const now = Date.now();
+    const durationMinutes = sessionContext.durationMinutes || 60;
+    const endsAt = sessionContext.endsAt || (sessionContext.startedAt ? sessionContext.startedAt + durationMinutes * 60 * 1000 : now);
+
+    return {
+        active: true,
+        sessionId: sessionContext.sessionId,
+        context: sessionContext,
+        targetTitle: sessionContext.targetTitle || sessionContext.conceptNodeName || sessionContext.goalTitle || 'Focus Session',
+        durationMinutes,
+        remainingSeconds: Math.max(0, Math.round((endsAt - now) / 1000)),
+        blockedCount: sessionContext.blockedCount || 0,
+        overrideCount: sessionContext.overrideCount || 0,
+        productiveSeconds: sessionContext.productiveSeconds || 0,
+        distractionSeconds: sessionContext.distractionSeconds || 0,
+    };
+}
 
 // Sync config
 chrome.storage.local.get(['apiUrl'], (data) => {
@@ -73,11 +97,91 @@ function isPrivacyBlocked(url) {
 
 const activeTabs = new Map(); // tabId -> { url, startedAt }
 
+async function getAuthHeaders() {
+    const data = await chrome.storage.local.get('apiKey');
+    const headers = { 'Content-Type': 'application/json' };
+    if (data.apiKey) headers.Authorization = `Bearer ${data.apiKey}`;
+    return headers;
+}
+
+async function applyGuardianCommands(commands = [], tabIdHint = null) {
+    for (const command of commands) {
+        const targetTabId = tabIdHint || currentActiveTabId;
+        if (!targetTabId) continue;
+
+        if (command.type === 'block') {
+            chrome.tabs.sendMessage(targetTabId, {
+                type: 'BLOCK_TAB',
+                reason: command.reason,
+                explainability: command.explainability,
+                targetDisplay: command.targetDisplay || sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session',
+                urlPattern: command.urlPattern,
+            });
+        }
+
+        if (command.type === 'unblock') {
+            chrome.tabs.sendMessage(targetTabId, {
+                type: 'UNBLOCK_TAB',
+                reason: command.reason,
+                explainability: command.explainability,
+                ttlSeconds: command.ttlSeconds,
+            });
+        }
+
+        if (command.type === 'classify') {
+            chrome.tabs.sendMessage(targetTabId, {
+                type: 'CLASSIFY_TOAST',
+                conceptTitle: command.conceptTitle,
+            });
+        }
+    }
+}
+
+async function postGuardianEvent(payload, tabIdHint = null) {
+    if (!guardianActive || !sessionContext?.sessionId) return null;
+
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/guardian/events`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                sessionId: sessionContext.sessionId,
+                timestamp: Date.now(),
+                ...payload,
+            }),
+        });
+
+        if (res.status === 409) {
+            guardianActive = false;
+            sessionContext = null;
+            activeTabs.clear();
+            chrome.alarms.clear('lifeos-guardian-heartbeat');
+            chrome.action.setBadgeText({ text: '' });
+            return null;
+        }
+
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data?.session) {
+            sessionContext = data.session;
+        }
+        if (Array.isArray(data.commands)) {
+            await applyGuardianCommands(data.commands, tabIdHint);
+        }
+        return data;
+    } catch (e) {
+        console.error('[LifeOS] guardian event failed', e);
+        return null;
+    }
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (!guardianActive) return; // HARD STOP — ZERO PROCESSING
     if (changeInfo.status !== 'complete') return;
     if (isPrivacyBlocked(tab.url)) return;
     if (!tab.active) return; // Only track the active tab
+    currentActiveTabId = tabId;
 
     reportTabActivity(tabId, tab.url, tab.title);
 });
@@ -87,6 +191,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     try {
         const tab = await chrome.tabs.get(activeInfo.tabId);
         if (isPrivacyBlocked(tab.url)) return;
+        currentActiveTabId = activeInfo.tabId;
         reportTabActivity(activeInfo.tabId, tab.url, tab.title);
     } catch (e) { }
 });
@@ -106,23 +211,7 @@ async function reportTabActivity(tabId, url, title) {
 
     activeTabs.set('current', { url, startedAt: Date.now() });
 
-    try {
-        const dataInfo = await chrome.storage.local.get('apiKey');
-        const apiKey = dataInfo.apiKey;
-        await fetch(`${API_BASE}/agent/tab-event`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-            body: JSON.stringify({
-                sessionId: sessionContext.sessionId,
-                url,
-                title,
-                dwellSeconds,
-                type: 'tab_navigation'
-            })
-        });
-    } catch (e) {
-        // silent fail
-    }
+    await postGuardianEvent({ type: 'tab', url, title, dwellSeconds }, tabId);
 }
 
 // Idle detection (using chrome API)
@@ -132,32 +221,29 @@ chrome.idle.onStateChanged.addListener(async (state) => {
 
     const idleSeconds = (state === 'idle' || state === 'locked') ? 60 : 0;
 
-    try {
-        const dataInfo = await chrome.storage.local.get('apiKey');
-        const apiKey = dataInfo.apiKey;
-        await fetch(`${API_BASE}/agent/tab-event`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) },
-            body: JSON.stringify({
-                sessionId: sessionContext.sessionId,
-                url: 'lifeos://idle',
-                title: 'User Idle State',
-                idleSeconds,
-                type: 'idle_state'
-            })
-        });
-    } catch (e) { }
+    await postGuardianEvent({
+        type: 'idle',
+        url: 'lifeos://idle',
+        title: 'User Idle State',
+        idleSeconds,
+    }, currentActiveTabId);
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name !== 'lifeos-guardian-heartbeat') return;
+    if (!guardianActive || !sessionContext?.sessionId) return;
+    await postGuardianEvent({ type: 'heartbeat' }, currentActiveTabId);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    // Phase 1 -> Core guardian orchestration commands from server
     if (msg.type === 'START_GUARDIAN') {
         guardianActive = true;
-        sessionContext = msg.context;
+        sessionContext = msg.context || msg;
         console.log('[LifeOS] Guardian Mode ACTIVE', sessionContext);
         chrome.action.setBadgeText({ text: 'ON' });
         chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
         activeTabs.clear();
+        chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
         sendResponse({ ok: true });
     }
 
@@ -167,11 +253,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         console.log('[LifeOS] Guardian Mode STOPPED');
         chrome.action.setBadgeText({ text: '' });
         activeTabs.clear();
+        chrome.alarms.clear('lifeos-guardian-heartbeat');
         sendResponse({ ok: true });
     }
 
     if (msg.type === 'GET_GUARDIAN_STATUS') {
-        sendResponse({ active: guardianActive, context: sessionContext });
+        sendResponse(buildGuardianStatus());
+    }
+
+    if (msg.type === 'GET_CURRENT_ACTIVITY') {
+        sendResponse(activeTabs.get('current') || null);
     }
 
     // Agent Loop Actions -> Passed to guardian.js content script
@@ -197,6 +288,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CLOSE_TAB') {
         if (sender.tab && sender.tab.id) chrome.tabs.remove(sender.tab.id);
         sendResponse({ ok: true });
+    }
+
+    if (msg.type === 'REQUEST_OVERRIDE') {
+        (async () => {
+            try {
+                const headers = await getAuthHeaders();
+                const res = await fetch(`${API_BASE}/guardian/override`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        sessionId: sessionContext?.sessionId,
+                        url: msg.url,
+                        title: msg.title,
+                        reason: msg.reason,
+                        requestedMinutes: msg.requestedMinutes,
+                    }),
+                });
+                const data = await res.json();
+                if (data?.decision?.approved && sender.tab?.id) {
+                    chrome.tabs.sendMessage(sender.tab.id, {
+                        type: 'UNBLOCK_TAB',
+                        reason: data.decision.reason,
+                        explainability: data.decision.explainability,
+                        ttlSeconds: data.decision.ttlMinutes * 60,
+                    });
+                } else if (sender.tab?.id) {
+                    chrome.tabs.sendMessage(sender.tab.id, {
+                        type: 'OVERRIDE_DECISION',
+                        decision: data.decision,
+                    });
+                }
+                sendResponse(data);
+            } catch (e) {
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
     }
 
     return true;
