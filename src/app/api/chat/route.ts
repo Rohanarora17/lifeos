@@ -1,36 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
+import { startGuardianSession } from '@/lib/guardian-runtime';
 import { MODEL_PRO } from '@/lib/models';
 import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
 import { getKnowledgeGapSummary } from '@/lib/graph';
 import { Type } from '@google/genai';
 
-const DB_SCHEMA = `
-TABLE activities (id, url, domain, title, category, subcategory, duration_seconds, started_at, ended_at)
-TABLE tasks (id, title, description, status, due_date, created_at, completed_at, goal_id, priority)
-TABLE habits (id, name, icon, frequency, goal_metric, goal_target, created_at, archived, goal_id)
-TABLE habit_checkins (id, habit_id, date, completed, value)
-TABLE daily_scores (date, xp_earned, productive_minutes, distraction_minutes, tasks_completed, habits_completed, ai_summary, ai_morning_brief, level, task_score, habit_score, accountability_score)
-TABLE goals (id, title, type, target_value, unit, active, deadline, description, current_value, progress, metric, category)
-TABLE focus_sessions (id, session_date, duration_minutes, focus_type, primary_domain, goal_title, task_title, actual_duration_seconds, productive_seconds, distraction_seconds, ai_report, status, started_at, ended_at)
-TABLE behavioral_memory (id, memory_type, content, confidence, reinforcement_count, last_reinforced, superseded, source)
-TABLE behavior_insights (id, category, insight, actionable_tip, severity, feedback)
-TABLE alerts (id, type, message, severity, read, title, priority)
-TABLE coin_ledger (id, amount, reason, created_at)
-`;
-
 const tools = [{
     functionDeclarations: [
         {
-            name: 'queryDatabase',
-            description: 'Run a raw SQLite SELECT query to fetch data about the user\'s habits, tasks, focus sessions, or activities. Schema:\n' + DB_SCHEMA,
+            name: 'getDashboardSnapshot',
+            description: 'Fetch a compact summary of the user\'s productivity state: tasks, active goals, recent focus sessions, alerts, and today score.',
             parameters: {
                 type: Type.OBJECT,
                 properties: {
-                    sql: { type: Type.STRING, description: 'The absolute raw SQLite SELECT query. No markdown.' }
-                },
-                required: ['sql']
+                    include_history: { type: Type.BOOLEAN }
+                }
             }
         },
         {
@@ -55,12 +41,16 @@ const tools = [{
             }
         },
         {
-            name: 'startFocusSession',
-            description: 'Start a focus session',
+            name: 'startGuardianSession',
+            description: 'Start a guarded focus session for the user',
             parameters: {
                 type: Type.OBJECT,
-                properties: { duration_minutes: { type: Type.INTEGER }, task_title: { type: Type.STRING } },
-                required: ['duration_minutes']
+                properties: {
+                    duration_minutes: { type: Type.INTEGER },
+                    task_title: { type: Type.STRING },
+                    mood: { type: Type.STRING, description: 'high, medium, or low' }
+                },
+                required: ['duration_minutes', 'task_title']
             }
         }
     ]
@@ -68,10 +58,45 @@ const tools = [{
 
 function executeTool(name: string, args: any) {
     const db = getDb();
-    if (name === 'queryDatabase') {
-        const stmt = db.prepare(args.sql);
-        if (!stmt.readonly) throw new Error('Only SELECT queries allowed');
-        return stmt.all();
+    if (name === 'getDashboardSnapshot') {
+        const tasks = db.prepare(`
+            SELECT id, title, status, priority, goal_id
+            FROM tasks
+            WHERE status IN ('doing', 'today', 'backlog')
+            ORDER BY CASE status
+                WHEN 'doing' THEN 0
+                WHEN 'today' THEN 1
+                ELSE 2
+            END, created_at DESC
+            LIMIT 10
+        `).all();
+        const goals = db.prepare(`
+            SELECT id, title, progress, deadline
+            FROM goals
+            WHERE active = 1
+            ORDER BY deadline IS NULL, deadline ASC
+            LIMIT 5
+        `).all();
+        const focusSessions = db.prepare(`
+            SELECT id, goal_title, task_title, duration_minutes, started_at, ended_at, status, ai_report
+            FROM focus_sessions
+            ORDER BY COALESCE(started_at, created_at, id) DESC
+            LIMIT ?
+        `).all(args.include_history ? 10 : 3);
+        const alerts = db.prepare(`
+            SELECT id, type, message, severity, title, priority
+            FROM alerts
+            WHERE read = 0
+            ORDER BY id DESC
+            LIMIT 5
+        `).all();
+        const today = db.prepare(`
+            SELECT *
+            FROM daily_scores
+            ORDER BY date DESC
+            LIMIT 1
+        `).get();
+        return { tasks, goals, focusSessions, alerts, today };
     } else if (name === 'createTask') {
         const stmt = db.prepare("INSERT INTO tasks (title, status, priority, created_at) VALUES (?, 'backlog', ?, datetime('now', 'localtime'))");
         const info = stmt.run(args.title, args.priority || 'medium');
@@ -81,11 +106,14 @@ function executeTool(name: string, args: any) {
         const stmt = db.prepare('INSERT OR IGNORE INTO habit_checkins (habit_id, date, completed) VALUES (?, ?, 1)');
         stmt.run(args.habit_id, today);
         return { success: true, message: 'Habit checked off for today' };
-    } else if (name === 'startFocusSession') {
-        const start = new Date(Date.now() + 19800000).toISOString();
-        const stmt = db.prepare("INSERT INTO focus_sessions (session_date, start_time, duration_minutes, task_title, status) VALUES (?, ?, ?, ?, 'active')");
-        const info = stmt.run(start.slice(0, 10), start, args.duration_minutes, args.task_title || '');
-        return { success: true, session_id: info.lastInsertRowid, message: 'Focus session created for ' + args.duration_minutes + 'm' };
+    } else if (name === 'startGuardianSession') {
+        const session = startGuardianSession({
+            conceptNodeName: args.task_title,
+            durationMinutes: args.duration_minutes,
+            mood: args.mood || 'medium',
+            source: 'api',
+        });
+        return { success: true, session_id: session.sessionId, message: 'Guardian session started', session };
     }
     throw new Error('Unknown tool');
 }
@@ -109,13 +137,13 @@ export async function POST(request: NextRequest) {
         const knowledgeContext = getKnowledgeGapSummary();
 
         const systemInstruction = "You are Jarvis, the core intelligence engine and personal assistant of LifeOS.\\n" +
-            "You have direct access to the user's LifeOS database via tools.\\n" +
+            "You have access only to typed LifeOS tools and summaries, not arbitrary SQL.\\n" +
             "Always be proactive, concise, and hold the user accountable.\\n\\n" +
             "Behavioral Context:\\n" + behaviorContext + "\\n\\n" +
             "Goals Context:\\n" + goalsContext + "\\n\\n" +
             (knowledgeContext ? "Knowledge Graph:\\n" + knowledgeContext + "\\n\\n" : "") +
-            "When users ask questions about their data, use the queryDatabase tool to fetch it.\\n" +
-            "When users ask to create a task, check a habit, or start a focus session, use the respective tool.\\n" +
+            "When users ask questions about their data, use the getDashboardSnapshot tool to fetch relevant structured context.\\n" +
+            "When users ask to create a task, check a habit, or start a guardian session, use the respective tool.\\n" +
             "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain data naturally.";
 
