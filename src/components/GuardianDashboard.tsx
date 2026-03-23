@@ -8,11 +8,13 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
     const [messages, setMessages] = useState<any[]>([]);
     const [elapsed, setElapsed] = useState<number>(0);
     const [history, setHistory] = useState<number[]>([100]);
+    const [onTopicTime, setOnTopicTime] = useState<number>(0);
+    const [distractions, setDistractions] = useState<number>(0);
 
     // SSE Subscription
     useEffect(() => {
         if (!sessionId) return;
-        const sse = new EventSource(`/api/agent/stream?sessionId=${sessionId}`);
+        const sse = new EventSource(`/api/guardian/stream?sessionId=${sessionId}`);
 
         sse.onmessage = (event) => {
             const data = JSON.parse(event.data);
@@ -22,28 +24,17 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
                 setHistory(prev => [...prev.slice(-19), data.score]);
             } else if (data.type === 'jarvis_speech') {
                 setMessages(prev => [{ text: data.text, tone: data.tone, time: Date.now() }, ...prev].slice(0, 3));
-            } else if (data.type === 'intervention') {
-                if (data.action === 'block' && typeof window !== 'undefined' && (window as any).chrome?.runtime) {
-                    (window as any).chrome.runtime.sendMessage({
-                        type: 'BLOCK_TAB',
-                        reason: data.payload.reason,
-                        tabId: null
-                    });
-                }
-                if (data.action === 'classify' && typeof window !== 'undefined' && (window as any).chrome?.runtime) {
-                    (window as any).chrome.runtime.sendMessage({
-                        type: 'CLASSIFY_TOAST',
-                        conceptTitle: data.payload.conceptTitle,
-                        tabId: null
-                    });
-                }
+            } else if (data.type === 'session_stats') {
+                setOnTopicTime(data.onTopicTime || 0);
+                setDistractions(data.distractions || 0);
+                setElapsed(data.elapsed || 0);
             }
         };
 
         return () => sse.close();
     }, [sessionId]);
 
-    // Heartbeat clock & elapsed timer
+    // Local display timer between stream updates
     useEffect(() => {
         if (!sessionId) return;
 
@@ -51,24 +42,8 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
             setElapsed(e => e + 1);
         }, 1000);
 
-        const heartbeatTimer = setInterval(() => {
-            fetch('/api/agent/heartbeat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId })
-            });
-        }, 30000);
-
-        // initial tick
-        fetch('/api/agent/heartbeat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId })
-        });
-
         return () => {
             clearInterval(tickTimer);
-            clearInterval(heartbeatTimer);
         };
     }, [sessionId]);
 
@@ -159,11 +134,11 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
                 </div>
                 <div className="col-span-1 bg-zinc-900 rounded-lg border border-zinc-800 p-4 flex flex-col justify-center">
                     <div className="text-zinc-500 text-xs font-bold tracking-widest uppercase mb-1">On-Topic Time</div>
-                    <div className="text-2xl font-bold text-white">82%</div>
+                    <div className="text-2xl font-bold text-white">{Math.round((onTopicTime / Math.max(1, elapsed)) * 100)}%</div>
                 </div>
                 <div className="col-span-1 bg-zinc-900 rounded-lg border border-zinc-800 p-4 flex flex-col justify-center">
                     <div className="text-zinc-500 text-xs font-bold tracking-widest uppercase mb-1">Distractions</div>
-                    <div className="text-2xl font-bold text-zinc-400">0</div>
+                    <div className="text-2xl font-bold text-zinc-400">{distractions}</div>
                 </div>
             </div>
 
