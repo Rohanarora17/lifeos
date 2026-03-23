@@ -10,6 +10,7 @@ const Database = require('better-sqlite3');
 const DB_PATH = path.join(process.cwd(), 'data', 'lifeos.db');
 const ACTIVE_POLICY_TYPE = 'guardian_policy_bundle';
 const SUITE_NAME = 'baseline_guardian_suite';
+const CANARY_SUITE_NAME = 'canary_holdout_suite';
 
 const DISTRACTION_DOMAINS = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com'];
 const PRODUCTIVE_DOMAINS = ['docs.', 'developer.mozilla.org', 'leetcode.com', 'khanacademy.org', 'coursera.org', 'edx.org', 'wikipedia.org'];
@@ -108,6 +109,142 @@ const DEFAULT_CASES = [
     },
     expectedOutcome: 'Should nudge for scatter without blocking productive browsing.',
   },
+  {
+    caseName: 'productive_url_never_blocked',
+    scenarioType: 'false_positive_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Algorithm Study',
+      events: [
+        { type: 'tab', url: 'https://leetcode.com/problems/two-sum', title: 'LeetCode', dwellSeconds: 300 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript', title: 'MDN', dwellSeconds: 240 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Dynamic_programming', title: 'Dynamic Programming', dwellSeconds: 180 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Guardian must never block a session that stays entirely on productive URLs.',
+  },
+  {
+    caseName: 'deep_focus_long_silence',
+    scenarioType: 'flow_protection',
+    inputPayload: {
+      durationMinutes: 90,
+      targetTitle: 'Linear Algebra Deep Dive',
+      events: [
+        { type: 'tab', url: 'https://khanacademy.org/math/linear-algebra', title: 'Khan Academy', dwellSeconds: 480 },
+        { type: 'heartbeat' },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Eigenvalues_and_eigenvectors', title: 'Eigenvalues', dwellSeconds: 360 },
+        { type: 'heartbeat' },
+        { type: 'heartbeat' },
+      ],
+      expected: { maxBlockCount: 0, maxSpeakCount: 1, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Guardian should stay silent during long deep-focus stretches on productive content.',
+  },
+  {
+    caseName: 'single_distraction_no_block',
+    scenarioType: 'over_intervention_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Operating Systems Assignment',
+      events: [
+        { type: 'tab', url: 'https://developer.mozilla.org', title: 'MDN', dwellSeconds: 300 },
+        { type: 'tab', url: 'https://youtube.com/watch?v=xyz', title: 'YouTube', dwellSeconds: 15 },
+        { type: 'tab', url: 'https://developer.mozilla.org', title: 'MDN', dwellSeconds: 240 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'A single brief distraction visit should not trigger a block.',
+  },
+  {
+    caseName: 'rapid_distraction_escalation_triggers_block',
+    scenarioType: 'realtime',
+    inputPayload: {
+      durationMinutes: 45,
+      targetTitle: 'Calculus Problem Set',
+      events: [
+        { type: 'tab', url: 'https://docs.python.org', title: 'Python Docs', dwellSeconds: 120 },
+        { type: 'tab', url: 'https://twitter.com/home', title: 'Twitter', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://docs.python.org', title: 'Python Docs', dwellSeconds: 40 },
+        { type: 'tab', url: 'https://twitter.com/home', title: 'Twitter', dwellSeconds: 25 },
+        { type: 'tab', url: 'https://twitter.com/notifications', title: 'Twitter', dwellSeconds: 20 },
+      ],
+      expected: { mustBlock: true, finalClassification: 'distraction' },
+    },
+    expectedOutcome: 'Rapid escalating revisits to same distraction domain must trigger a block.',
+  },
+  {
+    caseName: 'idle_then_return_no_block',
+    scenarioType: 'over_intervention_guard',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Reading Sprint',
+      events: [
+        { type: 'tab', url: 'https://coursera.org/learn/ml', title: 'Coursera', dwellSeconds: 200 },
+        { type: 'idle', idleSeconds: 540 },
+        { type: 'tab', url: 'https://coursera.org/learn/ml', title: 'Coursera', dwellSeconds: 180 },
+      ],
+      expected: { mustSpeak: true, maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Idle followed by return to productive URL should prompt a check-in, not a block.',
+  },
+  {
+    caseName: 'mixed_session_proportionate_response',
+    scenarioType: 'realtime',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Data Structures',
+      events: [
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 300 },
+        { type: 'tab', url: 'https://reddit.com/r/programming', title: 'Reddit', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 200 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://reddit.com/r/programming', title: 'Reddit', dwellSeconds: 20 },
+        { type: 'tab', url: 'https://leetcode.com', title: 'LeetCode', dwellSeconds: 160 },
+      ],
+      expected: { mustSpeak: true, maxBlockCount: 1 },
+    },
+    expectedOutcome: 'Mixed session with moderate distraction should speak and block at most once.',
+  },
+];
+
+// Holdout cases — never appear in the training suite, used only for canary validation.
+const CANARY_CASES = [
+  {
+    caseName: 'canary_hard_block_on_repeated_distraction',
+    scenarioType: 'canary',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Canary Session',
+      events: [
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Calculus', title: 'Wikipedia', dwellSeconds: 180 },
+        { type: 'tab', url: 'https://instagram.com', title: 'Instagram', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Calculus', title: 'Wikipedia', dwellSeconds: 60 },
+        { type: 'tab', url: 'https://instagram.com/explore', title: 'Instagram Explore', dwellSeconds: 25 },
+        { type: 'tab', url: 'https://instagram.com/reels', title: 'Instagram Reels', dwellSeconds: 20 },
+      ],
+      expected: { mustBlock: true, finalClassification: 'distraction' },
+    },
+    expectedOutcome: 'Canary: repeated distraction must still trigger block.',
+  },
+  {
+    caseName: 'canary_productive_url_no_block',
+    scenarioType: 'canary',
+    inputPayload: {
+      durationMinutes: 45,
+      targetTitle: 'Canary Deep Work',
+      events: [
+        { type: 'tab', url: 'https://edx.org/learn/cs', title: 'edX', dwellSeconds: 400 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://khanacademy.org/computing', title: 'Khan', dwellSeconds: 300 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+    expectedOutcome: 'Canary: productive-only session must never be blocked.',
+  },
 ];
 
 function openDb() {
@@ -157,11 +294,14 @@ function ensureActivePolicy(db) {
 }
 
 function ensureEvalCases(db) {
-  const row = db.prepare('SELECT COUNT(*) AS count FROM guardian_eval_cases WHERE suite_name = ?').get(SUITE_NAME);
-  if (row.count > 0) return;
+  // Ensure unique index exists for additive seeding
+  try {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_cases_suite_name ON guardian_eval_cases(suite_name, case_name)');
+  } catch {}
 
+  // INSERT OR IGNORE so new cases are added without re-inserting existing ones
   const insert = db.prepare(`
-    INSERT INTO guardian_eval_cases (suite_name, case_name, scenario_type, input_payload, expected_outcome)
+    INSERT OR IGNORE INTO guardian_eval_cases (suite_name, case_name, scenario_type, input_payload, expected_outcome)
     VALUES (?, ?, ?, ?, ?)
   `);
   const tx = db.transaction(() => {
@@ -182,7 +322,9 @@ function computeFocusScore(session, policy) {
   let switches = 0;
   let idleSeconds = 0;
 
+  // Only tab and idle events — heartbeats are excluded (matches real runtime behaviour)
   for (const event of session.events) {
+    if (event.type === 'heartbeat') continue;
     if (event.type === 'idle') {
       idleSeconds += event.idleSeconds || 0;
       continue;
@@ -200,7 +342,11 @@ function computeFocusScore(session, policy) {
   const continuityScore = Math.min(100, (onTopicSeconds / Math.max(1, elapsedMs / 1000)) * 100);
   const switchesPerMin = switches / Math.max(1, elapsedMinutes);
   const switchScore = switchesPerMin >= 3 ? 0 : 100 - (switchesPerMin * 33);
-  const avgDwell = switches > 0 ? (elapsedMs / 1000) / switches : 0;
+
+  // Use actual reported dwellSeconds (matches focus-score.ts fix)
+  const tabsWithDwell = session.events.filter((e) => e.type === 'tab' && typeof e.dwellSeconds === 'number');
+  const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
+  const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
   const dwellScore = Math.min(100, (avgDwell / 180) * 100);
   const distractPenalty = distractionRevisits * 8;
   let idlePenalty = 0;
@@ -223,7 +369,10 @@ function evaluateScenario(policy, scenario) {
   let speakCount = 0;
 
   for (const event of scenario.events) {
-    session.events.push(event);
+    // Heartbeats drive ticks only — never pushed into events (matches runtime behaviour)
+    if (event.type !== 'heartbeat') {
+      session.events.push(event);
+    }
     session.tick += 1;
     if (event.type === 'tab') session.currentClassification = classifyUrl(event.url);
     if (event.type === 'idle') session.currentClassification = 'unknown';
@@ -242,6 +391,12 @@ function evaluateScenario(policy, scenario) {
   let score = 100;
   let hardFailure = false;
   const expected = scenario.expected || {};
+
+  // Hard-fail: blocking while on a productive URL is a false-positive — never acceptable
+  if (blockCount > 0 && session.currentClassification === 'on_topic') {
+    hardFailure = true;
+    score -= 60;
+  }
 
   if (expected.mustBlock && blockCount === 0) {
     hardFailure = true;
@@ -342,7 +497,16 @@ function runCycle() {
     summary: 'Baseline evaluation',
   });
 
-  const candidates = mutateCandidates(activePolicy).map((candidate) => {
+  const cycleStartMs = Date.now();
+  const budgetMs = wallClockBudgetSeconds * 1000;
+  const mutatedCandidates = mutateCandidates(activePolicy);
+  const candidates = [];
+
+  for (const candidate of mutatedCandidates) {
+    if (Date.now() - cycleStartMs >= budgetMs) {
+      console.error(`[guardian-optimize] Wall-clock budget (${wallClockBudgetSeconds}s) reached — skipping remaining ${mutatedCandidates.length - candidates.length} candidates`);
+      break;
+    }
     const summary = evaluateBundle(candidate);
     const info = db.prepare(`
       INSERT INTO guardian_artifact_versions (
@@ -357,13 +521,16 @@ function runCycle() {
       status: summary.hardFailures === 0 ? 'passed' : 'failed',
       summary: 'Candidate evaluation',
     });
-    return { artifactId: info.lastInsertRowid, version: candidate.version, ...summary };
-  });
+    candidates.push({ artifactId: info.lastInsertRowid, version: candidate.version, ...summary });
+  }
 
   const winner = candidates.filter((item) => item.hardFailures === 0).sort((a, b) => b.guardianEvalScore - a.guardianEvalScore)[0];
 
   let promoted = null;
+  let canaryResult = null;
+
   if (winner && winner.guardianEvalScore > baseline.guardianEvalScore) {
+    // Promote the winner first
     db.transaction(() => {
       db.prepare('UPDATE guardian_artifact_versions SET is_active = 0 WHERE artifact_type = ?').run(ACTIVE_POLICY_TYPE);
       db.prepare('UPDATE guardian_artifact_versions SET is_active = 1, promoted_at = datetime(\'now\', \'localtime\') WHERE id = ?').run(winner.artifactId);
@@ -371,19 +538,46 @@ function runCycle() {
         winner.artifactId,
         `Promoted automatically: ${winner.guardianEvalScore} > ${baseline.guardianEvalScore}`
       );
-      db.prepare('INSERT INTO guardian_canary_results (guardian_eval_score, status, notes) VALUES (?, ?, ?)').run(
-        winner.guardianEvalScore,
-        'passed',
-        `Promotion candidate ${winner.version} passed.`
-      );
     })();
-    promoted = { artifactId: winner.artifactId, version: winner.version };
+
+    // Run canary validation on holdout suite
+    const winnerRow = db.prepare('SELECT content FROM guardian_artifact_versions WHERE id = ?').get(winner.artifactId);
+    const winnerContent = JSON.parse(winnerRow.content);
+    const canaryResults = CANARY_CASES.map((c) => evaluateScenario(winnerContent, c.inputPayload));
+    const canaryHardFailures = canaryResults.filter((r) => r.hardFailure).length;
+    const canaryScore = canaryResults.reduce((sum, r) => sum + r.score, 0) / canaryResults.length;
+
+    const baselineCanaryResults = CANARY_CASES.map((c) => evaluateScenario(activePolicy, c.inputPayload));
+    const baselineCanaryScore = baselineCanaryResults.reduce((sum, r) => sum + r.score, 0) / baselineCanaryResults.length;
+
+    if (canaryHardFailures > 0 || canaryScore < baselineCanaryScore) {
+      // Canary failed — rollback: re-promote the previous active version
+      db.transaction(() => {
+        db.prepare('UPDATE guardian_artifact_versions SET is_active = 0 WHERE artifact_type = ?').run(ACTIVE_POLICY_TYPE);
+        db.prepare('UPDATE guardian_artifact_versions SET is_active = 1, promoted_at = datetime(\'now\', \'localtime\') WHERE id = ?').run(activeRow.id);
+      })();
+      db.prepare('INSERT INTO guardian_canary_results (guardian_eval_score, status, notes) VALUES (?, ?, ?)').run(
+        canaryScore,
+        'failed',
+        `Canary failed for ${winner.version}: hardFailures=${canaryHardFailures}, canaryScore=${canaryScore} < baseline ${baselineCanaryScore}. Rolled back to ${activeRow.id}.`
+      );
+      canaryResult = { status: 'rolled_back', canaryScore, baselineCanaryScore };
+    } else {
+      db.prepare('INSERT INTO guardian_canary_results (guardian_eval_score, status, notes) VALUES (?, ?, ?)').run(
+        canaryScore,
+        'passed',
+        `Canary passed for ${winner.version}: score ${canaryScore} >= baseline ${baselineCanaryScore}.`
+      );
+      promoted = { artifactId: winner.artifactId, version: winner.version };
+      canaryResult = { status: 'passed', canaryScore, baselineCanaryScore };
+    }
   } else {
     db.prepare('INSERT INTO guardian_canary_results (guardian_eval_score, status, notes) VALUES (?, ?, ?)').run(
       baseline.guardianEvalScore,
       'passed',
       'No candidate beat baseline; active policy retained.'
     );
+    canaryResult = { status: 'no_candidate' };
   }
 
   return {
@@ -397,6 +591,7 @@ function runCycle() {
       hardFailures: item.hardFailures,
     })),
     promoted,
+    canary: canaryResult,
   };
 }
 
