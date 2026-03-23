@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { startSession, getSession, pauseSession, resumeSession, endSession, activeSessions } from '@/lib/session-state';
+import { endSession, getSession, listSessions, pauseSession, resumeSession, startSession } from '@/lib/session-state';
 
 export async function POST(req: Request) {
     try {
@@ -9,7 +9,7 @@ export async function POST(req: Request) {
         let resSession = null;
 
         if (action === 'start') {
-            resSession = startSession(intent || {});
+            resSession = await Promise.resolve(startSession(intent || {}));
         } else if (action === 'pause' && sessionId) {
             pauseSession(sessionId);
             resSession = getSession(sessionId);
@@ -28,6 +28,6 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-    const sessions = Array.from(activeSessions.values());
+    const sessions = listSessions();
     return NextResponse.json({ sessions });
 }

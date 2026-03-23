@@ -1,30 +1,295 @@
-import getDb from './db';
+import { getDb } from './db';
+import type { DayBriefing, GuardianSemanticProfile, GuardianSessionSummary } from './guardian-types';
 
-// The Longitudinal Engine provides longitudinal context across sessions
-// used primarily for opening lines, drift detection, and energy forecasting.
+function parseJsonArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
-export function getDayBriefing(userId: string = 'default') {
+function toEnergyBand(score: number): 'low' | 'medium' | 'high' {
+  if (score >= 85) return 'high';
+  if (score >= 65) return 'medium';
+  return 'low';
+}
+
+function average(values: number[]) {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function titleFrequency(rows: Array<{ targetTitle: string; averageFocusScore: number }>, highWaterMark: number, lowWaterMark: number) {
+  const strong = new Map<string, number>();
+  const friction = new Map<string, number>();
+
+  for (const row of rows) {
+    if (row.averageFocusScore >= highWaterMark) {
+      strong.set(row.targetTitle, (strong.get(row.targetTitle) || 0) + 1);
+    }
+    if (row.averageFocusScore <= lowWaterMark) {
+      friction.set(row.targetTitle, (friction.get(row.targetTitle) || 0) + 1);
+    }
+  }
+
+  return {
+    strongTopics: Array.from(strong.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([title]) => title),
+    frictionTopics: Array.from(friction.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([title]) => title),
+  };
+}
+
+function distractionFrequency(rows: Array<{ dominantDistractionDomain: string | null }>) {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.dominantDistractionDomain) continue;
+    counts.set(row.dominantDistractionDomain, (counts.get(row.dominantDistractionDomain) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([domain]) => domain);
+}
+
+function deriveCoachingStyle(avgFocusScore: number, avgOverrides: number): 'gentle' | 'balanced' | 'direct' {
+  if (avgFocusScore < 60 || avgOverrides < 0.5) return 'direct';
+  if (avgFocusScore >= 85 && avgOverrides >= 1.5) return 'gentle';
+  return 'balanced';
+}
+
+export function listRecentGuardianSessionSummaries(limit: number = 20): GuardianSessionSummary[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT
+      id,
+      session_id as sessionId,
+      target_title as targetTitle,
+      goal_title as goalTitle,
+      concept_node_name as conceptNodeName,
+      mood,
+      duration_minutes as durationMinutes,
+      elapsed_minutes as elapsedMinutes,
+      average_focus_score as averageFocusScore,
+      final_focus_score as finalFocusScore,
+      blocked_count as blockedCount,
+      override_count as overrideCount,
+      distraction_events as distractionEvents,
+      productive_events as productiveEvents,
+      neutral_events as neutralEvents,
+      dominant_distraction_domain as dominantDistractionDomain,
+      completed_at as completedAt
+    FROM guardian_session_summaries
+    ORDER BY completed_at DESC
+    LIMIT ?
+  `).all(limit) as GuardianSessionSummary[];
+}
+
+export function getGuardianSemanticProfile(userId: string = 'default'): GuardianSemanticProfile {
+  const db = getDb();
+  const existing = db.prepare(`
+    SELECT
+      id,
+      user_id as userId,
+      coaching_style as coachingStyle,
+      typical_energy_band as typicalEnergyBand,
+      best_start_hour as bestStartHour,
+      recurring_distraction_domains as recurringDistractionDomains,
+      strong_topics as strongTopics,
+      friction_topics as frictionTopics,
+      updated_at as updatedAt
+    FROM guardian_semantic_profiles
+    WHERE user_id = ?
+  `).get(userId) as
+    | (Omit<GuardianSemanticProfile, 'recurringDistractionDomains' | 'strongTopics' | 'frictionTopics'> & {
+        recurringDistractionDomains: string;
+        strongTopics: string;
+        frictionTopics: string;
+      })
+    | undefined;
+
+  if (existing) {
     return {
-        recentSessions: 3,
-        avgFocusScore: 78,
-        activeGoals: ['Learn advanced TS', 'Build Guardian']
+      ...existing,
+      recurringDistractionDomains: parseJsonArray(existing.recurringDistractionDomains),
+      strongTopics: parseJsonArray(existing.strongTopics),
+      frictionTopics: parseJsonArray(existing.frictionTopics),
     };
+  }
+
+  db.prepare(`
+    INSERT OR IGNORE INTO guardian_semantic_profiles (user_id)
+    VALUES (?)
+  `).run(userId);
+
+  return getGuardianSemanticProfile(userId);
+}
+
+export function updateGuardianSemanticProfile(userId: string = 'default') {
+  const db = getDb();
+  const recent = db.prepare(`
+    SELECT
+      target_title as targetTitle,
+      average_focus_score as averageFocusScore,
+      override_count as overrideCount,
+      dominant_distraction_domain as dominantDistractionDomain,
+      CAST(strftime('%H', completed_at) as INTEGER) as completedHour
+    FROM guardian_session_summaries
+    ORDER BY completed_at DESC
+    LIMIT 20
+  `).all() as Array<{
+    targetTitle: string;
+    averageFocusScore: number;
+    overrideCount: number;
+    dominantDistractionDomain: string | null;
+    completedHour: number | null;
+  }>;
+
+  if (recent.length === 0) {
+    return getGuardianSemanticProfile(userId);
+  }
+
+  const avgFocusScore = average(recent.map((row) => row.averageFocusScore));
+  const avgOverrides = average(recent.map((row) => row.overrideCount));
+  const bestStartHour = recent
+    .filter((row) => row.completedHour !== null && row.averageFocusScore >= avgFocusScore)
+    .sort((a, b) => b.averageFocusScore - a.averageFocusScore)[0]?.completedHour ?? null;
+  const { strongTopics, frictionTopics } = titleFrequency(recent, 82, 62);
+  const recurringDistractionDomains = distractionFrequency(recent);
+
+  const profile: GuardianSemanticProfile = {
+    ...getGuardianSemanticProfile(userId),
+    userId,
+    coachingStyle: deriveCoachingStyle(avgFocusScore, avgOverrides),
+    typicalEnergyBand: toEnergyBand(avgFocusScore),
+    bestStartHour,
+    recurringDistractionDomains,
+    strongTopics,
+    frictionTopics,
+    updatedAt: new Date().toISOString(),
+  };
+
+  db.prepare(`
+    INSERT INTO guardian_semantic_profiles (
+      user_id,
+      coaching_style,
+      typical_energy_band,
+      best_start_hour,
+      recurring_distraction_domains,
+      strong_topics,
+      friction_topics,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+    ON CONFLICT(user_id) DO UPDATE SET
+      coaching_style = excluded.coaching_style,
+      typical_energy_band = excluded.typical_energy_band,
+      best_start_hour = excluded.best_start_hour,
+      recurring_distraction_domains = excluded.recurring_distraction_domains,
+      strong_topics = excluded.strong_topics,
+      friction_topics = excluded.friction_topics,
+      updated_at = datetime('now', 'localtime')
+  `).run(
+    profile.userId,
+    profile.coachingStyle,
+    profile.typicalEnergyBand,
+    profile.bestStartHour,
+    JSON.stringify(profile.recurringDistractionDomains),
+    JSON.stringify(profile.strongTopics),
+    JSON.stringify(profile.frictionTopics)
+  );
+
+  return getGuardianSemanticProfile(userId);
+}
+
+export function getDayBriefing(userId: string = 'default'): DayBriefing {
+  const db = getDb();
+  const recent = listRecentGuardianSessionSummaries(7);
+  const profile = updateGuardianSemanticProfile(userId);
+  const activeGoals = db.prepare(`
+    SELECT title
+    FROM goals
+    WHERE active = 1
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 5
+  `).all() as Array<{ title: string }>;
+  const activeTasks = db.prepare(`
+    SELECT title
+    FROM tasks
+    WHERE status IN ('today', 'doing')
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 5
+  `).all() as Array<{ title: string }>;
+
+  const avgFocusScore = recent.length > 0 ? average(recent.map((session) => session.averageFocusScore)) : 0;
+  const activeGoalTitles = activeGoals.map((goal) => goal.title);
+  const activeTaskTitles = activeTasks.map((task) => task.title);
+  const upcomingFocusTarget =
+    activeTaskTitles[0] ||
+    activeGoalTitles[0] ||
+    recent[0]?.targetTitle ||
+    profile.frictionTopics[0] ||
+    profile.strongTopics[0] ||
+    null;
+
+  return {
+    recentSessions: recent.length,
+    avgFocusScore,
+    activeGoals: activeGoalTitles,
+    activeTasks: activeTaskTitles,
+    upcomingFocusTarget,
+    bestStartHour: profile.bestStartHour,
+    recurringDistractions: profile.recurringDistractionDomains,
+    coachingStyle: profile.coachingStyle,
+    energyForecast: profile.typicalEnergyBand,
+    openingMessage:
+      recent.length === 0
+        ? 'No recent guardian sessions yet. Start with one concrete target and a protected time block.'
+        : `Recent average focus is ${Math.round(avgFocusScore)}. ${upcomingFocusTarget ? `Best next target: ${upcomingFocusTarget}.` : 'Pick one clear target for the next session.'}`,
+  };
 }
 
 export function getEnergyForecast(userId: string = 'default', hour: number) {
-    return 'medium';
+  const profile = getGuardianSemanticProfile(userId);
+  if (profile.bestStartHour === null) {
+    return profile.typicalEnergyBand;
+  }
+
+  const distance = Math.abs(profile.bestStartHour - hour);
+  if (distance <= 1) return 'high';
+  if (distance <= 3) return 'medium';
+  return 'low';
 }
 
 export function detectGoalDrift(userId: string = 'default') {
-    return ['Fitness', 'Reading'];
+  const profile = getGuardianSemanticProfile(userId);
+  return profile.frictionTopics;
 }
 
-export function generateOpeningLine(briefing: any, intent: any) {
-    const duration = intent.durationMinutes || 60;
-    const topic = intent.topic || 'deep work';
+export function generateOpeningLine(
+  briefing: Pick<DayBriefing, 'avgFocusScore' | 'energyForecast' | 'coachingStyle' | 'upcomingFocusTarget'>,
+  intent: { durationMinutes?: number; topic?: string; mood?: 'high' | 'medium' | 'low' | null }
+) {
+  const duration = intent.durationMinutes || 60;
+  const topic = intent.topic || briefing.upcomingFocusTarget || 'deep work';
 
-    if (intent.mood === 'low') {
-        return `Energy is low, but we're locking in for ${duration} minutes on ${topic}. Let's push through.`;
-    }
-    return `Starting ${duration} minute focus block on ${topic}. Your last sessions averaged ${briefing.avgFocusScore}. Let's beat that.`;
+  if (intent.mood === 'low' || briefing.energyForecast === 'low') {
+    return `Energy is lower today. Keep it simple: ${duration} minutes on ${topic}.`;
+  }
+
+  if (briefing.coachingStyle === 'direct') {
+    return `Starting ${duration} minutes on ${topic}. Recent average focus is ${Math.round(briefing.avgFocusScore)}. Beat it.`;
+  }
+
+  if (briefing.coachingStyle === 'gentle') {
+    return `Starting ${duration} minutes on ${topic}. Settle in and build on your recent momentum.`;
+  }
+
+  return `Starting ${duration} minute focus block on ${topic}. Your recent sessions averaged ${Math.round(briefing.avgFocusScore)}.`;
 }

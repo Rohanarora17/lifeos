@@ -1,14 +1,16 @@
 import { getGenAI } from './ai';
+import { canUseCloudTextReasoning, sanitizeTranscriptForCloud } from './cloud-privacy';
 import { MODEL_FLASH } from './models';
 
-export async function parseLockInIntent(transcript: string, userId: string = 'default') {
+export async function parseLockInIntent(transcript: string, _userId: string = 'default') {
     const ai = getGenAI();
-    if (!ai) return null;
+    if (!ai || !canUseCloudTextReasoning()) return null;
+    const sanitizedTranscript = sanitizeTranscriptForCloud(transcript);
 
     const prompt = `Parse the following user voice transcript into a structured intent for the LifeOS Guardian. 
 Respond ONLY with a valid JSON object. Do not use markdown blocks.
 
-Transcript: "${transcript}"
+Transcript: "${sanitizedTranscript}"
 
 JSON Schema:
 {

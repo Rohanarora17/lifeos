@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parseLockInIntent } from '@/lib/intent-engine';
-import { getDayBriefing, generateOpeningLine } from '@/lib/longitudinal-engine';
-import { startSession } from '@/lib/session-state';
-import { speak } from '@/lib/tts';
+import { startGuardianSession } from '@/lib/guardian-runtime';
 
 export async function POST(req: Request) {
     try {
@@ -14,19 +12,14 @@ export async function POST(req: Request) {
 
         if (intent?.action === 'lock_in' && intent.parameters) {
             if (intent.clarificationNeeded && !intent.parameters.topic) {
-                speak('default', intent.clarificationNeeded, 'urgent', 'neutral');
                 return NextResponse.json({ success: true, clarification: intent.clarificationNeeded });
             } else if (intent.parameters.topic) {
-                const session = startSession({
+                const session = startGuardianSession({
                     durationMinutes: intent.parameters.durationMinutes || 60,
                     conceptNodeName: intent.parameters.topic,
-                    mood: intent.parameters.mood
+                    mood: intent.parameters.mood === 'neutral' ? 'medium' : intent.parameters.mood,
+                    source: 'voice',
                 });
-
-                const briefing = getDayBriefing();
-                const opening = generateOpeningLine(briefing, intent.parameters);
-
-                speak(session.sessionId, opening, 'urgent', 'flow_confirmed');
                 return NextResponse.json({ success: true, session });
             }
         }
