@@ -1,5 +1,5 @@
 import { getDb } from './db';
-import type { DayBriefing, GuardianSemanticProfile, GuardianSessionSummary } from './guardian-types';
+import type { DayBriefing, GuardianSemanticProfile, GuardianSessionReflection, GuardianSessionSummary, SoftWatchCommitment } from './guardian-types';
 
 function parseJsonArray(value: string | null | undefined): string[] {
   if (!value) return [];
@@ -140,7 +140,7 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
       average_focus_score as averageFocusScore,
       override_count as overrideCount,
       dominant_distraction_domain as dominantDistractionDomain,
-      CAST(strftime('%H', completed_at) as INTEGER) as completedHour
+      CAST(strftime('%H', datetime(completed_at, '-' || elapsed_minutes || ' minutes')) as INTEGER) as startHour
     FROM guardian_session_summaries
     ORDER BY completed_at DESC
     LIMIT 20
@@ -149,7 +149,7 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
     averageFocusScore: number;
     overrideCount: number;
     dominantDistractionDomain: string | null;
-    completedHour: number | null;
+    startHour: number | null;
   }>;
 
   if (recent.length === 0) {
@@ -159,8 +159,8 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
   const avgFocusScore = average(recent.map((row) => row.averageFocusScore));
   const avgOverrides = average(recent.map((row) => row.overrideCount));
   const bestStartHour = recent
-    .filter((row) => row.completedHour !== null && row.averageFocusScore >= avgFocusScore)
-    .sort((a, b) => b.averageFocusScore - a.averageFocusScore)[0]?.completedHour ?? null;
+    .filter((row) => row.startHour !== null && row.averageFocusScore >= avgFocusScore)
+    .sort((a, b) => b.averageFocusScore - a.averageFocusScore)[0]?.startHour ?? null;
   const { strongTopics, frictionTopics } = titleFrequency(recent, 82, 62);
   const recurringDistractionDomains = distractionFrequency(recent);
 
@@ -208,10 +208,46 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
   return getGuardianSemanticProfile(userId);
 }
 
+export function getUpcomingCommitments(): SoftWatchCommitment[] {
+  try {
+    const db = getDb();
+    const windowEnd = Date.now() + 4 * 60 * 60_000; // next 4 hours
+    return db.prepare(`
+      SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
+        intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
+        source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
+        status, locked_in_session_id as lockedInSessionId, created_at as createdAt
+      FROM soft_watch_commitments
+      WHERE status = 'pending' AND intended_start_at <= ?
+      ORDER BY intended_start_at ASC
+      LIMIT 5
+    `).all(windowEnd) as SoftWatchCommitment[];
+  } catch {
+    return [];
+  }
+}
+
+export function getRecentReflections(limit: number = 3): GuardianSessionReflection[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT
+      id,
+      session_id as sessionId,
+      reflection_text as reflectionText,
+      focus_quality as focusQuality,
+      generated_at as generatedAt
+    FROM guardian_session_reflections
+    ORDER BY generated_at DESC
+    LIMIT ?
+  `).all(limit) as GuardianSessionReflection[];
+}
+
 export function getDayBriefing(userId: string = 'default'): DayBriefing {
   const db = getDb();
   const recent = listRecentGuardianSessionSummaries(7);
   const profile = updateGuardianSemanticProfile(userId);
+  const recentReflections = getRecentReflections(3);
+  const upcomingCommitments = getUpcomingCommitments();
   const activeGoals = db.prepare(`
     SELECT title
     FROM goals
@@ -248,6 +284,8 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
     recurringDistractions: profile.recurringDistractionDomains,
     coachingStyle: profile.coachingStyle,
     energyForecast: profile.typicalEnergyBand,
+    recentReflections,
+    upcomingCommitments,
     openingMessage:
       recent.length === 0
         ? 'No recent guardian sessions yet. Start with one concrete target and a protected time block.'
@@ -267,9 +305,24 @@ export function getEnergyForecast(userId: string = 'default', hour: number) {
   return 'low';
 }
 
-export function detectGoalDrift(userId: string = 'default') {
-  const profile = getGuardianSemanticProfile(userId);
-  return profile.frictionTopics;
+export function detectGoalDrift(): Array<{ goalTitle: string; daysSinceLastSession: number | null }> {
+  const db = getDb();
+  // Goals that are active but haven't had a guardian session in 7+ days (or ever).
+  // Ordered: never-studied first, then most-neglected first.
+  return db.prepare(`
+    SELECT
+      g.title as goalTitle,
+      CAST(
+        (julianday('now', 'localtime') - julianday(MAX(gss.completed_at)))
+        AS INTEGER
+      ) as daysSinceLastSession
+    FROM goals g
+    LEFT JOIN guardian_session_summaries gss ON gss.goal_title = g.title
+    WHERE g.active = 1
+    GROUP BY g.id, g.title
+    HAVING daysSinceLastSession IS NULL OR daysSinceLastSession >= 7
+    ORDER BY daysSinceLastSession IS NULL DESC, daysSinceLastSession DESC
+  `).all() as Array<{ goalTitle: string; daysSinceLastSession: number | null }>;
 }
 
 export function generateOpeningLine(

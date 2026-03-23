@@ -54,8 +54,12 @@ export function computeFocusScore(
     if (switchesPerMin >= 3) switchScore = 0;
     else switchScore = 100 - (switchesPerMin * 33);
 
-    // 3. Dwell depth (20%)
-    const avgDwell = switches > 0 ? (elapsedMs / 1000) / switches : 0;
+    // 3. Dwell depth (20%) — use actual reported dwellSeconds from events
+    const tabsWithDwell = session.tabEventLog.filter(
+        (e) => e.type === 'tab' && typeof e.dwellSeconds === 'number'
+    );
+    const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
+    const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
     const dwellScore = Math.min(100, (avgDwell / 180) * 100);
 
     // 4. Distraction revisit penalty (15%)
