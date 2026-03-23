@@ -1,8 +1,11 @@
-import { ActiveSession } from './session-state';
+import { GuardianPolicyBundle, GuardianState } from './guardian-types';
 
 export type Trend = 'rising' | 'stable' | 'falling';
 
-export function computeFocusScore(session: ActiveSession) {
+export function computeFocusScore(
+    session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory'>,
+    policy?: GuardianPolicyBundle
+) {
     if (!session || session.tick === 0) return { score: 100, trend: 'stable' as Trend };
 
     const elapsedMs = Date.now() - session.startedAt;
@@ -11,28 +14,35 @@ export function computeFocusScore(session: ActiveSession) {
     // 1. On-topic continuity (35%)
     let onTopicSeconds = 0;
     let distractionRevisits = 0;
-    let distractionDomains = new Set<string>();
+    const distractionDomains = new Set<string>();
     let switches = 0;
     let idleSeconds = 0;
 
     session.tabEventLog.forEach((event) => {
-        if (event.url === 'lifeos://idle' && event.idleSeconds) {
+        if (event.type === 'idle' && event.idleSeconds) {
             idleSeconds += event.idleSeconds;
             return;
         }
         switches++;
-        const isDistraction = event.url.includes('youtube.com') || event.url.includes('twitter.com') || event.url.includes('reddit.com');
-        if (!isDistraction && event.dwellSeconds) {
+        const url = event.url || '';
+        const payloadClassification = event.payload?.classification;
+        const payloadAttentionCategory = event.payload?.attentionCategory;
+        const isDistraction =
+            payloadClassification === 'distraction' || payloadAttentionCategory === 'blocked_distractor';
+        const isProductive =
+            payloadClassification === 'on_topic' || payloadAttentionCategory === 'productive_support' || payloadAttentionCategory === 'temporary_override';
+
+        if (isProductive && event.dwellSeconds) {
             onTopicSeconds += event.dwellSeconds;
         }
         if (isDistraction) {
             try {
-                const domain = new URL(event.url).hostname;
+                const domain = new URL(url).hostname;
                 if (distractionDomains.has(domain)) {
                     distractionRevisits++;
                 }
                 distractionDomains.add(domain);
-            } catch (e) { }
+            } catch { }
         }
     });
 
@@ -57,7 +67,13 @@ export function computeFocusScore(session: ActiveSession) {
     if (idleMinutes > 10) idlePenalty = 30;
     else if (idleMinutes > 5) idlePenalty = 15;
 
-    const rawScore = (continuityScore * 0.35) + (switchScore * 0.25) + (dwellScore * 0.20) - distractPenalty - idlePenalty;
+    const weights = policy?.weights;
+    const rawScore =
+        (continuityScore * (weights?.continuity ?? 0.35)) +
+        (switchScore * (weights?.switches ?? 0.25)) +
+        (dwellScore * (weights?.dwell ?? 0.20)) -
+        (distractPenalty * (weights?.distractionPenalty ?? 0.15)) -
+        (idlePenalty * (weights?.idlePenalty ?? 0.05));
 
     // Cap between 0 and 100
     const score = Math.max(0, Math.min(100, Math.round(rawScore)));
@@ -71,7 +87,13 @@ export function computeFocusScore(session: ActiveSession) {
         else if (score < recent - 5) trend = 'falling';
     }
 
-    return { score, components: { continuityScore, switchScore, dwellScore }, trend };
+    return {
+        score,
+        components: { continuityScore, switchScore, dwellScore },
+        trend,
+        onTopicSeconds,
+        distractionCount: distractionRevisits,
+    };
 }
 
 export function buildReadout(score: number, trend: Trend): string {

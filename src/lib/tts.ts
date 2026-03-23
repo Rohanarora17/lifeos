@@ -1,5 +1,5 @@
-import { spawn } from 'child_process';
-import { sessionEmitter } from './session-state';
+import { ChildProcess, spawn } from 'child_process';
+import { emitGuardianRuntimeEvent } from './guardian-bus';
 
 interface SpeechRequest {
     text: string;
@@ -7,10 +7,16 @@ interface SpeechRequest {
     sessionId: string;
 }
 
+interface TtsAdapter {
+    name: string;
+    speak: (request: SpeechRequest) => ChildProcess | null;
+    stop: () => void;
+}
+
 const globalTTS = global as unknown as {
     speechQueue: SpeechRequest[];
     isSpeaking: boolean;
-    currentProcess: any;
+    currentProcess: ChildProcess | null;
 };
 
 export const speechQueue = globalTTS.speechQueue || [];
@@ -39,33 +45,73 @@ export async function speak(sessionId: string, text: string, priority: 'normal' 
     processQueue();
 }
 
+function getTtsAdapter(): TtsAdapter {
+    const provider = (process.env.LIFEOS_TTS_PROVIDER || 'say').toLowerCase();
+    const voice = process.env.LIFEOS_TTS_VOICE || 'Daniel';
+
+    return {
+        name: provider,
+        speak(request: SpeechRequest) {
+            if (provider === 'say') {
+                return spawn('say', ['-v', voice, request.text]);
+            }
+            return spawn('say', ['-v', voice, request.text]);
+        },
+        stop() {
+            if (currentProcess) {
+                currentProcess.kill('SIGTERM');
+                currentProcess = null;
+            }
+        },
+    };
+}
+
 function processQueue() {
     if (isSpeaking || speechQueue.length === 0) return;
 
     isSpeaking = true;
     const request = speechQueue.shift()!;
+    const adapter = getTtsAdapter();
 
-    sessionEmitter.emit('agent_event', request.sessionId, {
+    emitGuardianRuntimeEvent(request.sessionId, {
         type: 'jarvis_speech',
         text: request.text,
-        tone: request.tone
+        tone: request.tone,
+        provider: adapter.name,
     });
 
-    currentProcess = spawn('say', ['-v', 'Daniel', request.text]);
+    emitGuardianRuntimeEvent(request.sessionId, {
+        type: 'guardian_speech_start',
+        tone: request.tone,
+        provider: adapter.name,
+    });
+
+    currentProcess = adapter.speak(request);
+    if (!currentProcess) {
+        isSpeaking = false;
+        emitGuardianRuntimeEvent(request.sessionId, {
+            type: 'guardian_speech_end',
+            tone: request.tone,
+            provider: adapter.name,
+        });
+        return;
+    }
 
     currentProcess.on('close', () => {
         isSpeaking = false;
         currentProcess = null;
+        emitGuardianRuntimeEvent(request.sessionId, {
+            type: 'guardian_speech_end',
+            tone: request.tone,
+            provider: adapter.name,
+        });
         // slight pause between speeches
         setTimeout(() => processQueue(), 1000);
     });
 }
 
 export function stopAllSpeech() {
-    if (currentProcess) {
-        currentProcess.kill('SIGTERM');
-        currentProcess = null;
-    }
+    getTtsAdapter().stop();
     speechQueue.length = 0;
     isSpeaking = false;
 }
