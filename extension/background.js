@@ -169,6 +169,18 @@ async function postGuardianEvent(payload, tabIdHint = null) {
         if (Array.isArray(data.commands)) {
             await applyGuardianCommands(data.commands, tabIdHint);
         }
+
+        // Update badge with live focus score
+        if (guardianActive && data?.session?.focusScoreHistory?.length) {
+            const latestScore = data.session.focusScoreHistory[data.session.focusScoreHistory.length - 1];
+            if (typeof latestScore === 'number') {
+                const text = String(Math.round(latestScore));
+                const color = latestScore >= 80 ? '#22c55e' : latestScore >= 60 ? '#f59e0b' : '#ef4444';
+                chrome.action.setBadgeText({ text });
+                chrome.action.setBadgeBackgroundColor({ color });
+            }
+        }
+
         return data;
     } catch (e) {
         console.error('[LifeOS] guardian event failed', e);
