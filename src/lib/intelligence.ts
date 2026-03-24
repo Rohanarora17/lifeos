@@ -3,6 +3,7 @@ import { getStreakCount } from './scoring';
 import { getUnblockedNextConcepts } from './graph';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import { getMemoryContext } from './memory';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -518,6 +519,12 @@ function aggregateSignals(): string {
     }
   } catch { /* */ }
 
+  // Semantic memory facts — distilled long-term facts from the 4-tier memory layer
+  try {
+    const memCtx = getMemoryContext(12);
+    if (memCtx) sections.push(`\n${memCtx}`);
+  } catch { /* */ }
+
   return sections.join('\n');
 }
 
@@ -772,6 +779,12 @@ export function getIntelligenceContext(opts?: {
     const t = p.adaptiveThresholds;
     lines.push(`\n🔧 Adaptive thresholds: drop_alert=${t.focusDropAlertScore}, load=${t.cognitiveLoadThreshold} tasks, nudge=${t.distractionAlertMinutes}min, sprint=${t.sessionDurationSweetSpot}min`);
   }
+
+  // Append active semantic facts so every prompt sees long-term distilled memory
+  try {
+    const memCtx = getMemoryContext(6);
+    if (memCtx) lines.push(`\n${memCtx}`);
+  } catch { /* */ }
 
   return lines.join('\n');
 }
