@@ -262,6 +262,12 @@ export function updateFact(
         JSON.stringify(episodeIds),
         id,
     );
+
+    // Auto-promote: unverified facts seen ≥2 times graduate to active without manual review
+    const updated = db.prepare('SELECT confirmed_count, status FROM mem_facts WHERE id = ?').get(id) as { confirmed_count: number; status: string } | undefined;
+    if (updated && updated.status === 'unverified' && updated.confirmed_count >= 2) {
+        db.prepare("UPDATE mem_facts SET status = 'active' WHERE id = ?").run(id);
+    }
 }
 
 /**
