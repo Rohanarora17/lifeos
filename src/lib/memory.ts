@@ -554,6 +554,83 @@ export function getMemoryContext(maxFacts: number = 8): string {
     return lines.join('\n');
 }
 
+// ─── Embedding Storage & Semantic Search ─────────────────────────────────────
+
+/**
+ * Persist an embedding vector for a fact (called after background generation).
+ */
+export function storeEmbedding(factId: number, vector: number[]): void {
+  getDb().prepare('UPDATE mem_facts SET embedding = ? WHERE id = ?')
+    .run(JSON.stringify(vector), factId);
+}
+
+/**
+ * Full-text search over mem_facts using SQLite FTS5.
+ * Fast for any table size. Falls through to score-ordered query if FTS5 unavailable.
+ */
+export function searchFactsByText(query: string, limit: number = 10): ScoredFact[] {
+  const db = getDb();
+  try {
+    const rows = db.prepare(`
+      SELECT f.* FROM mem_facts f
+      JOIN mem_facts_fts fts ON f.id = fts.rowid
+      WHERE mem_facts_fts MATCH ? AND f.status != 'superseded'
+      ORDER BY bm25(mem_facts_fts)
+      LIMIT ?
+    `).all(query, limit) as MemFact[];
+
+    return rows.map(f => ({ ...f, effectiveScore: computeEffectiveScore(f) }));
+  } catch {
+    // FTS5 not available or query syntax error — fall back to importance order
+    return queryRelevantFacts({ limit });
+  }
+}
+
+/**
+ * Cosine-similarity search over mem_facts using stored embeddings.
+ * Used when mem_facts has >5 000 entries and FTS ranking isn't enough.
+ * Falls back to searchFactsByText if embeddings aren't present.
+ */
+export function semanticSearchFacts(queryVector: number[], limit: number = 10): ScoredFact[] {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT * FROM mem_facts WHERE status != 'superseded' AND embedding IS NOT NULL"
+  ).all() as (MemFact & { embedding: string })[];
+
+  if (rows.length === 0) return queryRelevantFacts({ limit });
+
+  // Compute cosine similarity in-process
+  const qNorm = Math.sqrt(queryVector.reduce((s, v) => s + v * v, 0));
+
+  const scored = rows.map(row => {
+    let vec: number[];
+    try { vec = JSON.parse(row.embedding); } catch { return null; }
+
+    let dot = 0;
+    let dNorm = 0;
+    for (let i = 0; i < queryVector.length && i < vec.length; i++) {
+      dot += queryVector[i] * vec[i];
+      dNorm += vec[i] * vec[i];
+    }
+    const similarity = qNorm > 0 && dNorm > 0 ? dot / (qNorm * Math.sqrt(dNorm)) : 0;
+    return { ...row, effectiveScore: similarity } as ScoredFact;
+  }).filter(Boolean) as ScoredFact[];
+
+  scored.sort((a, b) => b.effectiveScore - a.effectiveScore);
+  return scored.slice(0, limit);
+}
+
+/**
+ * Return total count of non-superseded facts — used to decide
+ * whether to use FTS5 or semantic (embedding) search.
+ */
+export function getFactCount(): number {
+  const row = getDb().prepare(
+    "SELECT COUNT(*) as cnt FROM mem_facts WHERE status != 'superseded'"
+  ).get() as { cnt: number };
+  return row.cnt;
+}
+
 // ─── Maintenance ──────────────────────────────────────────────────────────────
 
 /**

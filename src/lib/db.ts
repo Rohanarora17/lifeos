@@ -93,6 +93,8 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE knowledge_nodes ADD COLUMN last_studied TEXT DEFAULT NULL').run(); } catch (e) { }
   // guardian_semantic_profiles: commitment_follow_through_rate added after initial creation
   try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN commitment_follow_through_rate REAL DEFAULT NULL').run(); } catch (e) { }
+  // mem_facts: embedding vector (JSON float array) for semantic search at scale
+  try { db.prepare('ALTER TABLE mem_facts ADD COLUMN embedding TEXT DEFAULT NULL').run(); } catch (e) { }
 
   // voice_turns: persistent conversation memory for the voice agent
   db.exec(`
@@ -185,6 +187,38 @@ function initSchema(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_working_session ON mem_working(session_id, created_at DESC);
+  `);
+
+  // FTS5 full-text search over mem_facts (topic + content)
+  // Uses external content table pattern so queries stay in sync via triggers.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS mem_facts_fts USING fts5(
+      topic,
+      content,
+      category,
+      content='mem_facts',
+      content_rowid='id'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS mem_facts_fts_ai
+    AFTER INSERT ON mem_facts BEGIN
+      INSERT INTO mem_facts_fts(rowid, topic, content, category)
+      VALUES (new.id, new.topic, new.content, new.category);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS mem_facts_fts_au
+    AFTER UPDATE ON mem_facts BEGIN
+      INSERT INTO mem_facts_fts(mem_facts_fts, rowid, topic, content, category)
+      VALUES ('delete', old.id, old.topic, old.content, old.category);
+      INSERT INTO mem_facts_fts(rowid, topic, content, category)
+      VALUES (new.id, new.topic, new.content, new.category);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS mem_facts_fts_ad
+    AFTER DELETE ON mem_facts BEGIN
+      INSERT INTO mem_facts_fts(mem_facts_fts, rowid, topic, content, category)
+      VALUES ('delete', old.id, old.topic, old.content, old.category);
+    END;
   `);
 
   // Insert default settings if not present
