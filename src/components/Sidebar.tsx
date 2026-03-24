@@ -19,6 +19,7 @@ const navItems = [
     { href: '/calendar', label: 'Calendar', icon: '📅' },
     { href: '/insights', label: 'AI Insights', icon: '🧠' },
     { href: '/knowledge-graph', label: 'Knowledge Graph', icon: '🕸️' },
+    { href: '/memory', label: 'Memory', icon: '🧬' },
     { href: '/settings', label: 'Settings', icon: '⚙️' },
 ];
 
