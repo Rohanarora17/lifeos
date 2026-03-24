@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getGenAI } from '@/lib/ai';
+import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { startGuardianSession } from '@/lib/guardian-runtime';
 import { MODEL_PRO } from '@/lib/models';
-import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
+import { getIntelligenceContext, touchIntelligence } from '@/lib/intelligence';
+import { extractMemoryFromVoice } from '@/lib/memory-extractor';
 import { getKnowledgeGapSummary } from '@/lib/graph';
 import { Type } from '@google/genai';
 
@@ -132,20 +133,21 @@ export async function POST(request: NextRequest) {
         const ai = getGenAI();
         if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
 
-        const behaviorContext = buildBehaviorContext();
-        const goalsContext = typeof buildGoalsContext === 'function' ? buildGoalsContext() : '';
+        const intelligenceContext = getIntelligenceContext({ maxInsights: 4, includeThresholds: true, includeToday: true });
         const knowledgeContext = getKnowledgeGapSummary();
 
         const systemInstruction = "You are Jarvis, the core intelligence engine and personal assistant of LifeOS.\\n" +
             "You have access only to typed LifeOS tools and summaries, not arbitrary SQL.\\n" +
             "Always be proactive, concise, and hold the user accountable.\\n\\n" +
-            "Behavioral Context:\\n" + behaviorContext + "\\n\\n" +
-            "Goals Context:\\n" + goalsContext + "\\n\\n" +
+            intelligenceContext + "\\n\\n" +
             (knowledgeContext ? "Knowledge Graph:\\n" + knowledgeContext + "\\n\\n" : "") +
             "When users ask questions about their data, use the getDashboardSnapshot tool to fetch relevant structured context.\\n" +
             "When users ask to create a task, check a habit, or start a guardian session, use the respective tool.\\n" +
             "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain data naturally.";
+
+        // Nudge UIL to re-synthesize in background after a chat (new data signal)
+        touchIntelligence('chat');
 
         // Format history for @google/genai SDK v3
         let contents = messages.map((m: any) => ({
@@ -210,7 +212,18 @@ export async function POST(request: NextRequest) {
 
                 continue;
             } else {
-                return NextResponse.json({ text: (response.text || '').trim() });
+                const reply = (response.text || '').trim();
+
+                // Background memory extraction — every chat conversation enriches mem_facts
+                if (messages.length >= 4) {
+                    const turns = messages.map((m: any) => ({
+                        role: m.role === 'assistant' ? 'assistant' : 'user',
+                        text: m.content as string,
+                    }));
+                    extractMemoryFromVoice(turns, `chat-${Date.now()}`).catch(() => {});
+                }
+
+                return NextResponse.json({ text: reply });
             }
         }
 
