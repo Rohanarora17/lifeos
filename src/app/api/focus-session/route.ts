@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI } from '@/lib/ai';
-import { buildBehaviorContext, buildGoalsContext } from '@/lib/behavior';
+import { getIntelligenceContext } from '@/lib/intelligence';
 import { MODEL_PRO } from '@/lib/models';
 import { broadcastEvent } from '@/lib/sse';
 
@@ -262,8 +262,7 @@ async function generateFocusReport(data: {
     const ai = getGenAI();
     if (!ai) return buildFallbackReport(data);
 
-    const behaviorContext = buildBehaviorContext();
-    const goalsContext = buildGoalsContext();
+    const userContext = getIntelligenceContext({ maxInsights: 4, includeToday: true });
 
     const totalMinutes = Math.round(data.actualDurationSeconds / 60);
     const prodMinutes = Math.round(data.productiveSeconds / 60);
@@ -280,8 +279,7 @@ async function generateFocusReport(data: {
 
     const prompt = `You are an elite productivity coach generating a post-focus-session deep analysis report. Be insightful, specific, and actionable. Use emojis. Use markdown formatting.
 
-${behaviorContext}
-${goalsContext}
+${userContext}
 
 ## SESSION DATA
 - Goal: ${data.goalTitle || 'No specific goal'}

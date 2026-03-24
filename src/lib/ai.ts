@@ -1,7 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
-import { buildBehaviorContext, getSmartNudgeContext, buildGoalsContext } from './behavior';
+import { getSmartNudgeContext } from './behavior';
+import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_FLASH } from './models';
 
 let genAI: GoogleGenAI | null = null;
@@ -32,6 +33,34 @@ export function getGenAI(): GoogleGenAI | null {
         }
     }
     return genAI;
+}
+
+// Stable fallback when preview models are overloaded (503)
+const FALLBACK_FLASH = 'gemini-2.5-flash';
+const FALLBACK_PRO = 'gemini-2.5-pro';
+
+/**
+ * Wrapper around ai.models.generateContent that automatically retries
+ * once with a stable fallback model when a 503 / UNAVAILABLE error is
+ * returned (preview models under high demand).
+ */
+export async function generateWithFallback(
+    ai: GoogleGenAI,
+    params: Parameters<GoogleGenAI['models']['generateContent']>[0]
+): ReturnType<GoogleGenAI['models']['generateContent']> {
+    try {
+        return await ai.models.generateContent(params);
+    } catch (err: any) {
+        const is503 = err?.status === 503 || err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE');
+        if (!is503) throw err;
+
+        // Pick stable fallback based on whether we were using pro or flash
+        const originalModel = typeof params.model === 'string' ? params.model : '';
+        const fallback = originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
+
+        console.warn(`[AI] Model ${originalModel} overloaded (503) — falling back to ${fallback}`);
+        return await ai.models.generateContent({ ...params, model: fallback });
+    }
 }
 
 // Helper to extract YouTube video ID
@@ -116,7 +145,7 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
         for (let i = 0; i < itemsToClassify.length; i += CHUNK_SIZE) {
             const chunk = itemsToClassify.slice(i, i + CHUNK_SIZE);
             const _db = getDb();
-            const goalsContext = typeof buildGoalsContext === 'function' ? buildGoalsContext() : '';
+            const goalsContext = getIntelligenceContext({ maxInsights: 0, includeToday: false });
 
             // Build active tasks context for context-aware classification
             let taskContext = '';
@@ -172,7 +201,7 @@ RULES:
 - Reddit programming/tech subreddits → productive / research
 - News sites → neutral / news`;
 
-            const result = await ai.models.generateContent({
+            const result = await generateWithFallback(ai, {
                 model: MODEL_FLASH,
                 contents: prompt,
                 config: {
@@ -289,8 +318,7 @@ export async function generateDailySummary(date: string, stats: {
     }
 
     try {
-        const behaviorContext = buildBehaviorContext();
-        const goalsContext = buildGoalsContext();
+        const userContext = getIntelligenceContext({ maxInsights: 4, includeToday: true });
 
         // Phase 9: Inject habit completion data for holistic daily feedback
         let habitContext = '';
@@ -312,8 +340,7 @@ export async function generateDailySummary(date: string, stats: {
 
         const prompt = `Generate a concise, motivating daily productivity report. Use emojis. Be encouraging but honest about distractions. Keep it under 200 words.
 
-${behaviorContext}
-${goalsContext}
+${userContext}
 ${habitContext}
 
 Date: ${date}
@@ -332,7 +359,7 @@ ${stats.topDomains.map(d => `- ${d.domain}: ${d.minutes}min (${d.category})`).jo
 Use the behavioral profile above to personalize this report. Reference their patterns, habit streaks, and known triggers. If habits were missed, give specific encouragement. Compare today to their usual behavior. Format as a clean report with sections.`;
 
         // PRO: Deep synthesis and behavior reasoning
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: prompt
         });
@@ -356,12 +383,10 @@ export async function generateMorningBrief(date: string, data: {
     }
 
     try {
-        const behaviorContext = buildBehaviorContext();
-        const goalsContext = buildGoalsContext();
+        const userContext = getIntelligenceContext({ maxInsights: 3, includeToday: true });
         const prompt = `Generate a brief, energizing morning briefing. Use emojis. Keep it under 150 words. Be motivating!
 
-${behaviorContext}
-${goalsContext}
+${userContext}
 
 Date: ${date}
 Calendar events today:
@@ -380,7 +405,7 @@ CRITICAL INSTRUCTION: Based on the "Pending tasks", identify the single most imp
 Use the behavioral profile to personalize this briefing. Reference their typical patterns and known strengths/weaknesses. Include a motivating message tailored to their motivation style.`;
 
         // PRO: Strategic planning and motivation
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: prompt
         });
@@ -486,8 +511,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         try {
             // FLASH: Fast context processing for real-time nudge
             const nudgeContext = getSmartNudgeContext();
-            const behaviorContext = buildBehaviorContext();
-            const goalsContext = buildGoalsContext();
+            const userContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
 
             // Phase 9: Inject active tasks into nudge prompt
             let taskContext = '';
@@ -520,8 +544,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
             const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
-${behaviorContext}
-${goalsContext}
+${userContext}
 ${taskContext}
 ${intentionsContext}
 ${nudgeContext}
@@ -532,7 +555,7 @@ Use their behavioral profile to decide. If this site matches their known distrac
 If an Implementation Intention matches their current distraction (e.g., they are on social media and have an intention for that), use that intention's THEN action as the nudge reason and include the Intention ID.
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
-            const result = await ai.models.generateContent({
+            const result = await generateWithFallback(ai, {
                 model: MODEL_FLASH,
                 contents: prompt,
                 config: {
