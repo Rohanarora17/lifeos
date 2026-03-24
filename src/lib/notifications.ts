@@ -1,4 +1,7 @@
 import { getDb, getSetting } from './db';
+import { sendTelegram, formatAlert, ALERT_KEYBOARD } from './telegram';
+import { getGuardianContext } from './guardian-runtime';
+import { getIntelligenceProfile, touchIntelligence } from './intelligence';
 
 // ============================================================
 //  NOTIFICATION ENGINE — Real-time alerts + email via Resend
@@ -72,8 +75,9 @@ export async function sendAlert(
 
     console.log(`[Alert] ${severity.toUpperCase()}: ${type} — ${message}`);
 
-    // Try to email if configured and severity warrants it
+    // Notify via Telegram + email for warning/urgent alerts
     if (severity !== 'info') {
+        void sendTelegram(formatAlert(type, message, severity), 'HTML', ALERT_KEYBOARD);
         await trySendEmail(type, message, severity);
     }
 
@@ -171,6 +175,228 @@ async function trySendEmail(type: AlertType, message: string, severity: Severity
 }
 
 // ============================================================
+//  WEEKLY EMAIL — Rich HTML digest sent every Sunday
+// ============================================================
+
+/**
+ * Send a rich HTML weekly review email with focus trend, habit heatmap,
+ * session log, and goal progress. Called by the scheduler on Sunday at 21:00.
+ */
+export async function sendWeeklyEmail(): Promise<void> {
+    try {
+        const apiKey = getSetting('resend_api_key');
+        const email = getSetting('notification_email');
+        const enabled = getSetting('email_alerts_enabled');
+        if (!apiKey || !email || enabled === 'false') return;
+
+        const db = getDb();
+        const now = new Date(Date.now() + 19800000); // IST
+        const weekStart = new Date(now);
+        weekStart.setDate(weekStart.getDate() - 6);
+        const weekStartStr = weekStart.toISOString().slice(0, 10);
+        const todayStr = now.toISOString().slice(0, 10);
+
+        // Focus score trend — last 7 days
+        const dailyScores = db.prepare(`
+            SELECT date, COALESCE(AVG(score), 0) as avg_score
+            FROM daily_scores
+            WHERE date >= ? AND date <= ?
+            GROUP BY date ORDER BY date ASC
+        `).all(weekStartStr, todayStr) as { date: string; avg_score: number }[];
+
+        // Habit completion for the week
+        const habitData = db.prepare(`
+            SELECT h.name, h.icon,
+                COUNT(CASE WHEN hc.completed = 1 THEN 1 END) as completed_days,
+                7 as total_days
+            FROM habits h
+            LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date >= ?
+            WHERE h.archived = 0
+            GROUP BY h.id ORDER BY completed_days DESC
+        `).all(weekStartStr) as { name: string; icon: string; completed_days: number; total_days: number }[];
+
+        // Guardian sessions for the week
+        const sessions = db.prepare(`
+            SELECT target_title, elapsed_minutes, average_focus_score, completed_at
+            FROM guardian_session_summaries
+            WHERE completed_at >= datetime(?, 'localtime')
+            ORDER BY completed_at DESC LIMIT 10
+        `).all(weekStartStr) as { target_title: string; elapsed_minutes: number; average_focus_score: number; completed_at: string }[];
+
+        // Goals progress
+        const goals = db.prepare(`
+            SELECT g.title,
+                COUNT(CASE WHEN t.status = 'done' THEN 1 END) as done,
+                COUNT(t.id) as total
+            FROM goals g LEFT JOIN tasks t ON t.goal_id = g.id
+            WHERE g.active = 1
+            GROUP BY g.id ORDER BY done DESC LIMIT 5
+        `).all() as { title: string; done: number; total: number }[];
+
+        // Weekly totals
+        const weekStats = db.prepare(`
+            SELECT
+                COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
+                COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist
+            FROM activities WHERE date(started_at, 'localtime') >= ?
+        `).get(weekStartStr) as { prod: number; dist: number };
+
+        const totalSessions = sessions.length;
+        const avgScore = sessions.length
+            ? Math.round(sessions.reduce((s, r) => s + r.average_focus_score, 0) / sessions.length)
+            : 0;
+        const totalFocusMin = sessions.reduce((s, r) => s + r.elapsed_minutes, 0);
+        const scoreEmoji = avgScore >= 85 ? '🔥' : avgScore >= 70 ? '✅' : avgScore >= 55 ? '🟡' : '🔴';
+
+        // Build focus trend bars
+        const trendBars = dailyScores.map(d => {
+            const score = Math.round(d.avg_score);
+            const barWidth = Math.round((score / 100) * 120);
+            const color = score >= 85 ? '#4CAF50' : score >= 70 ? '#8BC34A' : score >= 55 ? '#FFC107' : '#F44336';
+            const label = new Date(d.date).toLocaleDateString('en-IN', { weekday: 'short' });
+            return `
+                <tr>
+                    <td style="color:#999;font-size:12px;padding:3px 8px 3px 0;white-space:nowrap;">${label}</td>
+                    <td style="padding:3px 0;">
+                        <div style="background:${color};height:18px;width:${barWidth}px;border-radius:3px;display:inline-block;"></div>
+                        <span style="color:#ccc;font-size:12px;margin-left:6px;">${score}</span>
+                    </td>
+                </tr>`;
+        }).join('');
+
+        // Build habit rows
+        const habitRows = habitData.slice(0, 8).map(h => {
+            const pct = Math.round((h.completed_days / 7) * 100);
+            const color = pct >= 85 ? '#4CAF50' : pct >= 50 ? '#FFC107' : '#F44336';
+            const dots = Array.from({ length: 7 }, (_, i) => {
+                // We can't get per-day data easily here, so just fill based on count
+                const filled = i < h.completed_days;
+                return `<span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${filled ? color : '#333'};margin:1px;"></span>`;
+            }).join('');
+            return `
+                <tr>
+                    <td style="color:#e0e0e0;font-size:13px;padding:4px 10px 4px 0;">${h.icon} ${h.name}</td>
+                    <td style="padding:4px 0;">${dots}</td>
+                    <td style="color:#999;font-size:12px;padding:4px 0 4px 8px;">${h.completed_days}/7</td>
+                </tr>`;
+        }).join('');
+
+        // Build session rows
+        const sessionRows = sessions.slice(0, 6).map(s => {
+            const score = Math.round(s.average_focus_score);
+            const scoreColor = score >= 85 ? '#4CAF50' : score >= 70 ? '#8BC34A' : score >= 55 ? '#FFC107' : '#F44336';
+            const dateStr = new Date(s.completed_at).toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
+            return `
+                <tr>
+                    <td style="color:#e0e0e0;font-size:13px;padding:4px 10px 4px 0;">${s.target_title}</td>
+                    <td style="color:#999;font-size:12px;padding:4px 8px;">${s.elapsed_minutes}m</td>
+                    <td style="color:${scoreColor};font-size:13px;font-weight:bold;padding:4px 0;">${score}/100</td>
+                    <td style="color:#666;font-size:11px;padding:4px 0 4px 8px;">${dateStr}</td>
+                </tr>`;
+        }).join('');
+
+        // Build goal progress bars
+        const goalRows = goals.map(g => {
+            const pct = g.total > 0 ? Math.round((g.done / g.total) * 100) : 0;
+            const barWidth = Math.round((pct / 100) * 200);
+            const color = pct >= 75 ? '#4CAF50' : pct >= 40 ? '#FFC107' : '#666';
+            return `
+                <tr>
+                    <td style="color:#e0e0e0;font-size:13px;padding:6px 10px 6px 0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${g.title}">${g.title}</td>
+                    <td style="padding:6px 0;">
+                        <div style="background:#333;border-radius:4px;height:10px;width:200px;">
+                            <div style="background:${color};height:10px;width:${barWidth}px;border-radius:4px;"></div>
+                        </div>
+                    </td>
+                    <td style="color:#999;font-size:12px;padding:6px 0 6px 8px;white-space:nowrap;">${g.done}/${g.total}</td>
+                </tr>`;
+        }).join('');
+
+        const prodH = Math.floor((weekStats?.prod ?? 0) / 3600);
+        const prodM = Math.floor(((weekStats?.prod ?? 0) % 3600) / 60);
+
+        const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0d0d1a;font-family:-apple-system,system-ui,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:600px;margin:0 auto;padding:24px 16px;">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#1a1a3e,#1a2a1e);border-radius:16px;padding:28px;margin-bottom:20px;border:1px solid #2a2a4a;">
+      <h1 style="margin:0 0 6px 0;font-size:22px;color:#fff;">📊 Weekly Review</h1>
+      <p style="margin:0;color:#888;font-size:14px;">${weekStartStr} → ${todayStr}</p>
+      <div style="margin-top:20px;display:flex;gap:24px;flex-wrap:wrap;">
+        <div>
+          <div style="font-size:28px;font-weight:bold;color:#fff;">${scoreEmoji} ${avgScore}</div>
+          <div style="font-size:12px;color:#888;margin-top:2px;">avg focus score</div>
+        </div>
+        <div>
+          <div style="font-size:28px;font-weight:bold;color:#7c9fff;">${totalSessions}</div>
+          <div style="font-size:12px;color:#888;margin-top:2px;">guardian sessions</div>
+        </div>
+        <div>
+          <div style="font-size:28px;font-weight:bold;color:#9fff9f;">${totalFocusMin}m</div>
+          <div style="font-size:12px;color:#888;margin-top:2px;">total focus time</div>
+        </div>
+        <div>
+          <div style="font-size:28px;font-weight:bold;color:#ffcf7f;">${prodH}h ${prodM}m</div>
+          <div style="font-size:12px;color:#888;margin-top:2px;">productive time</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Focus Trend -->
+    ${trendBars ? `
+    <div style="background:#111120;border-radius:12px;padding:20px;margin-bottom:16px;border:1px solid #22224a;">
+      <h2 style="margin:0 0 16px 0;font-size:15px;color:#bbb;font-weight:600;">📈 FOCUS TREND</h2>
+      <table style="border-collapse:collapse;width:100%;">${trendBars}</table>
+    </div>` : ''}
+
+    <!-- Habit Heatmap -->
+    ${habitRows ? `
+    <div style="background:#111120;border-radius:12px;padding:20px;margin-bottom:16px;border:1px solid #22224a;">
+      <h2 style="margin:0 0 16px 0;font-size:15px;color:#bbb;font-weight:600;">💪 HABIT COMPLETION</h2>
+      <table style="border-collapse:collapse;width:100%;">${habitRows}</table>
+    </div>` : ''}
+
+    <!-- Sessions Log -->
+    ${sessionRows ? `
+    <div style="background:#111120;border-radius:12px;padding:20px;margin-bottom:16px;border:1px solid #22224a;">
+      <h2 style="margin:0 0 16px 0;font-size:15px;color:#bbb;font-weight:600;">🛡️ GUARDIAN SESSIONS</h2>
+      <table style="border-collapse:collapse;width:100%;">${sessionRows}</table>
+    </div>` : ''}
+
+    <!-- Goal Progress -->
+    ${goalRows ? `
+    <div style="background:#111120;border-radius:12px;padding:20px;margin-bottom:16px;border:1px solid #22224a;">
+      <h2 style="margin:0 0 16px 0;font-size:15px;color:#bbb;font-weight:600;">🎯 GOAL PROGRESS</h2>
+      <table style="border-collapse:collapse;width:100%;">${goalRows}</table>
+    </div>` : ''}
+
+    <!-- Footer -->
+    <div style="text-align:center;padding:16px;color:#444;font-size:12px;">
+      LifeOS Guardian · Weekly Review · ${todayStr}
+    </div>
+  </div>
+</body>
+</html>`;
+
+        const { Resend } = await import('resend');
+        const resend = new Resend(apiKey);
+        await resend.emails.send({
+            from: 'LifeOS <onboarding@resend.dev>',
+            to: email,
+            subject: `📊 LifeOS Weekly Review — ${weekStartStr} to ${todayStr}`,
+            html,
+        });
+        console.log('[Notifications] Weekly email sent to', email);
+    } catch (err) {
+        console.error('[Notifications] Weekly email failed:', err);
+    }
+}
+
+// ============================================================
 //  ALERT TRIGGER ENGINE — Runs every 5 minutes
 // ============================================================
 
@@ -181,13 +407,17 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
     const triggered: string[] = [];
     const db = getDb();
 
+    // Use UIL adaptive thresholds — calibrated to this user's personal baseline
+    const uil = getIntelligenceProfile();
+    const thresholds = uil.adaptiveThresholds;
+
     try {
-        // 1. Cognitive Load (Zeigarnik Effect)
+        // 1. Cognitive Load (Zeigarnik Effect) — threshold from UIL, not hardcoded
         const openTasks = (db.prepare(
             "SELECT COUNT(*) as c FROM tasks WHERE status IN ('today', 'doing')"
         ).get() as { c: number }).c;
 
-        if (openTasks >= 8) {
+        if (openTasks >= thresholds.cognitiveLoadThreshold) {
             const sent = await sendAlert(
                 'cognitive_load',
                 `You have ${openTasks} active tasks creating mental load. Consider completing 3 quick ones or deferring some to next week.`,
@@ -196,22 +426,26 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (sent) triggered.push('cognitive_load');
         }
 
-        // 2. Focus Drop — check if distraction ratio spiked today
-        const todayStats = db.prepare(`
-      SELECT 
-        COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
-        COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist,
-        COALESCE(SUM(duration_seconds), 0) as total
-      FROM activities WHERE started_at >= datetime('now', '-2 hours')
-    `).get() as { prod: number; dist: number; total: number };
+        // 2. Focus Drop — only fires during an active guardian session.
+        // Browsing data is only meaningful when the guardian is watching.
+        const { activeSession } = getGuardianContext();
+        if (activeSession) {
+            const todayStats = db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
+          COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist,
+          COALESCE(SUM(duration_seconds), 0) as total
+        FROM activities WHERE started_at >= datetime('now', '-2 hours')
+      `).get() as { prod: number; dist: number; total: number };
 
-        if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
-            const sent = await sendAlert(
-                'focus_drop',
-                `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,
-                'warning'
-            );
-            if (sent) triggered.push('focus_drop');
+            if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
+                const sent = await sendAlert(
+                    'focus_drop',
+                    `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,
+                    'warning'
+                );
+                if (sent) triggered.push('focus_drop');
+            }
         }
 
         // 3. Habit Streak at Risk (runs at 10am, 3pm, 8pm)

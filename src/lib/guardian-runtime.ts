@@ -6,6 +6,17 @@ import { getGenAI } from './ai';
 import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
 import { emitGuardianRuntimeEvent } from './guardian-bus';
+import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
+import {
+  sendTelegram,
+  formatSessionStart,
+  formatSessionEnd,
+  formatSoftWatchReminder,
+  SESSION_START_KEYBOARD,
+  SESSION_END_KEYBOARD,
+  SOFT_WATCH_KEYBOARD,
+} from './telegram';
+import { createCalendarEvent, updateCalendarEvent, isCalendarConfigured } from './google-calendar';
 import {
   ActiveOverride,
   GuardianCommand,
@@ -31,18 +42,22 @@ const globalGuardian = global as unknown as {
   guardianCommands?: Map<string, GuardianCommand[]>;
   softWatchMap?: Map<string, SoftWatchCommitment>;
   softWatchCheckerInterval?: ReturnType<typeof setInterval>;
+  calendarEventIds?: Map<string, string>;
 };
 
 const guardianSessions = globalGuardian.guardianSessions || new Map<string, GuardianState>();
 const guardianIntervals = globalGuardian.guardianIntervals || new Map<string, ReturnType<typeof setInterval>>();
 const guardianCommands = globalGuardian.guardianCommands || new Map<string, GuardianCommand[]>();
 const softWatchMap = globalGuardian.softWatchMap || new Map<string, SoftWatchCommitment>();
+// sessionId → Google Calendar event ID (fire-and-forget, best-effort)
+const calendarEventIds = globalGuardian.calendarEventIds || new Map<string, string>();
 
 if (process.env.NODE_ENV !== 'production') {
   globalGuardian.guardianSessions = guardianSessions;
   globalGuardian.guardianIntervals = guardianIntervals;
   globalGuardian.guardianCommands = guardianCommands;
   globalGuardian.softWatchMap = softWatchMap;
+  globalGuardian.calendarEventIds = calendarEventIds;
 }
 
 function nowIso() {
@@ -371,12 +386,15 @@ async function generateSessionReflection(session: GuardianState) {
     const ai = getGenAI();
     if (!ai) return;
 
-    const prompt = `You are the LifeOS guardian reflecting on a just-completed study session. Write 2–3 concise sentences (max 60 words total) as a personal coach speaking directly to the user. Be honest and specific. No filler phrases.
+    const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
+    const prompt = `You are the LifeOS guardian reflecting on a just-completed study session. Write 2–3 concise sentences (max 60 words total) as a personal coach speaking directly to the user. Be honest, specific, and reference their patterns. No filler phrases.
 
 Session: ${session.targetTitle}
 Planned: ${session.durationMinutes} min | Elapsed: ${elapsedMinutes} min
 Average focus: ${averageFocusScore}/100 | Final focus: ${finalFocusScore}/100
-Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distraction events: ${distractionCount}`;
+Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distraction events: ${distractionCount}
+
+${uilContext}`;
 
     const result = await ai.models.generateContent({ model: MODEL_FLASH, contents: prompt });
     const reflectionText = (result.text ?? '').trim().slice(0, 400);
@@ -748,6 +766,24 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   void speak(sessionId, openingLine, 'urgent', 'flow_confirmed');
   session.lastSpeechAt = Date.now();
 
+  // Fire-and-forget: Telegram notification + Google Calendar event
+  void (async () => {
+    await sendTelegram(formatSessionStart(targetTitle, durationMinutes, input.mood || 'medium'), 'HTML', SESSION_START_KEYBOARD);
+
+    if (isCalendarConfigured()) {
+      const startTime = new Date();
+      const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
+      const eventId = await createCalendarEvent({
+        summary: `📚 ${targetTitle}`,
+        description: `LifeOS Guardian session — ${durationMinutes} min planned`,
+        startTime,
+        endTime,
+        colorId: '9', // blueberry
+      });
+      if (eventId) calendarEventIds.set(sessionId, eventId);
+    }
+  })();
+
   const timer = setInterval(() => {
     void tickGuardianSession(sessionId, { sessionId, type: 'heartbeat', timestamp: Date.now() });
   }, 30_000);
@@ -762,7 +798,41 @@ export function endGuardianSession(sessionId: string) {
   session.state = 'COMPLETE';
   clearHeartbeat(sessionId);
   persistSessionSummary(session);
+
+  const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+  const focusScores = session.focusScoreHistory.length ? session.focusScoreHistory : [100];
+  const avgFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
+
+  // Fire-and-forget: reflection → Telegram + Calendar update
+  void (async () => {
+    // Wait briefly for reflection to be generated
+    await new Promise(r => setTimeout(r, 3000));
+    let reflection: string | undefined;
+    try {
+      const db = getDb();
+      const row = db.prepare('SELECT reflection_text FROM guardian_session_reflections WHERE session_id = ?').get(sessionId) as { reflection_text: string } | undefined;
+      reflection = row?.reflection_text;
+    } catch { /* non-fatal */ }
+
+    await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection), 'HTML', SESSION_END_KEYBOARD);
+
+    // Update calendar event with actual duration and focus score
+    const eventId = calendarEventIds.get(sessionId);
+    if (eventId && isCalendarConfigured()) {
+      const scoreLabel = avgFocusScore >= 85 ? 'Excellent' : avgFocusScore >= 70 ? 'Good' : avgFocusScore >= 55 ? 'Fair' : 'Poor';
+      await updateCalendarEvent(eventId, {
+        summary: `📚 ${session.targetTitle} — ${scoreLabel} focus (${avgFocusScore}/100)`,
+        description: `LifeOS Guardian session\nElapsed: ${elapsedMinutes} min\nFocus score: ${avgFocusScore}/100\nBlocks: ${session.blockedCount}\n\n${reflection ?? ''}`.trim(),
+        endTime: new Date(),
+        colorId: avgFocusScore >= 70 ? '2' : '11', // sage=good, tomato=poor
+      });
+      calendarEventIds.delete(sessionId);
+    }
+  })();
+
   void generateSessionReflection(session);
+  // Signal the intelligence layer — session data is now committed to DB
+  touchIntelligence('session_end');
   emitSessionEvent(sessionId, {
     type: 'session_end',
     summary: {
@@ -1137,6 +1207,7 @@ function tickSoftWatchChecker() {
         'normal',
         'midpoint_checkin'
       );
+      void sendTelegram(formatSoftWatchReminder(commitment.targetTitle, 0), 'HTML', SOFT_WATCH_KEYBOARD);
       continue;
     }
 
@@ -1151,6 +1222,7 @@ function tickSoftWatchChecker() {
         'normal',
         'direct_push'
       );
+      void sendTelegram(`⏰ <b>Still pending</b>\n\nYou committed to <b>${commitment.targetTitle}</b> 30 min ago and haven't started. Lock in or reschedule?`, 'HTML', SOFT_WATCH_KEYBOARD);
     }
   }
 }

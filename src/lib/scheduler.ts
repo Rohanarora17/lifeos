@@ -1,4 +1,13 @@
-import { getSetting } from './db';
+import { getSetting, getDb } from './db';
+import {
+  sendTelegram,
+  formatDailyReport,
+  formatMorningBrief,
+  MORNING_BRIEF_KEYBOARD,
+  DAILY_REPORT_KEYBOARD,
+} from './telegram';
+import { listUpcomingEvents } from './google-calendar';
+import { forceSynthesis, getIntelligenceContext } from './intelligence';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -34,6 +43,46 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     const morningTime = getSetting('morning_brief_time') || '08:00';
     registerDailyJob('morning_brief', morningTime, async () => {
         await fetch(`${baseUrl}/api/summary?type=morning`);
+        // Also send morning brief to Telegram
+        try {
+            const db = getDb();
+            const today = new Date().toISOString().slice(0, 10);
+            const pending = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('today','doing')").get() as { c: number }).c;
+            const habits = (db.prepare("SELECT COUNT(*) as c FROM habits WHERE archived = 0").get() as { c: number }).c;
+            const streak = (db.prepare("SELECT COALESCE(MAX(streak),0) as s FROM habits WHERE archived = 0").get() as { s: number }).s;
+            const upcomingEvents = await listUpcomingEvents(12);
+
+            // Time-of-day intelligence: find peak focus hours from last 14 days of sessions
+            const hourlyData = db.prepare(`
+                SELECT
+                    CAST(strftime('%H', started_at, 'localtime') AS INTEGER) as hour,
+                    AVG(average_focus_score) as avg_score,
+                    COUNT(*) as session_count
+                FROM guardian_session_summaries
+                WHERE completed_at >= datetime('now', '-14 days')
+                GROUP BY hour
+                ORDER BY avg_score DESC
+                LIMIT 3
+            `).all() as { hour: number; avg_score: number; session_count: number }[];
+
+            const peakHoursLine = hourlyData.length >= 2
+                ? `⚡ <b>Peak focus hours:</b> ${hourlyData.map(h => `${h.hour}:00`).join(', ')}`
+                : null;
+
+            await sendTelegram(formatMorningBrief({
+                date: today,
+                pendingTasks: pending,
+                habitsToday: habits,
+                upcomingEvents: upcomingEvents.map(e => {
+                    const t = new Date(e.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+                    return `${t} ${e.title}`;
+                }),
+                streak,
+                peakHoursLine,
+            }), 'HTML', MORNING_BRIEF_KEYBOARD);
+        } catch (err) {
+            console.error('[Scheduler] Telegram morning brief failed:', err);
+        }
     });
 
     // Daily summary — runs every day at configured time
@@ -41,6 +90,34 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerDailyJob('daily_summary', summaryTime, async () => {
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
+        // Also send daily report to Telegram
+        try {
+            const db = getDb();
+            const stats = db.prepare(`
+                SELECT
+                    COALESCE(SUM(CASE WHEN category='productive' THEN duration_seconds END),0) as prod,
+                    COALESCE(SUM(CASE WHEN category='distraction' THEN duration_seconds END),0) as dist
+                FROM activities WHERE date(started_at,'localtime') = ?
+            `).get(today) as { prod: number; dist: number };
+            const tasks = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE date(created_at,'localtime') <= ? AND status IN ('today','doing','done')").get(today) as { total: number; done: number };
+            const habits = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
+            const sessions = (db.prepare("SELECT COUNT(*) as c FROM guardian_session_summaries WHERE date(completed_at,'localtime') = ?").get(today) as { c: number }).c;
+            const score = db.prepare("SELECT COALESCE(AVG(score),0) as s FROM daily_scores WHERE date = ?").get(today) as { s: number } | undefined;
+            await sendTelegram(formatDailyReport({
+                date: today,
+                productiveMinutes: Math.round((stats?.prod ?? 0) / 60),
+                distractionMinutes: Math.round((stats?.dist ?? 0) / 60),
+                tasksCompleted: tasks?.done ?? 0,
+                totalTasks: tasks?.total ?? 0,
+                habitsCompleted: habits?.done ?? 0,
+                totalHabits: habits?.total ?? 0,
+                score: Math.round(score?.s ?? 0),
+                xp: 0,
+                sessionsToday: sessions,
+            }), 'HTML', DAILY_REPORT_KEYBOARD);
+        } catch (err) {
+            console.error('[Scheduler] Telegram daily report failed:', err);
+        }
     });
 
     // Deep analysis — runs daily at 23:30
@@ -88,6 +165,12 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
     });
 
+    // UIL synthesis — runs every 2 hours during active day to keep profile fresh
+    registerIntervalJob('uil_synthesis', 2 * 60 * 60 * 1000, async () => {
+        console.log('[Scheduler] Running UIL background synthesis...');
+        await forceSynthesis('scheduled_2h');
+    });
+
     // Achievement engine - runs every 10 minutes
     registerIntervalJob('achievement_engine', 10 * 60 * 1000, async () => {
         await fetch(`${baseUrl}/api/gamification/engine`, { method: 'POST' });
@@ -98,6 +181,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         const dayOfWeek = new Date().getDay();
         if (dayOfWeek === 0) { // Sunday
             await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
+            // Also send rich weekly HTML email
+            try {
+                const { sendWeeklyEmail } = await import('./notifications');
+                await sendWeeklyEmail();
+            } catch (err) {
+                console.error('[Scheduler] Weekly email failed:', err);
+            }
         }
     });
 
