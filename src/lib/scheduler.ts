@@ -202,6 +202,16 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetch(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
     });
 
+    // Guardian policy optimization — runs nightly at 03:30, off hot path, skipped during active sessions
+    registerDailyJob('guardian_optimize', '03:30', async () => {
+        const res = await fetch(`${baseUrl}/api/guardian/optimize`, { method: 'POST' });
+        if (res.status === 409) {
+            console.log('[Scheduler] guardian_optimize skipped — active session in progress');
+        } else if (!res.ok) {
+            console.error('[Scheduler] guardian_optimize failed:', await res.text());
+        }
+    });
+
     // Weekly Data Archiving (Lossless Compression) - runs every Sunday at 02:00
     registerDailyJob('data_archiving', '02:00', async () => {
         const dayOfWeek = new Date().getDay();

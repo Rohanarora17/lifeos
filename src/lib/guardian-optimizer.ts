@@ -9,11 +9,67 @@ import {
   PolicyArtifactVersion,
 } from './guardian-types';
 import { evaluateGuardianPolicyScenario } from './guardian-eval';
+import { getGenAI, generateWithFallback } from './ai';
+import { MODEL_FLASH } from './models';
 
 const ACTIVE_POLICY_TYPE = 'guardian_policy_bundle';
 const DEFAULT_PRIMARY_METRIC = 'guardian_eval_score';
 const DEFAULT_SUITE_NAME = 'baseline_guardian_suite';
 const DEFAULT_BUDGET_SECONDS = 300;
+const MAX_LLM_MUTATIONS = 4;
+
+// ─── Policy Bounds (LLM mutations must stay within these) ─────────────────────
+
+const THRESHOLD_BOUNDS: Record<string, [number, number]> = {
+  speechCooldownMs:             [30_000, 300_000],
+  flowSilenceThreshold:         [70,     100],
+  distractionRevisitBlockCount: [2,      6],
+  distractionTabSwitchBlockCount:[2,     8],
+  highScatterSpeakThreshold:    [3,      10],
+  idleConcernSeconds:           [120,    900],
+  focusDropSpeakThreshold:      [5,      30],
+  lowFocusThreshold:            [40,     80],
+};
+
+const WEIGHT_KEYS = ['continuity', 'switches', 'dwell', 'distractionPenalty', 'idlePenalty'] as const;
+const WEIGHT_BOUNDS: [number, number] = [0.05, 0.60];
+const PROMPT_KEYS = ['interventionPrompt', 'overrideRubric', 'retrievalPrompt', 'sessionPlannerPrompt', 'voicePolicyPrompt', 'redTeamRules'] as const;
+const PROMPT_MAX_LENGTH = 1500;
+
+// ─── Canary Holdout Cases (never used in training suite) ──────────────────────
+
+const CANARY_EVAL_CASES: Array<{ caseName: string; inputPayload: GuardianEvalScenario }> = [
+  {
+    caseName: 'canary_repeated_distraction_must_block',
+    inputPayload: {
+      durationMinutes: 60,
+      targetTitle: 'Canary Session',
+      events: [
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Calculus', title: 'Wikipedia', dwellSeconds: 180 },
+        { type: 'tab', url: 'https://instagram.com', title: 'Instagram', dwellSeconds: 30 },
+        { type: 'tab', url: 'https://wikipedia.org/wiki/Calculus', title: 'Wikipedia', dwellSeconds: 60 },
+        { type: 'tab', url: 'https://instagram.com/explore', title: 'Instagram Explore', dwellSeconds: 25 },
+        { type: 'tab', url: 'https://instagram.com/reels', title: 'Instagram Reels', dwellSeconds: 20 },
+      ],
+      expected: { mustBlock: true, finalClassification: 'distraction' },
+    },
+  },
+  {
+    caseName: 'canary_productive_only_never_blocked',
+    inputPayload: {
+      durationMinutes: 45,
+      targetTitle: 'Canary Deep Work',
+      events: [
+        { type: 'tab', url: 'https://edx.org/learn/cs', title: 'edX', dwellSeconds: 400 },
+        { type: 'heartbeat' },
+        { type: 'tab', url: 'https://khanacademy.org/computing', title: 'Khan', dwellSeconds: 300 },
+      ],
+      expected: { maxBlockCount: 0, finalClassification: 'on_topic' },
+    },
+  },
+];
+
+// ─── Default Eval Cases ───────────────────────────────────────────────────────
 
 const DEFAULT_GUARDIAN_EVAL_CASES: Array<{
   caseName: string;
@@ -85,7 +141,6 @@ const DEFAULT_GUARDIAN_EVAL_CASES: Array<{
     },
     expectedOutcome: 'Should nudge for scatter without blocking productive browsing.',
   },
-  // ─── Additional cases ────────────────────────────────────────────────────────
   {
     caseName: 'productive_url_never_blocked',
     scenarioType: 'false_positive_guard',
@@ -188,29 +243,22 @@ const DEFAULT_GUARDIAN_EVAL_CASES: Array<{
   },
 ];
 
+// ─── Artifact CRUD ────────────────────────────────────────────────────────────
+
 export function ensureDefaultGuardianArtifacts(): PolicyArtifactVersion {
   const db = getDb();
   const active = db.prepare(`
-    SELECT *
-    FROM guardian_artifact_versions
+    SELECT * FROM guardian_artifact_versions
     WHERE artifact_type = ? AND is_active = 1
-    ORDER BY id DESC
-    LIMIT 1
+    ORDER BY id DESC LIMIT 1
   `).get(ACTIVE_POLICY_TYPE) as PolicyArtifactVersion | undefined;
 
-  if (active) {
-    return active;
-  }
+  if (active) return active;
 
   const info = db.prepare(`
     INSERT INTO guardian_artifact_versions (
-      artifact_type,
-      version,
-      content,
-      guardian_eval_score,
-      is_active,
-      promoted_at,
-      notes
+      artifact_type, version, content, guardian_eval_score,
+      is_active, promoted_at, notes
     ) VALUES (?, ?, ?, ?, 1, datetime('now', 'localtime'), ?)
   `).run(
     ACTIVE_POLICY_TYPE,
@@ -226,8 +274,7 @@ export function ensureDefaultGuardianArtifacts(): PolicyArtifactVersion {
 export function getActiveGuardianPolicyBundle(): GuardianPolicyBundle {
   const row = ensureDefaultGuardianArtifacts();
   try {
-    const parsed = JSON.parse(row.content) as GuardianPolicyBundle;
-    return parsed;
+    return JSON.parse(row.content) as GuardianPolicyBundle;
   } catch {
     return DEFAULT_GUARDIAN_POLICY_BUNDLE;
   }
@@ -245,15 +292,8 @@ export function recordGuardianEvalRun(input: {
   const db = getDb();
   const info = db.prepare(`
     INSERT INTO guardian_eval_runs (
-      artifact_version_id,
-      suite_name,
-      wall_clock_budget_seconds,
-      primary_metric,
-      guardian_eval_score,
-      hard_failures,
-      status,
-      summary,
-      completed_at
+      artifact_version_id, suite_name, wall_clock_budget_seconds, primary_metric,
+      guardian_eval_score, hard_failures, status, summary, completed_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.artifactVersionId ?? null,
@@ -266,7 +306,6 @@ export function recordGuardianEvalRun(input: {
     input.summary ?? null,
     input.status === 'pending' ? null : new Date().toISOString()
   );
-
   return db.prepare('SELECT * FROM guardian_eval_runs WHERE id = ?').get(info.lastInsertRowid) as EvalRun;
 }
 
@@ -279,146 +318,353 @@ export function promoteGuardianPolicyVersion(versionId: number, reason: string):
       SET is_active = 1, promoted_at = datetime('now', 'localtime')
       WHERE id = ?
     `).run(versionId);
-    db.prepare(`
-      INSERT INTO guardian_promotions (artifact_version_id, reason)
-      VALUES (?, ?)
-    `).run(versionId, reason);
+    db.prepare('INSERT INTO guardian_promotions (artifact_version_id, reason) VALUES (?, ?)').run(versionId, reason);
   })();
 }
 
 export function seedDefaultGuardianEvalCases(suiteName: string = DEFAULT_SUITE_NAME): number {
   const db = getDb();
-  // INSERT OR IGNORE so new cases are added without re-inserting existing ones.
-  // Requires the UNIQUE index on (suite_name, case_name) created in db.ts.
   const insert = db.prepare(`
     INSERT OR IGNORE INTO guardian_eval_cases (suite_name, case_name, scenario_type, input_payload, expected_outcome)
     VALUES (?, ?, ?, ?, ?)
   `);
-
   db.transaction(() => {
-    for (const testCase of DEFAULT_GUARDIAN_EVAL_CASES) {
-      insert.run(
-        suiteName,
-        testCase.caseName,
-        testCase.scenarioType,
-        JSON.stringify(testCase.inputPayload),
-        testCase.expectedOutcome
-      );
+    for (const c of DEFAULT_GUARDIAN_EVAL_CASES) {
+      insert.run(suiteName, c.caseName, c.scenarioType, JSON.stringify(c.inputPayload), c.expectedOutcome);
     }
   })();
-
   const count = db.prepare('SELECT COUNT(*) as count FROM guardian_eval_cases WHERE suite_name = ?').get(suiteName) as { count: number };
   return count.count;
 }
 
 export function listGuardianEvalCases(suiteName: string = DEFAULT_SUITE_NAME): GuardianEvalCaseRecord[] {
   seedDefaultGuardianEvalCases(suiteName);
-  const db = getDb();
-  return db.prepare(`
-    SELECT *
-    FROM guardian_eval_cases
-    WHERE suite_name = ? AND active = 1
-    ORDER BY id ASC
+  return getDb().prepare(`
+    SELECT * FROM guardian_eval_cases WHERE suite_name = ? AND active = 1 ORDER BY id ASC
   `).all(suiteName) as GuardianEvalCaseRecord[];
 }
 
-function round2(value: number) {
-  return Math.round(value * 100) / 100;
-}
+// ─── Scoring ──────────────────────────────────────────────────────────────────
+
+function round2(v: number) { return Math.round(v * 100) / 100; }
 
 function scoreBundleAgainstSuite(policy: GuardianPolicyBundle, suiteName: string = DEFAULT_SUITE_NAME): GuardianEvalSummary {
   const cases = listGuardianEvalCases(suiteName);
-  const caseResults = cases.map((record) =>
-    evaluateGuardianPolicyScenario(record.id, record.caseName, policy, JSON.parse(record.inputPayload) as GuardianEvalScenario)
+  const caseResults = cases.map((r) =>
+    evaluateGuardianPolicyScenario(r.id, r.caseName, policy, JSON.parse(r.inputPayload) as GuardianEvalScenario)
   );
-  const hardFailures = caseResults.filter((item) => item.hardFailure).length;
-  const totalScore = caseResults.reduce((sum, item) => sum + item.score, 0);
-  const guardianEvalScore = round2(totalScore / Math.max(1, caseResults.length));
   return {
     suiteName,
-    guardianEvalScore,
-    hardFailures,
+    guardianEvalScore: round2(caseResults.reduce((s, r) => s + r.score, 0) / Math.max(1, caseResults.length)),
+    hardFailures: caseResults.filter((r) => r.hardFailure).length,
     caseResults,
   };
 }
 
-function createMutatedCandidates(base: GuardianPolicyBundle): GuardianPolicyBundle[] {
-  const variants: GuardianPolicyBundle[] = [];
-  const makeClone = () => structuredClone(base) as GuardianPolicyBundle;
+function runCanaryValidation(candidate: GuardianPolicyBundle, baseline: GuardianPolicyBundle): {
+  passed: boolean;
+  canaryScore: number;
+  baselineCanaryScore: number;
+  hardFailures: number;
+} {
+  const evalCanary = (policy: GuardianPolicyBundle) =>
+    CANARY_EVAL_CASES.map((c, i) =>
+      evaluateGuardianPolicyScenario(10_000 + i, c.caseName, policy, c.inputPayload)
+    );
 
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-cooldown-tight`;
-    variant.thresholds.speechCooldownMs = Math.max(45_000, base.thresholds.speechCooldownMs - 15_000);
-    variants.push(variant);
-  }
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-cooldown-loose`;
-    variant.thresholds.speechCooldownMs = base.thresholds.speechCooldownMs + 15_000;
-    variants.push(variant);
-  }
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-focus-stricter`;
-    variant.thresholds.flowSilenceThreshold = Math.min(95, base.thresholds.flowSilenceThreshold + 3);
-    variants.push(variant);
-  }
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-scatter-earlier`;
-    variant.thresholds.highScatterSpeakThreshold = Math.max(4, base.thresholds.highScatterSpeakThreshold - 1);
-    variants.push(variant);
-  }
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-block-faster`;
-    variant.thresholds.distractionRevisitBlockCount = Math.max(2, base.thresholds.distractionRevisitBlockCount - 1);
-    variants.push(variant);
-  }
-  {
-    const variant = makeClone();
-    variant.version = `${base.version}-voice-tighter`;
-    variant.prompts.voicePolicyPrompt = `${base.prompts.voicePolicyPrompt} Keep interventions even shorter and avoid repeated phrasing.`;
-    variants.push(variant);
-  }
+  const candidateResults = evalCanary(candidate);
+  const baselineResults = evalCanary(baseline);
 
-  return variants;
+  const hardFailures = candidateResults.filter((r) => r.hardFailure).length;
+  const canaryScore = round2(candidateResults.reduce((s, r) => s + r.score, 0) / candidateResults.length);
+  const baselineCanaryScore = round2(baselineResults.reduce((s, r) => s + r.score, 0) / baselineResults.length);
+
+  return {
+    passed: hardFailures === 0 && canaryScore >= baselineCanaryScore,
+    canaryScore,
+    baselineCanaryScore,
+    hardFailures,
+  };
 }
 
 function insertCandidateArtifact(policy: GuardianPolicyBundle, score: number, notes: string): PolicyArtifactVersion {
   const db = getDb();
   const info = db.prepare(`
-    INSERT INTO guardian_artifact_versions (
-      artifact_type,
-      version,
-      content,
-      guardian_eval_score,
-      is_active,
-      notes
-    ) VALUES (?, ?, ?, ?, 0, ?)
+    INSERT INTO guardian_artifact_versions (artifact_type, version, content, guardian_eval_score, is_active, notes)
+    VALUES (?, ?, ?, ?, 0, ?)
   `).run(ACTIVE_POLICY_TYPE, policy.version, JSON.stringify(policy), score, notes);
   return db.prepare('SELECT * FROM guardian_artifact_versions WHERE id = ?').get(info.lastInsertRowid) as PolicyArtifactVersion;
 }
 
-function recordGuardianCanary(score: number, notes: string) {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO guardian_canary_results (guardian_eval_score, status, notes)
-    VALUES (?, ?, ?)
+function recordGuardianCanary(score: number, notes: string): void {
+  getDb().prepare(`
+    INSERT INTO guardian_canary_results (guardian_eval_score, status, notes) VALUES (?, ?, ?)
   `).run(score, score >= 0 ? 'passed' : 'failed', notes);
 }
 
-export function runGuardianOptimizationCycle(input?: {
+// ─── Mutation Context (feeds the LLM) ────────────────────────────────────────
+
+interface RecentSessionSummary {
+  target_title: string;
+  duration_minutes: number;
+  elapsed_minutes: number;
+  average_focus_score: number;
+  blocked_count: number;
+  override_count: number;
+  mood: string | null;
+  reflection_text: string | null;
+}
+
+interface EvalCaseFailure {
+  caseName: string;
+  score: number;
+  reasons: string[];
+}
+
+function buildMutationContext(): { recentSessions: RecentSessionSummary[]; lastEvalFailures: EvalCaseFailure[] } {
+  const db = getDb();
+
+  const recentSessions = db.prepare(`
+    SELECT
+      s.target_title, s.duration_minutes, s.elapsed_minutes,
+      s.average_focus_score, s.blocked_count, s.override_count, s.mood,
+      r.reflection_text
+    FROM guardian_session_summaries s
+    LEFT JOIN guardian_session_reflections r ON r.session_id = s.session_id
+    ORDER BY s.completed_at DESC
+    LIMIT 6
+  `).all() as RecentSessionSummary[];
+
+  let lastEvalFailures: EvalCaseFailure[] = [];
+  try {
+    const lastRun = db.prepare(`
+      SELECT summary FROM guardian_eval_runs
+      WHERE status != 'pending' AND summary IS NOT NULL
+      ORDER BY id DESC LIMIT 1
+    `).get() as { summary: string } | undefined;
+
+    if (lastRun?.summary) {
+      const parsed = JSON.parse(lastRun.summary) as Array<{ caseName: string; passed: boolean; score: number; reasons?: string[] }>;
+      if (Array.isArray(parsed)) {
+        lastEvalFailures = parsed
+          .filter((r) => !r.passed && r.reasons && r.reasons.length > 0)
+          .map((r) => ({ caseName: r.caseName, score: r.score, reasons: r.reasons! }))
+          .slice(0, 8);
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  return { recentSessions, lastEvalFailures };
+}
+
+// ─── Policy Bundle Validator ──────────────────────────────────────────────────
+
+function validatePolicyBundle(obj: unknown): GuardianPolicyBundle {
+  if (typeof obj !== 'object' || obj === null) throw new Error('Policy must be an object');
+  const p = obj as Record<string, unknown>;
+
+  if (typeof p.version !== 'string' || !p.version.trim()) throw new Error('Missing or empty version');
+  if (typeof p.prompts !== 'object' || !p.prompts) throw new Error('Missing prompts');
+  if (typeof p.thresholds !== 'object' || !p.thresholds) throw new Error('Missing thresholds');
+  if (typeof p.weights !== 'object' || !p.weights) throw new Error('Missing weights');
+
+  const prompts = p.prompts as Record<string, unknown>;
+  const thresholds = p.thresholds as Record<string, unknown>;
+  const weights = p.weights as Record<string, unknown>;
+
+  for (const key of PROMPT_KEYS) {
+    if (typeof prompts[key] !== 'string' || !(prompts[key] as string).trim()) {
+      throw new Error(`Missing or empty prompt field: ${key}`);
+    }
+    if ((prompts[key] as string).length > PROMPT_MAX_LENGTH) {
+      throw new Error(`Prompt field too long (max ${PROMPT_MAX_LENGTH} chars): ${key}`);
+    }
+  }
+
+  for (const [key, [min, max]] of Object.entries(THRESHOLD_BOUNDS)) {
+    if (typeof thresholds[key] !== 'number') throw new Error(`Missing threshold: ${key}`);
+    const val = thresholds[key] as number;
+    if (val < min || val > max) throw new Error(`Threshold ${key}=${val} out of bounds [${min}, ${max}]`);
+  }
+
+  let weightSum = 0;
+  for (const key of WEIGHT_KEYS) {
+    if (typeof weights[key] !== 'number') throw new Error(`Missing weight: ${key}`);
+    const val = weights[key] as number;
+    if (val < WEIGHT_BOUNDS[0] || val > WEIGHT_BOUNDS[1]) {
+      throw new Error(`Weight ${key}=${val} out of bounds [${WEIGHT_BOUNDS[0]}, ${WEIGHT_BOUNDS[1]}]`);
+    }
+    weightSum += val;
+  }
+  if (Math.abs(weightSum - 1.0) > 0.015) {
+    throw new Error(`Weights must sum to 1.0, got ${weightSum.toFixed(3)}`);
+  }
+
+  return p as unknown as GuardianPolicyBundle;
+}
+
+// ─── LLM Mutation Generator ───────────────────────────────────────────────────
+
+async function generateLLMMutations(
+  policy: GuardianPolicyBundle,
+  context: { recentSessions: RecentSessionSummary[]; lastEvalFailures: EvalCaseFailure[] }
+): Promise<Array<GuardianPolicyBundle & { _rationale?: string }>> {
+  const ai = getGenAI();
+  if (!ai) return [];
+
+  const sessionLines = context.recentSessions.length > 0
+    ? context.recentSessions.map((s) =>
+        `- "${s.target_title}" (${s.elapsed_minutes}/${s.duration_minutes}min, mood:${s.mood ?? 'unknown'}): ` +
+        `focus=${s.average_focus_score}/100, blocks=${s.blocked_count}, overrides=${s.override_count}` +
+        (s.reflection_text ? `, reflection: "${s.reflection_text.slice(0, 100)}"` : '')
+      ).join('\n')
+    : 'No completed sessions yet — use eval failure patterns to guide mutations.';
+
+  const failureLines = context.lastEvalFailures.length > 0
+    ? context.lastEvalFailures.map((f) => `- ${f.caseName} (score:${f.score}): ${f.reasons.join('; ')}`).join('\n')
+    : 'No failures in last eval run — policy is passing all cases.';
+
+  const thresholdDocs = Object.entries(THRESHOLD_BOUNDS)
+    .map(([k, [mn, mx]]) => `  ${k}: [${mn}, ${mx}]`)
+    .join('\n');
+
+  const prompt = `You are a policy optimizer for LifeOS Guardian — a personal AI that watches focus sessions and intervenes when the user gets distracted.
+
+Your job: propose ${MAX_LLM_MUTATIONS} improved candidate policy bundles based on real session outcomes and eval failures.
+
+CURRENT ACTIVE POLICY:
+${JSON.stringify(policy, null, 2)}
+
+RECENT SESSION OUTCOMES (latest first):
+${sessionLines}
+
+LAST EVAL CASE FAILURES:
+${failureLines}
+
+WHAT YOU MAY CHANGE:
+Prompts (any of: interventionPrompt, overrideRubric, voicePolicyPrompt — rewrite to improve coaching quality, tone, and specificity):
+  Max length per prompt: ${PROMPT_MAX_LENGTH} chars. Must be non-empty.
+  Do NOT change: retrievalPrompt, sessionPlannerPrompt, redTeamRules
+
+Thresholds (valid ranges):
+${thresholdDocs}
+
+Weights (each in [${WEIGHT_BOUNDS[0]}, ${WEIGHT_BOUNDS[1]}], must sum to EXACTLY 1.0):
+  continuity, switches, dwell, distractionPenalty, idlePenalty
+
+HARD CONSTRAINTS — never violate:
+${policy.prompts.redTeamRules}
+- Every mutation must differ from the current policy in at least one field
+- Weights must sum to exactly 1.0 (tolerance ±0.01)
+- Do not add or remove fields from the policy bundle
+
+STRATEGY GUIDE:
+- If sessions show low focus scores with many blocks → the guardian is too aggressive; loosen thresholds
+- If sessions show high override rates → override rubric may be too strict; soften it
+- If eval shows "spoke too often" failures → increase speechCooldownMs or flowSilenceThreshold
+- If eval shows "mustBlock but none occurred" failures → lower distractionRevisitBlockCount
+- If eval shows "mustSpeak but none occurred" failures → lower highScatterSpeakThreshold or idleConcernSeconds
+- If sessions show good focus with no issues → experiment with weight shifts to reward dwell depth more
+
+Return ONLY a JSON array of exactly ${MAX_LLM_MUTATIONS} complete policy bundles.
+Each bundle must contain ALL fields. Include a "_rationale" field (not part of the schema, will be stripped):
+
+[{
+  "_rationale": "one sentence: which specific weakness this targets and why this change addresses it",
+  "version": "guardian-v1-<short-kebab-name>",
+  "prompts": {
+    "interventionPrompt": "...",
+    "overrideRubric": "...",
+    "retrievalPrompt": "${policy.prompts.retrievalPrompt}",
+    "sessionPlannerPrompt": "${policy.prompts.sessionPlannerPrompt}",
+    "voicePolicyPrompt": "...",
+    "redTeamRules": "${policy.prompts.redTeamRules}"
+  },
+  "thresholds": { "speechCooldownMs": 90000, "flowSilenceThreshold": 85, "distractionRevisitBlockCount": 3, "distractionTabSwitchBlockCount": 4, "highScatterSpeakThreshold": 6, "idleConcernSeconds": 480, "focusDropSpeakThreshold": 15, "lowFocusThreshold": 60 },
+  "weights": { "continuity": 0.35, "switches": 0.25, "dwell": 0.20, "distractionPenalty": 0.15, "idlePenalty": 0.05 }
+}]`;
+
+  try {
+    const result = await generateWithFallback(ai, {
+      model: MODEL_FLASH,
+      contents: prompt,
+      config: { responseMimeType: 'application/json' },
+    });
+
+    const raw = JSON.parse((result.text || '').trim()) as unknown[];
+    if (!Array.isArray(raw)) return [];
+
+    const validated: Array<GuardianPolicyBundle & { _rationale?: string }> = [];
+    for (const item of raw) {
+      try {
+        const rationale = typeof (item as Record<string, unknown>)._rationale === 'string'
+          ? (item as Record<string, unknown>)._rationale as string
+          : undefined;
+        delete (item as Record<string, unknown>)._rationale;
+
+        const bundle = validatePolicyBundle(item) as GuardianPolicyBundle & { _rationale?: string };
+        bundle._rationale = rationale;
+        validated.push(bundle);
+      } catch (err) {
+        console.warn('[GuardianOptimizer] Skipping invalid LLM mutation:', (err as Error).message);
+      }
+    }
+
+    console.log(`[GuardianOptimizer] LLM produced ${validated.length}/${raw.length} valid mutations`);
+    return validated;
+  } catch (err) {
+    console.error('[GuardianOptimizer] LLM mutation generation failed:', err);
+    return [];
+  }
+}
+
+// ─── Fallback: hand-coded mutations (when LLM is unavailable) ─────────────────
+
+function createFallbackMutations(base: GuardianPolicyBundle): GuardianPolicyBundle[] {
+  const clone = () => structuredClone(base) as GuardianPolicyBundle;
+  const variants: GuardianPolicyBundle[] = [];
+
+  { const v = clone(); v.version = `${base.version}-cooldown-tight`; v.thresholds.speechCooldownMs = Math.max(45_000, base.thresholds.speechCooldownMs - 15_000); variants.push(v); }
+  { const v = clone(); v.version = `${base.version}-cooldown-loose`; v.thresholds.speechCooldownMs = Math.min(300_000, base.thresholds.speechCooldownMs + 15_000); variants.push(v); }
+  { const v = clone(); v.version = `${base.version}-block-faster`; v.thresholds.distractionRevisitBlockCount = Math.max(2, base.thresholds.distractionRevisitBlockCount - 1); variants.push(v); }
+  { const v = clone(); v.version = `${base.version}-scatter-earlier`; v.thresholds.highScatterSpeakThreshold = Math.max(3, base.thresholds.highScatterSpeakThreshold - 1); variants.push(v); }
+
+  return variants;
+}
+
+// ─── Main Optimization Cycle ──────────────────────────────────────────────────
+
+export async function runGuardianOptimizationCycle(input?: {
   suiteName?: string;
   wallClockBudgetSeconds?: number;
-}) {
-  const suiteName = input?.suiteName || DEFAULT_SUITE_NAME;
-  const wallClockBudgetSeconds = input?.wallClockBudgetSeconds || DEFAULT_BUDGET_SECONDS;
+}): Promise<{
+  suiteName: string;
+  wallClockBudgetSeconds: number;
+  mutationSource: 'llm' | 'fallback';
+  baseline: { score: number; hardFailures: number };
+  candidates: Array<{ artifactId: number; version: string; score: number; hardFailures: number; rationale: string | null }>;
+  promoted: PolicyArtifactVersion | null;
+  canary: { status: string; canaryScore?: number; baselineCanaryScore?: number };
+}> {
+  const db = getDb();
+  const suiteName = input?.suiteName ?? DEFAULT_SUITE_NAME;
+  const wallClockBudgetSeconds = input?.wallClockBudgetSeconds ?? DEFAULT_BUDGET_SECONDS;
+  const cycleStartMs = Date.now();
+  const budgetMs = wallClockBudgetSeconds * 1_000;
+
+  // Guard: never run during an active session
+  const activeSession = db.prepare(
+    "SELECT session_id FROM guardian_session_summaries WHERE completed_at IS NULL LIMIT 1"
+  ).get();
+  if (activeSession) {
+    throw new Error('Cannot run optimization during an active guardian session.');
+  }
+
   const activeArtifact = ensureDefaultGuardianArtifacts();
   const activePolicy = getActiveGuardianPolicyBundle();
-  const baselineSummary = scoreBundleAgainstSuite(activePolicy, suiteName);
 
+  // 1. Baseline eval
+  const baselineSummary = scoreBundleAgainstSuite(activePolicy, suiteName);
   recordGuardianEvalRun({
     artifactVersionId: activeArtifact.id,
     suiteName,
@@ -426,13 +672,41 @@ export function runGuardianOptimizationCycle(input?: {
     guardianEvalScore: baselineSummary.guardianEvalScore,
     hardFailures: baselineSummary.hardFailures,
     status: baselineSummary.hardFailures === 0 ? 'passed' : 'failed',
-    summary: `Baseline: ${baselineSummary.guardianEvalScore}`,
+    summary: JSON.stringify(baselineSummary.caseResults),
   });
 
-  const candidates = createMutatedCandidates(activePolicy);
-  const evaluatedCandidates = candidates.map((candidate) => {
+  // 2. Generate mutations — LLM first, fall back to hand-coded
+  const mutationContext = buildMutationContext();
+  let mutationSource: 'llm' | 'fallback' = 'llm';
+  let candidates = await generateLLMMutations(activePolicy, mutationContext);
+  if (candidates.length === 0) {
+    console.warn('[GuardianOptimizer] LLM unavailable or returned no valid mutations — using fallback');
+    candidates = createFallbackMutations(activePolicy);
+    mutationSource = 'fallback';
+  }
+
+  // 3. Evaluate each candidate within budget
+  const evaluatedCandidates: Array<{
+    artifact: PolicyArtifactVersion;
+    summary: GuardianEvalSummary;
+    rationale: string | null;
+  }> = [];
+
+  for (const candidate of candidates) {
+    if (Date.now() - cycleStartMs >= budgetMs) {
+      console.warn(`[GuardianOptimizer] Budget (${wallClockBudgetSeconds}s) reached — ${candidates.length - evaluatedCandidates.length} candidates skipped`);
+      break;
+    }
+
+    const rationale = (candidate as GuardianPolicyBundle & { _rationale?: string })._rationale ?? null;
+    delete (candidate as GuardianPolicyBundle & { _rationale?: string })._rationale;
+
     const summary = scoreBundleAgainstSuite(candidate, suiteName);
-    const artifact = insertCandidateArtifact(candidate, summary.guardianEvalScore, `Auto-generated candidate for ${suiteName}`);
+    const artifact = insertCandidateArtifact(
+      candidate,
+      summary.guardianEvalScore,
+      rationale ? `[LLM] ${rationale}` : `Auto candidate for ${suiteName} (${mutationSource})`
+    );
     recordGuardianEvalRun({
       artifactVersionId: artifact.id,
       suiteName,
@@ -442,34 +716,71 @@ export function runGuardianOptimizationCycle(input?: {
       status: summary.hardFailures === 0 ? 'passed' : 'failed',
       summary: JSON.stringify(summary.caseResults),
     });
-    return { artifact, summary };
-  });
+    evaluatedCandidates.push({ artifact, summary, rationale });
+  }
 
+  // 4. Pick winner: no hard failures, best score
   const winner = evaluatedCandidates
-    .filter((item) => item.summary.hardFailures === 0)
-    .sort((left, right) => right.summary.guardianEvalScore - left.summary.guardianEvalScore)[0];
+    .filter((c) => c.summary.hardFailures === 0)
+    .sort((a, b) => b.summary.guardianEvalScore - a.summary.guardianEvalScore)[0] ?? null;
 
-  let promoted = null;
+  let promoted: PolicyArtifactVersion | null = null;
+  let canaryResult: { status: string; canaryScore?: number; baselineCanaryScore?: number } = { status: 'no_candidate' };
+
   if (winner && winner.summary.guardianEvalScore > baselineSummary.guardianEvalScore) {
+    // 5. Promote winner (tentatively)
     promoteGuardianPolicyVersion(
       winner.artifact.id,
-      `Promoted automatically: ${winner.summary.guardianEvalScore} > ${baselineSummary.guardianEvalScore}`
+      `Score ${winner.summary.guardianEvalScore} > baseline ${baselineSummary.guardianEvalScore}` +
+      (winner.rationale ? ` — ${winner.rationale}` : '')
     );
-    recordGuardianCanary(winner.summary.guardianEvalScore, `Promotion candidate ${winner.artifact.version} passed.`);
-    promoted = winner.artifact;
+
+    // 6. Canary validation on holdout suite
+    const winnerPolicy = JSON.parse(
+      (db.prepare('SELECT content FROM guardian_artifact_versions WHERE id = ?').get(winner.artifact.id) as { content: string }).content
+    ) as GuardianPolicyBundle;
+
+    const canary = runCanaryValidation(winnerPolicy, activePolicy);
+
+    if (!canary.passed) {
+      // Rollback: re-activate the previous version
+      db.transaction(() => {
+        db.prepare('UPDATE guardian_artifact_versions SET is_active = 0 WHERE artifact_type = ?').run(ACTIVE_POLICY_TYPE);
+        db.prepare(`UPDATE guardian_artifact_versions SET is_active = 1, promoted_at = datetime('now', 'localtime') WHERE id = ?`).run(activeArtifact.id);
+      })();
+      recordGuardianCanary(
+        canary.canaryScore,
+        `Canary FAILED for ${winner.artifact.version}: hardFails=${canary.hardFailures}, score=${canary.canaryScore} < baseline ${canary.baselineCanaryScore}. Rolled back to v${activeArtifact.id}.`
+      );
+      canaryResult = { status: 'rolled_back', canaryScore: canary.canaryScore, baselineCanaryScore: canary.baselineCanaryScore };
+    } else {
+      recordGuardianCanary(
+        canary.canaryScore,
+        `Canary passed for ${winner.artifact.version}: score ${canary.canaryScore} >= baseline ${canary.baselineCanaryScore}.`
+      );
+      promoted = winner.artifact;
+      canaryResult = { status: 'passed', canaryScore: canary.canaryScore, baselineCanaryScore: canary.baselineCanaryScore };
+    }
   } else {
-    recordGuardianCanary(baselineSummary.guardianEvalScore, 'No candidate beat baseline; active policy retained.');
+    recordGuardianCanary(
+      baselineSummary.guardianEvalScore,
+      'No candidate beat baseline — active policy retained.'
+    );
   }
 
   return {
     suiteName,
-    baseline: baselineSummary,
-    candidates: evaluatedCandidates.map((item) => ({
-      artifactId: item.artifact.id,
-      version: item.artifact.version,
-      score: item.summary.guardianEvalScore,
-      hardFailures: item.summary.hardFailures,
+    wallClockBudgetSeconds,
+    mutationSource,
+    baseline: { score: baselineSummary.guardianEvalScore, hardFailures: baselineSummary.hardFailures },
+    candidates: evaluatedCandidates.map((c) => ({
+      artifactId: c.artifact.id,
+      version: c.artifact.version,
+      score: c.summary.guardianEvalScore,
+      hardFailures: c.summary.hardFailures,
+      rationale: c.rationale,
     })),
     promoted,
+    canary: canaryResult,
   };
 }
