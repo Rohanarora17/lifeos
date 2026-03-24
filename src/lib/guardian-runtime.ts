@@ -7,6 +7,7 @@ import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
 import { emitGuardianRuntimeEvent } from './guardian-bus';
 import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
+import { extractMemoryFromSession } from './memory-extractor';
 import {
   sendTelegram,
   formatSessionStart,
@@ -833,6 +834,39 @@ export function endGuardianSession(sessionId: string) {
   void generateSessionReflection(session);
   // Signal the intelligence layer — session data is now committed to DB
   touchIntelligence('session_end');
+
+  // Extract semantic memory from this session (background, non-blocking)
+  void (async () => {
+    // Wait for reflection to land in DB before reading it
+    await new Promise(r => setTimeout(r, 8000));
+    let reflection: string | null = null;
+    try {
+      const reflRow = getDb().prepare(
+        'SELECT reflection_text FROM guardian_session_reflections WHERE session_id = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(sessionId) as { reflection_text: string } | undefined;
+      reflection = reflRow?.reflection_text ?? null;
+    } catch { /* non-fatal */ }
+
+    const domains = [...new Set(
+      session.tabEventLog
+        .filter(e => e.domain)
+        .map(e => e.domain as string)
+    )];
+
+    await extractMemoryFromSession({
+      sessionId,
+      topic: session.targetTitle,
+      durationMinutes: elapsedMinutes,
+      focusScore: avgFocusScore,
+      domains,
+      interventions: session.blockedCount,
+      overrides: session.overrideCount,
+      reflection,
+      mood: session.mood ?? null,
+      startedAt: new Date(session.startedAt).toISOString(),
+      endedAt: new Date().toISOString(),
+    });
+  })();
   emitSessionEvent(sessionId, {
     type: 'session_end',
     summary: {

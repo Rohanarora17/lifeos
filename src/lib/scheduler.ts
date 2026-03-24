@@ -8,6 +8,7 @@ import {
 } from './telegram';
 import { listUpcomingEvents } from './google-calendar';
 import { forceSynthesis, getIntelligenceContext } from './intelligence';
+import { consolidateFacts } from './memory-extractor';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -189,6 +190,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                 console.error('[Scheduler] Weekly email failed:', err);
             }
         }
+    });
+
+    // Memory consolidation — runs nightly at 02:30 (merge duplicates, purge stale)
+    registerDailyJob('memory_consolidation', '02:30', async () => {
+        await consolidateFacts();
     });
 
     // Nightly Database Backup — runs every day at 03:00

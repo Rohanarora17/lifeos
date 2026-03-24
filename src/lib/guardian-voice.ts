@@ -16,6 +16,7 @@ import { createCalendarEvent, getConflictingEvents, isCalendarConfigured } from 
 import { sendTelegram } from './telegram';
 import { getDb } from './db';
 import { getIntelligenceContext, touchIntelligence } from './intelligence';
+import { extractMemoryFromVoice } from './memory-extractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -464,7 +465,12 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   // Signal UIL every 5 user turns — voice content enriches study topic tracking
   const turnCount = (voiceHistory.get(hKey) ?? []).filter(t => t.role === 'user').length;
-  if (turnCount % 5 === 0) touchIntelligence('voice_turns');
+  if (turnCount % 5 === 0) {
+    touchIntelligence('voice_turns');
+    // Extract semantic memory from recent voice turns (background)
+    const recentTurns = (voiceHistory.get(hKey) ?? []).slice(-20).map(t => ({ role: t.role, text: t.text }));
+    extractMemoryFromVoice(recentTurns, activeSessionId ?? hKey).catch(() => {});
+  }
 
   const intent = await parseGuardianVoiceIntent(transcript, hKey);
 
