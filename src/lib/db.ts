@@ -94,6 +94,99 @@ function initSchema(db: Database.Database) {
   // guardian_semantic_profiles: commitment_follow_through_rate added after initial creation
   try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN commitment_follow_through_rate REAL DEFAULT NULL').run(); } catch (e) { }
 
+  // voice_turns: persistent conversation memory for the voice agent
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS voice_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_key TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'model')),
+      text TEXT NOT NULL,
+      action TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_turns_session ON voice_turns(session_key, created_at DESC);
+  `);
+
+  // user_intelligence_profile: versioned UIL snapshots
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_intelligence_profile (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      synthesized_at TEXT DEFAULT (datetime('now')),
+      trigger TEXT DEFAULT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_uil_version ON user_intelligence_profile(version DESC);
+  `);
+
+  // ─── 4-TIER MEMORY LAYER ───────────────────────────────────────────────────
+  db.exec(`
+    -- EPISODIC MEMORY: structured episode log
+    CREATE TABLE IF NOT EXISTS mem_episodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL CHECK(source IN ('guardian','voice','chat','browse','manual')),
+      summary TEXT NOT NULL,
+      raw_context TEXT,
+      importance REAL DEFAULT 0.5,
+      started_at TEXT,
+      ended_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mem_ep_source ON mem_episodes(source, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mem_ep_importance ON mem_episodes(importance DESC);
+
+    -- SEMANTIC MEMORY: distilled facts (Mem0-style)
+    CREATE TABLE IF NOT EXISTS mem_facts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL CHECK(category IN (
+        'preference','pattern','habit','identity','goal','mood','constraint'
+      )),
+      topic TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL DEFAULT 0.7,
+      importance REAL DEFAULT 0.5,
+      status TEXT DEFAULT 'unverified' CHECK(status IN ('active','unverified','superseded')),
+      half_life_days INTEGER DEFAULT 14,
+      source TEXT DEFAULT 'inferred',
+      source_episode_ids TEXT DEFAULT '[]',
+      confirmed_count INTEGER DEFAULT 1,
+      last_confirmed TEXT DEFAULT (datetime('now')),
+      last_accessed TEXT DEFAULT (datetime('now')),
+      access_count INTEGER DEFAULT 0,
+      superseded_by INTEGER REFERENCES mem_facts(id),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mem_facts_status ON mem_facts(status, importance DESC);
+    CREATE INDEX IF NOT EXISTS idx_mem_facts_category ON mem_facts(category);
+
+    -- PROCEDURAL MEMORY: coaching macros with versioning
+    CREATE TABLE IF NOT EXISTS mem_procedures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      trigger_pattern TEXT NOT NULL,
+      action_template TEXT NOT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','active','archived')),
+      version INTEGER DEFAULT 1,
+      superseded_by INTEGER REFERENCES mem_procedures(id),
+      success_count INTEGER DEFAULT 0,
+      failure_count INTEGER DEFAULT 0,
+      last_used TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- WORKING MEMORY: session tick snapshots for audit trail
+    CREATE TABLE IF NOT EXISTS mem_working (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      cognitive_state TEXT DEFAULT 'IDLE',
+      focus_score REAL,
+      cognitive_load REAL,
+      active_facts TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mem_working_session ON mem_working(session_id, created_at DESC);
+  `);
+
   // Insert default settings if not present
   const insertSetting = db.prepare(
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
@@ -113,6 +206,18 @@ function initSchema(db: Database.Database) {
     level_xp_base: '500',
     distraction_domains: '[]',
     productive_domains: '[]',
+    // Telegram
+    telegram_bot_token: '',
+    telegram_chat_id: '',
+    telegram_enabled: 'true',
+    // Google Calendar
+    google_calendar_refresh_token: '',
+    google_calendar_id: 'primary',
+    google_calendar_enabled: 'true',
+    // Resend email
+    resend_api_key: '',
+    notification_email: '',
+    email_alerts_enabled: 'true',
   };
 
   for (const [key, value] of Object.entries(defaults)) {
