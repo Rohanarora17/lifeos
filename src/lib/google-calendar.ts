@@ -1,0 +1,208 @@
+import { google } from 'googleapis';
+import { getSetting, setSetting } from './db';
+
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/calendar/google/callback';
+
+export function getOAuth2Client() {
+  return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+}
+
+export function getAuthUrl(): string {
+  const auth = getOAuth2Client();
+  return auth.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: [
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/calendar.readonly',
+    ],
+  });
+}
+
+/**
+ * Exchange auth code for tokens and store refresh token in DB.
+ */
+export async function handleOAuthCallback(code: string): Promise<void> {
+  const auth = getOAuth2Client();
+  const { tokens } = await auth.getToken(code);
+  auth.setCredentials(tokens);
+  if (tokens.refresh_token) {
+    setSetting('google_calendar_refresh_token', tokens.refresh_token);
+  }
+}
+
+function getAuthedClient() {
+  const refreshToken = getSetting('google_calendar_refresh_token');
+  if (!refreshToken) return null;
+  const auth = getOAuth2Client();
+  auth.setCredentials({ refresh_token: refreshToken });
+  return auth;
+}
+
+function calendarId(): string {
+  return process.env.GOOGLE_CALENDAR_ID || getSetting('google_calendar_id') || 'primary';
+}
+
+export function isCalendarConfigured(): boolean {
+  return !!(getSetting('google_calendar_refresh_token'));
+}
+
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
+
+export interface CalendarEventInput {
+  summary: string;
+  description?: string;
+  startTime: Date;
+  endTime: Date;
+  colorId?: string; // '1'=lavender '2'=sage '3'=grape '4'=flamingo '9'=blueberry '11'=tomato
+}
+
+/**
+ * Create a calendar event. Returns the event ID.
+ */
+export async function createCalendarEvent(input: CalendarEventInput): Promise<string | null> {
+  const auth = getAuthedClient();
+  if (!auth) return null;
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth });
+    const res = await calendar.events.insert({
+      calendarId: calendarId(),
+      requestBody: {
+        summary: input.summary,
+        description: input.description,
+        start: { dateTime: input.startTime.toISOString(), timeZone: 'Asia/Kolkata' },
+        end: { dateTime: input.endTime.toISOString(), timeZone: 'Asia/Kolkata' },
+        colorId: input.colorId ?? '9', // blueberry for study sessions
+        reminders: {
+          useDefault: false,
+          overrides: [
+            { method: 'popup', minutes: 30 },
+            { method: 'popup', minutes: 15 },
+          ],
+        },
+      },
+    });
+    return res.data.id ?? null;
+  } catch (err) {
+    console.error('[GCal] createEvent failed:', err);
+    return null;
+  }
+}
+
+/**
+ * Update an existing event (e.g., set actual end time + focus score in description).
+ */
+export async function updateCalendarEvent(
+  eventId: string,
+  patch: Partial<CalendarEventInput> & { description?: string }
+): Promise<boolean> {
+  const auth = getAuthedClient();
+  if (!auth) return false;
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth });
+    const body: Record<string, unknown> = {};
+    if (patch.summary) body.summary = patch.summary;
+    if (patch.description !== undefined) body.description = patch.description;
+    if (patch.startTime) body.start = { dateTime: patch.startTime.toISOString(), timeZone: 'Asia/Kolkata' };
+    if (patch.endTime) body.end = { dateTime: patch.endTime.toISOString(), timeZone: 'Asia/Kolkata' };
+    if (patch.colorId) body.colorId = patch.colorId;
+
+    await calendar.events.patch({
+      calendarId: calendarId(),
+      eventId,
+      requestBody: body,
+    });
+    return true;
+  } catch (err) {
+    console.error('[GCal] updateEvent failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Delete a calendar event.
+ */
+export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
+  const auth = getAuthedClient();
+  if (!auth) return false;
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth });
+    await calendar.events.delete({ calendarId: calendarId(), eventId });
+    return true;
+  } catch (err) {
+    console.error('[GCal] deleteEvent failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Check for calendar conflicts in a given time window.
+ * Returns any events that overlap with [startTime, endTime].
+ */
+export async function getConflictingEvents(
+  startTime: Date,
+  endTime: Date
+): Promise<Array<{ title: string; start: string; end: string }>> {
+  const auth = getAuthedClient();
+  if (!auth) return [];
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth });
+    const res = await calendar.events.list({
+      calendarId: calendarId(),
+      timeMin: startTime.toISOString(),
+      timeMax: endTime.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 10,
+    });
+
+    return (res.data.items ?? [])
+      .filter(e => e.status !== 'cancelled')
+      .map(e => ({
+        title: e.summary ?? '(no title)',
+        start: e.start?.dateTime ?? e.start?.date ?? '',
+        end: e.end?.dateTime ?? e.end?.date ?? '',
+      }));
+  } catch (err) {
+    console.error('[GCal] getConflictingEvents failed:', err);
+    return [];
+  }
+}
+
+/**
+ * List upcoming events (next N hours). Used for day briefing context.
+ */
+export async function listUpcomingEvents(hoursAhead = 12): Promise<Array<{ title: string; start: string; end: string }>> {
+  const auth = getAuthedClient();
+  if (!auth) return [];
+
+  try {
+    const calendar = google.calendar({ version: 'v3', auth });
+    const now = new Date();
+    const timeMax = new Date(now.getTime() + hoursAhead * 3600_000);
+
+    const res = await calendar.events.list({
+      calendarId: calendarId(),
+      timeMin: now.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 10,
+    });
+
+    return (res.data.items ?? []).map(e => ({
+      title: e.summary ?? '(no title)',
+      start: e.start?.dateTime ?? e.start?.date ?? '',
+      end: e.end?.dateTime ?? e.end?.date ?? '',
+    }));
+  } catch (err) {
+    console.error('[GCal] listEvents failed:', err);
+    return [];
+  }
+}
