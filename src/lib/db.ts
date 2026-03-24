@@ -156,6 +156,7 @@ function initSchema(db: Database.Database) {
       last_accessed TEXT DEFAULT (datetime('now')),
       access_count INTEGER DEFAULT 0,
       superseded_by INTEGER REFERENCES mem_facts(id),
+      embedding TEXT DEFAULT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_facts_status ON mem_facts(status, importance DESC);
