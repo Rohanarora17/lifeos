@@ -19,10 +19,13 @@ import {
   findFactsByTopic,
   insertEpisode,
   queryRelevantFacts,
+  searchFactsByText,
   purgeStaleUnverifiedFacts,
   storeEmbedding,
   FactCategory,
+  ScoredFact,
 } from './memory';
+import { getIntelligenceProfile } from './intelligence';
 import { getDb } from './db';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -40,17 +43,38 @@ interface MemoryOp {
 
 // ─── LLM Extraction ──────────────────────────────────────────────────────────
 
-async function runLLMExtraction(contextText: string, source: string): Promise<MemoryOp[]> {
+async function runLLMExtraction(contextText: string, source: string, topicQuery?: string): Promise<MemoryOp[]> {
   const ai = getGenAI();
   if (!ai) return [];
 
-  // Load top active facts so LLM can reconcile against existing memory
-  const existingFacts = queryRelevantFacts({ status: 'active', limit: 40 });
+  // Top-scored active facts — always included as baseline
+  let existingFacts: ScoredFact[] = queryRelevantFacts({ status: 'active', limit: 25 });
+
+  // Topic-aware FTS5 retrieval: surface facts relevant to the current topic
+  // even if they're not in the top-25 by score (e.g. older but contextually relevant)
+  if (topicQuery) {
+    const topicFacts = searchFactsByText(topicQuery, 15);
+    const seen = new Set(existingFacts.map(f => f.id));
+    for (const f of topicFacts) {
+      if (!seen.has(f.id)) {
+        existingFacts.push(f);
+        seen.add(f.id);
+      }
+    }
+    existingFacts = existingFacts.slice(0, 40);
+  }
+
   const existingContext = existingFacts.length > 0
     ? existingFacts.map(f => `[ID:${f.id}] [${f.category}/${f.topic}] ${f.content} (conf:${f.confidence.toFixed(2)})`).join('\n')
     : 'No existing facts yet.';
 
-  const prompt = `You are a memory extraction engine for a personal AI guardian. Extract semantic facts and reconcile them with existing memory.
+  // Inject UIL narrative so extraction understands current user state and can judge relevance
+  const profile = getIntelligenceProfile();
+  const narrativeBlock = profile.currentNarrative
+    ? `\nCURRENT USER STATE: ${profile.currentNarrative}`
+    : '';
+
+  const prompt = `You are a memory extraction engine for a personal AI guardian. Extract semantic facts and reconcile them with existing memory.${narrativeBlock}
 
 EXISTING MEMORY:
 ${existingContext}
@@ -119,7 +143,8 @@ async function applyOps(ops: MemoryOp[], episodeId: number): Promise<number> {
           importance: Math.min(1, Math.max(0, op.importance)),
           source: 'extracted',
           sourceEpisodeIds: [episodeId],
-          status: 'unverified',
+          // High-confidence facts (≥0.8) activate immediately; others need a second sighting
+          status: op.confidence >= 0.8 ? 'active' : 'unverified',
         });
         // Fire-and-forget embedding generation
         generateAndStoreEmbedding(newId, `${op.topic}: ${op.content}`).catch(() => {});
@@ -190,7 +215,7 @@ export async function extractMemoryFromSession(session: {
   );
 
   try {
-    const ops = await runLLMExtraction(contextLines, 'guardian_session');
+    const ops = await runLLMExtraction(contextLines, 'guardian_session', session.topic);
     const applied = await applyOps(ops, episodeId);
     console.log(`[MemoryExtractor] Session ${session.sessionId}: ${applied}/${ops.length} ops applied`);
   } catch (err) {
@@ -222,8 +247,12 @@ export async function extractMemoryFromVoice(
     }
   );
 
+  // Use last user message as FTS query to surface topic-relevant existing facts
+  const lastUserTurn = [...turns].reverse().find(t => t.role === 'user');
+  const topicQuery = lastUserTurn ? lastUserTurn.text.slice(0, 80) : undefined;
+
   try {
-    const ops = await runLLMExtraction(contextLines, 'voice_conversation');
+    const ops = await runLLMExtraction(contextLines, 'voice_conversation', topicQuery);
     const applied = await applyOps(ops, episodeId);
     console.log(`[MemoryExtractor] Voice ${sessionId}: ${applied}/${ops.length} ops applied`);
   } catch (err) {
