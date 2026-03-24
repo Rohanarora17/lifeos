@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { parseLockInIntent } from '@/lib/intent-engine';
 import { startGuardianSession } from '@/lib/guardian-runtime';
+import { getConflictingEvents, isCalendarConfigured } from '@/lib/google-calendar';
 
 export async function POST(req: Request) {
   try {
@@ -34,8 +35,25 @@ export async function POST(req: Request) {
       };
     }
 
+    // Calendar conflict check — warn if there's something in the planned window
+    let calendarWarning: string | null = null;
+    let calendarConflicts: Array<{ title: string; start: string; end: string }> = [];
+    if (isCalendarConfigured() && startInput.durationMinutes) {
+      try {
+        const sessionStart = new Date();
+        const sessionEnd = new Date(sessionStart.getTime() + startInput.durationMinutes * 60_000);
+        const conflicts = await getConflictingEvents(sessionStart, sessionEnd);
+        if (conflicts.length > 0) {
+          calendarConflicts = conflicts;
+          const firstConflict = conflicts[0];
+          const t = new Date(firstConflict.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+          calendarWarning = `Calendar conflict: "${firstConflict.title}" starts at ${t}. Consider a shorter sprint.`;
+        }
+      } catch { /* non-fatal */ }
+    }
+
     const session = startGuardianSession(startInput);
-    return NextResponse.json({ success: true, session, parsedIntent });
+    return NextResponse.json({ success: true, session, parsedIntent, calendarWarning, calendarConflicts });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
