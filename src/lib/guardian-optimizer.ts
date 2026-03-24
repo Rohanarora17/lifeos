@@ -10,7 +10,7 @@ import {
 } from './guardian-types';
 import { evaluateGuardianPolicyScenario } from './guardian-eval';
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 
 const ACTIVE_POLICY_TYPE = 'guardian_policy_bundle';
 const DEFAULT_PRIMARY_METRIC = 'guardian_eval_score';
@@ -586,7 +586,7 @@ Each bundle must contain ALL fields. Include a "_rationale" field (not part of t
 
   try {
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: prompt,
       config: { responseMimeType: 'application/json' },
     });
