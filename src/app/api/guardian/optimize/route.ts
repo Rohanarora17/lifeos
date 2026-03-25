@@ -35,7 +35,7 @@ export async function GET() {
 
     // Last 5 promotions
     const promotions = db.prepare(`
-      SELECT p.id, p.artifact_version_id, p.reason, p.promoted_at,
+      SELECT p.id, p.artifact_version_id, p.reason, p.created_at as promoted_at,
              av.version, av.guardian_eval_score
       FROM guardian_promotions p
       JOIN guardian_artifact_versions av ON av.id = p.artifact_version_id
