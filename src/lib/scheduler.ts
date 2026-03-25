@@ -192,6 +192,68 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
+    // Stuck task detection — runs nightly at 23:50
+    // Flags tasks in doing/today that haven't had a guardian session in 3+ days
+    registerDailyJob('stuck_task_detection', '23:50', async () => {
+        try {
+            const { getDb } = await import('./db');
+            const db = getDb();
+            const threeDaysAgo = new Date(Date.now() - 3 * 86400_000).toISOString();
+
+            // Tasks active for 3+ days with no recent session covering them
+            const stuckTasks = db.prepare(`
+                SELECT t.id, t.title
+                FROM tasks t
+                WHERE t.status IN ('doing', 'today')
+                  AND t.blocked_since IS NULL
+                  AND t.created_at < ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM focus_sessions fs
+                    WHERE fs.task_id = t.id
+                      AND fs.status = 'completed'
+                      AND fs.ended_at >= ?
+                  )
+            `).all(threeDaysAgo, threeDaysAgo) as { id: number; title: string }[];
+
+            if (stuckTasks.length > 0) {
+                const now = new Date().toISOString();
+                const update = db.prepare(`UPDATE tasks SET blocked_since = ? WHERE id = ?`);
+                const updateMany = db.transaction((tasks: typeof stuckTasks) => {
+                    for (const t of tasks) update.run(now, t.id);
+                });
+                updateMany(stuckTasks);
+                console.log(`[Scheduler] stuck_task_detection: flagged ${stuckTasks.length} tasks — ${stuckTasks.map(t => t.title).join(', ')}`);
+            } else {
+                console.log('[Scheduler] stuck_task_detection: no stuck tasks');
+            }
+        } catch (err) {
+            console.error('[Scheduler] stuck_task_detection failed:', err);
+        }
+    });
+
+    // Goal health — runs nightly at 23:45, updates velocity + health_status for all active goals
+    registerDailyJob('goal_health', '23:45', async () => {
+        const { updateGoalHealth } = await import('./goal-health');
+        const result = updateGoalHealth();
+        console.log(`[Scheduler] goal_health: updated ${result.updated} goals`);
+        if (result.summary.length > 0) {
+            console.log('[Scheduler] goal_health issues:', result.summary.join('; '));
+        }
+    });
+
+    // Weekly plan refresh — regenerate every Monday at 00:05 using latest weights and goal health
+    registerDailyJob('weekly_plan_refresh', '00:05', async () => {
+        const day = new Date().getDay(); // 0=Sun, 1=Mon
+        if (day !== 1) return; // only on Mondays
+        try {
+            const { generateWeeklyPlan, saveWeeklyPlan } = await import('./weekly-planner');
+            saveWeeklyPlan(generateWeeklyPlan());
+            console.log('[Scheduler] weekly_plan_refresh: plan generated for new week');
+        } catch (err) {
+            console.error('[Scheduler] weekly_plan_refresh failed:', err);
+        }
+    });
+
     // Memory consolidation — runs nightly at 02:30 (merge duplicates, purge stale)
     registerDailyJob('memory_consolidation', '02:30', async () => {
         await consolidateFacts();
