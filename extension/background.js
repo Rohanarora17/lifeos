@@ -5,6 +5,7 @@ let API_BASE = 'http://localhost:3000/api';
 let guardianActive = false;
 let sessionContext = null;
 let currentActiveTabId = null;
+let sessionGroupId = null; // Chrome tab group for the active session
 
 function buildGuardianStatus() {
     if (!guardianActive || !sessionContext?.sessionId) {
@@ -192,10 +193,21 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (!guardianActive) return; // HARD STOP — ZERO PROCESSING
     if (changeInfo.status !== 'complete') return;
     if (isPrivacyBlocked(tab.url)) return;
-    if (!tab.active) return; // Only track the active tab
+
+    // Auto-group the tab into the session group if it isn't already
+    if (tab.groupId === -1 || tab.groupId !== sessionGroupId) {
+        if (sessionGroupId !== null) {
+            await addTabToSessionGroup(tabId);
+        } else {
+            await ensureSessionGroup(tabId);
+        }
+    }
+
+    if (!tab.active) return; // Only track the active tab for focus scoring
     currentActiveTabId = tabId;
 
-    reportTabActivity(tabId, tab.url, tab.title);
+    const groupInfo = await resolveTabGroup(tab.groupId);
+    reportTabActivity(tabId, tab.url, tab.title, groupInfo);
 });
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -204,11 +216,81 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
         const tab = await chrome.tabs.get(activeInfo.tabId);
         if (isPrivacyBlocked(tab.url)) return;
         currentActiveTabId = activeInfo.tabId;
-        reportTabActivity(activeInfo.tabId, tab.url, tab.title);
+        const groupInfo = await resolveTabGroup(tab.groupId);
+        reportTabActivity(activeInfo.tabId, tab.url, tab.title, groupInfo);
     } catch (e) { }
 });
 
-async function reportTabActivity(tabId, url, title) {
+async function resolveTabGroup(groupId) {
+    if (!groupId || groupId === -1) return null;
+    try {
+        const group = await chrome.tabGroups.get(groupId);
+        return { id: group.id, title: group.title || '', color: group.color };
+    } catch (e) {
+        return null;
+    }
+}
+
+// ── Session auto-grouping ──────────────────────────────────────────────────
+
+const SESSION_GROUP_COLOR = 'blue';
+
+// Returns the session group id, creating it from the given tab if it doesn't exist yet.
+async function ensureSessionGroup(tabId) {
+    if (!guardianActive || !sessionContext) return;
+
+    // Verify existing group is still alive
+    if (sessionGroupId !== null) {
+        try {
+            await chrome.tabGroups.get(sessionGroupId);
+            return; // group exists, just add the tab to it below
+        } catch {
+            sessionGroupId = null; // group was closed, recreate
+        }
+    }
+
+    // Create a new group with this tab
+    try {
+        const gid = await chrome.tabs.group({ tabIds: [tabId] });
+        const label = sessionContext.targetTitle || sessionContext.conceptNodeName || sessionContext.goalTitle || 'Focus Session';
+        await chrome.tabGroups.update(gid, {
+            title: label.slice(0, 32), // Chrome truncates long titles anyway
+            color: SESSION_GROUP_COLOR,
+        });
+        sessionGroupId = gid;
+    } catch (e) {
+        console.warn('[LifeOS] Could not create session tab group:', e);
+    }
+}
+
+async function addTabToSessionGroup(tabId) {
+    if (!guardianActive || !sessionContext || !sessionGroupId) return;
+    try {
+        await chrome.tabs.group({ tabIds: [tabId], groupId: sessionGroupId });
+    } catch {
+        // Group may have been deleted; recreate on next tab
+        sessionGroupId = null;
+    }
+}
+
+// New tab opened during an active session → add to session group
+chrome.tabs.onCreated.addListener(async (tab) => {
+    if (!guardianActive) return;
+    // Give the tab a moment to settle (it may already be getting a URL)
+    setTimeout(async () => {
+        try {
+            const fresh = await chrome.tabs.get(tab.id);
+            if (isPrivacyBlocked(fresh.url)) return;
+            if (sessionGroupId !== null) {
+                await addTabToSessionGroup(fresh.id);
+            } else {
+                await ensureSessionGroup(fresh.id);
+            }
+        } catch { /* tab may have closed immediately */ }
+    }, 300);
+});
+
+async function reportTabActivity(tabId, url, title, groupInfo) {
     if (!sessionContext || !sessionContext.sessionId) return;
 
     // Calculate dwell time of the previous tab
@@ -221,9 +303,24 @@ async function reportTabActivity(tabId, url, title) {
         if (prev.url === url) return;
     }
 
-    activeTabs.set('current', { url, startedAt: Date.now() });
+    activeTabs.set('current', {
+        url,
+        title,
+        startedAt: Date.now(),
+        tab_group_id: groupInfo?.id ?? -1,
+        tab_group_title: groupInfo?.title ?? null,
+        tab_group_color: groupInfo?.color ?? null,
+    });
 
-    await postGuardianEvent({ type: 'tab', url, title, dwellSeconds }, tabId);
+    await postGuardianEvent({
+        type: 'tab',
+        url,
+        title,
+        dwellSeconds,
+        tabGroupId: groupInfo?.id ?? undefined,
+        tabGroupTitle: groupInfo?.title ?? undefined,
+        tabGroupColor: groupInfo?.color ?? undefined,
+    }, tabId);
 }
 
 // Idle detection (using chrome API)
@@ -251,11 +348,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'START_GUARDIAN') {
         guardianActive = true;
         sessionContext = msg.context || msg;
+        sessionGroupId = null;
         console.log('[LifeOS] Guardian Mode ACTIVE', sessionContext);
         chrome.action.setBadgeText({ text: 'ON' });
         chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
         activeTabs.clear();
         chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+        // Group the currently active tab immediately
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0] && !isPrivacyBlocked(tabs[0].url)) {
+                ensureSessionGroup(tabs[0].id);
+            }
+        });
         sendResponse({ ok: true });
     }
 
@@ -266,6 +370,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.action.setBadgeText({ text: '' });
         activeTabs.clear();
         chrome.alarms.clear('lifeos-guardian-heartbeat');
+        // Collapse the session group so it's preserved but out of the way
+        if (sessionGroupId !== null) {
+            chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => {});
+            sessionGroupId = null;
+        }
         sendResponse({ ok: true });
     }
 
@@ -274,7 +383,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg.type === 'GET_CURRENT_ACTIVITY') {
-        sendResponse(activeTabs.get('current') || null);
+        const current = activeTabs.get('current');
+        if (!current) { sendResponse(null); return; }
+        let domain = '';
+        try { domain = new URL(current.url).hostname.replace(/^www\./, ''); } catch {}
+        sendResponse({
+            activity: {
+                url: current.url,
+                domain,
+                title: current.title || '',
+                started_at: new Date(current.startedAt).toISOString(),
+                tab_group_id: current.tab_group_id ?? -1,
+                tab_group_title: current.tab_group_title ?? null,
+                tab_group_color: current.tab_group_color ?? null,
+            }
+        });
     }
 
     // Agent Loop Actions -> Passed to guardian.js content script

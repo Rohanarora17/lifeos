@@ -36,6 +36,9 @@ export interface GuardianEvent {
   dwellSeconds?: number;
   idleSeconds?: number;
   transcript?: string;
+  tabGroupId?: number;
+  tabGroupTitle?: string;
+  tabGroupColor?: string;
   payload?: Record<string, unknown>;
 }
 

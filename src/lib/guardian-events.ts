@@ -27,6 +27,9 @@ export function normalizeGuardianEventInput(body: Record<string, unknown>): Guar
     dwellSeconds: typeof body.dwellSeconds === 'number' ? body.dwellSeconds : undefined,
     idleSeconds: typeof body.idleSeconds === 'number' ? body.idleSeconds : undefined,
     transcript: typeof body.transcript === 'string' ? body.transcript : undefined,
+    tabGroupId: typeof body.tabGroupId === 'number' ? body.tabGroupId : undefined,
+    tabGroupTitle: typeof body.tabGroupTitle === 'string' ? body.tabGroupTitle : undefined,
+    tabGroupColor: typeof body.tabGroupColor === 'string' ? body.tabGroupColor : undefined,
     payload: typeof body.payload === 'object' && body.payload !== null ? (body.payload as Record<string, unknown>) : undefined,
   };
 }
