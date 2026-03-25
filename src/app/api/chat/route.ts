@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getGenAI, generateWithFallback } from '@/lib/ai';
+import { getGenAI, generateWithFallback, generateStreamWithFallback } from '@/lib/ai';
 import { startGuardianSession } from '@/lib/guardian-runtime';
 import { MODEL_PRO } from '@/lib/models';
 import { getIntelligenceContext, touchIntelligence } from '@/lib/intelligence';
@@ -212,8 +212,6 @@ export async function POST(request: NextRequest) {
 
                 continue;
             } else {
-                const reply = (response.text || '').trim();
-
                 // Background memory extraction — every chat conversation enriches mem_facts
                 if (messages.length >= 4) {
                     const turns = messages.map((m: any) => ({
@@ -223,7 +221,34 @@ export async function POST(request: NextRequest) {
                     extractMemoryFromVoice(turns, `chat-${Date.now()}`).catch(() => {});
                 }
 
-                return NextResponse.json({ text: reply });
+                // Stream the final text response so the user sees tokens as they arrive
+                const streamResult = await generateStreamWithFallback(ai, {
+                    model: MODEL_PRO,
+                    contents,
+                    config: {
+                        systemInstruction,
+                        tools: tools as any,
+                        temperature: 0.2,
+                    },
+                });
+
+                const encoder = new TextEncoder();
+                const readable = new ReadableStream({
+                    async start(controller) {
+                        try {
+                            for await (const chunk of streamResult) {
+                                const text = chunk.text;
+                                if (text) controller.enqueue(encoder.encode(text));
+                            }
+                        } finally {
+                            controller.close();
+                        }
+                    },
+                });
+
+                return new Response(readable, {
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                });
             }
         }
 

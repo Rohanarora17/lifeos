@@ -63,6 +63,25 @@ export async function generateWithFallback(
     }
 }
 
+/**
+ * Streaming variant of generateWithFallback — retries with stable model on 503.
+ */
+export async function generateStreamWithFallback(
+    ai: GoogleGenAI,
+    params: Parameters<GoogleGenAI['models']['generateContentStream']>[0]
+): ReturnType<GoogleGenAI['models']['generateContentStream']> {
+    try {
+        return await ai.models.generateContentStream(params);
+    } catch (err: any) {
+        const is503 = err?.status === 503 || err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE');
+        if (!is503) throw err;
+        const originalModel = typeof params.model === 'string' ? params.model : '';
+        const fallback = originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
+        console.warn(`[AI] Model ${originalModel} overloaded (503) — stream falling back to ${fallback}`);
+        return await ai.models.generateContentStream({ ...params, model: fallback });
+    }
+}
+
 // Helper to extract YouTube video ID
 function extractYouTubeVideoId(url: string): string | null {
     const videoIdMatch = url.match(/(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);

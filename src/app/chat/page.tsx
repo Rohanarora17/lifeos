@@ -48,16 +48,34 @@ export default function ChatPage() {
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // Send the entire conversation history to the API for memory context
                 body: JSON.stringify({ messages: updatedMessages.map(m => ({ role: m.role, content: m.content })) })
             });
-            const data = await res.json();
 
-            setMessages(prev => [...prev, {
-                id: (Date.now() + 1).toString(),
-                role: 'assistant',
-                content: data.text || 'I encountered an error connecting to my cognition engine.'
-            }]);
+            if (!res.ok || !res.body) {
+                const data = await res.json().catch(() => ({}));
+                setMessages(prev => [...prev, {
+                    id: (Date.now() + 1).toString(),
+                    role: 'assistant',
+                    content: data.text || 'I encountered an error connecting to my cognition engine.'
+                }]);
+                return;
+            }
+
+            // Streaming response — show tokens as they arrive
+            const msgId = (Date.now() + 1).toString();
+            setMessages(prev => [...prev, { id: msgId, role: 'assistant', content: '' }]);
+            setLoading(false);
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let fullText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                fullText += decoder.decode(value, { stream: true });
+                setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: fullText } : m));
+            }
         } catch (error) {
             setMessages(prev => [...prev, {
                 id: (Date.now() + 1).toString(),
