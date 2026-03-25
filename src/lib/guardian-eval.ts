@@ -57,6 +57,7 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     emittedMilestones: [],
     targetTitle: scenario.targetTitle,
     personalBestFocusScore: null,
+    energyComposite: null,
   };
 }
 

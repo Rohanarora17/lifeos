@@ -273,11 +273,46 @@ export function ensureDefaultGuardianArtifacts(): PolicyArtifactVersion {
 
 export function getActiveGuardianPolicyBundle(): GuardianPolicyBundle {
   const row = ensureDefaultGuardianArtifacts();
+  let bundle: GuardianPolicyBundle;
   try {
-    return JSON.parse(row.content) as GuardianPolicyBundle;
+    bundle = JSON.parse(row.content) as GuardianPolicyBundle;
   } catch {
-    return DEFAULT_GUARDIAN_POLICY_BUNDLE;
+    bundle = DEFAULT_GUARDIAN_POLICY_BUNDLE;
   }
+
+  // Overlay per-user focus-score weights from the most recent calibrated semantic profile.
+  // Calibration may adjust these over time — always use the latest values.
+  try {
+    const db = getDb();
+    const profile = db.prepare(`
+      SELECT focus_weight_continuity, focus_weight_tab_switches,
+             focus_weight_dwell, focus_weight_distraction_revisit, focus_weight_idle
+      FROM guardian_semantic_profiles
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get() as {
+      focus_weight_continuity: number | null;
+      focus_weight_tab_switches: number | null;
+      focus_weight_dwell: number | null;
+      focus_weight_distraction_revisit: number | null;
+      focus_weight_idle: number | null;
+    } | undefined;
+
+    if (profile && profile.focus_weight_continuity !== null) {
+      bundle = {
+        ...bundle,
+        weights: {
+          continuity:        profile.focus_weight_continuity,
+          switches:          profile.focus_weight_tab_switches ?? bundle.weights.switches,
+          dwell:             profile.focus_weight_dwell ?? bundle.weights.dwell,
+          distractionPenalty: profile.focus_weight_distraction_revisit ?? bundle.weights.distractionPenalty,
+          idlePenalty:       profile.focus_weight_idle ?? bundle.weights.idlePenalty,
+        },
+      };
+    }
+  } catch { /* non-fatal — fall through with artifact weights */ }
+
+  return bundle;
 }
 
 export function recordGuardianEvalRun(input: {
@@ -353,9 +388,24 @@ function scoreBundleAgainstSuite(policy: GuardianPolicyBundle, suiteName: string
   const caseResults = cases.map((r) =>
     evaluateGuardianPolicyScenario(r.id, r.caseName, policy, JSON.parse(r.inputPayload) as GuardianEvalScenario)
   );
+  const scenarioScore = round2(caseResults.reduce((s, r) => s + r.score, 0) / Math.max(1, caseResults.length));
+
+  // Blend in calibration accuracy (0–100) as a secondary signal.
+  // Weight: 85% scenario performance + 15% calibration accuracy.
+  // If no calibration data yet, full weight goes to scenario score.
+  let blendedScore = scenarioScore;
+  try {
+    const { getCalibrationStatus } = require('./guardian-calibration') as typeof import('./guardian-calibration');
+    const calibration = getCalibrationStatus();
+    if (calibration.accuracy !== null && calibration.sessions_count >= 3) {
+      const calibAccuracy100 = calibration.accuracy * 100;
+      blendedScore = round2(0.85 * scenarioScore + 0.15 * calibAccuracy100);
+    }
+  } catch { /* non-fatal — calibration module may not exist yet */ }
+
   return {
     suiteName,
-    guardianEvalScore: round2(caseResults.reduce((s, r) => s + r.score, 0) / Math.max(1, caseResults.length)),
+    guardianEvalScore: blendedScore,
     hardFailures: caseResults.filter((r) => r.hardFailure).length,
     caseResults,
   };

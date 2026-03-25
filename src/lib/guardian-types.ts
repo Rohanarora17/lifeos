@@ -117,6 +117,7 @@ export interface GuardianState {
   emittedMilestones: string[];
   targetTitle: string;
   personalBestFocusScore: number | null;
+  energyComposite: number | null; // [0–100] computed at session start
 }
 
 export interface SoftWatchCommitment {

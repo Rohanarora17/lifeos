@@ -1,5 +1,8 @@
 import { getDb, getSetting } from './db';
 import { computeFocusScore } from './focus-score';
+import { computeEnergyComposite, recordEnergyReading } from './energy-composite';
+import { logGoalTime } from './goal-health';
+import { propagateMastery } from './graph';
 import { speak } from './tts';
 import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } from './longitudinal-engine';
 import { getGenAI } from './ai';
@@ -137,6 +140,7 @@ function createSessionState(input: {
   conceptNodeId?: string | null;
   conceptNodeName?: string | null;
   personalBestFocusScore?: number | null;
+  energyComposite?: number | null;
 }): GuardianState {
   return {
     sessionId: input.sessionId,
@@ -164,6 +168,7 @@ function createSessionState(input: {
     emittedMilestones: [],
     targetTitle: input.targetTitle,
     personalBestFocusScore: input.personalBestFocusScore ?? null,
+    energyComposite: input.energyComposite ?? null,
   };
 }
 
@@ -496,7 +501,9 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const cooldownPassed = decisionCooldownPassed(session, policy);
   const inFlow = focusScore >= policy.thresholds.flowSilenceThreshold;
   const attentionCategory = getAttentionCategory(session, session.currentUrl);
-  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}`;
+  // Low-energy mode: soften direct interventions, lower break threshold
+  const lowEnergy = session.energyComposite !== null && session.energyComposite < 35;
+  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}`;
 
   if (attentionCategory === 'temporary_override') {
     return {
@@ -585,7 +592,9 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
     return {
       type: 'speak',
       tone: 'break_suggestion',
-      text: 'You have been idle a while. Either reset intentionally or get back into the work.',
+      text: lowEnergy
+        ? 'You have been idle a while. With energy running low today, a short rest break might actually help more than pushing through.'
+        : 'You have been idle a while. Either reset intentionally or get back into the work.',
       reason: 'Extended idle time during active session',
       explainability: `${explainabilityBase}; idle threshold crossed`,
     };
@@ -596,8 +605,11 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
     if (previous - focusScore >= policy.thresholds.focusDropSpeakThreshold && cooldownPassed && !inFlow) {
       return {
         type: 'speak',
-        tone: 'direct_push',
-        text: 'Focus is slipping. Pull it back now.',
+        // On low-energy days, a motivational push lands better than a direct command
+        tone: lowEnergy ? 'grounding_nudge' : 'direct_push',
+        text: lowEnergy
+          ? 'Focus dropped a bit. That happens on low-energy days — take a breath and come back to it.'
+          : 'Focus is slipping. Pull it back now.',
         reason: 'Sharp focus score drop',
         explainability: `${explainabilityBase}; focus drop threshold crossed`,
       };
@@ -740,6 +752,10 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     mood: input.mood,
   });
 
+  // Compute energy composite at session start and persist for calibration
+  const energyComponents = computeEnergyComposite();
+  recordEnergyReading(energyComponents, sessionId);
+
   const session = createSessionState({
     sessionId,
     durationMinutes,
@@ -750,6 +766,7 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     conceptNodeId: input.conceptNodeId,
     conceptNodeName: input.conceptNodeName || input.topic || null,
     personalBestFocusScore: queryPersonalBestFocusScore(),
+    energyComposite: energyComponents.composite_score,
   });
 
   guardianSessions.set(sessionId, session);
@@ -801,6 +818,61 @@ export function endGuardianSession(sessionId: string) {
   persistSessionSummary(session);
 
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+
+  // Credit time to the linked goal
+  if (session.goalId) {
+    logGoalTime(parseInt(session.goalId, 10) || null, sessionId, elapsedMinutes);
+  }
+
+  // Insert pending session_completion for post-session review
+  try {
+    const db = getDb();
+    // Look up task by matching title if taskId not explicitly set on session
+    let taskId: number | null = null;
+    if (session.conceptNodeName) {
+      const task = db.prepare(
+        `SELECT id FROM tasks WHERE title = ? AND status NOT IN ('done', 'cancelled') LIMIT 1`
+      ).get(session.conceptNodeName) as { id: number } | undefined;
+      taskId = task?.id ?? null;
+    }
+    db.prepare(`
+      INSERT INTO session_completions (session_id, task_id, status)
+      VALUES (?, ?, 'pending')
+    `).run(sessionId, taskId);
+  } catch (err) {
+    console.error('[guardian] session_completions insert failed:', err);
+  }
+
+  // Write time-based habit checkins from this session
+  try {
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const windowStart = new Date(session.startedAt).toISOString();
+    const windowEnd = new Date().toISOString();
+    const timeHabits = db.prepare(
+      `SELECT id, goal_target FROM habits WHERE archived = 0 AND goal_metric = 'time'`
+    ).all() as { id: number; goal_target: number }[];
+
+    for (const habit of timeHabits) {
+      const existing = db.prepare(
+        `SELECT id, value FROM habit_checkins WHERE habit_id = ? AND date = ? AND source = 'guardian_session'`
+      ).get(habit.id, today) as { id: number; value: number } | undefined;
+      const newValue = (existing?.value ?? 0) + elapsedMinutes;
+      const completed = newValue >= habit.goal_target ? 1 : 0;
+      if (existing) {
+        db.prepare(
+          `UPDATE habit_checkins SET value = ?, completed = ?, window_end = ?, session_id = ? WHERE id = ?`
+        ).run(newValue, completed, windowEnd, sessionId, existing.id);
+      } else {
+        db.prepare(
+          `INSERT INTO habit_checkins (habit_id, date, value, completed, source, session_id, window_start, window_end)
+           VALUES (?, ?, ?, ?, 'guardian_session', ?, ?, ?)`
+        ).run(habit.id, today, elapsedMinutes, completed, sessionId, windowStart, windowEnd);
+      }
+    }
+  } catch (err) {
+    console.error('[guardian] habit checkin write failed:', err);
+  }
   const focusScores = session.focusScoreHistory.length ? session.focusScoreHistory : [100];
   const avgFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
 
@@ -834,6 +906,29 @@ export function endGuardianSession(sessionId: string) {
   void generateSessionReflection(session);
   // Signal the intelligence layer — session data is now committed to DB
   touchIntelligence('session_end');
+
+  // Propagate knowledge graph mastery for the concept studied in this session
+  if (session.conceptNodeId) {
+    try {
+      const nodeId = parseInt(session.conceptNodeId, 10);
+      if (!isNaN(nodeId)) {
+        // focusScore-weighted quality: 0 → low-quality session, 100 → high quality
+        propagateMastery(null, null);
+        // Direct node update with session quality as evidence
+        const db = getDb();
+        const node = db.prepare(`SELECT id, mastery FROM knowledge_nodes WHERE id = ?`).get(nodeId) as { id: number; mastery: number } | undefined;
+        if (node) {
+          const quality = Math.max(0.1, avgFocusScore / 100);
+          const increment = quality * 0.05 * Math.min(1, elapsedMinutes / 30);
+          const newMastery = Math.min(1.0, node.mastery + increment);
+          db.prepare(`UPDATE knowledge_nodes SET mastery = ?, updated_at = datetime('now') WHERE id = ?`).run(newMastery, nodeId);
+          console.log(`[guardian] mastery update: node ${nodeId} ${(node.mastery * 100).toFixed(0)}% → ${(newMastery * 100).toFixed(0)}%`);
+        }
+      }
+    } catch (err) {
+      console.error('[guardian] mastery propagation failed:', err);
+    }
+  }
 
   // Extract semantic memory from this session (background, non-blocking)
   void (async () => {
