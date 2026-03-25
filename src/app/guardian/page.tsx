@@ -81,6 +81,56 @@ export default function GuardianPage() {
       blocked_count: number; override_count: number;
       dominant_distraction_domain: string | null; completed_at: string;
     }>;
+    pendingCompletions: Array<{
+      id: number; session_id: string; task_id: number | null;
+      task_title: string | null; target_title: string | null;
+      average_focus_score: number | null; elapsed_minutes: number | null;
+      mood: string | null; session_completed_at: string | null;
+    }>;
+  } | null>(null);
+  const [suggestedTasks, setSuggestedTasks] = useState<Array<{
+    id: number; title: string; status: string; priority: string;
+    energy_required: string; goal_title: string | null; goal_health: string | null;
+    score: number; reason: string;
+  }>>([]);
+  const [weakConcepts, setWeakConcepts] = useState<Array<{
+    id: number; title: string; mastery: number; goalTitle: string | null;
+  }>>([]);
+  const [weeklyPlan, setWeeklyPlan] = useState<{
+    week_start: string;
+    days: Array<{
+      date: string;
+      day_name: string;
+      energy_forecast: 'high' | 'medium' | 'low';
+      tasks: Array<{
+        task_id: number;
+        title: string;
+        estimated_minutes: number;
+        goal_id: number | null;
+        goal_title: string | null;
+        energy_required: string;
+        reason: string;
+      }>;
+      total_minutes: number;
+    }>;
+    unscheduled: Array<{ task_id: number; title: string; reason: string }>;
+    summary: string;
+    generated_at: string;
+  } | null>(null);
+  const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
+  const [feedbackText, setFeedbackText] = useState<Record<string, string>>({});
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({});
+  const [feedbackDone, setFeedbackDone] = useState<Record<string, boolean>>({});
+  const [calibrationStatus, setCalibrationStatus] = useState<{
+    accuracy: number | null;
+    sessions_count: number;
+    recent_adjustments: Array<{
+      component: string;
+      previous_value: number;
+      new_value: number;
+      reason: string;
+      applied_at: string;
+    }>;
   } | null>(null);
   const topicRef = useRef<HTMLInputElement>(null);
 
@@ -93,6 +143,49 @@ export default function GuardianPage() {
       }
     } catch {}
   }, []);
+
+  const fetchSuggestedTasks = useCallback(async () => {
+    try {
+      const res = await fetch('/api/guardian/standup');
+      if (res.ok) {
+        const data = await res.json();
+        setSuggestedTasks(data.suggestedTasks ?? []);
+        setWeakConcepts(data.weakConcepts ?? []);
+      }
+    } catch {}
+  }, []);
+
+  const fetchCalibrationStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/guardian/session/feedback');
+      if (res.ok) {
+        const data = await res.json();
+        setCalibrationStatus(data);
+      }
+    } catch {}
+  }, []);
+
+  const fetchWeeklyPlan = useCallback(async () => {
+    try {
+      const res = await fetch('/api/guardian/weekly-plan');
+      if (res.ok) {
+        const data = await res.json();
+        setWeeklyPlan(data.plan ?? null);
+      }
+    } catch {}
+  }, []);
+
+  const regenerateWeeklyPlan = async () => {
+    setWeeklyPlanLoading(true);
+    try {
+      const res = await fetch('/api/guardian/weekly-plan', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setWeeklyPlan(data.plan ?? null);
+      }
+    } catch {}
+    setWeeklyPlanLoading(false);
+  };
 
   const fetchActiveSession = useCallback(async () => {
     try {
@@ -112,7 +205,11 @@ export default function GuardianPage() {
       const res = await fetch('/api/guardian/history');
       if (res.ok) {
         const data = await res.json();
-        setHistoryData({ overrides: data.overrides ?? [], sessions: data.sessions ?? [] });
+        setHistoryData({
+          overrides: data.overrides ?? [],
+          sessions: data.sessions ?? [],
+          pendingCompletions: data.pendingCompletions ?? [],
+        });
       }
     } catch {}
   }, []);
@@ -133,10 +230,10 @@ export default function GuardianPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchBriefing(), fetchActiveSession(), fetchOptimizerData(), fetchHistoryData()]).finally(() => setLoading(false));
+    Promise.all([fetchBriefing(), fetchActiveSession(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
     const interval = setInterval(fetchBriefing, 60_000);
     return () => clearInterval(interval);
-  }, [fetchBriefing, fetchActiveSession, fetchOptimizerData, fetchHistoryData]);
+  }, [fetchBriefing, fetchActiveSession, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
 
   // Pre-fill topic from briefing
   useEffect(() => {
@@ -186,6 +283,32 @@ export default function GuardianPage() {
       await fetch(`/api/guardian/soft-watch?id=${id}`, { method: 'DELETE' });
       await fetchBriefing();
     } catch {}
+  };
+
+  const actionCompletion = async (id: number, action: 'done' | 'blocked' | 'skipped', markTaskDone = false) => {
+    try {
+      await fetch('/api/guardian/session/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, action, mark_task_done: markTaskDone }),
+      });
+      await fetchHistoryData();
+    } catch {}
+  };
+
+  const submitFeedback = async (sessionId: string) => {
+    const text = feedbackText[sessionId]?.trim();
+    if (!text) return;
+    setFeedbackSubmitting(prev => ({ ...prev, [sessionId]: true }));
+    try {
+      await fetch('/api/guardian/session/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, feedback: text }),
+      });
+      setFeedbackDone(prev => ({ ...prev, [sessionId]: true }));
+    } catch {}
+    setFeedbackSubmitting(prev => ({ ...prev, [sessionId]: false }));
   };
 
   const scheduleCommitment = async () => {
@@ -289,6 +412,59 @@ export default function GuardianPage() {
           <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '14px' }}>
             Start a Session
           </div>
+          {suggestedTasks.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', color: '#555570', marginBottom: '6px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Suggested — based on goals & energy
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {suggestedTasks.slice(0, 4).map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTopic(t.title)}
+                    style={{
+                      padding: '4px 10px', borderRadius: '20px', border: 'none', cursor: 'pointer',
+                      fontSize: '12px', fontWeight: 500,
+                      background: topic === t.title ? '#6366f133' : '#1a1a2e',
+                      color: topic === t.title ? '#a5b4fc' : '#8888a0',
+                      borderWidth: '1px', borderStyle: 'solid',
+                      borderColor: topic === t.title ? '#6366f155' : '#2a2a40',
+                    }}
+                  >
+                    {t.title}
+                    {t.goal_health === 'at_risk' && <span style={{ color: '#f59e0b', marginLeft: '4px' }}>!</span>}
+                    {t.goal_health === 'off_track' && <span style={{ color: '#ef4444', marginLeft: '4px' }}>!!</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {weakConcepts.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', color: '#555570', marginBottom: '6px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Weak concepts to review
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {weakConcepts.slice(0, 3).map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => setTopic(c.title)}
+                    style={{
+                      padding: '4px 10px', borderRadius: '20px', border: 'none', cursor: 'pointer',
+                      fontSize: '12px', fontWeight: 500,
+                      background: topic === c.title ? '#f59e0b22' : '#1a1a2e',
+                      color: topic === c.title ? '#f59e0b' : '#888899',
+                      borderWidth: '1px', borderStyle: 'solid',
+                      borderColor: topic === c.title ? '#f59e0b44' : '#2a2a40',
+                    }}
+                    title={c.goalTitle ?? undefined}
+                  >
+                    {c.title} <span style={{ color: '#555570' }}>{c.mastery}%</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <input
             ref={topicRef}
             type="text"
@@ -483,6 +659,118 @@ export default function GuardianPage() {
         </div>
       )}
 
+      {/* Weekly Plan */}
+      <div style={{ background: '#111118', border: '1px solid #2a2a40', borderRadius: '14px', padding: '18px', marginBottom: '28px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+          <div>
+            <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              This Week
+            </div>
+            {weeklyPlan && (
+              <div style={{ fontSize: '10px', color: '#444460', marginTop: '2px' }}>{weeklyPlan.summary}</div>
+            )}
+          </div>
+          <button
+            onClick={regenerateWeeklyPlan}
+            disabled={weeklyPlanLoading}
+            style={{
+              padding: '6px 13px', borderRadius: '7px', border: '1px solid #2a2a40',
+              background: '#0a0a12', color: weeklyPlanLoading ? '#444460' : '#8888a0',
+              fontSize: '11px', cursor: weeklyPlanLoading ? 'default' : 'pointer', fontWeight: 600,
+            }}
+          >
+            {weeklyPlanLoading ? 'Generating…' : 'Regenerate'}
+          </button>
+        </div>
+
+        {!weeklyPlan ? (
+          <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '20px 0' }}>
+            No plan yet. Click Regenerate to build this week&apos;s schedule.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '6px' }}>
+            {weeklyPlan.days.map(day => {
+              const isToday = day.date === new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+              const energyColor = day.energy_forecast === 'high' ? '#22c55e' : day.energy_forecast === 'medium' ? '#f59e0b' : '#8888a0';
+              return (
+                <div
+                  key={day.date}
+                  style={{
+                    background: isToday ? 'rgba(99,102,241,0.08)' : '#0a0a12',
+                    border: `1px solid ${isToday ? 'rgba(99,102,241,0.3)' : '#1a1a2e'}`,
+                    borderRadius: '9px',
+                    padding: '8px 6px',
+                    minHeight: '80px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 700, color: isToday ? '#a5b4fc' : '#666680' }}>
+                      {day.day_name.slice(0, 3).toUpperCase()}
+                    </span>
+                    <span style={{
+                      width: '7px', height: '7px', borderRadius: '50%',
+                      background: energyColor, flexShrink: 0,
+                    }} title={`${day.energy_forecast} energy`} />
+                  </div>
+                  {day.tasks.length === 0 ? (
+                    <div style={{ fontSize: '9px', color: '#333350', textAlign: 'center', paddingTop: '8px' }}>—</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {day.tasks.slice(0, 4).map(t => (
+                        <div
+                          key={t.task_id}
+                          onClick={() => setTopic(t.title)}
+                          title={`${t.title} · ${t.estimated_minutes}m${t.goal_title ? ` · ${t.goal_title}` : ''}${t.reason ? ` · ${t.reason}` : ''}`}
+                          style={{
+                            fontSize: '9px', color: '#8888a0', lineHeight: 1.3,
+                            padding: '2px 4px', background: '#151525', borderRadius: '4px',
+                            cursor: 'pointer', overflow: 'hidden',
+                            textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {t.title}
+                        </div>
+                      ))}
+                      {day.tasks.length > 4 && (
+                        <div style={{ fontSize: '9px', color: '#444460', paddingLeft: '4px' }}>
+                          +{day.tasks.length - 4} more
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {day.total_minutes > 0 && (
+                    <div style={{ fontSize: '9px', color: '#444460', marginTop: '4px', textAlign: 'right' }}>
+                      {day.total_minutes}m
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {weeklyPlan && weeklyPlan.unscheduled.length > 0 && (
+          <div style={{ marginTop: '10px', padding: '8px 10px', background: '#0a0a12', borderRadius: '8px', border: '1px solid #1a1a2e' }}>
+            <div style={{ fontSize: '9px', color: '#555570', fontWeight: 600, marginBottom: '5px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Unscheduled ({weeklyPlan.unscheduled.length})
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+              {weeklyPlan.unscheduled.slice(0, 8).map(t => (
+                <span
+                  key={t.task_id}
+                  style={{ fontSize: '10px', color: '#666680', padding: '2px 6px', background: '#151525', borderRadius: '4px' }}
+                >
+                  {t.title}
+                </span>
+              ))}
+              {weeklyPlan.unscheduled.length > 8 && (
+                <span style={{ fontSize: '10px', color: '#444460' }}>+{weeklyPlan.unscheduled.length - 8} more</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Recent Reflections */}
       {briefing && briefing.recentReflections.length > 0 && (
         <div style={{ background: '#111118', border: '1px solid #2a2a40', borderRadius: '14px', padding: '18px', marginBottom: '28px' }}>
@@ -501,6 +789,100 @@ export default function GuardianPage() {
                   <div style={{ fontSize: '10px', color: '#555570', marginTop: '4px' }}>
                     {r.focusQuality} · {new Date(r.generatedAt).toLocaleDateString()}
                   </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Post-Session Review Queue */}
+      {historyData && historyData.pendingCompletions.length > 0 && (
+        <div style={{ background: '#111118', border: '1px solid #2a2a40', borderRadius: '14px', padding: '18px', marginBottom: '28px' }}>
+          <div style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '14px' }}>
+            Review — {historyData.pendingCompletions.length} session{historyData.pendingCompletions.length > 1 ? 's' : ''} pending
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {historyData.pendingCompletions.map(c => (
+              <div key={c.id} style={{
+                background: '#0a0a12', borderRadius: '10px', padding: '12px 14px',
+                borderLeft: '3px solid #f59e0b',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
+                  <div>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#e0e0f0' }}>
+                      {c.task_title ?? c.target_title ?? 'Session'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#555570', marginTop: '2px' }}>
+                      {c.elapsed_minutes != null && `${c.elapsed_minutes}m`}
+                      {c.average_focus_score != null && ` · focus ${Math.round(c.average_focus_score)}`}
+                      {c.mood && ` · ${c.mood} energy`}
+                    </div>
+                  </div>
+                  {c.average_focus_score != null && (
+                    <div style={{
+                      fontSize: '18px', fontWeight: 800,
+                      color: c.average_focus_score >= 75 ? '#22c55e' : c.average_focus_score >= 50 ? '#f59e0b' : '#ef4444',
+                    }}>
+                      {Math.round(c.average_focus_score)}
+                    </div>
+                  )}
+                </div>
+                {/* Feedback textarea */}
+                {!feedbackDone[c.session_id] ? (
+                  <div style={{ marginBottom: '10px' }}>
+                    <textarea
+                      rows={2}
+                      placeholder="How did the session feel? (energy, distractions, length…)"
+                      value={feedbackText[c.session_id] ?? ''}
+                      onChange={e => setFeedbackText(prev => ({ ...prev, [c.session_id]: e.target.value }))}
+                      style={{
+                        width: '100%', padding: '7px 10px', background: '#0d0d1a',
+                        border: '1px solid #2a2a40', borderRadius: '7px',
+                        color: '#c0c0d5', fontSize: '12px', resize: 'vertical',
+                        boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.4,
+                        marginBottom: '6px',
+                      }}
+                    />
+                    <button
+                      onClick={() => void submitFeedback(c.session_id)}
+                      disabled={!feedbackText[c.session_id]?.trim() || feedbackSubmitting[c.session_id]}
+                      style={{
+                        padding: '4px 10px', borderRadius: '6px', border: 'none',
+                        cursor: feedbackText[c.session_id]?.trim() ? 'pointer' : 'default',
+                        fontSize: '11px', fontWeight: 600,
+                        background: feedbackText[c.session_id]?.trim() ? '#6366f133' : '#1a1a2e',
+                        color: feedbackText[c.session_id]?.trim() ? '#a5b4fc' : '#444460',
+                      }}
+                    >
+                      {feedbackSubmitting[c.session_id] ? 'Saving…' : 'Submit Feedback'}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#22c55e', marginBottom: '10px' }}>
+                    Feedback saved — weights updated.
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => actionCompletion(c.id, 'done', !!c.task_id)}
+                    style={{ padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600, background: '#22c55e22', color: '#22c55e' }}
+                  >
+                    Done
+                  </button>
+                  <button
+                    onClick={() => actionCompletion(c.id, 'blocked')}
+                    style={{ padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600, background: '#ef444422', color: '#ef4444' }}
+                  >
+                    Blocked
+                  </button>
+                  <button
+                    onClick={() => actionCompletion(c.id, 'skipped')}
+                    style={{ padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: 600, background: '#33334a', color: '#8888a0' }}
+                  >
+                    Skip
+                  </button>
                 </div>
               </div>
             ))}
@@ -592,6 +974,70 @@ export default function GuardianPage() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Calibration */}
+      {calibrationStatus && (
+        <div style={{ background: '#111118', border: '1px solid #2a2a40', borderRadius: '14px', padding: '18px', marginBottom: '28px' }}>
+          <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '14px' }}>
+            Model Calibration
+          </div>
+
+          {/* Accuracy meter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '14px' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                <span style={{ fontSize: '11px', color: '#8888a0' }}>Prediction accuracy</span>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: calibrationStatus.accuracy === null ? '#555570' : calibrationStatus.accuracy >= 0.7 ? '#22c55e' : calibrationStatus.accuracy >= 0.5 ? '#f59e0b' : '#ef4444' }}>
+                  {calibrationStatus.accuracy === null ? '—' : `${Math.round(calibrationStatus.accuracy * 100)}%`}
+                </span>
+              </div>
+              {calibrationStatus.accuracy !== null && (
+                <div style={{ height: '4px', background: '#1a1a2e', borderRadius: '2px' }}>
+                  <div style={{
+                    height: '100%', borderRadius: '2px',
+                    width: `${Math.round(calibrationStatus.accuracy * 100)}%`,
+                    background: calibrationStatus.accuracy >= 0.7 ? '#22c55e' : calibrationStatus.accuracy >= 0.5 ? '#f59e0b' : '#ef4444',
+                  }} />
+                </div>
+              )}
+            </div>
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#f0f0f5' }}>{calibrationStatus.sessions_count}</div>
+              <div style={{ fontSize: '10px', color: '#555570' }}>sessions</div>
+            </div>
+          </div>
+
+          {/* Recent adjustments */}
+          {calibrationStatus.recent_adjustments.length > 0 ? (
+            <div>
+              <div style={{ fontSize: '10px', color: '#555570', fontWeight: 600, marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Recent Weight Adjustments
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {calibrationStatus.recent_adjustments.slice(0, 6).map((a, i) => {
+                  const delta = a.new_value - a.previous_value;
+                  const label = a.component.replace(/^(energy|focus)_weight_/, '').replace(/_/g, ' ');
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 8px', background: '#0a0a12', borderRadius: '5px' }}>
+                      <span style={{ fontSize: '10px', color: '#666680', flex: 1 }}>{label}</span>
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: delta > 0 ? '#22c55e' : '#ef4444', minWidth: '42px', textAlign: 'right' }}>
+                        {delta > 0 ? '+' : ''}{(delta * 100).toFixed(1)}%
+                      </span>
+                      <span style={{ fontSize: '10px', color: '#444460', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {a.reason}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: '12px', color: '#555570' }}>
+              No calibration yet. Submit session feedback to tune your model.
+            </div>
+          )}
         </div>
       )}
 

@@ -35,6 +35,9 @@ interface Goal {
     linkedTasks: LinkedTask[];
     linkedHabits: LinkedHabit[];
     intentions: { id: number; if_condition: string; then_action: string; active: number; times_triggered: number }[];
+    health_status: 'on_track' | 'at_risk' | 'off_track' | null;
+    velocity_needed: number | null;
+    actual_velocity: number | null;
 }
 
 export default function GoalsPage() {
@@ -233,6 +236,19 @@ export default function GoalsPage() {
                                             {goal.momentum > 0 ? '📈' : '📉'} {goal.momentum > 0 ? '+' : ''}{goal.momentum}%
                                         </span>
                                     )}
+                                    {goal.health_status && goal.health_status !== 'on_track' && (
+                                        <span className="badge text-xs" style={{
+                                            background: goal.health_status === 'off_track' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
+                                            color: goal.health_status === 'off_track' ? '#ef4444' : '#f59e0b',
+                                        }} title={goal.velocity_needed != null ? `Need ${goal.velocity_needed.toFixed(0)}m/day · getting ${(goal.actual_velocity ?? 0).toFixed(0)}m/day` : undefined}>
+                                            {goal.health_status === 'off_track' ? 'Off track' : 'At risk'}
+                                        </span>
+                                    )}
+                                    {goal.health_status === 'on_track' && goal.velocity_needed != null && (
+                                        <span className="badge text-xs" style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e' }}>
+                                            On track
+                                        </span>
+                                    )}
                                 </div>
                                 {goal.description && (
                                     <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>{goal.description}</p>
@@ -253,6 +269,11 @@ export default function GoalsPage() {
                                         {goal.progress}%
                                     </span>
                                 </div>
+                                {goal.velocity_needed != null && (
+                                    <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                                        {(goal.actual_velocity ?? 0).toFixed(0)}m/day actual · {goal.velocity_needed.toFixed(0)}m/day needed
+                                    </div>
+                                )}
 
                                 {/* Mini Stats */}
                                 <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>

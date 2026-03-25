@@ -48,7 +48,36 @@ export async function GET() {
       completed_at: string;
     }>;
 
-    return NextResponse.json({ success: true, overrides, sessions });
+    // Pending session completions (post-session review queue)
+    const pendingCompletions = db.prepare(`
+      SELECT sc.id, sc.session_id, sc.task_id, sc.status,
+             sc.completion_note, sc.blocker_note, sc.created_at,
+             t.title as task_title,
+             gs.target_title, gs.average_focus_score, gs.elapsed_minutes,
+             gs.mood, gs.completed_at as session_completed_at
+      FROM session_completions sc
+      LEFT JOIN tasks t ON t.id = sc.task_id
+      LEFT JOIN guardian_session_summaries gs ON gs.session_id = sc.session_id
+      WHERE sc.status = 'pending'
+      ORDER BY sc.created_at DESC
+      LIMIT 10
+    `).all() as Array<{
+      id: number;
+      session_id: string;
+      task_id: number | null;
+      status: string;
+      completion_note: string | null;
+      blocker_note: string | null;
+      created_at: string;
+      task_title: string | null;
+      target_title: string | null;
+      average_focus_score: number | null;
+      elapsed_minutes: number | null;
+      mood: string | null;
+      session_completed_at: string | null;
+    }>;
+
+    return NextResponse.json({ success: true, overrides, sessions, pendingCompletions });
   } catch (error) {
     console.error('[guardian/history] GET failed', error);
     return NextResponse.json({ error: String(error) }, { status: 500 });

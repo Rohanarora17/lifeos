@@ -104,20 +104,35 @@ export async function GET(request: NextRequest) {
 
             const todayProdMins = Math.round(productiveMinutes?.mins || 0);
 
-            const updateStmt = db.prepare(`
-                INSERT INTO habit_checkins (habit_id, date, completed, value) 
-                VALUES (?, ?, ?, ?) 
-                ON CONFLICT(habit_id, date) DO UPDATE SET completed = excluded.completed, value = excluded.value
-            `);
-            const updateMany = db.transaction((habitsToUpdate: any[]) => {
+            db.transaction((habitsToUpdate: any[]) => {
                 for (const h of habitsToUpdate) {
-                    const isCompleted = todayProdMins >= (h.goal_target || 1) ? 1 : 0;
-                    updateStmt.run(h.id, today, isCompleted, todayProdMins);
-                    h.today_value = todayProdMins;
+                    // The activities table records ALL productive time including guardian session time.
+                    // So MAX(session_value, activities_value) = activities_value (subsumes sessions),
+                    // which is the correct total with no double-counting.
+                    // We preserve 'guardian_session' as source only if it won (session > activities).
+                    const existing = db.prepare(
+                        `SELECT id, value, source FROM habit_checkins WHERE habit_id = ? AND date = ?`
+                    ).get(h.id, today) as { id: number; value: number; source: string } | undefined;
+
+                    const bestValue = Math.max(todayProdMins, existing?.value ?? 0);
+                    // Keep guardian_session source if it contributed the higher value
+                    const bestSource = (existing?.source === 'guardian_session' && (existing.value ?? 0) >= todayProdMins)
+                        ? 'guardian_session'
+                        : 'screen_time';
+                    const isCompleted = bestValue >= (h.goal_target || 1) ? 1 : 0;
+
+                    db.prepare(`
+                        INSERT INTO habit_checkins (habit_id, date, completed, value, source)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(habit_id, date) DO UPDATE SET
+                          completed = excluded.completed,
+                          value = excluded.value,
+                          source = excluded.source
+                    `).run(h.id, today, isCompleted, bestValue, bestSource);
+                    h.today_value = bestValue;
                     h.checked_today = isCompleted;
                 }
-            });
-            updateMany(timeHabits);
+            })(timeHabits);
         }
 
         // Calculate Habit Automaticity Score (Lally Curve)
