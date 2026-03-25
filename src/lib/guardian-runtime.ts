@@ -198,13 +198,13 @@ function finalizeDecision(
     explainability,
     command: decision.command
       ? {
-          ...decision.command,
-          sessionId,
-          sourceEventType,
-          reason: decision.command.reason || reason,
-          explainability: decision.command.explainability || explainability,
-          createdAt: decision.command.createdAt ?? createdAt,
-        }
+        ...decision.command,
+        sessionId,
+        sourceEventType,
+        reason: decision.command.reason || reason,
+        explainability: decision.command.explainability || explainability,
+        createdAt: decision.command.createdAt ?? createdAt,
+      }
       : undefined,
   };
 }
@@ -386,8 +386,8 @@ async function generateSessionReflection(session: GuardianState) {
 
     const focusQuality =
       averageFocusScore >= 85 ? 'excellent' :
-      averageFocusScore >= 70 ? 'good' :
-      averageFocusScore >= 55 ? 'neutral' : 'poor';
+        averageFocusScore >= 70 ? 'good' :
+          averageFocusScore >= 55 ? 'neutral' : 'poor';
 
     const ai = getGenAI();
     if (!ai) return;
@@ -739,6 +739,11 @@ export function listGuardianSessions() {
 export function getGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   return session ? cloneSession(session) : null;
+}
+
+export function getActiveGuardianSession(): GuardianState | null {
+  const active = Array.from(guardianSessions.values()).find(s => s.state === 'ACTIVE' || s.state === 'BREAK');
+  return active ? cloneSession(active) : null;
 }
 
 export function startGuardianSession(input: GuardianStartRequest): GuardianState {

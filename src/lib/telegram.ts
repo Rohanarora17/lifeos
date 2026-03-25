@@ -26,15 +26,20 @@ export const SESSION_START_KEYBOARD: InlineKeyboard = [
     { text: '📊 Status', callback_data: 'action:status' },
     { text: '⏹ End Session', callback_data: 'action:end_session' },
   ],
+  [
+    { text: '🚫 Override', callback_data: 'action:override_info' },
+    { text: '📋 Tasks', callback_data: 'action:tasks' },
+  ],
 ];
 
 export const SESSION_END_KEYBOARD: InlineKeyboard = [
   [
-    { text: '✅ Accurate', callback_data: 'feedback:accurate' },
-    { text: '📝 Add Note', callback_data: 'feedback:add_note' },
+    { text: '✅ Session Review', callback_data: 'action:review' },
+    { text: '📝 Add Feedback', callback_data: 'action:feedback_prompt' },
   ],
   [
     { text: '🔁 New Session', callback_data: 'action:new_session' },
+    { text: '📊 Status', callback_data: 'action:status' },
   ],
 ];
 
@@ -44,8 +49,12 @@ export const MORNING_BRIEF_KEYBOARD: InlineKeyboard = [
     { text: '📋 Today\'s Tasks', callback_data: 'action:tasks' },
   ],
   [
-    { text: '✅ Log Habits', callback_data: 'action:habits' },
-    { text: '📊 Status', callback_data: 'action:status' },
+    { text: '✅ Habits', callback_data: 'action:habits' },
+    { text: '🧠 Standup', callback_data: 'action:standup' },
+  ],
+  [
+    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '🎯 Goals', callback_data: 'action:goals' },
   ],
 ];
 
@@ -71,7 +80,61 @@ export const DAILY_REPORT_KEYBOARD: InlineKeyboard = [
     { text: '📊 Full Report', callback_data: 'action:report' },
     { text: '🔁 New Session', callback_data: 'action:new_session' },
   ],
+  [
+    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '✅ Review Queue', callback_data: 'action:review' },
+  ],
 ];
+
+export const FULL_MENU_KEYBOARD: InlineKeyboard = [
+  [
+    { text: '🎯 Start Session', callback_data: 'action:new_session' },
+    { text: '📊 Status', callback_data: 'action:status' },
+  ],
+  [
+    { text: '📋 Tasks', callback_data: 'action:tasks' },
+    { text: '✅ Habits', callback_data: 'action:habits' },
+  ],
+  [
+    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '🎯 Goals', callback_data: 'action:goals' },
+  ],
+  [
+    { text: '🧠 Standup', callback_data: 'action:standup' },
+    { text: '📝 Review', callback_data: 'action:review' },
+  ],
+  [
+    { text: '📈 Report', callback_data: 'action:report' },
+    { text: '🔬 Calibration', callback_data: 'action:calibration' },
+  ],
+];
+
+/** Build a dynamic per-completion review keyboard. IDs limited to stay under 64B. */
+export function buildReviewKeyboard(completionId: number): InlineKeyboard {
+  return [
+    [
+      { text: '✅ Done', callback_data: `review:done:${completionId}` },
+      { text: '🚫 Blocked', callback_data: `review:blocked:${completionId}` },
+      { text: '⏭ Skip', callback_data: `review:skip:${completionId}` },
+    ],
+    [{ text: '📝 More Reviews', callback_data: 'action:review' }],
+  ];
+}
+
+/** Build a keyboard with up to 3 task-start chips. */
+export function buildTaskChipsKeyboard(tasks: Array<{ id: number; title: string }>): InlineKeyboard {
+  const chips = tasks.slice(0, 3).map(t => ({
+    text: t.title.length > 20 ? t.title.slice(0, 18) + '…' : t.title,
+    callback_data: `task:start:${t.id}`,
+  }));
+  return [
+    chips,
+    [
+      { text: '🎯 Custom Topic', callback_data: 'action:new_session' },
+      { text: '📊 Status', callback_data: 'action:status' },
+    ],
+  ];
+}
 
 /**
  * Send a plain-text or HTML message to the configured chat.
@@ -252,6 +315,182 @@ export function formatAlert(type: string, message: string, severity: string): st
   const emoji = severity === 'urgent' ? '🚨' : '⚠️';
   const label = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   return `${emoji} <b>${label}</b>\n\n${message}`;
+}
+
+export function formatStandupBrief(data: {
+  goal: string | null;
+  mood: string | null;
+  energy: { composite: number; band: string } | null;
+  suggestedTasks: Array<{ id: number; title: string; goal_health: string | null; reason: string }>;
+  weakConcepts: Array<{ title: string; mastery: number; goalTitle: string | null }>;
+}): string {
+  const lines = [`🧠 <b>Standup Brief</b>`, ``];
+  if (data.goal) lines.push(`🎯 <b>Today's goal:</b> ${data.goal}`);
+  if (data.mood) lines.push(`${data.mood === 'high' ? '⚡' : data.mood === 'low' ? '😴' : '😐'} <b>Mood:</b> ${data.mood}`);
+  if (data.energy) {
+    const e = data.energy;
+    const dot = e.band === 'high' ? '🟢' : e.band === 'medium' ? '🟡' : '🔴';
+    lines.push(`${dot} <b>Energy:</b> ${e.band} (${Math.round(e.composite)}/100)`);
+  }
+  if (data.suggestedTasks.length > 0) {
+    lines.push(``, `📋 <b>Suggested tasks:</b>`);
+    for (const t of data.suggestedTasks.slice(0, 4)) {
+      const flag = t.goal_health === 'off_track' ? ' ‼️' : t.goal_health === 'at_risk' ? ' ⚠️' : '';
+      lines.push(`  • ${t.title}${flag}`);
+    }
+  }
+  if (data.weakConcepts.length > 0) {
+    lines.push(``, `🔬 <b>Weak concepts to review:</b>`);
+    for (const c of data.weakConcepts.slice(0, 3)) {
+      lines.push(`  • ${c.title} — ${c.mastery}% mastery`);
+    }
+  }
+  if (!data.goal) lines.push(``, `Reply "standup: [your goal today] [mood]" to set today's goal.`);
+  return lines.join('\n');
+}
+
+export function formatTasksList(tasks: Array<{
+  title: string;
+  status: string;
+  priority: string;
+  goal_title: string | null;
+  goal_health: string | null;
+  estimated_minutes: number | null;
+  reason: string;
+}>): string {
+  if (tasks.length === 0) return `📋 <b>Tasks</b>\n\nNo actionable tasks found. Add tasks to get started.`;
+  const lines = [`📋 <b>Today's Tasks</b>`, ``];
+  for (const t of tasks.slice(0, 6)) {
+    const pri = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🟡' : '⚪';
+    const flag = t.goal_health === 'off_track' ? ' ‼️' : t.goal_health === 'at_risk' ? ' ⚠️' : '';
+    const mins = t.estimated_minutes ? ` · ${t.estimated_minutes}m` : '';
+    const goal = t.goal_title ? ` <i>(${t.goal_title})</i>` : '';
+    lines.push(`${pri} <b>${t.title}</b>${flag}${mins}${goal}`);
+  }
+  return lines.join('\n');
+}
+
+export function formatHabitStatus(habits: Array<{
+  title: string;
+  completed: boolean;
+  streak: number;
+  target_value: number | null;
+  current_value: number | null;
+  goal_metric: string;
+}>): string {
+  if (habits.length === 0) return `💪 <b>Habits</b>\n\nNo habits configured yet.`;
+  const lines = [`💪 <b>Today's Habits</b>`, ``];
+  for (const h of habits) {
+    const check = h.completed ? '✅' : '⬜';
+    const streak = h.streak > 1 ? ` 🔥${h.streak}` : '';
+    const progress = h.goal_metric === 'time' && h.current_value != null && h.target_value != null
+      ? ` (${Math.round(h.current_value)}/${h.target_value} min)`
+      : '';
+    lines.push(`${check} ${h.title}${streak}${progress}`);
+  }
+  const done = habits.filter(h => h.completed).length;
+  lines.push(``, `${done}/${habits.length} complete`);
+  return lines.join('\n');
+}
+
+export function formatWeeklyPlanSummary(plan: {
+  week_start: string;
+  days: Array<{
+    date: string;
+    day_name: string;
+    energy_forecast: string;
+    tasks: Array<{ title: string; estimated_minutes: number }>;
+    total_minutes: number;
+  }>;
+  summary: string;
+}): string {
+  const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+  const lines = [`🗓 <b>Weekly Plan</b>`, `<i>${plan.summary}</i>`, ``];
+  for (const day of plan.days) {
+    if (day.tasks.length === 0) continue;
+    const isToday = day.date === today;
+    const dot = day.energy_forecast === 'high' ? '🟢' : day.energy_forecast === 'medium' ? '🟡' : '🔴';
+    const marker = isToday ? ' ← today' : '';
+    lines.push(`${dot} <b>${day.day_name}${marker}</b> (${day.total_minutes}m)`);
+    for (const t of day.tasks.slice(0, 3)) {
+      lines.push(`  • ${t.title}`);
+    }
+    if (day.tasks.length > 3) lines.push(`  <i>+${day.tasks.length - 3} more</i>`);
+  }
+  return lines.join('\n');
+}
+
+export function formatGoalHealthStatus(goals: Array<{
+  title: string;
+  health_status: string | null;
+  actual_velocity: number | null;
+  velocity_needed: number | null;
+  progress_value: number | null;
+  target_value: number | null;
+  deadline: string | null;
+}>): string {
+  if (goals.length === 0) return `🎯 <b>Goals</b>\n\nNo active goals. Add goals to track progress.`;
+  const lines = [`🎯 <b>Goal Health</b>`, ``];
+  for (const g of goals) {
+    const status = g.health_status;
+    const icon = status === 'on_track' ? '✅' : status === 'at_risk' ? '⚠️' : status === 'off_track' ? '🔴' : '⬜';
+    const vel = g.actual_velocity != null ? ` · ${Math.round(g.actual_velocity)}m/day` : '';
+    const needed = g.velocity_needed != null ? ` (need ${Math.round(g.velocity_needed)}m/day)` : '';
+    lines.push(`${icon} <b>${g.title}</b>${vel}${needed}`);
+  }
+  return lines.join('\n');
+}
+
+export function formatPendingReviews(reviews: Array<{
+  id: number;
+  task_title: string | null;
+  target_title: string | null;
+  session_id: string;
+  elapsed_minutes: number | null;
+  average_focus_score: number | null;
+  mood: string | null;
+}>): string {
+  if (reviews.length === 0) return `📝 <b>Review Queue</b>\n\nNo pending reviews — you're all caught up!`;
+  const r = reviews[0];
+  const name = r.task_title ?? r.target_title ?? 'Session';
+  const score = r.average_focus_score != null ? `${Math.round(r.average_focus_score)}/100` : '—';
+  const mins = r.elapsed_minutes != null ? `${r.elapsed_minutes}m` : '—';
+  const mood = r.mood ? ` · ${r.mood} energy` : '';
+  const remaining = reviews.length > 1 ? `\n<i>${reviews.length - 1} more in queue</i>` : '';
+  return [
+    `📝 <b>Session Review</b>`,
+    ``,
+    `📚 <b>${name}</b>`,
+    `⏱️ ${mins} · Focus: ${score}${mood}`,
+    ``,
+    `Mark this session:${remaining}`,
+  ].join('\n');
+}
+
+export function formatCalibrationStatus(data: {
+  accuracy: number | null;
+  sessions_count: number;
+  recent_adjustments: Array<{ component: string; new_value: number; previous_value: number; reason: string }>;
+}): string {
+  const acc = data.accuracy !== null ? `${Math.round(data.accuracy * 100)}%` : 'Not yet calibrated';
+  const accEmoji = data.accuracy === null ? '⬜' : data.accuracy >= 0.7 ? '🟢' : data.accuracy >= 0.5 ? '🟡' : '🔴';
+  const lines = [
+    `🔬 <b>Model Calibration</b>`,
+    ``,
+    `${accEmoji} <b>Accuracy:</b> ${acc}`,
+    `📊 <b>Sessions with feedback:</b> ${data.sessions_count}`,
+  ];
+  if (data.recent_adjustments.length > 0) {
+    lines.push(``, `<b>Recent weight adjustments:</b>`);
+    for (const a of data.recent_adjustments.slice(0, 4)) {
+      const delta = a.new_value - a.previous_value;
+      const label = a.component.replace(/^(energy|focus)_weight_/, '').replace(/_/g, ' ');
+      lines.push(`  ${delta > 0 ? '▲' : '▼'} ${label}: ${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`);
+    }
+  } else {
+    lines.push(``, `<i>Submit session feedback to start calibration.</i>`);
+  }
+  return lines.join('\n');
 }
 
 export function formatSoftWatchReminder(targetTitle: string, minutesUntil: number): string {
