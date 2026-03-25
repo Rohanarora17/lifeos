@@ -47,6 +47,8 @@ export default function GoalsPage() {
     const [expandedGoal, setExpandedGoal] = useState<number | null>(null);
     const [allTasks, setAllTasks] = useState<{ id: number; title: string; status: string; goal_id: number | null }[]>([]);
     const [allHabits, setAllHabits] = useState<{ id: number; name: string; icon: string; goal_id: number | null }[]>([]);
+    const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
+    const [editingGoalTitle, setEditingGoalTitle] = useState('');
 
     // Form state
     const [title, setTitle] = useState('');
@@ -97,6 +99,19 @@ export default function GoalsPage() {
         await fetch(`/api/goals?id=${id}`, { method: 'DELETE' });
         fetchGoals();
         fetchUnlinked();
+    };
+
+    const saveGoalTitle = async (id: number) => {
+        const trimmed = editingGoalTitle.trim();
+        if (trimmed) {
+            await fetch('/api/goals', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, title: trimmed }),
+            });
+            fetchGoals();
+        }
+        setEditingGoalId(null);
     };
 
     const toggleActive = async (goal: Goal) => {
@@ -211,7 +226,25 @@ export default function GoalsPage() {
 
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                    <h3 className="font-semibold text-lg">{goal.title}</h3>
+                                    {editingGoalId === goal.id ? (
+                                        <input
+                                            autoFocus
+                                            className="input font-semibold text-lg"
+                                            style={{ padding: '2px 8px', height: 'auto' }}
+                                            value={editingGoalTitle}
+                                            onChange={e => setEditingGoalTitle(e.target.value)}
+                                            onBlur={() => saveGoalTitle(goal.id)}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') saveGoalTitle(goal.id);
+                                                if (e.key === 'Escape') setEditingGoalId(null);
+                                            }}
+                                        />
+                                    ) : (
+                                        <h3
+                                            className="font-semibold text-lg cursor-text"
+                                            onClick={() => { setEditingGoalId(goal.id); setEditingGoalTitle(goal.title); }}
+                                        >{goal.title}</h3>
+                                    )}
                                     {goal.deadline && (
                                         <span className="badge text-xs" style={{
                                             background: new Date(goal.deadline) < new Date() ? 'rgba(255,85,85,0.15)' : 'rgba(255,165,0,0.15)',

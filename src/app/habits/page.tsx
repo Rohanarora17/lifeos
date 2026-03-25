@@ -56,6 +56,8 @@ export default function HabitsPage() {
     const [proofHabitId, setProofHabitId] = useState<number | null>(null);
     const [verifying, setVerifying] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [editingHabitId, setEditingHabitId] = useState<number | null>(null);
+    const [editingHabitName, setEditingHabitName] = useState('');
 
     const fetchHeatmap = async () => {
         const res = await fetch('/api/habits?heatmap=true');
@@ -120,6 +122,19 @@ export default function HabitsPage() {
         await fetch(`/api/habits?id=${id}`, { method: 'DELETE' });
         fetchHabits();
         fetchHeatmap();
+    };
+
+    const saveHabitName = async (id: number) => {
+        const trimmed = editingHabitName.trim();
+        if (trimmed) {
+            await fetch('/api/habits', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, name: trimmed }),
+            });
+            fetchHabits();
+        }
+        setEditingHabitId(null);
     };
 
     // Calculate streak
@@ -358,10 +373,28 @@ export default function HabitsPage() {
                         </button>
                         <div className="flex-1 space-y-1">
                             <div className="flex justify-between items-center">
-                                <p className={`font - medium ${habit.checked_today ? 'line-through' : ''}`}
-                                    style={{ color: habit.checked_today ? 'var(--text-muted)' : 'var(--text-primary)' }}>
-                                    {habit.name}
-                                </p>
+                                {editingHabitId === habit.id ? (
+                                    <input
+                                        autoFocus
+                                        className="input font-medium"
+                                        style={{ padding: '2px 8px', height: 'auto' }}
+                                        value={editingHabitName}
+                                        onChange={e => setEditingHabitName(e.target.value)}
+                                        onBlur={() => saveHabitName(habit.id)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') saveHabitName(habit.id);
+                                            if (e.key === 'Escape') setEditingHabitId(null);
+                                        }}
+                                    />
+                                ) : (
+                                    <p
+                                        className={`font-medium cursor-text ${habit.checked_today ? 'line-through' : ''}`}
+                                        style={{ color: habit.checked_today ? 'var(--text-muted)' : 'var(--text-primary)' }}
+                                        onClick={() => { setEditingHabitId(habit.id); setEditingHabitName(habit.name); }}
+                                    >
+                                        {habit.name}
+                                    </p>
+                                )}
                                 {habit.goal_metric === 'time' && (
                                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
                                         {habit.today_value} / {habit.goal_target} min

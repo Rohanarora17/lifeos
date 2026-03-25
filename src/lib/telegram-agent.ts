@@ -35,6 +35,14 @@ AVAILABLE ACTIONS:
 - "STANDUP": Show standup brief (energy + suggestions).
 - "STATUS": Current session status.
 - "MENU": Show the full action menu.
+- "CREATE_TASK": Create a new task. Payload: title (required), status (backlog/next/this_week/today, default backlog), priority (low/medium/high/critical, default medium).
+- "UPDATE_TASK": Update an existing task. Payload: searchTitle (text to find it), title (new title), status, priority.
+- "DELETE_TASK": Delete a task by title. Payload: searchTitle.
+- "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other, default productivity), deadline (YYYY-MM-DD or null).
+- "DELETE_GOAL": Delete a goal. Payload: searchTitle.
+- "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, default ✅), goal_metric (boolean/time, default boolean), goal_target (minutes if time, default 60).
+- "UPDATE_HABIT": Rename a habit. Payload: searchName, newName.
+- "DELETE_HABIT": Delete/archive a habit. Payload: searchName.
 - "CHAT": Conversational reply (no action).
 
 Respond ONLY with valid JSON:
@@ -47,7 +55,19 @@ Respond ONLY with valid JSON:
     "mood": "high|medium|low",
     "habitTitle": "string",
     "goal": "string",
-    "feedback": "string"
+    "feedback": "string",
+    "title": "string",
+    "status": "string",
+    "priority": "string",
+    "searchTitle": "string",
+    "searchName": "string",
+    "newName": "string",
+    "category": "string",
+    "deadline": "string",
+    "name": "string",
+    "icon": "string",
+    "goal_metric": "boolean|time",
+    "goal_target": 60
   }
 }`;
 
@@ -69,14 +89,14 @@ function fetchHabitsData() {
     const db = getDb();
     const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
     return db.prepare(`
-      SELECT h.title, h.goal_metric, h.target_value,
+      SELECT h.name as title, h.goal_metric, h.goal_target as target_value,
              COALESCE(hc.completed, 0) as completed,
              COALESCE(hc.value, 0) as current_value,
-             COALESCE(h.streak, 0) as streak
+             0 as streak
       FROM habits h
       LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?
       WHERE h.archived = 0
-      ORDER BY h.position ASC
+      ORDER BY h.created_at ASC
     `).all(today) as Array<{
       title: string; goal_metric: string; target_value: number | null;
       completed: number; current_value: number; streak: number;
@@ -438,6 +458,107 @@ export async function executeAction(
         const energyLine = standup?.energy ? `\n${standup.energy.band === 'high' ? '🟢' : standup.energy.band === 'medium' ? '🟡' : '🔴'} Energy: ${standup.energy.band} (${Math.round(standup.energy.composite)}/100)` : '';
         await sendTelegram(`💤 <b>No active session.</b>${energyLine}`, 'HTML', FULL_MENU_KEYBOARD);
       }
+      break;
+    }
+
+    case 'CREATE_TASK': {
+      const title = (payload.title as string | undefined)?.trim();
+      if (!title) { await sendTelegram('What should the task be called?', ''); break; }
+      const db = getDb();
+      const result = db.prepare(
+        `INSERT INTO tasks (title, status, priority) VALUES (?, ?, ?)`
+      ).run(title, (payload.status as string | undefined) || 'backlog', (payload.priority as string | undefined) || 'medium');
+      await sendTelegram(`✅ Task created: <b>${title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'UPDATE_TASK': {
+      const search = (payload.searchTitle as string | undefined)?.trim();
+      if (!search) { await sendTelegram('Which task? Give me a search term.', ''); break; }
+      const db = getDb();
+      const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? AND status != 'done' LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
+      if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+      const sets: string[] = [];
+      const vals: (string | number)[] = [];
+      if (payload.title) { sets.push('title = ?'); vals.push(payload.title as string); }
+      if (payload.status) { sets.push('status = ?'); vals.push(payload.status as string); }
+      if (payload.priority) { sets.push('priority = ?'); vals.push(payload.priority as string); }
+      if (sets.length === 0) { await sendTelegram('Nothing to update — specify title, status, or priority.', ''); break; }
+      vals.push(task.id);
+      db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      await sendTelegram(`✅ Updated task: <b>${(payload.title as string) || task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'DELETE_TASK': {
+      const search = (payload.searchTitle as string | undefined)?.trim();
+      if (!search) { await sendTelegram('Which task should I delete?', ''); break; }
+      const db = getDb();
+      const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
+      if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+      db.prepare(`DELETE FROM tasks WHERE id = ?`).run(task.id);
+      await sendTelegram(`🗑️ Deleted task: <b>${task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'CREATE_GOAL': {
+      const title = (payload.title as string | undefined)?.trim();
+      if (!title) { await sendTelegram('What should the goal be called?', ''); break; }
+      const db = getDb();
+      db.prepare(`INSERT INTO goals (title, category, deadline) VALUES (?, ?, ?)`).run(
+        title,
+        (payload.category as string | undefined) || 'productivity',
+        (payload.deadline as string | undefined) || null
+      );
+      await sendTelegram(`✅ Goal created: <b>${title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'DELETE_GOAL': {
+      const search = (payload.searchTitle as string | undefined)?.trim();
+      if (!search) { await sendTelegram('Which goal should I delete?', ''); break; }
+      const db = getDb();
+      const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
+      if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+      db.prepare(`DELETE FROM goals WHERE id = ?`).run(goal.id);
+      await sendTelegram(`🗑️ Deleted goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'CREATE_HABIT': {
+      const name = (payload.name as string | undefined)?.trim();
+      if (!name) { await sendTelegram('What should the habit be called?', ''); break; }
+      const db = getDb();
+      db.prepare(`INSERT INTO habits (name, icon, frequency, goal_metric, goal_target) VALUES (?, ?, 'daily', ?, ?)`).run(
+        name,
+        (payload.icon as string | undefined) || '✅',
+        (payload.goal_metric as string | undefined) || 'boolean',
+        Number(payload.goal_target) || 1
+      );
+      await sendTelegram(`✅ Habit created: <b>${name}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'UPDATE_HABIT': {
+      const search = (payload.searchName as string | undefined)?.trim();
+      const newName = (payload.newName as string | undefined)?.trim();
+      if (!search || !newName) { await sendTelegram('Provide both the current habit name and the new name.', ''); break; }
+      const db = getDb();
+      const habit = db.prepare(`SELECT id, name FROM habits WHERE LOWER(name) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; name: string } | undefined;
+      if (!habit) { await sendTelegram(`Habit matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+      db.prepare(`UPDATE habits SET name = ? WHERE id = ?`).run(newName, habit.id);
+      await sendTelegram(`✅ Renamed: <b>${habit.name}</b> → <b>${newName}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+      break;
+    }
+
+    case 'DELETE_HABIT': {
+      const search = (payload.searchName as string | undefined)?.trim();
+      if (!search) { await sendTelegram('Which habit should I delete?', ''); break; }
+      const db = getDb();
+      const habit = db.prepare(`SELECT id, name FROM habits WHERE LOWER(name) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; name: string } | undefined;
+      if (!habit) { await sendTelegram(`Habit matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+      db.prepare(`UPDATE habits SET archived = 1 WHERE id = ?`).run(habit.id);
+      await sendTelegram(`🗑️ Archived habit: <b>${habit.name}</b>`, 'HTML', FULL_MENU_KEYBOARD);
       break;
     }
 

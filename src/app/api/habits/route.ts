@@ -223,6 +223,33 @@ export async function POST(request: NextRequest) {
     }
 }
 
+// PATCH: Update a habit definition
+export async function PATCH(request: NextRequest) {
+    try {
+        const body = await request.json();
+        const { id, name, icon, goal_metric, goal_target, goal_id } = body;
+        if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+
+        const db = getDb();
+        const updates: string[] = [];
+        const params: (string | number | null)[] = [];
+
+        if (name !== undefined) { updates.push('name = ?'); params.push(sanitizeText(name, 200)); }
+        if (icon !== undefined) { updates.push('icon = ?'); params.push(sanitizeText(icon, 10)); }
+        if (goal_metric !== undefined) { updates.push('goal_metric = ?'); params.push(goal_metric); }
+        if (goal_target !== undefined) { updates.push('goal_target = ?'); params.push(Number(goal_target)); }
+        if (goal_id !== undefined) { updates.push('goal_id = ?'); params.push(goal_id); }
+
+        if (updates.length === 0) return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
+        params.push(id);
+        db.prepare(`UPDATE habits SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        console.error('Habits PATCH error:', error);
+        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    }
+}
+
 // DELETE: Archive or delete a habit
 export async function DELETE(request: NextRequest) {
     try {

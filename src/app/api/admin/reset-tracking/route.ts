@@ -27,6 +27,16 @@ const TABLES_TO_CLEAR = [
   'guardian_semantic_profiles',
   'session_ticks',
   'soft_watch_commitments',
+  // Guardian new tables (phases 1–10)
+  'guardian_event_log',
+  'guardian_interventions',
+  'guardian_overrides',
+  'session_completions',
+  'session_feedback',
+  'calibration_history',
+  'energy_readings',
+  'goal_time_logs',
+  'weekly_plans',
   // AI / intelligence layers
   'ai_insights',
   'user_intelligence_profile',

@@ -48,6 +48,8 @@ export default function TasksPage() {
     const [completedTasks, setCompletedTasks] = useState<CompletedTask[]>([]);
     const [selectedDay, setSelectedDay] = useState<string | null>(null);
     const [newTaskPriority, setNewTaskPriority] = useState('medium');
+    const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+    const [editingTitle, setEditingTitle] = useState('');
     const inputRef = useRef<HTMLInputElement>(null);
 
     const fetchTasks = useCallback(async () => {
@@ -100,6 +102,19 @@ export default function TasksPage() {
     const deleteTask = async (taskId: number) => {
         await fetch(`/api/tasks?id=${taskId}`, { method: 'DELETE' });
         fetchTasks();
+    };
+
+    const saveTaskTitle = async (taskId: number) => {
+        const trimmed = editingTitle.trim();
+        if (trimmed) {
+            await fetch('/api/tasks', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: taskId, title: trimmed }),
+            });
+            fetchTasks();
+        }
+        setEditingTaskId(null);
     };
 
     const handleDragStart = (task: Task) => {
@@ -295,14 +310,32 @@ export default function TasksPage() {
                                             onDragEnd={() => setDraggedTask(null)}
                                         >
                                             <div className="flex items-start justify-between gap-2">
-                                                <div className="flex items-start gap-2">
+                                                <div className="flex items-start gap-2 flex-1 min-w-0">
                                                     <div className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{
                                                         background: task.priority === 'critical' ? 'var(--accent-red)'
                                                             : task.priority === 'high' ? 'var(--accent-orange)'
                                                                 : task.priority === 'low' ? 'var(--text-muted)'
                                                                     : 'var(--accent-blue)'
                                                     }} />
-                                                    <p className="text-sm font-medium leading-snug">{task.title}</p>
+                                                    {editingTaskId === task.id ? (
+                                                        <input
+                                                            autoFocus
+                                                            className="input text-sm font-medium"
+                                                            style={{ padding: '2px 6px', height: 'auto', minWidth: 0 }}
+                                                            value={editingTitle}
+                                                            onChange={e => setEditingTitle(e.target.value)}
+                                                            onBlur={() => saveTaskTitle(task.id)}
+                                                            onKeyDown={e => {
+                                                                if (e.key === 'Enter') saveTaskTitle(task.id);
+                                                                if (e.key === 'Escape') setEditingTaskId(null);
+                                                            }}
+                                                        />
+                                                    ) : (
+                                                        <p
+                                                            className="text-sm font-medium leading-snug cursor-text"
+                                                            onClick={e => { e.stopPropagation(); setEditingTaskId(task.id); setEditingTitle(task.title); }}
+                                                        >{task.title}</p>
+                                                    )}
                                                 </div>
                                                 <button
                                                     onClick={() => deleteTask(task.id)}
