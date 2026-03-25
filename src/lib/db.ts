@@ -96,6 +96,40 @@ function initSchema(db: Database.Database) {
   // mem_facts: embedding vector (JSON float array) for semantic search at scale
   try { db.prepare('ALTER TABLE mem_facts ADD COLUMN embedding TEXT DEFAULT NULL').run(); } catch (e) { }
 
+  // ─── P0.2: tasks — energy routing + friction detection ────────────────────
+  try { db.prepare("ALTER TABLE tasks ADD COLUMN energy_required TEXT DEFAULT 'medium'").run(); } catch (e) { }
+  try { db.prepare("ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT 'familiar'").run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE tasks ADD COLUMN estimated_minutes INTEGER DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE tasks ADD COLUMN blocked_since TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE tasks ADD COLUMN subtask_of INTEGER REFERENCES tasks(id)').run(); } catch (e) { }
+
+  // ─── P0.3: goals — type system + velocity tracking ────────────────────────
+  try { db.prepare("ALTER TABLE goals ADD COLUMN goal_type TEXT DEFAULT 'milestone'").run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE goals ADD COLUMN target_value REAL DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE goals ADD COLUMN progress_value REAL DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare("ALTER TABLE goals ADD COLUMN health_status TEXT DEFAULT 'on_track'").run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE goals ADD COLUMN velocity_needed REAL DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE goals ADD COLUMN actual_velocity REAL DEFAULT NULL').run(); } catch (e) { }
+
+  // ─── P0.4a: habit_checkins — source tagging for deduplication ─────────────
+  try { db.prepare("ALTER TABLE habit_checkins ADD COLUMN source TEXT DEFAULT 'manual'").run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE habit_checkins ADD COLUMN session_id TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE habit_checkins ADD COLUMN window_start TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE habit_checkins ADD COLUMN window_end TEXT DEFAULT NULL').run(); } catch (e) { }
+
+  // ─── P0.4b: guardian_semantic_profiles — per-user calibration weights ──────
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN energy_weight_standup REAL DEFAULT 0.30').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN energy_weight_time_of_day REAL DEFAULT 0.25').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN energy_weight_focus_quality REAL DEFAULT 0.25').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN energy_weight_circadian REAL DEFAULT 0.20').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN focus_weight_continuity REAL DEFAULT 0.35').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN focus_weight_tab_switches REAL DEFAULT 0.25').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN focus_weight_dwell REAL DEFAULT 0.20').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN focus_weight_distraction_revisit REAL DEFAULT 0.15').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN focus_weight_idle REAL DEFAULT 0.05').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN calibration_accuracy REAL DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN calibration_sessions_count INTEGER DEFAULT 0').run(); } catch (e) { }
+
   // voice_turns: persistent conversation memory for the voice agent
   db.exec(`
     CREATE TABLE IF NOT EXISTS voice_turns (
@@ -188,6 +222,89 @@ function initSchema(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_mem_working_session ON mem_working(session_id, created_at DESC);
+  `);
+
+  // ─── P0.4c: new tables for unified intelligence architecture ──────────────
+  db.exec(`
+    -- Energy composite readings (per-session + mid-session drift)
+    CREATE TABLE IF NOT EXISTS energy_readings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+      standup_mood INTEGER,
+      time_of_day_prior REAL,
+      recent_focus_quality REAL,
+      circadian_prior REAL,
+      composite_score REAL,
+      session_id TEXT DEFAULT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_energy_readings_session ON energy_readings(session_id);
+    CREATE INDEX IF NOT EXISTS idx_energy_readings_time ON energy_readings(timestamp DESC);
+
+    -- Time credited to goals from guardian sessions
+    CREATE TABLE IF NOT EXISTS goal_time_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL,
+      minutes REAL NOT NULL,
+      logged_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_goal_time_logs_goal ON goal_time_logs(goal_id);
+
+    -- Post-session completion review queue
+    CREATE TABLE IF NOT EXISTS session_completions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      task_id INTEGER REFERENCES tasks(id),
+      status TEXT DEFAULT 'pending',
+      completion_note TEXT DEFAULT NULL,
+      blocker_note TEXT DEFAULT NULL,
+      actioned_at TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_completions_status ON session_completions(status, created_at DESC);
+
+    -- Post-session free-text feedback + calibration gap analysis
+    CREATE TABLE IF NOT EXISTS session_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      system_energy_composite REAL,
+      system_focus_trajectory TEXT,
+      system_distraction_events TEXT,
+      system_tab_switch_pattern TEXT,
+      system_idle_periods TEXT,
+      system_intervention_count INTEGER,
+      system_override_count INTEGER,
+      gap_analysis TEXT,
+      prediction_error_energy REAL,
+      prediction_error_focus REAL,
+      session_length_fit TEXT,
+      self_awareness_score REAL,
+      extracted_facts TEXT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      processed_at TEXT DEFAULT NULL
+    );
+
+    -- Audit trail of every weight adjustment from calibration
+    CREATE TABLE IF NOT EXISTS calibration_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_feedback_id INTEGER REFERENCES session_feedback(id),
+      component TEXT NOT NULL,
+      previous_value REAL NOT NULL,
+      new_value REAL NOT NULL,
+      reason TEXT NOT NULL,
+      applied_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
+    -- AI-generated weekly plans
+    CREATE TABLE IF NOT EXISTS weekly_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      week_start TEXT NOT NULL,
+      plan_json TEXT NOT NULL,
+      generated_at TEXT DEFAULT (datetime('now', 'localtime')),
+      status TEXT DEFAULT 'active'
+    );
+    CREATE INDEX IF NOT EXISTS idx_weekly_plans_week ON weekly_plans(week_start DESC);
   `);
 
   // FTS5 full-text search over mem_facts (topic + content)
