@@ -35,3 +35,5 @@ jobs:
             npm run build
             launchctl unload ~/Library/LaunchAgents/com.lifeos.server.plist
             launchctl load  ~/Library/LaunchAgents/com.lifeos.server.plist
+            launchctl unload ~/Library/LaunchAgents/com.lifeos.daemon.plist
+            launchctl load  ~/Library/LaunchAgents/com.lifeos.daemon.plist
