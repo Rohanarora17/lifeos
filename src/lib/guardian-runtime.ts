@@ -11,6 +11,7 @@ import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian
 import { emitGuardianRuntimeEvent } from './guardian-bus';
 import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { extractMemoryFromSession } from './memory-extractor';
+import { activateTasksForSession, evaluateSessionTaskCompletion } from './session-task-sync';
 import {
   sendTelegram,
   formatSessionStart,
@@ -777,6 +778,13 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   guardianSessions.set(sessionId, session);
   linkSoftWatchToSession(sessionId, targetTitle);
 
+  // Activate matching tasks → 'doing' (sync, fast keyword match)
+  try {
+    activateTasksForSession(targetTitle, input.goalId ?? null);
+  } catch (err) {
+    console.error('[guardian] activateTasksForSession failed:', err);
+  }
+
   emitSessionEvent(sessionId, {
     type: 'session_state',
     state: session.state,
@@ -881,8 +889,15 @@ export function endGuardianSession(sessionId: string) {
   const focusScores = session.focusScoreHistory.length ? session.focusScoreHistory : [100];
   const avgFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
 
-  // Fire-and-forget: reflection → Telegram + Calendar update
+  // Fire-and-forget: task completion assessment + reflection → Telegram + Calendar update
   void (async () => {
+    // Assess task completion while reflection generates in parallel
+    try {
+      await evaluateSessionTaskCompletion(sessionId, session.targetTitle, elapsedMinutes, avgFocusScore);
+    } catch (err) {
+      console.error('[guardian] evaluateSessionTaskCompletion failed:', err);
+    }
+
     // Wait briefly for reflection to be generated
     await new Promise(r => setTimeout(r, 3000));
     let reflection: string | undefined;

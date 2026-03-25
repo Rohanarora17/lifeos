@@ -257,8 +257,17 @@ if (!BOT_TOKEN) {
       return;
     }
 
-    // Unknown command
-    await tgSend(chatId, 'Unknown command. Send /help to see available commands.', HELP_KEYBOARD);
+    // Unknown command — forward to Next.js for full command handling (habits, tasks, goals, etc.)
+    try {
+      await fetch(`${APP_URL}/api/telegram/webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { text, chat: { id: parseInt(chatId, 10) } } }),
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch (err) {
+      await tgSend(chatId, `Unknown command. Send /help to see available commands.`);
+    }
   }
 
   // ─── Action handlers (used by both commands and callback queries) ─────────
@@ -296,7 +305,8 @@ if (!BOT_TOKEN) {
       const today = new Date().toISOString().slice(0, 10);
       const res = await fetch(`${APP_URL}/api/summary?type=daily&date=${today}`, { signal: AbortSignal.timeout(10000) });
       const data = await res.json();
-      const summary = data.summary || data.report || 'No report generated yet for today.';
+      const rawSummary = data.summary || data.report;
+      const summary = typeof rawSummary === 'string' ? rawSummary : 'No report generated yet for today.';
       await tgSend(chatId, summary.slice(0, 4000), [
         [{ text: '🔁 New Session', callback_data: 'action:new_session' }],
       ]);
@@ -649,14 +659,23 @@ if (!BOT_TOKEN) {
           console.log(`[telegram] Command from ${chatId}: ${msg.text}`);
           await handleCommand(chatId, msg.text);
         } else {
-          // Check if we're in a conversation state
+          // Check if we're in a local conversation state first
           const state = conversationState.get(chatId);
           if (state?.mode === 'standup') {
             await processStandupReply(chatId, msg.text, state);
           } else if (state?.mode === 'session_note') {
             await processSessionNote(chatId, msg.text, state);
+          } else {
+            // Forward natural language to Next.js for LLM handling
+            try {
+              await fetch(`${APP_URL}/api/telegram/webhook`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: { text: msg.text, chat: { id: parseInt(chatId, 10) } } }),
+                signal: AbortSignal.timeout(30000),
+              });
+            } catch { /* non-fatal — app may be restarting */ }
           }
-          // Non-command messages with no state are silently ignored
         }
       }
     } catch (err) {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sanitizeText } from '@/lib/sanitize';
 import { propagateMastery } from '@/lib/graph';
+import { autoLinkTaskToGoal } from '@/lib/task-auto-linker';
 
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
@@ -116,7 +117,16 @@ export async function POST(request: NextRequest) {
             priority || 'medium'
         );
 
-        return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
+        const newId = Number(result.lastInsertRowid);
+
+        // Auto-link to a goal if none was specified (fire-and-forget)
+        if (!goal_id) {
+            void autoLinkTaskToGoal(newId).catch(err =>
+                console.error('[tasks] auto-link failed:', err)
+            );
+        }
+
+        return NextResponse.json({ id: newId }, { status: 201 });
     } catch (error) {
         console.error('Tasks POST error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
