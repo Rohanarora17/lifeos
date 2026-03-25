@@ -21,7 +21,14 @@ jobs:
           host: ${{ secrets.MAC_MINI_HOST }}
           username: ${{ secrets.MAC_MINI_USER }}
           key: ${{ secrets.MAC_MINI_SSH_KEY }}
+          script_stop: true
           script: |
+            # Ensure node/npm are on PATH (Homebrew Apple Silicon + Intel, nvm)
+            export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+            set -e
             cd ~/lifeos
             git pull origin main
             npm ci --prefer-offline

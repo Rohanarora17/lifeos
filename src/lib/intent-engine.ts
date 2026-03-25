@@ -26,7 +26,7 @@ JSON Schema:
 
     try {
         const result = await ai.models.generateContent({
-            model: MODEL_FLASH || 'gemini-3.1-flash-lite-preview',
+            model: MODEL_FLASH || 'gemini-2.5-flash',
             contents: prompt,
             config: {
                 systemInstruction: "You are Jarvis, extracting structured intent from voice transcripts.",
