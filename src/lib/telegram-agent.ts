@@ -227,22 +227,130 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     return;
   }
 
-  // Simple slash commands
-  if (text.trim() === '/start' || text.trim() === '/menu') {
+  // Slash command dispatch
+  const cmd = text.trim();
+  const cmdLower = cmd.toLowerCase();
+
+  if (cmdLower === '/start' || cmdLower === '/menu') {
     await sendTelegram(`🛡️ <b>LifeOS Guardian</b>\n\nWhat would you like to do?`, 'HTML', FULL_MENU_KEYBOARD);
     return;
   }
-  if (text.trim() === '/status') {
-    const active = getActiveGuardianSession();
-    if (active) {
-      const elapsed = Math.floor((Date.now() - active.startedAt) / 60000);
-      await sendTelegram(
-        `🛡️ <b>Active Session:</b> ${active.targetTitle}\n⏱️ Elapsed: ${elapsed}min\n🔴 Blocks: ${active.blockedCount}`,
-        'HTML', SESSION_START_KEYBOARD
-      );
-    } else {
-      await sendTelegram(`💤 No active session.`, 'HTML', FULL_MENU_KEYBOARD);
-    }
+  if (cmdLower === '/status') {
+    await executeAction('STATUS', '', {});
+    return;
+  }
+  if (cmdLower === '/tasks') {
+    await executeAction('SHOW_TASKS', '', {});
+    return;
+  }
+  if (cmdLower === '/habits') {
+    await executeAction('SHOW_HABITS', '', {});
+    return;
+  }
+  if (cmdLower === '/goals') {
+    await executeAction('GOAL_STATUS', '', {});
+    return;
+  }
+  if (cmdLower === '/plan') {
+    await executeAction('WEEKLY_PLAN', '', {});
+    return;
+  }
+  if (cmdLower === '/standup') {
+    await executeAction('STANDUP', '', {});
+    return;
+  }
+  if (cmdLower === '/review') {
+    await executeAction('SESSION_REVIEW', '', {});
+    return;
+  }
+  if (cmdLower === '/calibration') {
+    await executeAction('CALIBRATION', '', {});
+    return;
+  }
+  if (cmdLower === '/report') {
+    // Reuse the action:report webhook path via executeAction-like call
+    const db = getDb();
+    const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+    const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(average_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
+    const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','today','doing','this_week')`).get() as { total: number; done: number };
+    const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
+    const emoji = sessRow.avg_focus >= 85 ? '🔥' : sessRow.avg_focus >= 70 ? '✅' : sessRow.avg_focus >= 50 ? '🟡' : '🔴';
+    await sendTelegram(
+      `📊 <b>Daily Report — ${today}</b>\n\n${emoji} <b>Avg Focus:</b> ${Math.round(sessRow.avg_focus)}/100\n🛡️ <b>Sessions:</b> ${sessRow.count} (${sessRow.total_minutes}m total)\n📋 <b>Tasks:</b> ${tasksRow.done}/${tasksRow.total} done\n💪 <b>Habits:</b> ${habitsRow.done}/${habitsRow.total} checked`,
+      'HTML', FULL_MENU_KEYBOARD
+    );
+    return;
+  }
+  if (cmdLower === '/endsession') {
+    await executeAction('END_SESSION', '', {});
+    return;
+  }
+  // /addtask <title>
+  if (cmdLower.startsWith('/addtask ')) {
+    const title = cmd.slice('/addtask '.length).trim();
+    await executeAction('CREATE_TASK', '', { title, status: 'today', priority: 'medium' });
+    return;
+  }
+  if (cmdLower === '/addtask') {
+    await sendTelegram('Usage: <code>/addtask Task title here</code>', 'HTML');
+    return;
+  }
+  // /deletetask <search>
+  if (cmdLower.startsWith('/deletetask ')) {
+    const searchTitle = cmd.slice('/deletetask '.length).trim();
+    await executeAction('DELETE_TASK', '', { searchTitle });
+    return;
+  }
+  if (cmdLower === '/deletetask') {
+    await sendTelegram('Usage: <code>/deletetask partial task name</code>', 'HTML');
+    return;
+  }
+  // /addgoal <title>
+  if (cmdLower.startsWith('/addgoal ')) {
+    const title = cmd.slice('/addgoal '.length).trim();
+    await executeAction('CREATE_GOAL', '', { title });
+    return;
+  }
+  if (cmdLower === '/addgoal') {
+    await sendTelegram('Usage: <code>/addgoal Goal title here</code>', 'HTML');
+    return;
+  }
+  // /addhabit <name>
+  if (cmdLower.startsWith('/addhabit ')) {
+    const name = cmd.slice('/addhabit '.length).trim();
+    await executeAction('CREATE_HABIT', '', { name });
+    return;
+  }
+  if (cmdLower === '/addhabit') {
+    await sendTelegram('Usage: <code>/addhabit Habit name here</code>', 'HTML');
+    return;
+  }
+  // /deletehabit <search>
+  if (cmdLower.startsWith('/deletehabit ')) {
+    const searchName = cmd.slice('/deletehabit '.length).trim();
+    await executeAction('DELETE_HABIT', '', { searchName });
+    return;
+  }
+  // /session <topic> or just /session
+  if (cmdLower.startsWith('/session ')) {
+    const topic = cmd.slice('/session '.length).trim();
+    await executeAction('START_SESSION', '', { targetTitle: topic, durationMinutes: 60 });
+    return;
+  }
+  if (cmdLower === '/session') {
+    await sendTelegram('Usage: <code>/session Topic name</code> — or just tell me what to focus on.', 'HTML', FULL_MENU_KEYBOARD);
+    return;
+  }
+  if (cmdLower === '/help') {
+    await sendTelegram(
+      `🛡️ <b>LifeOS Commands</b>\n\n` +
+      `<b>Sessions</b>\n/session &lt;topic&gt; — Start focus session\n/endsession — End current session\n/status — Current session status\n\n` +
+      `<b>View</b>\n/tasks — Today's ranked tasks\n/habits — Habit check-ins\n/goals — Goal health status\n/plan — Weekly plan\n/standup — Standup brief\n/review — Pending reviews\n/report — Daily report\n/calibration — Model accuracy\n\n` +
+      `<b>Create</b>\n/addtask &lt;title&gt;\n/addgoal &lt;title&gt;\n/addhabit &lt;name&gt;\n\n` +
+      `<b>Delete</b>\n/deletetask &lt;search&gt;\n/deletehabit &lt;search&gt;\n\n` +
+      `Or just send a natural language message — Jarvis understands context.`,
+      'HTML', FULL_MENU_KEYBOARD
+    );
     return;
   }
 
