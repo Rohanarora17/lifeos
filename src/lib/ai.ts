@@ -40,9 +40,30 @@ const FALLBACK_FLASH = 'gemini-2.5-flash';
 const FALLBACK_PRO = 'gemini-2.5-pro';
 
 /**
+ * Returns true for errors that mean "model overloaded / unreachable" —
+ * covers HTTP 503, UNAVAILABLE status, and undici HeadersTimeoutError
+ * (the server accepted the TCP connection but never sent response headers).
+ */
+function isOverloadedError(err: any): boolean {
+    return (
+        err?.status === 503 ||
+        err?.message?.includes('503') ||
+        err?.message?.includes('UNAVAILABLE') ||
+        err?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+        err?.cause?.message?.includes('Headers Timeout') ||
+        err?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+        err?.cause?.code === 'UND_ERR_SOCKET'
+    );
+}
+
+function fallbackModel(originalModel: string): string {
+    return originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
+}
+
+/**
  * Wrapper around ai.models.generateContent that automatically retries
- * once with a stable fallback model when a 503 / UNAVAILABLE error is
- * returned (preview models under high demand).
+ * once with a stable fallback model when a 503 / UNAVAILABLE error or
+ * a headers timeout is returned (preview models under high demand).
  */
 export async function generateWithFallback(
     ai: GoogleGenAI,
@@ -51,14 +72,10 @@ export async function generateWithFallback(
     try {
         return await ai.models.generateContent(params);
     } catch (err: any) {
-        const is503 = err?.status === 503 || err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE');
-        if (!is503) throw err;
-
-        // Pick stable fallback based on whether we were using pro or flash
+        if (!isOverloadedError(err)) throw err;
         const originalModel = typeof params.model === 'string' ? params.model : '';
-        const fallback = originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
-
-        console.warn(`[AI] Model ${originalModel} overloaded (503) — falling back to ${fallback}`);
+        const fallback = fallbackModel(originalModel);
+        console.warn(`[AI] ${originalModel} overloaded/timeout — falling back to ${fallback}`);
         return await ai.models.generateContent({ ...params, model: fallback });
     }
 }
@@ -73,11 +90,10 @@ export async function generateStreamWithFallback(
     try {
         return await ai.models.generateContentStream(params);
     } catch (err: any) {
-        const is503 = err?.status === 503 || err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE');
-        if (!is503) throw err;
+        if (!isOverloadedError(err)) throw err;
         const originalModel = typeof params.model === 'string' ? params.model : '';
-        const fallback = originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
-        console.warn(`[AI] Model ${originalModel} overloaded (503) — stream falling back to ${fallback}`);
+        const fallback = fallbackModel(originalModel);
+        console.warn(`[AI] ${originalModel} overloaded/timeout — stream falling back to ${fallback}`);
         return await ai.models.generateContentStream({ ...params, model: fallback });
     }
 }
