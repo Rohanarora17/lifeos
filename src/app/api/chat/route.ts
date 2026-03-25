@@ -161,7 +161,7 @@ export async function POST(request: NextRequest) {
         while (loopCount < MAX_TOOL_LOOPS) {
             loopCount++;
 
-            const response = await ai.models.generateContent({
+            const response = await generateWithFallback(ai, {
                 model: MODEL_PRO,
                 contents: contents,
                 config: {
