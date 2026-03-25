@@ -1,0 +1,147 @@
+# LifeOS Guardian Agent: Local-First, Multi-Surface, Eval-Gated
+
+## Summary
+- Rebuild LifeOS around a **session-scoped guardian runtime**, not a dashboard-centric app. The guardian is silent and non-observant when inactive, becomes a hard guardian only during explicit study sessions, and learns across sessions through auditable memory and offline optimization.
+- Split the system into four clear planes:
+  - **Realtime plane**: browser extension + Mac helper + session orchestrator + live guardian UI
+  - **Memory plane**: working, semantic, episodic, and procedural memory plus the existing knowledge graph
+  - **Reasoning plane**: intent parsing, override adjudication, reflection, and tutor submode
+  - **Optimizer plane**: bounded autoresearch loop for prompts, thresholds, and strategies only
+- Keep the hot path deterministic and low-latency. The LLM is a bounded component inside the workflow, not the workflow itself.
+
+## Implementation Changes
+- Introduce a new **local guardian runtime** (`lifeosd` style Mac helper / menubar daemon) that owns:
+  - session state machine
+  - heartbeat scheduler
+  - voice pipeline
+  - block/unblock commands
+  - event normalization
+  - offline optimizer jobs
+- Remove guardian hot-path ownership from Next startup side effects. The current scheduler in [src/instrumentation.ts](/Users/rohan/.gemini/antigravity/scratch/lifeos/src/instrumentation.ts) and [src/lib/scheduler.ts](/Users/rohan/.gemini/antigravity/scratch/lifeos/src/lib/scheduler.ts) should no longer be the source of truth for live session orchestration.
+- Consolidate the split `/api/agent/*` and `/api/extension/*` contract into a single guardian contract:
+  - `POST /api/guardian/session/start`
+  - `POST /api/guardian/session/end`
+  - `POST /api/guardian/events`
+  - `GET /api/guardian/stream`
+  - `POST /api/guardian/override`
+  - `POST /api/voice/push-to-talk`
+  - `GET /api/guardian/day-briefing`
+- Replace ad hoc payloads with explicit interfaces:
+  - `GuardianEvent`
+  - `GuardianState`
+  - `GuardianDecision`
+  - `OverrideRequest`
+  - `OverrideDecision`
+  - `PolicyArtifactVersion`
+  - `EvalRun`
+- Make the extension dumb and session-scoped:
+  - no passive monitoring outside active sessions
+  - emits only normalized tab, idle, and dwell events
+  - receives only `block`, `unblock`, `classify`, and `session_state` commands
+- Adopt a four-layer memory model:
+  - **working memory**: current session state, last interventions, active goal/concept
+  - **semantic memory**: stable user preferences, coaching style, peak hours, recurring distractions
+  - **episodic memory**: full session traces, interventions, overrides, outcomes
+  - **procedural memory**: current best prompt pack, policy tables, weights, override rubric
+- Keep the knowledge graph as the study model, but stop exposing raw SQL to the live agent. The current wide tool surface in [src/app/api/chat/route.ts](/Users/rohan/.gemini/antigravity/scratch/lifeos/src/app/api/chat/route.ts) should be replaced with typed tools and read models.
+- Voice stack defaults:
+  - **Push-to-talk** outside sessions and at session start
+  - **Silero VAD** for local speech gating
+  - **whisper.cpp** for local STT
+  - **Kokoro** for local TTS
+  - macOS `say` only as fallback/bootstrap, not the long-term primary voice
+  - keep voice I/O isolated behind normalized events so the guardian brain does not depend on a specific audio stack
+- Multi-surface v1:
+  - web app remains primary cockpit
+  - Chrome extension remains browser sensor/actuator
+  - Mac helper handles low-latency voice/runtime duties
+  - phone surface is a **PWA + push/notification + override surface**, not a native mobile tracking app
+- Guardian authority model:
+  - inactive: zero monitoring
+  - active: hard guardian may block distractions
+  - every block is explainable
+  - user may argue for an override
+  - override adjudication is AI-assisted but scoped to a target + TTL, never a blanket session disable
+  - every override becomes training data for later reflection/evals
+- Product stance:
+  - guardian-first by default
+  - tutor behavior exists only as an **explicit submode or explicit ask**
+  - no unsolicited lecture/explanation loop during flow
+
+## Autoresearch Loop
+- Do **not** let the optimizer rewrite arbitrary app code, DB schema, or runtime plumbing.
+- Restrict the optimizer to versioned agent artifacts only:
+  - intervention prompt pack
+  - focus-score weights and thresholds
+  - override adjudication rubric
+  - retrieval/memory selection prompts
+  - session planning strategy
+  - voice phrasing policy
+  - red-team defense rules
+- Use a Karpathy-style loop with the same core discipline:
+  - one constrained edit surface
+  - one fixed eval budget
+  - one primary scalar score
+  - automatic keep-or-revert
+  - logged experiment history
+- Define one primary metric: `guardian_eval_score`
+  - weighted scalar across intent accuracy, distraction interception quality, over-intervention penalty, override judgment quality, tone/trust score, and session-outcome proxy
+  - hard fail gates for privacy, unsafe blocking, broken overrides, or regression on critical cases
+- Build the eval harness from three sources:
+  - scripted held-out study scenarios
+  - replayed real session traces
+  - adversarial voice and override suites
+- Persist and version:
+  - `guardian_artifact_versions`
+  - `guardian_eval_cases`
+  - `guardian_eval_runs`
+  - `guardian_promotions`
+  - `guardian_canary_results`
+- Promotion rule:
+  - baseline first
+  - single bundle mutation per run
+  - fixed wall-clock eval budget
+  - promote only if score improves and all hard gates pass
+  - tie-break in favor of simpler artifacts
+  - instant rollback on canary failure
+- Run the optimizer only off-session or on a shadow runtime, never on the live guardian hot path.
+
+## Test Plan
+- Off-state privacy:
+  - zero tab processing
+  - zero mic processing
+  - zero guardian network/events while no session is active
+- Realtime session flow:
+  - lock-in starts session with correct goal/concept mapping
+  - focus score updates continuously
+  - distraction triggers hard block within local realtime budget
+  - override request is judged with a visible rationale
+  - approved override lifts only the requested target and only for the approved TTL
+  - block returns automatically on expiry
+- Voice UX:
+  - push-to-talk release to acknowledgement stays within target local latency
+  - speech queue never talks over itself
+  - urgent speech may interrupt normal speech
+- Personalization:
+  - tone, pacing, and recommendations change only through memory/procedural updates
+  - every adaptive action has an explainability record
+- Optimizer safety:
+  - every promoted artifact version beats baseline on the fixed eval suite
+  - no promotion can modify live code or schema
+  - rollback restores prior behavior without migration work
+
+## Assumptions and Defaults
+- Local-first means raw audio, transcripts, behavioral traces, and eval traces stay on the Mac Mini by default. Any cloud reasoning remains optional and slow-path only.
+- Full multi-surface means web app + Chrome extension + Mac helper + phone PWA/push in v1. It does **not** imply a native phone app or phone-side tracking in v1.
+- Bounded autonomy means the system may self-improve only through eval-gated policy artifact promotion. It may not self-edit live code, migrations, or unrestricted prompts.
+- External anchors for this design:
+  - [karpathy/autoresearch README](https://raw.githubusercontent.com/karpathy/autoresearch/master/README.md)
+  - [karpathy/autoresearch program.md](https://raw.githubusercontent.com/karpathy/autoresearch/master/program.md)
+  - [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+  - [Kokoro](https://github.com/hexgrad/kokoro)
+  - [Silero VAD](https://github.com/snakers4/silero-vad)
+  - [LiveKit Agents voice docs](https://docs.livekit.io/agents/start/voice-ai/)
+  - [LangGraph memory](https://docs.langchain.com/oss/javascript/langgraph/memory)
+  - [LangGraph durable execution](https://docs.langchain.com/oss/python/langgraph/durable-execution)
+  - [OpenAI eval best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
+  - [Promptfoo](https://github.com/promptfoo/promptfoo)

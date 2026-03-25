@@ -44,7 +44,7 @@ export function getLifeOSAppUrl() {
 }
 
 export function getGuardianVoiceAgentModel() {
-  return process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-preview-native-audio-dialog';
+  return process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-native-audio-latest';
 }
 
 export function getGuardianVoiceAgentVoice() {

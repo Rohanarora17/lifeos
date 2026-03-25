@@ -43,3 +43,13 @@ next-env.d.ts
 # LifeOS local data
 data/
 .env.local
+
+# Secrets and credentials
+client_secret*.json
+
+# Binary / large local files
+*.docx
+*.pdf
+
+# Logs
+logs/

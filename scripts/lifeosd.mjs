@@ -5,7 +5,22 @@ import process from 'node:process';
 const APP_URL = process.env.LIFEOS_APP_URL || 'http://127.0.0.1:3000';
 const PING_INTERVAL_MS = Number(process.env.LIFEOSD_PING_MS || '300000'); // 5 min default
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const ALERT_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 const startedAt = new Date().toISOString();
+
+// Sends a plain-text Telegram alert using the configured bot + chat ID.
+// Silent no-op if either is missing.
+async function sendAlert(text) {
+  if (!BOT_TOKEN || !ALERT_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: ALERT_CHAT_ID, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch { /* non-fatal — don't let alert failure crash the daemon */ }
+}
 
 console.log(`[lifeosd] starting at ${startedAt}`);
 console.log(`[lifeosd] appUrl=${APP_URL} pingIntervalMs=${PING_INTERVAL_MS}`);
@@ -14,16 +29,66 @@ console.log(`[lifeosd] telegram=${BOT_TOKEN ? 'configured' : 'not configured'}`)
 
 // ─── Guardian ping ───────────────────────────────────────────────────────────
 
+let appWasDown = false;
+let lastHeapAlertAt = 0;
+const HEAP_ALERT_THRESHOLD_MB = Number(process.env.LIFEOSD_HEAP_ALERT_MB || '400');
+const HEAP_ALERT_COOLDOWN_MS = 60 * 60 * 1000; // max one heap alert per hour
+
 async function pingGuardian(attempt = 0) {
   try {
-    const res = await fetch(`${APP_URL}/api/guardian/soft-watch`, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) {
-      console.error(`[lifeosd] soft-watch ping failed: HTTP ${res.status}`);
+    // Primary ping via soft-watch (also starts the checker)
+    const pingRes = await fetch(`${APP_URL}/api/guardian/soft-watch`, { signal: AbortSignal.timeout(8000) });
+    if (!pingRes.ok) {
+      console.error(`[lifeosd] soft-watch ping failed: HTTP ${pingRes.status}`);
       return;
     }
-    const data = await res.json();
-    const pending = (data.commitments ?? []).filter(c => c.status === 'pending').length;
-    console.log(`[lifeosd] ${new Date().toISOString()} ping ok — ${pending} pending commitment(s)`);
+    const pingData = await pingRes.json();
+    const pending = (pingData.commitments ?? []).filter(c => c.status === 'pending').length;
+
+    // Health check — fetch telemetry every ping
+    let health = null;
+    try {
+      const healthRes = await fetch(`${APP_URL}/api/health`, { signal: AbortSignal.timeout(8000) });
+      if (healthRes.ok) health = await healthRes.json();
+    } catch { /* non-fatal — health endpoint may not exist on older builds */ }
+
+    const heapMb = health?.process?.heapUsedMb ?? 0;
+    const memPct = health?.os?.memUsedPct ?? 0;
+    const dbMb   = health?.db?.sizeMb ?? 0;
+    const uptime = health?.uptime?.human ?? '—';
+    const status = health?.status ?? 'unknown';
+
+    console.log(
+      `[lifeosd] ${new Date().toISOString()} ok | ` +
+      `uptime=${uptime} heap=${heapMb}MB mem=${memPct}% db=${dbMb}MB ` +
+      `pending=${pending} status=${status}`
+    );
+
+    // Recovery alert
+    if (appWasDown) {
+      appWasDown = false;
+      await sendAlert(
+        `✅ <b>LifeOS is back online</b>\n\n` +
+        `Uptime: ${uptime} | Heap: ${heapMb}MB | DB: ${dbMb}MB`
+      );
+    }
+
+    // Heap alert — fires if heap exceeds threshold, at most once per hour
+    if (heapMb > HEAP_ALERT_THRESHOLD_MB && Date.now() - lastHeapAlertAt > HEAP_ALERT_COOLDOWN_MS) {
+      lastHeapAlertAt = Date.now();
+      await sendAlert(
+        `⚠️ <b>LifeOS high memory</b>\n\n` +
+        `Heap: <b>${heapMb}MB</b> (threshold ${HEAP_ALERT_THRESHOLD_MB}MB)\n` +
+        `OS mem used: ${memPct}%\n\n` +
+        `Consider restarting: <code>launchctl unload ~/Library/LaunchAgents/com.lifeos.server.plist && launchctl load ~/Library/LaunchAgents/com.lifeos.server.plist</code>`
+      );
+    }
+
+    // DB size alert — warn if over 500 MB
+    if (dbMb > 500) {
+      console.warn(`[lifeosd] DB size ${dbMb}MB — consider running a backup and archive cycle`);
+    }
+
   } catch (err) {
     if (attempt < 5) {
       const delay = Math.min(2000 * Math.pow(2, attempt), 30000);
@@ -31,6 +96,14 @@ async function pingGuardian(attempt = 0) {
       setTimeout(() => pingGuardian(attempt + 1), delay);
     } else {
       console.error(`[lifeosd] could not reach app after ${attempt} attempts: ${String(err)}`);
+      if (!appWasDown) {
+        appWasDown = true;
+        await sendAlert(
+          `⚠️ <b>LifeOS is unreachable</b>\n\n` +
+          `Failed to connect to <code>${APP_URL}</code> after ${attempt} attempts.\n\n` +
+          `Check: <code>launchctl list | grep lifeos</code>`
+        );
+      }
     }
   }
 }

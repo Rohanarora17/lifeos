@@ -12,7 +12,6 @@ const navItems = [
     { href: '/goals', label: 'Goals', icon: '🎯' },
     { href: '/study-plan', label: 'Study Plans', icon: '📚' },
     { href: '/guardian', label: 'Guardian', icon: '🛡️' },
-    { href: '/focus-sessions', label: 'Focus Sessions', icon: '⏱️' },
     { href: '/chat', label: 'Jarvis', icon: '💬' },
     { href: '/store', label: 'Store & Badges', icon: '💎' },
     { href: '/analytics', label: 'Analytics', icon: '📈' },

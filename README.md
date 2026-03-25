@@ -95,6 +95,28 @@ LifeOS can read per-app usage from macOS. To enable:
 
 Without Full Disk Access, it falls back to listing running apps (less detailed).
 
+### Step 6: Enable Local Voice STT With `whisper.cpp` (Optional)
+
+If you want real local speech-to-text for push-to-talk, run a local `whisper.cpp` server and point LifeOS at it.
+
+Add local env:
+
+```bash
+VOICE_MODE=local
+WHISPER_CPP_MODEL=/absolute/path/to/ggml-small.en.bin
+WHISPER_CPP_URL=http://127.0.0.1:8080/inference
+```
+
+Then start the local server:
+
+```bash
+npm run guardian:stt-local
+```
+
+Full setup guide:
+
+- [Local whisper.cpp setup](/Users/rohan/.gemini/antigravity/scratch/lifeos/docs/LOCAL_WHISPER_CPP.md)
+
 ---
 
 ## 📱 Features
@@ -221,6 +243,7 @@ lifeos/
 | Screen time shows 0 apps | Enable Full Disk Access for Terminal in System Settings |
 | Server not starting on boot | Run `bash scripts/install-launchagent.sh` again. Check `launchctl list | grep lifeos` |
 | Port 3000 already in use | `lsof -i :3000` then `kill -9 <PID>`, or change port in `package.json` |
+| Push-to-talk keeps using stub transcript | Set `WHISPER_CPP_URL`, then run `npm run guardian:stt-local` and verify `GET /api/voice/transcribe` shows `configured: true` |
 
 ---
 

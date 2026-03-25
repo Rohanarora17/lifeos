@@ -8,7 +8,7 @@ import { VAD } from '@livekit/agents-plugin-silero';
 import { z } from 'zod';
 
 const DEFAULT_APP_URL = 'http://127.0.0.1:3000';
-const DEFAULT_MODEL = process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-preview-native-audio-dialog';
+const DEFAULT_MODEL = process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-native-audio-latest';
 const DEFAULT_VOICE = process.env.LIVEKIT_GUARDIAN_VOICE || 'Aoede';
 const DEFAULT_AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || 'lifeos-guardian-agent';
 const VOICE_MODE = process.env.VOICE_MODE || 'local';

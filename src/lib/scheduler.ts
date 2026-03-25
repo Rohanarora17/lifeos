@@ -202,6 +202,21 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetch(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
     });
 
+    // Log rotation — runs nightly at 04:00, keeps logs under 10 MB each
+    registerDailyJob('log_rotation', '04:00', async () => {
+        const { execFile } = await import('child_process');
+        const { promisify } = await import('util');
+        const execFileAsync = promisify(execFile);
+        const path = await import('path');
+        const script = path.join(process.cwd(), 'scripts', 'rotate-logs.mjs');
+        try {
+            const { stdout } = await execFileAsync(process.execPath, [script], { timeout: 30_000 });
+            if (stdout) console.log('[Scheduler] log_rotation:', stdout.trim());
+        } catch (err) {
+            console.error('[Scheduler] log_rotation failed:', err);
+        }
+    });
+
     // Guardian policy optimization — runs nightly at 03:30, off hot path, skipped during active sessions
     registerDailyJob('guardian_optimize', '03:30', async () => {
         const res = await fetch(`${baseUrl}/api/guardian/optimize`, { method: 'POST' });
