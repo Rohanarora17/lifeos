@@ -82,62 +82,55 @@ function moodToScore(mood: string | null | undefined): number {
 }
 
 /**
- * Historical average productive_minutes for this hour-of-day bucket (±1h window)
- * from daily_scores + focus_sessions, normalised to [0,1].
+ * Historical average focus quality for this hour-of-day bucket (±1h window)
+ * from guardian_session_summaries, normalised to [0,1].
  */
 function computeTimeOfDayPrior(hourNow: number): number {
   try {
     const db = getDb();
-    // Average focus_score proxy: productive_seconds / (productive + distraction + neutral) per session
-    // started within ±1 hour of current hour across all history
     const rows = db.prepare(`
-      SELECT productive_seconds, distraction_seconds, neutral_seconds
-      FROM focus_sessions
-      WHERE status = 'completed'
+      SELECT average_focus_score / 100.0 as ratio
+      FROM guardian_session_summaries
+      WHERE started_at IS NOT NULL
         AND CAST(strftime('%H', started_at) AS INTEGER) BETWEEN ? AND ?
       ORDER BY started_at DESC
       LIMIT 30
     `).all(Math.max(0, hourNow - 1), Math.min(23, hourNow + 1)) as
-      { productive_seconds: number; distraction_seconds: number; neutral_seconds: number }[];
+      { ratio: number }[];
 
-    if (rows.length === 0) return 0.6; // no history → neutral
-
-    const ratios = rows.map(r => {
-      const total = (r.productive_seconds || 0) + (r.distraction_seconds || 0) + (r.neutral_seconds || 0);
-      return total > 0 ? (r.productive_seconds || 0) / total : 0.5;
-    });
-    return ratios.reduce((s, v) => s + v, 0) / ratios.length;
+    if (rows.length === 0) return 0.6;
+    return rows.reduce((s, r) => s + (r.ratio || 0), 0) / rows.length;
   } catch {
     return 0.6;
   }
 }
 
 /**
- * recent_focus_quality = mean(focus_score * (1 - distraction_ratio)) over last 3 sessions.
+ * recent_focus_quality = mean(focus_score * (1 - distraction_event_ratio)) over last 3 sessions.
  * Removes circularity: discipline signal, not energy itself.
  */
 function computeRecentFocusQuality(): number {
   try {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT productive_seconds, distraction_seconds, neutral_seconds, actual_duration_seconds
-      FROM focus_sessions
-      WHERE status = 'completed' AND actual_duration_seconds > 0
+      SELECT average_focus_score, distraction_events, productive_events, neutral_events
+      FROM guardian_session_summaries
+      WHERE elapsed_minutes > 0
       ORDER BY started_at DESC
       LIMIT 3
     `).all() as {
-      productive_seconds: number;
-      distraction_seconds: number;
-      neutral_seconds: number;
-      actual_duration_seconds: number;
+      average_focus_score: number;
+      distraction_events: number;
+      productive_events: number;
+      neutral_events: number;
     }[];
 
     if (rows.length === 0) return 0.6;
 
     const qualities = rows.map(r => {
-      const total = r.actual_duration_seconds || 1;
-      const focusScore = Math.min(1, (r.productive_seconds || 0) / total);
-      const distractionRatio = Math.min(1, (r.distraction_seconds || 0) / total);
+      const focusScore = Math.min(1, (r.average_focus_score || 0) / 100);
+      const totalEvents = (r.productive_events || 0) + (r.distraction_events || 0) + (r.neutral_events || 0);
+      const distractionRatio = totalEvents > 0 ? Math.min(1, (r.distraction_events || 0) / totalEvents) : 0;
       return focusScore * (1 - distractionRatio);
     });
     return qualities.reduce((s, v) => s + v, 0) / qualities.length;

@@ -64,11 +64,11 @@ export async function generateDeepCorrelations(): Promise<void> {
 
         // 4. Gather 30-day focus sessions
         const focus = db.prepare(`
-            SELECT 
-                date(created_at, 'localtime') as day,
-                SUM(duration_minutes) as focus_minutes
-            FROM focus_sessions
-            WHERE created_at >= datetime('now', '-30 days', 'localtime')
+            SELECT
+                date(COALESCE(started_at, completed_at), 'localtime') as day,
+                SUM(elapsed_minutes) as focus_minutes
+            FROM guardian_session_summaries
+            WHERE COALESCE(started_at, completed_at) >= datetime('now', '-30 days', 'localtime')
             GROUP BY day
         `).all() as any[];
 

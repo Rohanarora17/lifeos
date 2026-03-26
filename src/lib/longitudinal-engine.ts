@@ -258,8 +258,8 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
   const activeTasks = db.prepare(`
     SELECT title
     FROM tasks
-    WHERE status IN ('today', 'doing')
-    ORDER BY updated_at DESC, id DESC
+    WHERE status IN ('todo', 'doing')
+    ORDER BY priority_rank ASC NULLS LAST, updated_at DESC, id DESC
     LIMIT 5
   `).all() as Array<{ title: string }>;
 

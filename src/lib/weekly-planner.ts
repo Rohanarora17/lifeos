@@ -83,8 +83,8 @@ function energyBand(score: number): 'high' | 'medium' | 'low' {
 }
 
 /**
- * Compute per-day-of-week energy forecast from historical focus_sessions.
- * Returns a map {0..6} → [0,1] representing avg productive ratio.
+ * Compute per-day-of-week energy forecast from historical guardian_session_summaries.
+ * Returns a map {0..6} → [0,1] representing avg focus score ratio.
  * Falls back to 0.5 for days with no history.
  */
 function computeDayEnergyMap(): Record<number, number> {
@@ -93,9 +93,9 @@ function computeDayEnergyMap(): Record<number, number> {
     const db = getDb();
     const rows = db.prepare(`
       SELECT strftime('%w', started_at, 'localtime') as dow,
-             AVG(focus_score / 100.0) as avg_focus
-      FROM focus_sessions
-      WHERE started_at IS NOT NULL AND focus_score IS NOT NULL
+             AVG(average_focus_score / 100.0) as avg_focus
+      FROM guardian_session_summaries
+      WHERE started_at IS NOT NULL
       GROUP BY dow
     `).all() as Array<{ dow: string; avg_focus: number }>;
     for (const row of rows) {

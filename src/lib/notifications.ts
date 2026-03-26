@@ -530,7 +530,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
         COUNT(CASE WHEN status = 'done' THEN 1 END) as completed,
         COUNT(*) as total
       FROM tasks 
-      WHERE status IN ('today', 'doing', 'done', 'this_week')
+      WHERE status IN ('todo', 'doing', 'done')
       AND created_at >= datetime('now', '-14 days')
     `).get() as { completed: number; total: number };
 

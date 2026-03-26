@@ -67,25 +67,6 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE behavioral_memory ADD COLUMN source TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE alerts ADD COLUMN title TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE alerts ADD COLUMN priority TEXT DEFAULT NULL').run(); } catch (e) { }
-  // focus_sessions: backfill columns missing from pre-014 schema
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN goal_id INTEGER DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN goal_title TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN task_id INTEGER DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN task_title TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN actual_duration_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN productive_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN distraction_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN neutral_seconds INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_opened INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_blocked INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN tabs_overridden INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN top_domains TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN ai_report TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN status TEXT DEFAULT "completed"').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN ended_at TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN duration_minutes INTEGER DEFAULT 0').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE focus_sessions ADD COLUMN started_at TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare("UPDATE focus_sessions SET started_at = start_time WHERE started_at IS NULL AND start_time IS NOT NULL").run(); } catch (e) { }
   // knowledge_nodes: backfill columns added after initial inline creation
   try { db.prepare('ALTER TABLE knowledge_nodes ADD COLUMN bloom_level INTEGER DEFAULT 1').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE knowledge_nodes ADD COLUMN decay_rate REAL DEFAULT 0.02').run(); } catch (e) { }
@@ -337,6 +318,21 @@ function initSchema(db: Database.Database) {
       INSERT INTO mem_facts_fts(mem_facts_fts, rowid, topic, content, category)
       VALUES ('delete', old.id, old.topic, old.content, old.category);
     END;
+  `);
+
+  // daily_domain_aggregates: migration 010_data_pruning.sql creates and then drops this table
+  // in the same file (-- Down section), so it doesn't exist on fresh installs. Ensure it exists here.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_domain_aggregates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      category TEXT DEFAULT 'neutral',
+      total_duration INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT current_timestamp
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_domain_aggregates_date ON daily_domain_aggregates(date);
+    CREATE INDEX IF NOT EXISTS idx_daily_domain_aggregates_category ON daily_domain_aggregates(category);
   `);
 
   // Insert default settings if not present

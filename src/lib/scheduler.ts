@@ -48,7 +48,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         try {
             const db = getDb();
             const today = new Date().toISOString().slice(0, 10);
-            const pending = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('today','doing')").get() as { c: number }).c;
+            const pending = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','doing')").get() as { c: number }).c;
             const habits = (db.prepare("SELECT COUNT(*) as c FROM habits WHERE archived = 0").get() as { c: number }).c;
             const streak = (db.prepare("SELECT COALESCE(MAX(streak),0) as s FROM habits WHERE archived = 0").get() as { s: number }).s;
             const upcomingEvents = await listUpcomingEvents(12);
@@ -100,7 +100,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                     COALESCE(SUM(CASE WHEN category='distraction' THEN duration_seconds END),0) as dist
                 FROM activities WHERE date(started_at,'localtime') = ?
             `).get(today) as { prod: number; dist: number };
-            const tasks = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE date(created_at,'localtime') <= ? AND status IN ('today','doing','done')").get(today) as { total: number; done: number };
+            const tasks = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE date(created_at,'localtime') <= ? AND status IN ('todo','doing','done')").get(today) as { total: number; done: number };
             const habits = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
             const sessions = (db.prepare("SELECT COUNT(*) as c FROM guardian_session_summaries WHERE date(completed_at,'localtime') = ?").get(today) as { c: number }).c;
             const score = db.prepare("SELECT COALESCE(AVG(score),0) as s FROM daily_scores WHERE date = ?").get(today) as { s: number } | undefined;
@@ -200,20 +200,14 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             const db = getDb();
             const threeDaysAgo = new Date(Date.now() - 3 * 86400_000).toISOString();
 
-            // Tasks active for 3+ days with no recent session covering them
+            // Tasks active for 3+ days without being marked done
             const stuckTasks = db.prepare(`
                 SELECT t.id, t.title
                 FROM tasks t
-                WHERE t.status IN ('doing', 'today')
+                WHERE t.status IN ('doing', 'todo')
                   AND t.blocked_since IS NULL
                   AND t.created_at < ?
-                  AND NOT EXISTS (
-                    SELECT 1 FROM focus_sessions fs
-                    WHERE fs.task_id = t.id
-                      AND fs.status = 'completed'
-                      AND fs.ended_at >= ?
-                  )
-            `).all(threeDaysAgo, threeDaysAgo) as { id: number; title: string }[];
+            `).all(threeDaysAgo) as { id: number; title: string }[];
 
             if (stuckTasks.length > 0) {
                 const now = new Date().toISOString();

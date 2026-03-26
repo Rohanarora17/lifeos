@@ -187,7 +187,7 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
             try {
                 const activeTasks = _db.prepare(`
                     SELECT title, status FROM tasks
-                    WHERE status IN ('today', 'doing')
+                    WHERE status IN ('todo', 'doing')
                     ORDER BY status DESC
                 `).all() as { title: string; status: string }[];
                 if (activeTasks.length > 0) {
@@ -555,7 +555,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
             try {
                 const activeTasks = db.prepare(`
                     SELECT title, status FROM tasks
-                    WHERE status IN ('today', 'doing')
+                    WHERE status IN ('todo', 'doing')
                     ORDER BY status DESC
                 `).all() as { title: string; status: string }[];
                 if (activeTasks.length > 0) {

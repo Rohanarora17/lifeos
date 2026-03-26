@@ -57,13 +57,12 @@ const softWatchMap = globalGuardian.softWatchMap || new Map<string, SoftWatchCom
 // sessionId → Google Calendar event ID (fire-and-forget, best-effort)
 const calendarEventIds = globalGuardian.calendarEventIds || new Map<string, string>();
 
-if (process.env.NODE_ENV !== 'production') {
-  globalGuardian.guardianSessions = guardianSessions;
-  globalGuardian.guardianIntervals = guardianIntervals;
-  globalGuardian.guardianCommands = guardianCommands;
-  globalGuardian.softWatchMap = softWatchMap;
-  globalGuardian.calendarEventIds = calendarEventIds;
-}
+// Always pin maps on global so they survive hot-reloads (dev) and module re-evaluations (prod).
+globalGuardian.guardianSessions = guardianSessions;
+globalGuardian.guardianIntervals = guardianIntervals;
+globalGuardian.guardianCommands = guardianCommands;
+globalGuardian.softWatchMap = softWatchMap;
+globalGuardian.calendarEventIds = calendarEventIds;
 
 function nowIso() {
   return new Date().toISOString();
@@ -171,6 +170,58 @@ function createSessionState(input: {
     personalBestFocusScore: input.personalBestFocusScore ?? null,
     energyComposite: input.energyComposite ?? null,
   };
+}
+
+// Restore ACTIVE sessions from SQLite when the in-memory Map is empty (e.g. after server restart).
+function restoreSessionsFromDb() {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT session_id, target_title, goal_id, goal_title, concept_node_name,
+             started_at, duration_minutes, mood
+      FROM guardian_sessions
+      WHERE state = 'ACTIVE'
+    `).all() as Array<{
+      session_id: string; target_title: string; goal_id: string | null;
+      goal_title: string | null; concept_node_name: string | null;
+      started_at: number; duration_minutes: number; mood: string | null;
+    }>;
+
+    for (const row of rows) {
+      const endsAt = row.started_at + row.duration_minutes * 60_000;
+      if (endsAt <= Date.now()) {
+        // Session expired while server was down — mark complete
+        db.prepare(`UPDATE guardian_sessions SET state = 'COMPLETE' WHERE session_id = ?`).run(row.session_id);
+        continue;
+      }
+      if (guardianSessions.has(row.session_id)) continue; // already in memory
+
+      const session = createSessionState({
+        sessionId: row.session_id,
+        durationMinutes: row.duration_minutes,
+        targetTitle: row.target_title || 'Deep Work',
+        mood: row.mood as 'high' | 'medium' | 'low' | null,
+        goalId: row.goal_id,
+        goalTitle: row.goal_title,
+        conceptNodeName: row.concept_node_name,
+      });
+      // Preserve original timing so the countdown is accurate
+      session.startedAt = row.started_at;
+      session.endsAt = endsAt;
+
+      guardianSessions.set(row.session_id, session);
+      console.log('[guardian] Restored session from DB:', row.session_id, row.target_title);
+
+      if (!guardianIntervals.has(row.session_id)) {
+        const timer = setInterval(() => {
+          void tickGuardianSession(row.session_id, { sessionId: row.session_id, type: 'heartbeat', timestamp: Date.now() });
+        }, 30_000);
+        guardianIntervals.set(row.session_id, timer);
+      }
+    }
+  } catch (err) {
+    console.error('[guardian] restoreSessionsFromDb failed:', err);
+  }
 }
 
 function emitSessionEvent(sessionId: string, payload: Record<string, unknown>) {
@@ -316,6 +367,8 @@ function persistSessionSummary(session: GuardianState) {
     const dominantDistractionDomain =
       Array.from(domainCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
+    const startedAtIso = new Date(session.startedAt).toISOString();
+
     db.prepare(`
       INSERT INTO guardian_session_summaries (
         session_id,
@@ -323,6 +376,7 @@ function persistSessionSummary(session: GuardianState) {
         goal_title,
         concept_node_name,
         mood,
+        started_at,
         duration_minutes,
         elapsed_minutes,
         average_focus_score,
@@ -333,12 +387,13 @@ function persistSessionSummary(session: GuardianState) {
         productive_events,
         neutral_events,
         dominant_distraction_domain
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         target_title = excluded.target_title,
         goal_title = excluded.goal_title,
         concept_node_name = excluded.concept_node_name,
         mood = excluded.mood,
+        started_at = excluded.started_at,
         duration_minutes = excluded.duration_minutes,
         elapsed_minutes = excluded.elapsed_minutes,
         average_focus_score = excluded.average_focus_score,
@@ -356,6 +411,7 @@ function persistSessionSummary(session: GuardianState) {
       session.goalTitle || null,
       session.conceptNodeName || null,
       session.mood || null,
+      startedAtIso,
       session.durationMinutes,
       elapsedMinutes,
       averageFocusScore,
@@ -734,6 +790,7 @@ async function executeDecision(session: GuardianState, decision: GuardianDecisio
 }
 
 export function listGuardianSessions() {
+  if (guardianSessions.size === 0) restoreSessionsFromDb();
   return Array.from(guardianSessions.values()).map(cloneSession);
 }
 
@@ -743,6 +800,7 @@ export function getGuardianSession(sessionId: string) {
 }
 
 export function getActiveGuardianSession(): GuardianState | null {
+  if (guardianSessions.size === 0) restoreSessionsFromDb();
   const active = Array.from(guardianSessions.values()).find(s => s.state === 'ACTIVE' || s.state === 'BREAK');
   return active ? cloneSession(active) : null;
 }
@@ -776,6 +834,24 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   });
 
   guardianSessions.set(sessionId, session);
+
+  // Persist to DB so the session survives server restarts
+  try {
+    getDb().prepare(`
+      INSERT OR IGNORE INTO guardian_sessions
+        (session_id, target_title, goal_id, goal_title, concept_node_name, started_at, duration_minutes, mood)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      sessionId, targetTitle,
+      input.goalId || null, input.goalTitle || null,
+      input.conceptNodeName || input.topic || null,
+      session.startedAt, durationMinutes,
+      input.mood || null
+    );
+  } catch (err) {
+    console.error('[guardian] Failed to persist session to DB:', err);
+  }
+
   linkSoftWatchToSession(sessionId, targetTitle);
 
   // Activate matching tasks → 'doing' (sync, fast keyword match)
@@ -829,6 +905,11 @@ export function endGuardianSession(sessionId: string) {
   session.state = 'COMPLETE';
   clearHeartbeat(sessionId);
   persistSessionSummary(session);
+
+  // Mark persistent session record as complete
+  try {
+    getDb().prepare(`UPDATE guardian_sessions SET state = 'COMPLETE' WHERE session_id = ?`).run(sessionId);
+  } catch { /* non-fatal */ }
 
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
 
@@ -1053,6 +1134,10 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
 }
 
 export async function tickGuardianSession(sessionId: string, inputEvent?: GuardianEvent) {
+  // Lazy restore: if session missing, try to pull it back from DB (handles server restarts)
+  if (!guardianSessions.has(sessionId) && guardianSessions.size === 0) {
+    restoreSessionsFromDb();
+  }
   const session = guardianSessions.get(sessionId);
   const sourceEventType = inputEvent?.type ?? 'system';
   if (!session || session.state !== 'ACTIVE') {
@@ -1258,7 +1343,7 @@ export function getGuardianContext() {
   const activeTasks = db.prepare(`
     SELECT id, title, description, goal_id
     FROM tasks
-    WHERE status IN ('doing', 'today')
+    WHERE status IN ('doing', 'todo')
   `).all();
   const activeSession = listGuardianSessions().find((session) => session.state === 'ACTIVE') || null;
   return { activeGoals, activeTasks, activeSession };

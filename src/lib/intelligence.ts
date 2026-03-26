@@ -810,7 +810,7 @@ export function checkAchievements(): void {
   let maxStreak = 0;
 
   try { tasksDone = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status = 'done'").get() as any).c || 0; } catch (e) { console.error(e); }
-  try { focusSessions = (db.prepare('SELECT COUNT(*) as c FROM focus_sessions').get() as any).c || 0; } catch (e) { console.error(e); }
+  try { focusSessions = (db.prepare('SELECT COUNT(*) as c FROM guardian_session_summaries').get() as any).c || 0; } catch (e) { console.error(e); }
 
   try {
     const allCheckins = db.prepare('SELECT habit_id, date FROM habit_checkins WHERE completed = 1').all() as any[];

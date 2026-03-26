@@ -447,10 +447,10 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
 
   // ── Focus consistency (daily deep work minutes) ──
   const focusByDay = db.prepare(`
-    SELECT session_date, SUM(duration_minutes) as deep_mins
-    FROM focus_sessions
-    WHERE session_date >= date('now', '-${days} days') AND focus_type IN ('deep', 'moderate')
-    GROUP BY session_date
+    SELECT date(started_at, 'localtime') as session_date, SUM(elapsed_minutes) as deep_mins
+    FROM guardian_session_summaries
+    WHERE started_at >= datetime('now', '-${days} days') AND average_focus_score >= 50
+    GROUP BY date(started_at, 'localtime')
   `).all() as { session_date: string; deep_mins: number }[];
 
   const focusValues = focusByDay.map(f => f.deep_mins);
@@ -599,9 +599,10 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
     }
     case 'deep_work_minutes': {
       const r = db.prepare(`
-        SELECT COALESCE(SUM(duration_minutes), 0) as v
-        FROM focus_sessions WHERE focus_type IN ('deep')
-        AND session_date >= date('now', '${range}', '${offset}') AND session_date < date('now', '${baseOffset}')
+        SELECT COALESCE(SUM(elapsed_minutes), 0) as v
+        FROM guardian_session_summaries WHERE average_focus_score >= 70
+        AND date(started_at, 'localtime') >= date('now', '${range}', '${offset}')
+        AND date(started_at, 'localtime') < date('now', '${baseOffset}')
       `).get() as { v: number };
       return r.v;
     }
@@ -689,16 +690,16 @@ export function classifyArchetype(days: number = 30): Archetype {
 
   // Work style: session duration distribution
   const sessionDurations = db.prepare(`
-    SELECT duration_minutes, focus_type FROM focus_sessions
-    WHERE session_date >= date('now', '-${days} days')
-  `).all() as { duration_minutes: number; focus_type: string }[];
+    SELECT elapsed_minutes as duration_minutes, average_focus_score FROM guardian_session_summaries
+    WHERE started_at >= datetime('now', '-${days} days')
+  `).all() as { duration_minutes: number; average_focus_score: number }[];
 
   const avgSessionDuration = sessionDurations.length > 0
     ? sessionDurations.reduce((s, d) => s + d.duration_minutes, 0) / sessionDurations.length
     : 15;
 
-  const deepSessions = sessionDurations.filter(s => s.focus_type === 'deep').length;
-  const fragmentedSessions = sessionDurations.filter(s => s.focus_type === 'fragmented').length;
+  const deepSessions = sessionDurations.filter(s => s.average_focus_score >= 70).length;
+  const fragmentedSessions = sessionDurations.filter(s => s.average_focus_score < 40).length;
 
   let workStyle = 'sprinter';
   if (avgSessionDuration > 45 && deepSessions > sessionDurations.length * 0.3) workStyle = 'deep-diver';
@@ -1067,17 +1068,6 @@ export async function runDeepAnalysis(): Promise<{
     WHERE created_at >= datetime('now', '-30 days')
   `).get() as { total: number; ack: number };
   const nudgeEffectiveness = nudgeStats.total > 0 ? (nudgeStats.ack || 0) / nudgeStats.total : 0.5;
-
-  // Save focus sessions
-  const insertSession = db.prepare(`
-    INSERT INTO focus_sessions (session_date, start_time, end_time, duration_minutes, focus_type, primary_domain, primary_category, tab_switches, context_switches, flow_state_detected)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const s of sessions) {
-    try {
-      insertSession.run(today, s.startTime, s.endTime, s.durationMinutes, s.focusType, s.primaryDomain, s.primaryCategory, s.tabSwitches, s.contextSwitches, s.flowStateDetected ? 1 : 0);
-    } catch { /* ignore duplicates */ }
-  }
 
   // Save snapshot
   const analysisData = { focusScore, entropy, consistency, archetype, goalAlignment, peakHours };
