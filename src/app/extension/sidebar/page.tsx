@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import GuardianVoiceRoom from '@/components/GuardianVoiceRoom';
+import { useGuardianSession } from '@/hooks/useGuardianSession';
 
 interface Task {
     id: number;
@@ -31,43 +32,35 @@ function getChromeRuntime(): ChromeRuntime | undefined {
 }
 
 export default function ExtensionSidebar() {
+    const { session, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
     const [tasks, setTasks] = useState<Task[]>([]);
     const [goals, setGoals] = useState<Goal[]>([]);
     const [stats, setStats] = useState<DashStats | null>(null);
-
-    // Focus session state
-    const [focusActive, setFocusActive] = useState(false);
     const [focusTarget, setFocusTarget] = useState('');
-    const [focusTargetLabel, setFocusTargetLabel] = useState('');
     const [focusDuration, setFocusDuration] = useState(60);
-    const [timeLeft, setTimeLeft] = useState(0);
-    const [blockedCount, setBlockedCount] = useState(0);
-    const [overrideCount, setOverrideCount] = useState(0);
-    const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
+    // Notify extension background when session state changes
+    useEffect(() => {
+        const rt = getChromeRuntime();
+        if (!rt) return;
+        if (session.active) {
+            rt.sendMessage({ type: 'START_GUARDIAN', context: { sessionId: session.sessionId, targetTitle: session.targetTitle, durationMinutes: session.durationMinutes, startedAt: session.startedAt } });
+        } else {
+            rt.sendMessage({ type: 'STOP_GUARDIAN' });
+        }
+    }, [session.active, session.sessionId]);
+
+    // Poll tasks/goals/stats (separate from session — handled by hook)
     const fetchContext = useCallback(async () => {
         try {
-            const [sessionRes, dashRes] = await Promise.all([
-                fetch('/api/extension/session'),
+            const [contextRes, dashRes] = await Promise.all([
+                fetch('/api/guardian/state'),
                 fetch('/api/dashboard'),
             ]);
-            const sessionData = await sessionRes.json();
+            const contextData = await contextRes.json();
             const dashData = await dashRes.json();
-
-            if (sessionData.activeTasks) setTasks(sessionData.activeTasks);
-            if (sessionData.activeGoals) setGoals(sessionData.activeGoals);
-            if (sessionData.activeSession?.state === 'ACTIVE') {
-                setActiveSessionId(sessionData.activeSession.sessionId);
-                setFocusActive(true);
-                setFocusTargetLabel(sessionData.activeSession.targetTitle || 'Focus Session');
-                setFocusDuration(sessionData.activeSession.durationMinutes || 60);
-
-                if (sessionData.activeSession.startedAt) {
-                    const elapsedSec = Math.floor((Date.now() - sessionData.activeSession.startedAt) / 1000);
-                    const totalSec = (sessionData.activeSession.durationMinutes || 60) * 60;
-                    setTimeLeft(Math.max(0, totalSec - elapsedSec));
-                }
-            }
+            if (contextData.activeTasks) setTasks(contextData.activeTasks);
+            if (contextData.activeGoals) setGoals(contextData.activeGoals);
             if (dashData.today) {
                 setStats({
                     score: dashData.today.score,
@@ -80,107 +73,47 @@ export default function ExtensionSidebar() {
     }, []);
 
     useEffect(() => {
-        const bootstrapTimer = setTimeout(() => {
-            void fetchContext();
-        }, 0);
-        const interval = setInterval(fetchContext, 30000);
-        return () => {
-            clearTimeout(bootstrapTimer);
-            clearInterval(interval);
-        };
+        fetchContext();
+        const interval = setInterval(fetchContext, 30_000); // tasks/stats refresh slower
+        return () => clearInterval(interval);
     }, [fetchContext]);
 
-    const endFocusSession = useCallback(async () => {
-        setFocusActive(false);
-        setTimeLeft(0);
-        const sessionId = activeSessionId;
-        setActiveSessionId(null);
-
-        if (sessionId) {
-            try {
-                await fetch('/api/guardian/session/end', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId }),
-                });
-            } catch { }
-        }
-
-        try {
-            const chromeRuntime = getChromeRuntime();
-            if (chromeRuntime) {
-                chromeRuntime.sendMessage({ type: 'STOP_GUARDIAN' });
-            } else if (window.parent !== window) {
-                window.parent.postMessage({ type: 'STOP_GUARDIAN' }, '*');
-            }
-        } catch { }
-
-        fetchContext();
-    }, [activeSessionId, fetchContext]);
-
-    // Focus timer countdown
+    // Auto-end when timer hits zero
     useEffect(() => {
-        let tickTimer: ReturnType<typeof setInterval> | null = null;
-        let completionTimer: ReturnType<typeof setTimeout> | null = null;
-        if (focusActive && timeLeft > 0) {
-            tickTimer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
-        } else if (focusActive && timeLeft === 0) {
-            completionTimer = setTimeout(() => {
-                void endFocusSession();
-            }, 0);
+        if (session.active && session.timeLeftSeconds === 0) {
+            endGuardianSession();
         }
-        return () => {
-            if (tickTimer) clearInterval(tickTimer);
-            if (completionTimer) clearTimeout(completionTimer);
-        };
-    }, [endFocusSession, focusActive, timeLeft]);
+    }, [session.active, session.timeLeftSeconds, endGuardianSession]);
+
+    const endFocusSession = useCallback(async () => {
+        await endGuardianSession();
+        // Parent window fallback (iframe context)
+        if (window.parent !== window) {
+            window.parent.postMessage({ type: 'STOP_GUARDIAN' }, '*');
+        }
+    }, [endGuardianSession]);
 
     const startFocus = async () => {
         if (!focusTarget) return;
-
-        let goalId = null, goalTitle = null, taskTitle = null;
         const selectedOption = document.querySelector<HTMLOptionElement>(`#sidebar-focus-target option[value="${focusTarget}"]`);
         const label = selectedOption?.textContent || '';
-
+        let goalId = null, goalTitle = null, taskTitle = null;
         if (focusTarget.startsWith('goal-')) {
             goalId = parseInt(focusTarget.replace('goal-', ''));
             goalTitle = label;
         } else if (focusTarget.startsWith('task-')) {
             taskTitle = label;
         }
-
-        try {
-            const res = await fetch('/api/guardian/session/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    goalId: goalId ? String(goalId) : null,
-                    goalTitle,
-                    conceptNodeName: taskTitle || goalTitle || label,
-                    durationMinutes: focusDuration,
-                    source: 'extension',
-                }),
-            });
-            const data = await res.json();
-            if (!data.session) return;
-
-            setActiveSessionId(data.session.sessionId);
-            setFocusTargetLabel(label);
-            setTimeLeft(focusDuration * 60);
-            setBlockedCount(0);
-            setOverrideCount(0);
-            setFocusActive(true);
-
-            const chromeRuntime = getChromeRuntime();
-            if (chromeRuntime) {
-                chromeRuntime.sendMessage({
-                    type: 'START_GUARDIAN',
-                    context: data.session,
-                });
-            } else if (window.parent !== window) {
-                window.parent.postMessage({ type: 'START_GUARDIAN', context: data.session }, '*');
-            }
-        } catch { }
+        const sessionId = await startGuardianSession({
+            goalId: goalId ? String(goalId) : null,
+            goalTitle,
+            conceptNodeName: taskTitle || goalTitle || label,
+            durationMinutes: focusDuration,
+            source: 'extension',
+        });
+        if (sessionId && window.parent !== window) {
+            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: label, durationMinutes: focusDuration } }, '*');
+        }
     };
 
     const formatTimer = (seconds: number) => {
@@ -259,44 +192,36 @@ export default function ExtensionSidebar() {
             {/* Focus Session */}
             <div style={{ padding: '0 10px 8px' }}>
                 <div style={{
-                    background: focusActive
+                    background: session.active
                         ? 'linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.08))'
                         : '#1a1a2e',
-                    border: `1px solid ${focusActive ? 'rgba(59,130,246,0.5)' : '#2a2a40'}`,
+                    border: `1px solid ${session.active ? 'rgba(59,130,246,0.5)' : '#2a2a40'}`,
                     borderRadius: '10px', padding: '10px',
                 }}>
                     <div style={{
                         fontSize: '10px', color: '#8888a0', textTransform: 'uppercase' as const,
                         letterSpacing: '0.5px', marginBottom: '6px', fontWeight: 600,
                     }}>
-                        🎯 {focusActive ? 'Focus Active' : 'Focus Session'}
+                        🎯 {session.active ? 'Guardian Active' : 'Start Session'}
                     </div>
 
-                    {focusActive ? (
+                    {session.active ? (
                         <>
                             <div style={{ textAlign: 'center', fontSize: '11px', color: '#8888a0' }}>
-                                {focusTargetLabel}
+                                {session.targetTitle}
                             </div>
                             <div style={{
                                 fontSize: '32px', fontWeight: 900, textAlign: 'center',
                                 color: '#3b82f6', fontVariantNumeric: 'tabular-nums',
                                 margin: '4px 0', letterSpacing: '2px',
                             }}>
-                                {formatTimer(timeLeft)}
+                                {formatTimer(session.timeLeftSeconds)}
                             </div>
-                            <div style={{
-                                display: 'flex', justifyContent: 'center', gap: '16px',
-                                fontSize: '11px', marginBottom: '8px',
-                            }}>
-                                <div style={{ textAlign: 'center' }}>
-                                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#ef4444' }}>{blockedCount}</div>
-                                    <div style={{ color: '#8888a0' }}>Blocked</div>
+                            {session.focusScore !== null && (
+                                <div style={{ textAlign: 'center', fontSize: '11px', color: '#8888a0', marginBottom: '8px' }}>
+                                    Focus Score: <strong style={{ color: '#3b82f6' }}>{Math.round(session.focusScore)}</strong>
                                 </div>
-                                <div style={{ textAlign: 'center' }}>
-                                    <div style={{ fontWeight: 700, fontSize: '14px', color: '#eab308' }}>{overrideCount}</div>
-                                    <div style={{ color: '#8888a0' }}>Overrides</div>
-                                </div>
-                            </div>
+                            )}
                             <button
                                 onClick={endFocusSession}
                                 style={{
@@ -307,10 +232,10 @@ export default function ExtensionSidebar() {
                             >
                                 End Session
                             </button>
-                            {activeSessionId ? (
+                            {session.sessionId ? (
                                 <GuardianVoiceRoom
-                                    sessionId={activeSessionId}
-                                    targetTitle={focusTargetLabel || 'Focus Session'}
+                                    sessionId={session.sessionId}
+                                    targetTitle={session.targetTitle ?? 'Focus Session'}
                                 />
                             ) : null}
                         </>

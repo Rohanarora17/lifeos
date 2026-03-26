@@ -41,7 +41,8 @@ async function loadFocusSection() {
   const focusEl = document.getElementById('focus-section');
   if (!focusEl) return;
 
-  const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'GET_GUARDIAN_STATUS' }, r));
+  // SYNC_SESSION forces a server check first so Telegram/dashboard-started sessions show up immediately
+  const status = await new Promise(r => chrome.runtime.sendMessage({ type: 'SYNC_SESSION' }, r));
 
   if (status && status.active) {
     renderActiveFocusSession(focusEl, status);
@@ -53,7 +54,7 @@ async function loadFocusSection() {
 async function renderFocusStarter(el) {
   let goals = [], tasks = [];
   try {
-    const res = await fetch(`${API_BASE}/extension/session`);
+    const res = await fetch(`${API_BASE}/guardian/state`);
     const data = await res.json();
     goals = data.activeGoals || [];
     tasks = data.activeTasks || [];

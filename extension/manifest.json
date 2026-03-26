@@ -13,7 +13,8 @@
     "storage",
     "contextMenus",
     "sidePanel",
-    "scripting"
+    "scripting",
+    "windows"
   ],
   "host_permissions": [
     "http://localhost:3000/*",

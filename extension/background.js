@@ -216,7 +216,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-    if (!guardianActive) return; // HARD STOP
+    // Always check for externally-started sessions (Telegram, dashboard) when user switches tabs
+    if (!guardianActive) {
+        await checkExternalSession();
+        return;
+    }
     try {
         const tab = await chrome.tabs.get(activeInfo.tabId);
         if (isPrivacyBlocked(tab.url)) return;
@@ -224,6 +228,14 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
         const groupInfo = await resolveTabGroup(tab.groupId);
         reportTabActivity(activeInfo.tabId, tab.url, tab.title, groupInfo);
     } catch (e) { }
+});
+
+// Sync when Chrome window regains focus (e.g. user Alt-Tabs back after starting a session via Telegram)
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+    if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+    if (!guardianActive) {
+        await checkExternalSession();
+    }
 });
 
 async function resolveTabGroup(groupId) {
@@ -357,7 +369,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 async function checkExternalSession() {
     try {
         const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/extension/session`, { headers });
+        const res = await fetch(`${API_BASE}/guardian/state`, { headers });
         if (!res.ok) return;
         const data = await res.json();
         const serverActive = data.activeSession?.state === 'ACTIVE';
@@ -431,6 +443,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'GET_GUARDIAN_STATUS') {
         sendResponse(buildGuardianStatus());
     }
+
+    // Force a fresh server check, then return updated status — used by popup on open
+    if (msg.type === 'SYNC_SESSION') {
+        checkExternalSession().then(() => {
+            sendResponse(buildGuardianStatus());
+        });
+    }
+
 
     if (msg.type === 'GET_CURRENT_ACTIVITY') {
         const current = activeTabs.get('current');
