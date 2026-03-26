@@ -96,15 +96,6 @@ function initSchema(db: Database.Database) {
   // mem_facts: embedding vector (JSON float array) for semantic search at scale
   try { db.prepare('ALTER TABLE mem_facts ADD COLUMN embedding TEXT DEFAULT NULL').run(); } catch (e) { }
 
-  // ─── Student Task Architecture — new task metadata columns ─────────────────
-  try { db.prepare("ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'task'").run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE tasks ADD COLUMN due_time TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE tasks ADD COLUMN course TEXT DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE tasks ADD COLUMN priority_rank INTEGER DEFAULT NULL').run(); } catch (e) { }
-  try { db.prepare('ALTER TABLE tasks ADD COLUMN priority_reason TEXT DEFAULT NULL').run(); } catch (e) { }
-  // Migrate old kanban status values to simplified todo/doing/done model
-  try { db.prepare("UPDATE tasks SET status = 'todo' WHERE status IN ('backlog','next','this_week','today')").run(); } catch (e) { }
-
   // ─── P0.2: tasks — energy routing + friction detection ────────────────────
   try { db.prepare("ALTER TABLE tasks ADD COLUMN energy_required TEXT DEFAULT 'medium'").run(); } catch (e) { }
   try { db.prepare("ALTER TABLE tasks ADD COLUMN complexity TEXT DEFAULT 'familiar'").run(); } catch (e) { }
