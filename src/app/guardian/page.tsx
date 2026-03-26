@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import GuardianDashboard from '@/components/GuardianDashboard';
+import { useGuardianSession } from '@/hooks/useGuardianSession';
 
 interface DayBriefing {
   recentSessions: number;
@@ -46,8 +47,8 @@ const QUALITY_COLOR: Record<string, string> = {
 };
 
 export default function GuardianPage() {
+  const { session: activeSession, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
-  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [topic, setTopic] = useState('');
@@ -188,19 +189,6 @@ export default function GuardianPage() {
     setWeeklyPlanLoading(false);
   };
 
-  const fetchActiveSession = useCallback(async () => {
-    try {
-      const res = await fetch('/api/extension/session');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.activeSession?.state === 'ACTIVE') {
-        setActiveSession(data.activeSession);
-      } else {
-        setActiveSession(null);
-      }
-    } catch { }
-  }, []);
-
   const fetchHistoryData = useCallback(async () => {
     try {
       const res = await fetch('/api/guardian/history');
@@ -231,10 +219,10 @@ export default function GuardianPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchBriefing(), fetchActiveSession(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
-    const interval = setInterval(fetchBriefing, 60_000);
-    return () => clearInterval(interval);
-  }, [fetchBriefing, fetchActiveSession, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
+    Promise.all([fetchBriefing(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
+    const briefingInterval = setInterval(fetchBriefing, 60_000);
+    return () => { clearInterval(briefingInterval); };
+  }, [fetchBriefing, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
 
   // Pre-fill topic from briefing
   useEffect(() => {
@@ -246,36 +234,19 @@ export default function GuardianPage() {
   const startSession = async () => {
     if (!topic.trim()) { topicRef.current?.focus(); return; }
     setStarting(true);
-    try {
-      const res = await fetch('/api/guardian/session/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: topic.trim(),
-          durationMinutes: duration,
-          mood: mood || null,
-          source: 'dashboard',
-        }),
-      });
-      const data = await res.json();
-      if (data.session) {
-        setActiveSession(data.session);
-        setTopic('');
-      }
-    } catch { }
+    const id = await startGuardianSession({
+      conceptNodeName: topic.trim(),
+      durationMinutes: duration,
+      mood: mood || null,
+      source: 'dashboard',
+    });
+    if (id) setTopic('');
     setStarting(false);
   };
 
   const endSession = async () => {
-    if (!activeSession) return;
-    try {
-      await fetch('/api/guardian/session/end', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: activeSession.sessionId }),
-      });
-    } catch { }
-    setActiveSession(null);
+    if (!activeSession.active) return;
+    await endGuardianSession();
     await fetchBriefing();
   };
 
@@ -381,18 +352,18 @@ export default function GuardianPage() {
           Guardian
         </div>
         <h1 style={{ fontSize: '28px', fontWeight: 900, color: '#f0f0f5', margin: 0, letterSpacing: '-0.5px' }}>
-          {activeSession ? 'Session Active' : (briefing?.openingMessage ?? 'Ready when you are.')}
+          {activeSession.active ? 'Session Active' : (briefing?.openingMessage ?? 'Ready when you are.')}
         </h1>
       </div>
 
       {/* Live Session — shown when active */}
-      {activeSession ? (
+      {activeSession.active ? (
         <div style={{ marginBottom: '28px' }}>
           <GuardianDashboard
-            sessionId={activeSession.sessionId}
+            sessionId={activeSession.sessionId!}
             plannedMinutes={activeSession.durationMinutes}
-            targetTitle={activeSession.targetTitle}
-            startedAt={activeSession.startedAt}
+            targetTitle={activeSession.targetTitle ?? 'Focus Session'}
+            startedAt={activeSession.startedAt ?? undefined}
           />
           <button
             onClick={endSession}

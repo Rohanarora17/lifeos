@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     const taskStats = db.prepare(`
       SELECT 
         COUNT(CASE WHEN status = 'done' AND date(completed_at) = ? THEN 1 END) as completed_today,
-        COUNT(CASE WHEN status IN ('today', 'doing') THEN 1 END) as active_today,
+        COUNT(CASE WHEN status IN ('todo', 'doing') THEN 1 END) as active_today,
         COUNT(CASE WHEN status = 'doing' THEN 1 END) as in_progress
       FROM tasks
     `).get(today) as Record<string, number>;

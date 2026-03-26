@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import ScoreRing from '@/components/ScoreRing';
 import DonutChart from '@/components/DonutChart';
 import AICoach from '@/components/AICoach';
+import { useGuardianSession } from '@/hooks/useGuardianSession';
 
 interface DashboardData {
   today: {
@@ -48,57 +49,14 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
   const [showAlerts, setShowAlerts] = useState(false);
-  const [focusSessions, setFocusSessions] = useState<any[]>([]);
-  const [focusData, setFocusData] = useState<{
-    taskId: number | null;
-    taskTitle: string | null;
-    durationMins: number;
-    timeLeft: number;
-    isActive: boolean;
-  }>({ taskId: null, taskTitle: null, durationMins: 25, timeLeft: 0, isActive: false });
+  const { session, start: startSession, end: endSession } = useGuardianSession();
+  const focusSessions: any[] = []; // Legacy section hidden — guardian history is at /guardian
   const [liveFocusStats, setLiveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
 
+  // Reset live stats when a new session starts
   useEffect(() => {
-    const sse = new EventSource('/api/sse');
-
-    sse.addEventListener('activities_updated', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data && data.new_activities) {
-          setLiveFocusStats(prev => {
-            let prod = prev.productiveSeconds;
-            let dist = prev.distractionSeconds;
-            data.new_activities.forEach((a: any) => {
-              if (a.category === 'productive') prod += a.duration_seconds || 0;
-              if (a.category === 'distraction') dist += a.duration_seconds || 0;
-            });
-            return { productiveSeconds: prod, distractionSeconds: dist };
-          });
-        }
-      } catch (err) { }
-    });
-
-    sse.addEventListener('focus_session_started', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        setFocusData({
-          taskId: data.taskId || null,
-          taskTitle: data.taskTitle || data.goalTitle || 'Deep Work Session',
-          durationMins: data.durationMinutes || 60,
-          timeLeft: (data.durationMinutes || 60) * 60,
-          isActive: true
-        });
-        setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
-      } catch (err) { }
-    });
-
-    sse.addEventListener('focus_session_completed', () => {
-      setFocusData(prev => ({ ...prev, isActive: false }));
-      setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
-    });
-
-    return () => sse.close();
-  }, []);
+    if (session.active) setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
+  }, [session.sessionId]);
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -109,93 +67,27 @@ export default function DashboardPage() {
       .then(r => r.json())
       .then(d => setAlerts(d.alerts || []))
       .catch(() => { });
-    fetch('/api/focus-session')
-      .then(r => r.json())
-      .then(d => {
-        const sessions = d.sessions || [];
-        // Helper: parse SQLite datetime string safely as UTC
-        const parseUtc = (s: string) => {
-          if (!s) return NaN;
-          // SQLite datetime('now') returns '2026-03-02 21:01:15' without T/Z — treat as UTC
-          const normalized = s.includes('T') ? s : s.replace(' ', 'T') + 'Z';
-          return new Date(normalized).getTime();
-        };
-
-        setFocusSessions(sessions);
-        // Hydrate active focus session started from extension popup
-        const active = sessions.find((s: any) => s.status === 'active');
-        if (active && !focusData.isActive) {
-          const startedMs = parseUtc(active.started_at);
-          const totalSecs = (active.duration_minutes || 60) * 60;
-          const elapsed = Math.round((Date.now() - startedMs) / 1000);
-          const remaining = Math.max(0, totalSecs - elapsed);
-          if (remaining > 0) {
-            setFocusData({
-              taskId: active.id,
-              taskTitle: active.task_title || active.goal_title || null,
-              durationMins: active.duration_minutes || 60,
-              timeLeft: remaining,
-              isActive: true,
-            });
-          }
-        }
-      })
-      .catch(() => { });
   }, []);
 
+  // Auto-end session when timer hits zero
   useEffect(() => {
-    let int: NodeJS.Timeout;
-    if (focusData.isActive && focusData.timeLeft > 0) {
-      int = setInterval(() => {
-        setFocusData(prev => ({ ...prev, timeLeft: prev.timeLeft - 1 }));
-      }, 1000);
-    } else if (focusData.isActive && focusData.timeLeft === 0) {
-      setFocusData(prev => ({ ...prev, isActive: false }));
-
-      // Save session via new focus-session API
-      fetch('/api/focus-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'complete',
-          sessionId: focusData.taskId, // placeholder
-          actualDurationMinutes: focusData.durationMins,
-          activities: [],
-          blockedCount: 0,
-          overrideCount: 0,
-        })
-      });
-
-      // Refresh stats + sessions
-      fetch('/api/dashboard').then(r => r.json()).then(d => setData(d));
-      fetch('/api/focus-session').then(r => r.json()).then(d => setFocusSessions(d.sessions || []));
+    if (session.active && session.timeLeftSeconds === 0) {
+      endSession().then(() => fetch('/api/dashboard').then(r => r.json()).then(d => setData(d)).catch(() => {}));
     }
-    return () => clearInterval(int);
-  }, [focusData.isActive, focusData.timeLeft]);
+  }, [session.active, session.timeLeftSeconds, endSession]);
 
-  const startFocus = (taskId: number | null, taskTitle: string | null, mins: number = 25) => {
-    setFocusData({ taskId, taskTitle, durationMins: mins, timeLeft: mins * 60, isActive: true });
+  const startFocus = async (goalId: number | null, goalTitle: string | null, taskTitle: string | null, mins: number = 60) => {
+    await startSession({
+      goalId: goalId ? String(goalId) : null,
+      goalTitle,
+      conceptNodeName: taskTitle || goalTitle || 'Focus Session',
+      durationMinutes: mins,
+    });
   };
 
   const cancelFocus = async () => {
-    // Call the API to properly end the session
-    try {
-      await fetch('/api/focus-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'complete',
-          sessionId: focusData.taskId,
-          actualDurationMinutes: Math.round((focusData.durationMins * 60 - focusData.timeLeft) / 60),
-          activities: [],
-          blockedCount: 0,
-          overrideCount: 0,
-        })
-      });
-    } catch { }
-    setFocusData(prev => ({ ...prev, isActive: false, timeLeft: 0 }));
-    // Refresh sessions
-    fetch('/api/focus-session').then(r => r.json()).then(d => setFocusSessions(d.sessions || [])).catch(() => { });
+    await endSession();
+    fetch('/api/dashboard').then(r => r.json()).then(d => setData(d)).catch(() => {});
   };
 
   const markAllRead = async () => {
@@ -230,24 +122,21 @@ export default function DashboardPage() {
     return `${Math.floor(mins / 60)}h ${mins % 60}m`;
   };
 
-  const elapsedSecs = focusData.durationMins * 60 - focusData.timeLeft;
-  const progressPct = focusData.durationMins > 0 ? Math.round((elapsedSecs / (focusData.durationMins * 60)) * 100) : 0;
-
   return (
     <div className="max-w-[1400px] mx-auto space-y-6 animate-fade-in">
       {/* Focus Session Panel — Active or Start */}
-      {focusData.isActive ? (
+      {session.active ? (
         <div className="card relative overflow-hidden" style={{ borderColor: 'var(--accent-purple)', background: 'rgba(157, 78, 221, 0.05)' }}>
           {/* Progress bar at top */}
           <div className="absolute top-0 left-0 h-1 bg-gradient-to-r from-[var(--accent-purple)] to-[var(--accent-blue)]"
-            style={{ width: `${progressPct}%`, transition: 'width 1s linear' }} />
+            style={{ width: `${session.progressPct}%`, transition: 'width 1s linear' }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px', padding: '8px 0' }}>
             {/* Left: Timer */}
             <div style={{ textAlign: 'center', minWidth: '160px' }}>
-              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--accent-purple)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>🎯 Focus Active</p>
+              <p className="text-xs font-semibold mb-1" style={{ color: 'var(--accent-purple)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>🎯 Guardian Active</p>
               <div className="font-mono font-bold tracking-wider" style={{ fontSize: '48px', lineHeight: 1, color: 'var(--accent-purple)' }}>
-                {Math.floor(focusData.timeLeft / 60).toString().padStart(2, '0')}:{(focusData.timeLeft % 60).toString().padStart(2, '0')}
+                {Math.floor(session.timeLeftSeconds / 60).toString().padStart(2, '0')}:{(session.timeLeftSeconds % 60).toString().padStart(2, '0')}
               </div>
               <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>remaining</p>
             </div>
@@ -255,12 +144,12 @@ export default function DashboardPage() {
             {/* Center: Details */}
             <div style={{ flex: 1 }}>
               <p className="text-base font-semibold mb-2">
-                {focusData.taskTitle || 'Deep Work Session'}
+                {session.targetTitle || 'Focus Session'}
               </p>
               {/* Progress bar */}
               <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '4px', height: '8px', overflow: 'hidden', marginBottom: '8px' }}>
                 <div style={{
-                  width: `${progressPct}%`,
+                  width: `${session.progressPct}%`,
                   height: '100%',
                   background: 'linear-gradient(90deg, var(--accent-purple), var(--accent-blue))',
                   borderRadius: '4px',
@@ -268,9 +157,9 @@ export default function DashboardPage() {
                 }} />
               </div>
               <div className="flex gap-4" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                <span>⏱️ Elapsed: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.round(elapsedSecs / 60))}</strong></span>
-                <span>⏳ Remaining: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.ceil(focusData.timeLeft / 60))}</strong></span>
-                <span>📊 {progressPct}% done</span>
+                <span>⏱️ Elapsed: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.round(session.elapsedSeconds / 60))}</strong></span>
+                <span>⏳ Remaining: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(Math.ceil(session.timeLeftSeconds / 60))}</strong></span>
+                <span>📊 {session.progressPct}% done</span>
               </div>
               {liveFocusStats.productiveSeconds > 0 || liveFocusStats.distractionSeconds > 0 ? (
                 <div className="flex gap-4 mt-2" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
@@ -352,24 +241,15 @@ export default function DashboardPage() {
                 const selected = targetEl?.value || '';
                 const selectedOption = targetEl?.options[targetEl.selectedIndex];
                 const mins = parseInt(durationEl?.value || '60');
-                let taskId = null, taskTitle = null;
-                if (selected.startsWith('goal-') || selected.startsWith('task-')) {
-                  taskId = parseInt(selected.split('-')[1]);
-                  taskTitle = selectedOption?.dataset?.title || selectedOption?.textContent?.replace(/^[🎯📋]\s*/, '') || null;
+                let goalId: number | null = null, goalTitle: string | null = null, taskTitle: string | null = null;
+                const label = selectedOption?.dataset?.title || selectedOption?.textContent?.replace(/^[🎯📋]\s*/, '') || null;
+                if (selected.startsWith('goal-')) {
+                  goalId = parseInt(selected.split('-')[1]);
+                  goalTitle = label;
+                } else if (selected.startsWith('task-')) {
+                  taskTitle = label;
                 }
-                // Start locally
-                startFocus(taskId, taskTitle, mins);
-                // Also start on backend
-                fetch('/api/focus-session', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    action: 'start',
-                    goalTitle: selected.startsWith('goal-') ? taskTitle : null,
-                    taskTitle: selected.startsWith('task-') ? taskTitle : null,
-                    durationMinutes: mins,
-                  })
-                }).catch(() => { });
+                startFocus(goalId, goalTitle, taskTitle, mins);
               }}
               style={{
                 padding: '8px 24px',
@@ -621,8 +501,8 @@ export default function DashboardPage() {
                     <button
                       className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-0.5 rounded cursor-pointer"
                       style={{ background: 'var(--accent-purple)', color: 'white' }}
-                      onClick={() => startFocus(t.id, t.title)}
-                      disabled={focusData.isActive}
+                      onClick={() => startFocus(null, null, t.title)}
+                      disabled={session.active}
                     >
                       ⏱️ Focus
                     </button>
