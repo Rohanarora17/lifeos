@@ -1,7 +1,7 @@
 /**
  * session-task-sync.ts
  * Handles automatic task status transitions tied to Guardian sessions:
- *  - Session START: move matching tasks from backlog/next/this_week/today → doing
+ *  - Session START: move matching tasks from todo → doing
  *  - Session END: LLM evaluates which tasks were likely completed; auto-done or adds to review
  */
 
@@ -32,10 +32,10 @@ export function activateTasksForSession(topic: string, goalId?: string | null): 
   const candidates = db.prepare(`
     SELECT id, title, status, priority, goal_id
     FROM tasks
-    WHERE status IN ('today', 'this_week', 'next', 'backlog')
+    WHERE status IN ('todo', 'doing')
     ORDER BY
-      CASE status WHEN 'today' THEN 0 WHEN 'this_week' THEN 1 WHEN 'next' THEN 2 ELSE 3 END,
-      CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
+      CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+      CASE WHEN priority_rank IS NULL THEN 1 ELSE 0 END, priority_rank ASC
     LIMIT 20
   `).all() as TaskRow[];
 
@@ -56,12 +56,12 @@ export function activateTasksForSession(topic: string, goalId?: string | null): 
     }
   }
 
-  // Also activate the first 'today' task even if no keyword match (it's prioritised today)
+  // Also activate the first 'todo' task if no keyword match was found
   if (activated.length === 0) {
-    const topToday = candidates.find(t => t.status === 'today');
-    if (topToday) {
-      db.prepare(`UPDATE tasks SET status = 'doing' WHERE id = ?`).run(topToday.id);
-      activated.push(topToday.id);
+    const topTodo = candidates.find(t => t.status === 'todo' || t.status === 'doing');
+    if (topTodo) {
+      db.prepare(`UPDATE tasks SET status = 'doing' WHERE id = ?`).run(topTodo.id);
+      activated.push(topTodo.id);
     }
   }
 
@@ -143,7 +143,7 @@ export async function evaluateSessionTaskCompletion(
           const task = db.prepare(`SELECT priority FROM tasks WHERE id = ?`).get(a.taskId) as { priority: string } | undefined;
           const coins = task?.priority === 'critical' ? 100 : task?.priority === 'high' ? 40 : task?.priority === 'low' ? 10 : 20;
           db.prepare(`INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)`).run(coins, `Auto-completed Task (ID: ${a.taskId}) after session`);
-        } catch {}
+        } catch { }
         autoDone.push(a.title);
       } else if (a.verdict !== 'not_done') {
         // Add to review queue with assessment context as note

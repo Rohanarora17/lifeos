@@ -8,17 +8,18 @@ import { getIntelligenceProfile, touchIntelligence } from './intelligence';
 // ============================================================
 
 export type AlertType =
-    | 'cognitive_load'    // Too many open tasks (Zeigarnik)
-    | 'focus_drop'        // CUSUM anomaly / distraction spike
-    | 'habit_streak'      // Habit at risk of breaking streak
-    | 'midday_checkin'    // Pulse check
-    | 'goal_gradient'     // Goal near completion — push!
-    | 'goal_deadline'     // Goal deadline approaching
-    | 'task_reminder'     // Task due today/tomorrow
-    | 'efficacy_drop'     // Self-efficacy dropping
-    | 'weekly_review'     // Weekly retrospective ready
-    | 'habit_levelup'     // Habit ready for difficulty increase
-    | 'goal_conflict';    // Goal conflict detected
+    | 'cognitive_load'
+    | 'focus_drop'
+    | 'habit_streak'
+    | 'midday_checkin'
+    | 'goal_gradient'
+    | 'goal_deadline'
+    | 'task_reminder'
+    | 'task_overdue'
+    | 'efficacy_drop'
+    | 'weekly_review'
+    | 'habit_levelup'
+    | 'goal_conflict';
 
 export type Severity = 'info' | 'warning' | 'urgent';
 
@@ -41,6 +42,7 @@ const DEDUP_MINUTES: Record<string, number> = {
     goal_gradient: 240,
     goal_deadline: 720,
     task_reminder: 360,
+    task_overdue: 720,
     efficacy_drop: 1440,
     weekly_review: 10080,
     habit_levelup: 1440,
@@ -414,7 +416,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
     try {
         // 1. Cognitive Load (Zeigarnik Effect) — threshold from UIL, not hardcoded
         const openTasks = (db.prepare(
-            "SELECT COUNT(*) as c FROM tasks WHERE status IN ('today', 'doing')"
+            "SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'doing')"
         ).get() as { c: number }).c;
 
         if (openTasks >= thresholds.cognitiveLoadThreshold) {
@@ -537,27 +539,77 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (rate < 30) {
                 const sent = await sendAlert(
                     'efficacy_drop',
-                    `Your task completion rate is ${rate}% over the last 14 days. Try completing a few quick tasks to rebuild momentum. 💪`,
+                    `Your task completion rate is ${rate}% over the last 14 days. Try completing a few quick tasks to rebuild momentum.`,
                     'warning'
                 );
                 if (sent) triggered.push('efficacy_drop');
             }
         }
 
-        // 7. Task Reminders — tasks due today
-        const dueTasks = db.prepare(`
-      SELECT title FROM tasks 
-      WHERE due_date = ? AND status != 'done'
-    `).all(today) as { title: string }[];
+        // 7. Multi-tier deadline alerts — per task, per tier
+        type Severity = 'info' | 'warning' | 'urgent';
+        const tasksDue = db.prepare(`
+            SELECT id, title, due_date, due_time, task_type, course
+            FROM tasks
+            WHERE due_date IS NOT NULL AND status NOT IN ('done','cancelled')
+        `).all() as { id: number; title: string; due_date: string; due_time: string | null; task_type: string; course: string | null }[];
 
-        if (dueTasks.length > 0 && hour >= 9 && hour <= 10) {
-            const names = dueTasks.slice(0, 3).map(t => `"${t.title}"`).join(', ');
-            const sent = await sendAlert(
-                'task_reminder',
-                `${dueTasks.length} task${dueTasks.length > 1 ? 's' : ''} due today: ${names}`,
-                'info'
-            );
-            if (sent) triggered.push('task_reminder');
+        const ist = Date.now() + 19800000;
+        const today2 = new Date(ist).toISOString().slice(0, 10);
+
+        for (const t of tasksDue) {
+            const todayDate = new Date(today2 + 'T00:00:00');
+            const dueDate = new Date(t.due_date + 'T00:00:00');
+            const daysLeft = Math.round((dueDate.getTime() - todayDate.getTime()) / 86400000);
+            const courseLabel = t.course ? `[${t.course}] ` : '';
+            const timeLabel = t.due_time ? ` ${t.due_time}` : '';
+
+            interface AlertTier { key: string; condition: boolean; severity: Severity; msg: string; }
+            const tiers: AlertTier[] = [
+                {
+                    key: `task_overdue_${t.id}`, condition: daysLeft < 0, severity: 'urgent',
+                    msg: `Overdue: ${courseLabel}${t.title} (was due ${Math.abs(daysLeft)}d ago)`
+                },
+                {
+                    key: `task_due_today_${t.id}`, condition: daysLeft === 0, severity: 'urgent',
+                    msg: `Due TODAY: ${courseLabel}${t.title}${timeLabel}`
+                },
+                {
+                    key: `task_1d_${t.id}`, condition: daysLeft === 1, severity: 'warning',
+                    msg: `Due tomorrow: ${courseLabel}${t.title}${timeLabel}`
+                },
+                {
+                    key: `task_3d_${t.id}`, condition: daysLeft === 3, severity: 'warning',
+                    msg: `${courseLabel}${t.title} due in 3 days${timeLabel}`
+                },
+                {
+                    key: `task_7d_${t.id}`, condition: daysLeft === 7 && (t.task_type === 'assignment' || t.task_type === 'exam'), severity: 'info',
+                    msg: `${courseLabel}${t.title} due in 7 days${timeLabel}`
+                },
+                {
+                    key: `task_14d_${t.id}`, condition: daysLeft === 14 && t.task_type === 'exam', severity: 'info',
+                    msg: `Exam in 14 days: ${courseLabel}${t.title}${timeLabel}`
+                },
+            ];
+
+            for (const tier of tiers) {
+                if (!tier.condition) continue;
+                const dedupWindow = tier.severity === 'urgent' ? (daysLeft < 0 ? 720 : 360) : 1440;
+                const alreadySent = db.prepare(
+                    `SELECT id FROM alerts WHERE type = ? AND created_at >= datetime('now', '-${dedupWindow} minutes') LIMIT 1`
+                ).get(tier.key);
+                if (!alreadySent) {
+                    const alertType = daysLeft < 0 ? 'task_overdue' : 'task_reminder';
+                    db.prepare('INSERT INTO alerts (type, message, severity) VALUES (?, ?, ?)')
+                        .run(tier.key, tier.msg, tier.severity);
+                    console.log(`[Alert] ${tier.severity.toUpperCase()}: ${tier.key} — ${tier.msg}`);
+                    if (tier.severity !== 'info') {
+                        void sendTelegram(formatAlert(alertType as AlertType, tier.msg, tier.severity), 'HTML', ALERT_KEYBOARD);
+                    }
+                    triggered.push(tier.key);
+                }
+                break; // Only fire the highest matching tier per task
+            }
         }
 
         // Cleanup old alerts

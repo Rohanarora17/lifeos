@@ -283,6 +283,7 @@ export function formatMorningBrief(data: {
   upcomingEvents: string[];
   streak: number;
   peakHoursLine?: string | null;
+  deadlines?: Array<{ title: string; due_date: string; due_time: string | null; task_type: string; course: string | null; daysLeft: number }>;
 }): string {
   const events = data.upcomingEvents.length
     ? data.upcomingEvents.slice(0, 3).map(e => `  • ${e}`).join('\n')
@@ -300,12 +301,24 @@ export function formatMorningBrief(data: {
     lines.push(data.peakHoursLine);
   }
 
+  // Deadlines this week
+  if (data.deadlines && data.deadlines.length > 0) {
+    lines.push(``, `⏰ <b>DEADLINES THIS WEEK</b>`);
+    for (const d of data.deadlines) {
+      const courseTag = d.course ? `[${d.course}] ` : '';
+      const timeTag = d.due_time ? ` ${d.due_time}` : '';
+      const urgency = d.daysLeft <= 0 ? '🔴 OVERDUE:' : d.daysLeft === 1 ? '🔴' : '⚠️';
+      const countdown = d.daysLeft < 0 ? `(${Math.abs(d.daysLeft)}d overdue)` : d.daysLeft === 0 ? 'due TODAY' : `in ${d.daysLeft}d`;
+      lines.push(`${urgency} ${courseTag}${d.title} — ${countdown}${timeTag}`);
+    }
+  }
+
   lines.push(
     ``,
     `📅 <b>Today's calendar:</b>`,
     events,
     ``,
-    `Let's make it count. 🚀`,
+    `Let's make it count.`,
   );
 
   return lines.join('\n');
@@ -349,26 +362,6 @@ export function formatStandupBrief(data: {
   return lines.join('\n');
 }
 
-export function formatTasksList(tasks: Array<{
-  title: string;
-  status: string;
-  priority: string;
-  goal_title: string | null;
-  goal_health: string | null;
-  estimated_minutes: number | null;
-  reason: string;
-}>): string {
-  if (tasks.length === 0) return `📋 <b>Tasks</b>\n\nNo actionable tasks found. Add tasks to get started.`;
-  const lines = [`📋 <b>Today's Tasks</b>`, ``];
-  for (const t of tasks.slice(0, 6)) {
-    const pri = t.priority === 'critical' ? '🔴' : t.priority === 'high' ? '🟠' : t.priority === 'medium' ? '🟡' : '⚪';
-    const flag = t.goal_health === 'off_track' ? ' ‼️' : t.goal_health === 'at_risk' ? ' ⚠️' : '';
-    const mins = t.estimated_minutes ? ` · ${t.estimated_minutes}m` : '';
-    const goal = t.goal_title ? ` <i>(${t.goal_title})</i>` : '';
-    lines.push(`${pri} <b>${t.title}</b>${flag}${mins}${goal}`);
-  }
-  return lines.join('\n');
-}
 
 export function formatHabitStatus(habits: Array<{
   title: string;
@@ -495,7 +488,51 @@ export function formatCalibrationStatus(data: {
 
 export function formatSoftWatchReminder(targetTitle: string, minutesUntil: number): string {
   if (minutesUntil <= 0) {
-    return `⏰ <b>Session time!</b>\n\nYou planned to study <b>${targetTitle}</b> right now.\n\nOpen LifeOS to lock in. 🎯`;
+    return `⏰ <b>Session time!</b>\n\nYou planned to study <b>${targetTitle}</b> right now.\n\nOpen LifeOS to lock in.`;
   }
   return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}\n\nGet ready to focus.`;
+}
+
+// ─── Task List Formatter ─────────────────────────────────────────────────────
+
+export function formatTasksList(
+  tasks: Array<{
+    id: number;
+    title: string;
+    task_type?: string;
+    course?: string | null;
+    due_date?: string | null;
+    due_time?: string | null;
+    priority_rank?: number | null;
+    priority_reason?: string | null;
+    status: string;
+  }>,
+  maxItems = 7
+): string {
+  if (tasks.length === 0) return 'No tasks found.';
+
+  const ist = Date.now() + 19800000;
+  const today = new Date(ist).toISOString().slice(0, 10);
+
+  const lines = tasks.slice(0, maxItems).map((t, i) => {
+    const rankTag = t.priority_rank ? `<b>#${t.priority_rank}</b> ` : `${i + 1}. `;
+    const courseTag = t.course ? `[${t.course}] ` : '';
+    const typeTag = t.task_type === 'exam' ? ' 📊' : t.task_type === 'assignment' ? ' 📝' : '';
+
+    let dueBadge = '';
+    if (t.due_date) {
+      const todayD = new Date(today + 'T00:00:00');
+      const dueD = new Date(t.due_date + 'T00:00:00');
+      const days = Math.round((dueD.getTime() - todayD.getTime()) / 86400000);
+      if (days < 0) dueBadge = ` 🔴 overdue`;
+      else if (days === 0) dueBadge = ` 🔴 due today${t.due_time ? ' ' + t.due_time : ''}`;
+      else if (days === 1) dueBadge = ` ⚠️ due tomorrow`;
+      else if (days <= 3) dueBadge = ` ⚠️ in ${days}d`;
+      else dueBadge = ` · in ${days}d`;
+    }
+    const reasonTag = t.priority_reason ? `\n   <i>${t.priority_reason}</i>` : '';
+    return `${rankTag}${courseTag}${t.title}${typeTag}${dueBadge}${reasonTag}`;
+  });
+
+  return lines.join('\n');
 }

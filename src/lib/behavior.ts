@@ -439,7 +439,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
 
   // Only count tasks that were actually committed to (today/doing/done/this_week)
   const taskTotal = (db.prepare(
-    `SELECT COUNT(*) as c FROM tasks WHERE status IN ('today', 'doing', 'done', 'this_week') AND created_at >= datetime('now', '-${days} days')`
+    `SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'doing', 'done') AND created_at >= datetime('now', '-${days} days')`
   ).get() as { c: number }).c;
   const taskCompleted = taskValues.reduce((a, b) => a + b, 0);
   const taskCompletionRate = taskTotal > 0 ? Math.min(1, taskCompleted / taskTotal) : 0;
@@ -1378,7 +1378,7 @@ export function buildGoalsContext(): string {
     // Compute self-efficacy (rolling task success rate)
     const efficacyRow = db.prepare(`
       SELECT COUNT(CASE WHEN status = 'done' THEN 1 END) as completed, COUNT(*) as total
-      FROM tasks WHERE status IN ('today', 'doing', 'done', 'this_week') AND created_at >= datetime('now', '-14 days')
+      FROM tasks WHERE status IN ('todo', 'doing', 'done') AND created_at >= datetime('now', '-14 days')
     `).get() as { completed: number; total: number };
     const selfEfficacy = efficacyRow.total > 0 ? Math.round((efficacyRow.completed / efficacyRow.total) * 100) : 50;
 

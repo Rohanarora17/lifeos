@@ -35,8 +35,8 @@ AVAILABLE ACTIONS:
 - "STANDUP": Show standup brief (energy + suggestions).
 - "STATUS": Current session status.
 - "MENU": Show the full action menu.
-- "CREATE_TASK": Create a new task. Payload: title (required), status (backlog/next/this_week/today, default backlog), priority (low/medium/high/critical, default medium).
-- "UPDATE_TASK": Update an existing task. Payload: searchTitle (text to find it), title (new title), status, priority.
+- "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam — infer from keywords: 'submit/assignment/homework'→assignment, 'exam/midterm/final/test'→exam), status (todo/doing, default todo), priority (low/medium/high/critical, default medium), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (e.g. 'CS 101', 'Personal', or null).
+- "UPDATE_TASK": Update an existing task. Payload: searchTitle (text to find it), title (new title), status (todo/doing/done), priority, due_date, due_time, course, task_type.
 - "DELETE_TASK": Delete a task by title. Payload: searchTitle.
 - "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other, default productivity), deadline (YYYY-MM-DD or null).
 - "DELETE_GOAL": Delete a goal. Payload: searchTitle.
@@ -57,8 +57,12 @@ Respond ONLY with valid JSON:
     "goal": "string",
     "feedback": "string",
     "title": "string",
-    "status": "string",
+    "status": "todo|doing|done",
     "priority": "string",
+    "task_type": "task|assignment|exam",
+    "due_date": "YYYY-MM-DD or null",
+    "due_time": "HH:MM or null",
+    "course": "string or null",
     "searchTitle": "string",
     "searchName": "string",
     "newName": "string",
@@ -133,6 +137,27 @@ function fetchStandupData() {
             weakConcepts = weakConcepts.sort((a, b) => a.mastery - b.mastery).slice(0, 3);
         } catch { /* non-fatal */ }
 
+        const ist = Date.now() + 19800000;
+        const today2 = new Date(ist).toISOString().slice(0, 10);
+
+        // Upcoming deadlines this week
+        let deadlines: Array<{ id: number; title: string; due_date: string; due_time: string | null; task_type: string; course: string | null; daysLeft: number }> = [];
+        try {
+            const db = getDb();
+            const dueTasks = db.prepare(`
+                SELECT id, title, due_date, due_time, task_type, course
+                FROM tasks
+                WHERE due_date IS NOT NULL AND status NOT IN ('done','cancelled')
+                  AND due_date <= date('now', '+7 days')
+                ORDER BY due_date ASC LIMIT 5
+            `).all() as Array<{ id: number; title: string; due_date: string; due_time: string | null; task_type: string; course: string | null }>;
+            deadlines = dueTasks.map(t => {
+                const todayD = new Date(today2 + 'T00:00:00');
+                const dueD = new Date(t.due_date + 'T00:00:00');
+                return { ...t, daysLeft: Math.round((dueD.getTime() - todayD.getTime()) / 86400000) };
+            });
+        } catch { /* non-fatal */ }
+
         return {
             goal: isToday ? goal : null,
             mood: isToday ? mood : null,
@@ -142,6 +167,7 @@ function fetchStandupData() {
             },
             suggestedTasks,
             weakConcepts,
+            deadlines,
         };
     } catch {
         return null;
@@ -272,7 +298,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         const db = getDb();
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(average_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
-        const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','today','doing','this_week')`).get() as { total: number; done: number };
+        const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','todo','doing')`).get() as { total: number; done: number };
         const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
         const emoji = sessRow.avg_focus >= 85 ? '🔥' : sessRow.avg_focus >= 70 ? '✅' : sessRow.avg_focus >= 50 ? '🟡' : '🔴';
         await sendTelegram(
@@ -288,7 +314,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     // /addtask <title>
     if (cmdLower.startsWith('/addtask ')) {
         const title = cmd.slice('/addtask '.length).trim();
-        await executeAction('CREATE_TASK', '', { title, status: 'today', priority: 'medium' });
+        await executeAction('CREATE_TASK', '', { title, status: 'todo', priority: 'medium' });
         return;
     }
     if (cmdLower === '/addtask') {
@@ -573,10 +599,27 @@ export async function executeAction(
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the task be called?', ''); break; }
             const db = getDb();
+            const safeStatus = ['todo', 'doing', 'done'].includes(payload.status as string) ? (payload.status as string) : 'todo';
+            const safeType = ['task', 'assignment', 'exam'].includes(payload.task_type as string) ? (payload.task_type as string) : 'task';
             const result = db.prepare(
-                `INSERT INTO tasks (title, status, priority) VALUES (?, ?, ?)`
-            ).run(title, (payload.status as string | undefined) || 'backlog', (payload.priority as string | undefined) || 'medium');
-            await sendTelegram(`✅ Task created: <b>${title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+                `INSERT INTO tasks (title, status, priority, task_type, due_date, due_time, course) VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).run(
+                title,
+                safeStatus,
+                (payload.priority as string | undefined) || 'medium',
+                safeType,
+                (payload.due_date as string | undefined) || null,
+                (payload.due_time as string | undefined) || null,
+                (payload.course as string | undefined) || null,
+            );
+            const taskId = Number(result.lastInsertRowid);
+            // Fire-and-forget: auto-link + prioritize
+            try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(console.error); } catch { /* non-fatal */ }
+            try { const { triggerPrioritize } = require('./task-priority-ranker') as typeof import('./task-priority-ranker'); triggerPrioritize(); } catch { /* non-fatal */ }
+            const typeLabel = safeType === 'exam' ? ' (exam)' : safeType === 'assignment' ? ' (assignment)' : '';
+            const courseLabel = payload.course ? ` [${payload.course}]` : '';
+            const dueLabel = payload.due_date ? ` · due ${payload.due_date}` : '';
+            await sendTelegram(`✅ Task created: <b>${title}</b>${typeLabel}${courseLabel}${dueLabel}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 

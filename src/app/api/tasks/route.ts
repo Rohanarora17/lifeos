@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { sanitizeText } from '@/lib/sanitize';
 import { propagateMastery } from '@/lib/graph';
 import { autoLinkTaskToGoal } from '@/lib/task-auto-linker';
+import { triggerPrioritize } from '@/lib/task-priority-ranker';
 
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest) {
                 FROM dates
                 LEFT JOIN (
                     SELECT date(created_at) as d, COUNT(*) as count
-                    FROM tasks WHERE status IN ('today', 'doing', 'done', 'this_week')
+                    FROM tasks WHERE status IN ('todo', 'doing', 'done')
                     GROUP BY d
                 ) assigned ON assigned.d = dates.d
                 LEFT JOIN (
@@ -40,20 +41,18 @@ export async function GET(request: NextRequest) {
                 LEFT JOIN (
                     SELECT date(created_at) as d, 
                         COUNT(*) as count
-                    FROM tasks WHERE status IN ('today', 'doing', 'this_week')
+                    FROM tasks WHERE status IN ('todo', 'doing')
                     GROUP BY d
                 ) pending ON pending.d = dates.d
                 ORDER BY dates.d ASC
             `).all() as { date: string; tasks_assigned: number; tasks_completed: number; tasks_pending: number }[];
 
-            // Calculate daily task score for each day
             const historyWithScores = dailyHistory.map(day => {
                 const total = day.tasks_assigned || 1;
                 const score = Math.min(100, Math.round((day.tasks_completed / total) * 100));
                 return { ...day, task_score: day.tasks_assigned > 0 ? score : null };
             });
 
-            // Also return the completed tasks per day with titles
             const completedByDay = db.prepare(`
                 SELECT title, status, date(completed_at) as completed_date, date(created_at) as created_date
                 FROM tasks
@@ -72,7 +71,7 @@ export async function GET(request: NextRequest) {
             params.push(status);
         }
 
-        query += ' ORDER BY position ASC, created_at DESC';
+        query += ' ORDER BY CASE WHEN priority_rank IS NULL THEN 1 ELSE 0 END, priority_rank ASC, position ASC, created_at DESC';
         const tasks = db.prepare(query).all(...params);
 
         return NextResponse.json({ tasks });
@@ -86,7 +85,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { title, description, status, due_date, goal_id, priority } = body;
+        const { title, description, status, due_date, goal_id, priority, task_type, due_time, course } = body;
 
         if (!title) {
             return NextResponse.json({ error: 'title is required' }, { status: 400 });
@@ -94,39 +93,43 @@ export async function POST(request: NextRequest) {
 
         const safeTitle = sanitizeText(title, 500);
         const safeDesc = sanitizeText(description || '', 2000);
+        // Enforce simplified status model
+        const safeStatus = ['todo', 'doing', 'done'].includes(status) ? status : 'todo';
+        const safeType = ['task', 'assignment', 'exam'].includes(task_type) ? task_type : 'task';
 
         const db = getDb();
 
-        // Get max position for the target status column
         const maxPos = db.prepare(
             'SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM tasks WHERE status = ?'
-        ).get(status || 'backlog') as { next_pos: number };
+        ).get(safeStatus) as { next_pos: number };
 
         const stmt = db.prepare(`
-      INSERT INTO tasks (title, description, status, due_date, position, goal_id, priority)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
+            INSERT INTO tasks (title, description, status, due_date, due_time, course, task_type, position, goal_id, priority)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
 
         const result = stmt.run(
             safeTitle,
             safeDesc,
-            status || 'backlog',
+            safeStatus,
             due_date || null,
+            due_time || null,
+            course || null,
+            safeType,
             maxPos.next_pos,
             goal_id || null,
             priority || 'medium'
         );
 
-        const newId = Number(result.lastInsertRowid);
+        const taskId = Number(result.lastInsertRowid);
 
-        // Auto-link to a goal if none was specified (fire-and-forget)
-        if (!goal_id) {
-            void autoLinkTaskToGoal(newId).catch(err =>
-                console.error('[tasks] auto-link failed:', err)
-            );
+        // Fire-and-forget: auto-link to goal + re-rank all tasks
+        if (typeof autoLinkTaskToGoal === 'function') {
+            autoLinkTaskToGoal(taskId).catch(console.error);
         }
+        triggerPrioritize();
 
-        return NextResponse.json({ id: newId }, { status: 201 });
+        return NextResponse.json({ id: taskId }, { status: 201 });
     } catch (error) {
         console.error('Tasks POST error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -137,7 +140,7 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
     try {
         const body = await request.json();
-        const { id, title, description, status, due_date, position, goal_id, priority } = body;
+        const { id, title, description, status, due_date, due_time, course, task_type, position, goal_id, priority, priority_rank } = body;
 
         if (!id) {
             return NextResponse.json({ error: 'id is required' }, { status: 400 });
@@ -145,40 +148,55 @@ export async function PATCH(request: NextRequest) {
 
         const db = getDb();
         const updates: string[] = [];
-        const params: (string | number)[] = [];
+        const params: (string | number | null)[] = [];
 
-        if (title !== undefined) { updates.push('title = ?'); params.push(sanitizeText(title, 500)); }
+        // Track whether we need a re-rank
+        let needsRerank = false;
+
+        if (title !== undefined) {
+            updates.push('title = ?');
+            params.push(sanitizeText(title, 500));
+            needsRerank = true;
+        }
         if (description !== undefined) { updates.push('description = ?'); params.push(sanitizeText(description, 2000)); }
+        if (task_type !== undefined) {
+            const safeType = ['task', 'assignment', 'exam'].includes(task_type) ? task_type : 'task';
+            updates.push('task_type = ?');
+            params.push(safeType);
+            needsRerank = true;
+        }
+        if (course !== undefined) { updates.push('course = ?'); params.push(course); }
         if (status !== undefined) {
+            const safeStatus = ['todo', 'doing', 'done'].includes(status) ? status : 'todo';
             updates.push('status = ?');
-            params.push(status);
-            // If moving to 'done', set completed_at and award coins based on priority
-            if (status === 'done') {
+            params.push(safeStatus);
+            if (safeStatus === 'done') {
                 updates.push("completed_at = datetime('now')");
-
-                // Get task priority to award coins
                 try {
                     const task = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(id) as { priority: string };
-                    let coins = 20; // default medium
+                    let coins = 20;
                     if (task) {
                         if (task.priority === 'low') coins = 10;
                         if (task.priority === 'high') coins = 40;
                         if (task.priority === 'critical') coins = 100;
                     }
-                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(coins, 'Completed Task (ID: ' + id + ')');
-
-                    // Propagate mastery through knowledge graph for this task
-                    try { propagateMastery(id, null); } catch (e) { /* non-critical */ }
+                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(coins, `Completed Task (ID: ${id})`);
+                    try { propagateMastery(id, null); } catch { /* non-critical */ }
                 } catch (e) { console.error('Error awarding task coins:', e); }
-
             } else {
                 updates.push('completed_at = NULL');
             }
         }
-        if (due_date !== undefined) { updates.push('due_date = ?'); params.push(due_date); }
+        if (due_date !== undefined) {
+            updates.push('due_date = ?');
+            params.push(due_date);
+            needsRerank = true;
+        }
+        if (due_time !== undefined) { updates.push('due_time = ?'); params.push(due_time); }
         if (position !== undefined) { updates.push('position = ?'); params.push(position); }
         if (goal_id !== undefined) { updates.push('goal_id = ?'); params.push(goal_id); }
         if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
+        if (priority_rank !== undefined) { updates.push('priority_rank = ?'); params.push(priority_rank); }
 
         if (updates.length === 0) {
             return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
@@ -186,6 +204,9 @@ export async function PATCH(request: NextRequest) {
 
         params.push(id);
         db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+        // Re-rank if deadline, title, or type changed
+        if (needsRerank) triggerPrioritize();
 
         return NextResponse.json({ success: true });
     } catch (error) {
