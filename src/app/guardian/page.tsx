@@ -35,6 +35,7 @@ interface ActiveSession {
   targetTitle: string;
   durationMinutes: number;
   state: string;
+  startedAt?: number;
 }
 
 const QUALITY_COLOR: Record<string, string> = {
@@ -141,7 +142,7 @@ export default function GuardianPage() {
         const data = await res.json();
         setBriefing(data.briefing ?? data);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchSuggestedTasks = useCallback(async () => {
@@ -152,7 +153,7 @@ export default function GuardianPage() {
         setSuggestedTasks(data.suggestedTasks ?? []);
         setWeakConcepts(data.weakConcepts ?? []);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchCalibrationStatus = useCallback(async () => {
@@ -162,7 +163,7 @@ export default function GuardianPage() {
         const data = await res.json();
         setCalibrationStatus(data);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchWeeklyPlan = useCallback(async () => {
@@ -172,7 +173,7 @@ export default function GuardianPage() {
         const data = await res.json();
         setWeeklyPlan(data.plan ?? null);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const regenerateWeeklyPlan = async () => {
@@ -183,7 +184,7 @@ export default function GuardianPage() {
         const data = await res.json();
         setWeeklyPlan(data.plan ?? null);
       }
-    } catch {}
+    } catch { }
     setWeeklyPlanLoading(false);
   };
 
@@ -197,7 +198,7 @@ export default function GuardianPage() {
       } else {
         setActiveSession(null);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchHistoryData = useCallback(async () => {
@@ -211,7 +212,7 @@ export default function GuardianPage() {
           pendingCompletions: data.pendingCompletions ?? [],
         });
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const fetchOptimizerData = useCallback(async () => {
@@ -226,7 +227,7 @@ export default function GuardianPage() {
           canaryResults: data.canaryResults ?? [],
         });
       }
-    } catch {}
+    } catch { }
   }, []);
 
   useEffect(() => {
@@ -261,7 +262,7 @@ export default function GuardianPage() {
         setActiveSession(data.session);
         setTopic('');
       }
-    } catch {}
+    } catch { }
     setStarting(false);
   };
 
@@ -273,7 +274,7 @@ export default function GuardianPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: activeSession.sessionId }),
       });
-    } catch {}
+    } catch { }
     setActiveSession(null);
     await fetchBriefing();
   };
@@ -282,7 +283,7 @@ export default function GuardianPage() {
     try {
       await fetch(`/api/guardian/soft-watch?id=${id}`, { method: 'DELETE' });
       await fetchBriefing();
-    } catch {}
+    } catch { }
   };
 
   const actionCompletion = async (id: number, action: 'done' | 'blocked' | 'skipped', markTaskDone = false) => {
@@ -293,7 +294,7 @@ export default function GuardianPage() {
         body: JSON.stringify({ id, action, mark_task_done: markTaskDone }),
       });
       await fetchHistoryData();
-    } catch {}
+    } catch { }
   };
 
   const submitFeedback = async (sessionId: string) => {
@@ -307,7 +308,7 @@ export default function GuardianPage() {
         body: JSON.stringify({ session_id: sessionId, feedback: text }),
       });
       setFeedbackDone(prev => ({ ...prev, [sessionId]: true }));
-    } catch {}
+    } catch { }
     setFeedbackSubmitting(prev => ({ ...prev, [sessionId]: false }));
   };
 
@@ -331,7 +332,7 @@ export default function GuardianPage() {
       setScheduleMode(false);
       setScheduleTime('');
       await fetchBriefing();
-    } catch {}
+    } catch { }
   };
 
   const runOptimizer = async () => {
@@ -380,7 +381,7 @@ export default function GuardianPage() {
           Guardian
         </div>
         <h1 style={{ fontSize: '28px', fontWeight: 900, color: '#f0f0f5', margin: 0, letterSpacing: '-0.5px' }}>
-          {briefing?.openingMessage ?? 'Ready when you are.'}
+          {activeSession ? 'Session Active' : (briefing?.openingMessage ?? 'Ready when you are.')}
         </h1>
       </div>
 
@@ -391,6 +392,7 @@ export default function GuardianPage() {
             sessionId={activeSession.sessionId}
             plannedMinutes={activeSession.durationMinutes}
             targetTitle={activeSession.targetTitle}
+            startedAt={activeSession.startedAt}
           />
           <button
             onClick={endSession}
@@ -938,7 +940,7 @@ export default function GuardianPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {historyData.overrides.map(o => {
               let displayUrl = o.url;
-              try { displayUrl = new URL(o.url).hostname.replace(/^www\./, ''); } catch {}
+              try { displayUrl = new URL(o.url).hostname.replace(/^www\./, ''); } catch { }
               return (
                 <div key={o.id} style={{
                   padding: '8px 10px', background: '#0a0a12', borderRadius: '8px',

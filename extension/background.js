@@ -48,6 +48,11 @@ chrome.runtime.onInstalled.addListener(() => {
         title: "Extract Task to LifeOS",
         contexts: ["selection"]
     });
+    chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+    chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -339,10 +344,55 @@ chrome.idle.onStateChanged.addListener(async (state) => {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name !== 'lifeos-guardian-heartbeat') return;
-    if (!guardianActive || !sessionContext?.sessionId) return;
-    await postGuardianEvent({ type: 'heartbeat' }, currentActiveTabId);
+    if (alarm.name === 'lifeos-guardian-poll') {
+        await checkExternalSession();
+        return;
+    }
+    if (alarm.name === 'lifeos-guardian-heartbeat') {
+        if (!guardianActive || !sessionContext?.sessionId) return;
+        await postGuardianEvent({ type: 'heartbeat' }, currentActiveTabId);
+    }
 });
+
+async function checkExternalSession() {
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/extension/session`, { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverActive = data.activeSession?.state === 'ACTIVE';
+
+        if (serverActive && !guardianActive) {
+            console.log('[LifeOS] Discovered active session externally:', data.activeSession);
+            guardianActive = true;
+            sessionContext = data.activeSession;
+            sessionGroupId = null;
+            chrome.action.setBadgeText({ text: 'ON' });
+            chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+            activeTabs.clear();
+            chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs[0] && !isPrivacyBlocked(tabs[0].url)) {
+                    ensureSessionGroup(tabs[0].id);
+                }
+            });
+        } else if (!serverActive && guardianActive) {
+            console.log('[LifeOS] Guardian Mode STOPPED (via polling)');
+            guardianActive = false;
+            sessionContext = null;
+            chrome.action.setBadgeText({ text: '' });
+            activeTabs.clear();
+            chrome.alarms.clear('lifeos-guardian-heartbeat');
+            if (sessionGroupId !== null) {
+                chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
+                sessionGroupId = null;
+            }
+        }
+    } catch (e) {
+        // ignore network error
+    }
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'START_GUARDIAN') {
@@ -372,7 +422,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.alarms.clear('lifeos-guardian-heartbeat');
         // Collapse the session group so it's preserved but out of the way
         if (sessionGroupId !== null) {
-            chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => {});
+            chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
             sessionGroupId = null;
         }
         sendResponse({ ok: true });
@@ -386,7 +436,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const current = activeTabs.get('current');
         if (!current) { sendResponse(null); return; }
         let domain = '';
-        try { domain = new URL(current.url).hostname.replace(/^www\./, ''); } catch {}
+        try { domain = new URL(current.url).hostname.replace(/^www\./, ''); } catch { }
         sendResponse({
             activity: {
                 url: current.url,

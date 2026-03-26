@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 
-export default function GuardianDashboard({ sessionId, plannedMinutes, targetTitle }: { sessionId: string, plannedMinutes: number, targetTitle: string }) {
+export default function GuardianDashboard({ sessionId, plannedMinutes, targetTitle, startedAt }: { sessionId: string, plannedMinutes: number, targetTitle: string, startedAt?: number }) {
     const [score, setScore] = useState<number>(100);
     const [trend, setTrend] = useState<number>(0);
     const [messages, setMessages] = useState<any[]>([]);
@@ -10,6 +10,13 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
     const [history, setHistory] = useState<number[]>([100]);
     const [onTopicTime, setOnTopicTime] = useState<number>(0);
     const [distractions, setDistractions] = useState<number>(0);
+
+    // Sync elapsed with startedAt on mount to prevent starting from 0
+    useEffect(() => {
+        if (startedAt) {
+            setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+        }
+    }, [startedAt]);
 
     // SSE Subscription
     useEffect(() => {

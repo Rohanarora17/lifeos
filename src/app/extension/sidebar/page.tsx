@@ -61,6 +61,12 @@ export default function ExtensionSidebar() {
                 setFocusActive(true);
                 setFocusTargetLabel(sessionData.activeSession.targetTitle || 'Focus Session');
                 setFocusDuration(sessionData.activeSession.durationMinutes || 60);
+
+                if (sessionData.activeSession.startedAt) {
+                    const elapsedSec = Math.floor((Date.now() - sessionData.activeSession.startedAt) / 1000);
+                    const totalSec = (sessionData.activeSession.durationMinutes || 60) * 60;
+                    setTimeLeft(Math.max(0, totalSec - elapsedSec));
+                }
             }
             if (dashData.today) {
                 setStats({
