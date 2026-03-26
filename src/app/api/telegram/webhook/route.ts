@@ -188,7 +188,7 @@ async function handleActionCallback(payload: string) {
             const tasksRow = db.prepare(`
         SELECT COUNT(*) as total,
                SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done
-        FROM tasks WHERE status IN ('done', 'today', 'doing', 'this_week')
+        FROM tasks WHERE status IN ('done', 'todo', 'doing')
       `).get() as { total: number; done: number };
 
             const habitsRow = db.prepare(`

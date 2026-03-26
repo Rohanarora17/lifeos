@@ -37,7 +37,7 @@ const CLEAR_TABLES = [
   'activities',
   'domain_categories',
   'daily_scores',
-  'focus_sessions',
+  'guardian_session_summaries',
   'nudge_log',
   'tab_switches',
   'screen_time',

@@ -9,7 +9,6 @@ const TABLES_TO_CLEAR = [
   'activities',
   'domain_categories',
   'daily_scores',
-  'focus_sessions',
   'nudge_log',
   'tab_switches',
   'screen_time',

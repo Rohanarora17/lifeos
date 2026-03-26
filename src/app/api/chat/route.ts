@@ -63,12 +63,11 @@ function executeTool(name: string, args: any) {
         const tasks = db.prepare(`
             SELECT id, title, status, priority, goal_id
             FROM tasks
-            WHERE status IN ('doing', 'today', 'backlog')
+            WHERE status IN ('doing', 'todo')
             ORDER BY CASE status
                 WHEN 'doing' THEN 0
-                WHEN 'today' THEN 1
-                ELSE 2
-            END, created_at DESC
+                ELSE 1
+            END, priority_rank ASC, created_at DESC
             LIMIT 10
         `).all();
         const goals = db.prepare(`
@@ -79,9 +78,11 @@ function executeTool(name: string, args: any) {
             LIMIT 5
         `).all();
         const focusSessions = db.prepare(`
-            SELECT id, goal_title, task_title, duration_minutes, started_at, ended_at, status, ai_report
-            FROM focus_sessions
-            ORDER BY COALESCE(started_at, created_at, id) DESC
+            SELECT session_id as id, goal_title, concept_node_name as task_title,
+                   elapsed_minutes as duration_minutes, started_at, completed_at as ended_at,
+                   average_focus_score, final_focus_score
+            FROM guardian_session_summaries
+            ORDER BY COALESCE(started_at, completed_at) DESC
             LIMIT ?
         `).all(args.include_history ? 10 : 3);
         const alerts = db.prepare(`
@@ -99,7 +100,7 @@ function executeTool(name: string, args: any) {
         `).get();
         return { tasks, goals, focusSessions, alerts, today };
     } else if (name === 'createTask') {
-        const stmt = db.prepare("INSERT INTO tasks (title, status, priority, created_at) VALUES (?, 'backlog', ?, datetime('now', 'localtime'))");
+        const stmt = db.prepare("INSERT INTO tasks (title, status, priority, created_at) VALUES (?, 'todo', ?, datetime('now', 'localtime'))");
         const info = stmt.run(args.title, args.priority || 'medium');
         return { success: true, task_id: info.lastInsertRowid };
     } else if (name === 'checkHabit') {

@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
             ).all(date) as { title: string; start_time: string; end_time: string }[];
 
             const pendingTasks = db.prepare(
-                "SELECT title, status FROM tasks WHERE status IN ('today', 'doing', 'this_week') ORDER BY position"
+                "SELECT title, status FROM tasks WHERE status IN ('todo', 'doing') ORDER BY priority_rank ASC, position ASC"
             ).all() as { title: string; status: string }[];
 
             // Yesterday's score
@@ -79,7 +79,7 @@ export async function GET(request: NextRequest) {
         ).get(date) as { count: number }).count;
 
         const totalTasks = (db.prepare(
-            "SELECT COUNT(*) as count FROM tasks WHERE status IN ('today', 'doing', 'done') AND (date(created_at) <= ? OR date(completed_at) = ?)"
+            "SELECT COUNT(*) as count FROM tasks WHERE status IN ('todo', 'doing', 'done') AND (date(created_at) <= ? OR date(completed_at) = ?)"
         ).get(date, date) as { count: number }).count;
 
         const habitsCompleted = (db.prepare(
