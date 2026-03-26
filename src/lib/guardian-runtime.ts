@@ -1152,6 +1152,20 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
     };
   }
 
+  // Auto-end session when planned duration has elapsed
+  if (session.endsAt && Date.now() >= session.endsAt) {
+    endGuardianSession(sessionId);
+    return {
+      session: null,
+      decision: finalizeDecision(
+        sessionId,
+        { type: 'silence', reason: 'Session expired', explainability: 'The planned session duration was reached and the session was automatically ended.' },
+        sourceEventType
+      ),
+      commands: [],
+    };
+  }
+
   if (inputEvent) {
     appendGuardianEvent(inputEvent);
   }

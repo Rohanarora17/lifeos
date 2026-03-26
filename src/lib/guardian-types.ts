@@ -34,6 +34,8 @@ export interface GuardianEvent {
   title?: string;
   domain?: string;
   dwellSeconds?: number;
+  prevUrl?: string;
+  prevTitle?: string;
   idleSeconds?: number;
   transcript?: string;
   tabGroupId?: number;

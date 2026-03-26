@@ -311,14 +311,19 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 async function reportTabActivity(tabId, url, title, groupInfo) {
     if (!sessionContext || !sessionContext.sessionId) return;
 
-    // Calculate dwell time of the previous tab
+    // Calculate dwell time on the PREVIOUS URL and capture it for attribution
     let dwellSeconds = 0;
+    let prevUrl = null;
+    let prevTitle = null;
     if (activeTabs.has('current')) {
         const prev = activeTabs.get('current');
-        dwellSeconds = Math.round((Date.now() - prev.startedAt) / 1000);
 
         // Prevent spamming the same URL
         if (prev.url === url) return;
+
+        dwellSeconds = Math.round((Date.now() - prev.startedAt) / 1000);
+        prevUrl = prev.url;
+        prevTitle = prev.title || null;
     }
 
     activeTabs.set('current', {
@@ -335,6 +340,9 @@ async function reportTabActivity(tabId, url, title, groupInfo) {
         url,
         title,
         dwellSeconds,
+        // prevUrl/prevTitle tell the server which URL the dwell time actually belongs to
+        prevUrl: prevUrl || undefined,
+        prevTitle: prevTitle || undefined,
         tabGroupId: groupInfo?.id ?? undefined,
         tabGroupTitle: groupInfo?.title ?? undefined,
         tabGroupColor: groupInfo?.color ?? undefined,

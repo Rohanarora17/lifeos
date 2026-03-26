@@ -121,7 +121,7 @@ export default function ExtensionSidebar() {
             source: 'extension',
         });
         if (sessionId && window.parent !== window) {
-            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: label, durationMinutes: focusDuration } }, '*');
+            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: label, durationMinutes: focusDuration, startedAt: Date.now() } }, '*');
         }
     };
 

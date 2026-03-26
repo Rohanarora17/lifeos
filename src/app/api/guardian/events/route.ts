@@ -18,31 +18,38 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Guardian session is not active' }, { status: 409 });
     }
 
-    // Mirror the tab event into the general activity log so it appears in the Activity Tab
-    if (event.type === 'tab' && event.url && !event.url.startsWith('chrome://')) {
-      try {
-        let domainStr = event.url;
-        try { domainStr = new URL(event.url).hostname.replace(/^www\./, ''); } catch { }
-        const classification = await classifyActivity(event.url, event.title || '', domainStr, undefined);
-        const dwellSeconds = typeof event.dwellSeconds === 'number' ? event.dwellSeconds : 0;
-        const started_at = new Date(Date.now() - dwellSeconds * 1000).toISOString();
+    // Mirror the tab event into the general activity log so it appears in the Activity Tab.
+    // When prevUrl is present, log dwell time against the PREVIOUS URL (where the time was spent).
+    // The new URL (event.url) just started — its dwell will be recorded on the next navigation.
+    if (event.type === 'tab') {
+      const dwellSeconds = typeof event.dwellSeconds === 'number' ? event.dwellSeconds : 0;
+      const activityUrl = event.prevUrl || event.url;
+      const activityTitle = event.prevTitle || event.title || '';
 
-        getDb().prepare(`
-          INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, device_name)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          event.url,
-          domainStr,
-          event.title || '',
-          classification.category,
-          classification.subcategory,
-          started_at,
-          dwellSeconds,
-          JSON.stringify(classification),
-          'LifeOS Guardian'
-        );
-      } catch (err) {
-        console.error('[Guardian] Failed to log activity to SQLite:', err);
+      if (activityUrl && !activityUrl.startsWith('chrome://') && dwellSeconds > 0) {
+        try {
+          let domainStr = activityUrl;
+          try { domainStr = new URL(activityUrl).hostname.replace(/^www\./, ''); } catch { }
+          const classification = await classifyActivity(activityUrl, activityTitle, domainStr, undefined);
+          const started_at = new Date(Date.now() - dwellSeconds * 1000).toISOString();
+
+          getDb().prepare(`
+            INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, device_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            activityUrl,
+            domainStr,
+            activityTitle,
+            classification.category,
+            classification.subcategory,
+            started_at,
+            dwellSeconds,
+            JSON.stringify(classification),
+            'LifeOS Guardian'
+          );
+        } catch (err) {
+          console.error('[Guardian] Failed to log activity to SQLite:', err);
+        }
       }
     }
 

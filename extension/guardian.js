@@ -2,6 +2,10 @@
 // Handles UI interventions (block overlay, classify toast) when commanded by the agent loop.
 // Completely inert unless a message is received from background.js.
 
+// Guard against double-injection (pre-existing tabs re-injected via chrome.scripting.executeScript)
+if (window.__lifeosGuardianLoaded) { /* already loaded */ } else {
+window.__lifeosGuardianLoaded = true;
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'BLOCK_TAB') {
         injectBlockOverlay(request);

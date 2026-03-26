@@ -25,6 +25,8 @@ export function normalizeGuardianEventInput(body: Record<string, unknown>): Guar
     url: typeof body.url === 'string' ? body.url : undefined,
     title: typeof body.title === 'string' ? body.title : undefined,
     dwellSeconds: typeof body.dwellSeconds === 'number' ? body.dwellSeconds : undefined,
+    prevUrl: typeof body.prevUrl === 'string' ? body.prevUrl : undefined,
+    prevTitle: typeof body.prevTitle === 'string' ? body.prevTitle : undefined,
     idleSeconds: typeof body.idleSeconds === 'number' ? body.idleSeconds : undefined,
     transcript: typeof body.transcript === 'string' ? body.transcript : undefined,
     tabGroupId: typeof body.tabGroupId === 'number' ? body.tabGroupId : undefined,
