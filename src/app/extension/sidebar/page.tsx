@@ -1,8 +1,17 @@
 'use client';
 
+// Must be first — polyfills crypto.randomUUID for HTTP (non-secure) contexts
+import '@/lib/polyfill-crypto-uuid';
+
 import { useState, useEffect, useCallback } from 'react';
-import GuardianVoiceRoom from '@/components/GuardianVoiceRoom';
+import dynamic from 'next/dynamic';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+
+// Lazy-load livekit-client only after polyfill is in place and component mounts
+const GuardianVoiceRoom = dynamic(() => import('@/components/GuardianVoiceRoom'), {
+    ssr: false,
+    loading: () => null,
+});
 
 interface Task {
     id: number;
