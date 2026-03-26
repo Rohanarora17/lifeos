@@ -227,6 +227,8 @@ OUTPUT FORMAT: Return a JSON array matching this schema:
 ]
 
 RULES:
+- If a site is generically productive (coding sites, docs, educational platforms like Wikipedia or Khan Academy), classify it as productive EVEN IF it does not perfectly match the active tasks.
+- Use Active Tasks primarily to determine if ambiguous sites (YouTube, Reddit, blogs) are currently productive/on-topic or are distractions.
 - YouTube tutorials, courses, tech talks, coding, educational content → productive / youtube-educational
 - YouTube entertainment, vlogs, random browsing → distraction / youtube-entertainment
 - YouTube gaming livestreams (e.g., CS:GO, Valorant), unless explicitly educational → distraction / gaming

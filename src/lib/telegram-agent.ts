@@ -363,6 +363,13 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await executeAction('START_SESSION', '', { targetTitle: topic, durationMinutes: 60 });
         return;
     }
+    // Allow user to literally type "session:60" or "/session:60"
+    if (cmdLower.startsWith('session:') || cmdLower.startsWith('/session:')) {
+        const parts = cmd.split(':');
+        const duration = parseInt(parts[1]?.trim(), 10) || 60;
+        await executeAction('START_SESSION', '', { targetTitle: 'Focus Session', durationMinutes: duration });
+        return;
+    }
     if (cmdLower === '/session') {
         await sendTelegram('Usage: <code>/session Topic name</code> — or just tell me what to focus on.', 'HTML', FULL_MENU_KEYBOARD);
         return;

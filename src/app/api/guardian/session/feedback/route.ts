@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     const feedback = (body.feedback as string | undefined)?.trim();
 
     if (!sessionId) return NextResponse.json({ error: 'session_id is required' }, { status: 400 });
-    if (!feedback)  return NextResponse.json({ error: 'feedback is required' }, { status: 400 });
+    if (!feedback) return NextResponse.json({ error: 'feedback is required' }, { status: 400 });
 
     // Load session metrics from DB for error computation
     const db = getDb();
@@ -35,10 +35,9 @@ export async function POST(req: Request) {
       override_count: number | null;
     } | undefined;
 
-    // Pull most recent energy reading for this session from energy_readings if available
     const energyRow = db.prepare(`
       SELECT composite_score FROM energy_readings
-      WHERE session_id = ? ORDER BY recorded_at DESC LIMIT 1
+      WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1
     `).get(sessionId) as { composite_score: number } | undefined;
 
     const metrics = {

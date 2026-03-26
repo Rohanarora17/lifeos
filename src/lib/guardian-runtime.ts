@@ -868,7 +868,7 @@ export function endGuardianSession(sessionId: string) {
 
     for (const habit of timeHabits) {
       const existing = db.prepare(
-        `SELECT id, value FROM habit_checkins WHERE habit_id = ? AND date = ? AND source = 'guardian_session'`
+        `SELECT id, value FROM habit_checkins WHERE habit_id = ? AND date = ?`
       ).get(habit.id, today) as { id: number; value: number } | undefined;
       const newValue = (existing?.value ?? 0) + elapsedMinutes;
       const completed = newValue >= habit.goal_target ? 1 : 0;
