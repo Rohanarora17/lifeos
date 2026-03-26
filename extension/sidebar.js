@@ -43,7 +43,15 @@ window.addEventListener('focus', () => {
 
 // Relay guardian lifecycle events from the sidebar iframe to the background script.
 window.addEventListener('message', (event) => {
-    if (event.origin !== APP_URL && event.origin !== 'http://localhost:3000') return;
+    // Accept messages from the configured app URL (which may be a LAN/VPN IP, not localhost).
+    // We check host+port rather than full origin so that the check still passes before
+    // storage finishes loading APP_URL (APP_URL defaults to localhost:3000 but the iframe
+    // may be at a different IP if the server is accessed by IP address).
+    const eventOriginHost = event.origin.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    const appUrlHost = APP_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    const isOwnOrigin = eventOriginHost === appUrlHost ||
+        eventOriginHost === 'localhost:3000' || eventOriginHost === '127.0.0.1:3000';
+    if (!isOwnOrigin) return;
 
     if (event.data && (event.data.type === 'START_GUARDIAN' || event.data.type === 'LIFEOS_FOCUS_START')) {
         chrome.runtime.sendMessage({

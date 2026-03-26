@@ -219,7 +219,8 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     // Always check for externally-started sessions (Telegram, dashboard) when user switches tabs
     if (!guardianActive) {
         await checkExternalSession();
-        return;
+        // Don't return — if the check just activated guardian, fall through to track this tab
+        if (!guardianActive) return;
     }
     try {
         const tab = await chrome.tabs.get(activeInfo.tabId);
@@ -384,9 +385,12 @@ async function checkExternalSession() {
             activeTabs.clear();
             chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
 
+            // Immediately track + group the currently-active tab so tracking starts now
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0] && !isPrivacyBlocked(tabs[0].url)) {
+                    currentActiveTabId = tabs[0].id;
                     ensureSessionGroup(tabs[0].id);
+                    reportTabActivity(tabs[0].id, tabs[0].url, tabs[0].title || '', null);
                 }
             });
         } else if (!serverActive && guardianActive) {
