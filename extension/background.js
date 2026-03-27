@@ -3,9 +3,59 @@
 
 let API_BASE = 'http://localhost:3000/api';
 let guardianActive = false;
+
+// Domain config — loaded from server at startup so no hardcoded lists.
+// Falls back to empty arrays on network error (fail open: server handles blocking).
+let PRIVACY_BLOCKED_DOMAINS = [];
+let CONTEXT_SENSITIVE_DOMAINS = [];
+
+async function fetchGuardianConfig() {
+    try {
+        const res = await fetch(`${API_BASE}/guardian/config`);
+        if (res.ok) {
+            const cfg = await res.json();
+            PRIVACY_BLOCKED_DOMAINS = cfg.privacyDomains || [];
+            CONTEXT_SENSITIVE_DOMAINS = cfg.contextSensitiveDomains || [];
+        }
+    } catch { /* server not reachable — keep empty defaults */ }
+}
+
+// Fetch config at service worker startup
+fetchGuardianConfig();
 let sessionContext = null;
 let currentActiveTabId = null;
 let sessionGroupId = null; // Chrome tab group for the active session
+
+function getUrlDomain(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+// Uses the AI-computed block list for this specific session goal (no hardcoded lists).
+// Falls back gracefully when immediateBlockDomains is empty — server handles blocking.
+function isSessionDistraction(url) {
+    if (!url || !sessionContext) return false;
+    const domain = getUrlDomain(url);
+    if (!domain) return false;
+    const blockList = sessionContext.immediateBlockDomains || [];
+    return blockList.some(d => domain === d || domain.endsWith('.' + d));
+}
+
+// ── Reliable block delivery: injects content script if not yet present in tab ──
+async function sendBlockToTab(tabId, blockData) {
+    try {
+        await chrome.tabs.sendMessage(tabId, blockData);
+    } catch {
+        // Content script not loaded (pre-existing tab) — inject guardian.js then retry
+        try {
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['guardian.js'] });
+            // Small delay to let the script register its listener
+            await new Promise(r => setTimeout(r, 50));
+            chrome.tabs.sendMessage(tabId, blockData).catch(() => {});
+        } catch (e2) {
+            console.warn('[LifeOS] Could not inject guardian.js into tab', tabId, e2);
+        }
+    }
+}
 
 function buildGuardianStatus() {
     if (!guardianActive || !sessionContext?.sessionId) {
@@ -85,13 +135,6 @@ function isPrivacyBlocked(url) {
 
     try {
         const domain = new URL(url).hostname;
-        const PRIVACY_BLOCKED_DOMAINS = [
-            'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'fidelity.com',
-            'paypal.com', 'venmo.com', 'robinhood.com', 'coinbase.com',
-            'mychart.com', 'myhealth.va.gov', 'patient.info',
-            'accounts.google.com', 'login.microsoftonline.com', 'auth0.com',
-            'web.whatsapp.com', 'web.telegram.org'
-        ];
         return PRIVACY_BLOCKED_DOMAINS.some(blocked => domain === blocked || domain.endsWith('.' + blocked));
     } catch {
         return true;
@@ -116,13 +159,14 @@ async function applyGuardianCommands(commands = [], tabIdHint = null) {
         if (!targetTabId) continue;
 
         if (command.type === 'block') {
-            chrome.tabs.sendMessage(targetTabId, {
+            await sendBlockToTab(targetTabId, {
                 type: 'BLOCK_TAB',
                 reason: command.reason,
                 explainability: command.explainability,
                 targetDisplay: command.targetDisplay || sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session',
                 urlPattern: command.urlPattern,
             });
+            if (sessionContext) sessionContext.blockedCount = (sessionContext.blockedCount || 0) + 1;
         }
 
         if (command.type === 'unblock') {
@@ -131,14 +175,14 @@ async function applyGuardianCommands(commands = [], tabIdHint = null) {
                 reason: command.reason,
                 explainability: command.explainability,
                 ttlSeconds: command.ttlSeconds,
-            });
+            }).catch(() => {});
         }
 
         if (command.type === 'classify') {
             chrome.tabs.sendMessage(targetTabId, {
                 type: 'CLASSIFY_TOAST',
                 conceptTitle: command.conceptTitle,
-            });
+            }).catch(() => {});
         }
     }
 }
@@ -315,6 +359,7 @@ async function reportTabActivity(tabId, url, title, groupInfo) {
     let dwellSeconds = 0;
     let prevUrl = null;
     let prevTitle = null;
+    let prevStartedAt = null;
     if (activeTabs.has('current')) {
         const prev = activeTabs.get('current');
 
@@ -322,24 +367,46 @@ async function reportTabActivity(tabId, url, title, groupInfo) {
         if (prev.url === url) return;
 
         dwellSeconds = Math.round((Date.now() - prev.startedAt) / 1000);
+        prevStartedAt = prev.startedAt; // exact epoch ms when previous tab became active
         prevUrl = prev.url;
         prevTitle = prev.title || null;
     }
 
+    const newTabStartedAt = Date.now();
     activeTabs.set('current', {
         url,
         title,
-        startedAt: Date.now(),
+        startedAt: newTabStartedAt,
         tab_group_id: groupInfo?.id ?? -1,
         tab_group_title: groupInfo?.title ?? null,
         tab_group_color: groupInfo?.color ?? null,
     });
+
+    // Proactive local block — fires IMMEDIATELY without waiting for server round-trip.
+    // Uses AI-derived immediateBlockDomains (computed at session start for this specific goal).
+    // Server confirms with richer reasoning; this makes the first hit feel instant.
+    if (isSessionDistraction(url)) {
+        const domain = getUrlDomain(url);
+        const target = sessionContext?.targetTitle || sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session';
+        await sendBlockToTab(tabId, {
+            type: 'BLOCK_TAB',
+            reason: `${domain} is a distraction. You're in a focus session for: ${target}.`,
+            explainability: 'You navigated to a known distraction site during an active guardian session.',
+            targetDisplay: target,
+        });
+        if (sessionContext) sessionContext.blockedCount = (sessionContext.blockedCount || 0) + 1;
+    }
 
     await postGuardianEvent({
         type: 'tab',
         url,
         title,
         dwellSeconds,
+        // tabStartedAt = exact epoch ms when the dwelled (previous) tab became active.
+        // Server uses this for the activities.started_at column — no retrocomputation needed.
+        tabStartedAt: prevStartedAt || undefined,
+        // timestamp = when the NEW tab became active (server uses for currentTabStartedAt)
+        timestamp: newTabStartedAt,
         // prevUrl/prevTitle tell the server which URL the dwell time actually belongs to
         prevUrl: prevUrl || undefined,
         prevTitle: prevTitle || undefined,
@@ -423,21 +490,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         guardianActive = true;
         sessionContext = msg.context || msg;
         sessionGroupId = null;
+        // Refresh domain config so this session gets the latest DB state
+        fetchGuardianConfig();
         console.log('[LifeOS] Guardian Mode ACTIVE', sessionContext);
         chrome.action.setBadgeText({ text: 'ON' });
         chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
         activeTabs.clear();
         chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
-        // Group the currently active tab immediately
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0] && !isPrivacyBlocked(tabs[0].url)) {
-                ensureSessionGroup(tabs[0].id);
+        // Capture the currently active tab IMMEDIATELY — tracks dwell from session start, not from first navigation.
+        // Without this, the time on the first tab is always lost (activeTabs was just cleared).
+        chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+            const tab = tabs[0];
+            if (tab?.url && !isPrivacyBlocked(tab.url)) {
+                const sessionStart = Date.now();
+                activeTabs.set('current', {
+                    url: tab.url,
+                    title: tab.title || '',
+                    startedAt: sessionStart,
+                    tab_group_id: null,
+                    tab_group_title: null,
+                    tab_group_color: null,
+                });
+                ensureSessionGroup(tab.id);
+                // Send initial tab event so server registers currentUrl + currentTabStartedAt.
+                // dwellSeconds=0 means no activity row is written — just URL registration.
+                if (sessionContext?.sessionId) {
+                    postGuardianEvent({
+                        type: 'tab',
+                        url: tab.url,
+                        title: tab.title || '',
+                        dwellSeconds: 0,
+                        timestamp: sessionStart,
+                    }).catch(() => {});
+                }
             }
         });
         sendResponse({ ok: true });
     }
 
     if (msg.type === 'STOP_GUARDIAN') {
+        // Flush the final tab's dwell time before clearing state.
+        // The server flushes on endGuardianSession too, but this extension-side flush
+        // ensures the event reaches the server before the session closes.
+        const current = activeTabs.get('current');
+        if (current && current.url && sessionContext?.sessionId) {
+            const finalDwellSeconds = Math.round((Date.now() - current.startedAt) / 1000);
+            if (finalDwellSeconds > 5) {
+                // Fire-and-forget: send the final tab event (don't await — we're stopping).
+                // tabStartedAt gives the server the exact start time so started_at is accurate.
+                postGuardianEvent({
+                    type: 'tab',
+                    url: current.url,
+                    title: current.title || '',
+                    dwellSeconds: finalDwellSeconds,
+                    tabStartedAt: current.startedAt,
+                    timestamp: Date.now(),
+                    prevUrl: current.url,
+                    prevTitle: current.title || '',
+                }).catch(() => {});
+            }
+        }
+
         guardianActive = false;
         sessionContext = null;
         console.log('[LifeOS] Guardian Mode STOPPED');

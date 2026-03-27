@@ -166,3 +166,5 @@ window.addEventListener('message', (event) => {
         chrome.runtime.sendMessage(event.data);
     }
 });
+
+} // end __lifeosGuardianLoaded guard
