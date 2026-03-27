@@ -19,8 +19,8 @@ export const DEFAULT_GUARDIAN_POLICY_BUNDLE: GuardianPolicyBundle = {
   thresholds: {
     speechCooldownMs: 90_000,
     flowSilenceThreshold: 85,
-    distractionRevisitBlockCount: 3,
-    distractionTabSwitchBlockCount: 4,
+    distractionRevisitBlockCount: 1,
+    distractionTabSwitchBlockCount: 3,
     highScatterSpeakThreshold: 6,
     idleConcernSeconds: 480,
     focusDropSpeakThreshold: 15,

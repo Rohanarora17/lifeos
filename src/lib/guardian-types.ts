@@ -34,6 +34,7 @@ export interface GuardianEvent {
   title?: string;
   domain?: string;
   dwellSeconds?: number;
+  tabStartedAt?: number; // epoch ms when the dwelled tab became active — used for exact started_at
   prevUrl?: string;
   prevTitle?: string;
   idleSeconds?: number;
@@ -123,6 +124,10 @@ export interface GuardianState {
   targetTitle: string;
   personalBestFocusScore: number | null;
   energyComposite: number | null; // [0–100] computed at session start
+  // Intelligence layer — zero hardcoded lists
+  sessionClassificationCache: Record<string, 'on_topic' | 'distraction' | 'unknown'>;
+  immediateBlockDomains: string[]; // AI-derived per-session block list sent to extension at start
+  currentTabStartedAt: number | null; // tracks when user navigated to currentUrl for final-dwell flush
 }
 
 export interface SoftWatchCommitment {

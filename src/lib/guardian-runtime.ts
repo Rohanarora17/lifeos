@@ -5,7 +5,7 @@ import { logGoalTime } from './goal-health';
 import { propagateMastery } from './graph';
 import { speak } from './tts';
 import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } from './longitudinal-engine';
-import { getGenAI } from './ai';
+import { getGenAI, classifyActivity } from './ai';
 import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
 import { emitGuardianRuntimeEvent } from './guardian-bus';
@@ -35,9 +35,6 @@ import {
   OverrideRequest,
   SoftWatchCommitment,
 } from './guardian-types';
-
-const DISTRACTION_DOMAINS = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com'];
-const PRODUCTIVE_DOMAINS = ['docs.', 'developer.mozilla.org', 'leetcode.com', 'khanacademy.org', 'coursera.org', 'edx.org', 'wikipedia.org'];
 
 // guardian-runtime is the single owner of live session state.
 // Routes ingest input and render output, but do not mutate session state directly.
@@ -85,36 +82,36 @@ function getDomain(url: string | undefined): string | undefined {
   }
 }
 
-function readDomainSetting(key: string, fallback: string[]) {
-  const raw = getSetting(key);
-  if (!raw || raw === 'undefined' || raw === 'null') {
-    return fallback;
-  }
+/**
+ * Sync classification — zero latency, no network.
+ * Priority: session-scoped cache (set by async classifyActivity calls during the session)
+ *   → domain_categories persistent table → 'unknown' fallback.
+ * Uses the same domain_categories table that classifyActivity writes to, so the
+ * two paths stay in sync rather than being separate silos.
+ */
+function classifyUrlForGuardian(
+  url: string | undefined,
+  sessionClassificationCache?: Record<string, 'on_topic' | 'distraction' | 'unknown'>
+): 'on_topic' | 'distraction' | 'unknown' {
+  if (!url) return 'unknown';
+  let domain: string;
+  try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch { return 'unknown'; }
+  if (!domain || domain.startsWith('chrome') || domain === 'newtab') return 'unknown';
+
+  // 1. Session-scoped cache (set by async classifyActivity with session context)
+  if (sessionClassificationCache?.[domain]) return sessionClassificationCache[domain];
+
+  // 2. Persistent domain_categories (written by classifyActivity, learnDomainClassifications, user overrides)
   try {
-    const parsed = JSON.parse(raw) as string[];
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
+    const row = getDb().prepare(
+      'SELECT category, confidence FROM domain_categories WHERE domain = ?'
+    ).get(domain) as { category: string; confidence: number } | undefined;
+    if (row && row.confidence >= 0.6) {
+      if (row.category === 'productive') return 'on_topic';
+      if (row.category === 'distraction') return 'distraction';
+    }
+  } catch { /* DB not ready */ }
 
-function isDistractionUrl(url: string | undefined) {
-  const domain = getDomain(url);
-  if (!domain) return false;
-  const domains = readDomainSetting('distraction_domains', DISTRACTION_DOMAINS);
-  return domains.some((candidate) => domain === candidate || domain.endsWith(`.${candidate}`));
-}
-
-function isProductiveUrl(url: string | undefined) {
-  const domain = getDomain(url);
-  if (!domain) return false;
-  const domains = readDomainSetting('productive_domains', PRODUCTIVE_DOMAINS);
-  return domains.some((candidate) => domain === candidate || domain.endsWith(`.${candidate}`));
-}
-
-function classifyUrl(url: string | undefined): 'on_topic' | 'distraction' | 'unknown' {
-  if (isDistractionUrl(url)) return 'distraction';
-  if (isProductiveUrl(url)) return 'on_topic';
   return 'unknown';
 }
 
@@ -169,6 +166,9 @@ function createSessionState(input: {
     targetTitle: input.targetTitle,
     personalBestFocusScore: input.personalBestFocusScore ?? null,
     energyComposite: input.energyComposite ?? null,
+    sessionClassificationCache: {},
+    immediateBlockDomains: [],
+    currentTabStartedAt: null,
   };
 }
 
@@ -351,13 +351,13 @@ function persistSessionSummary(session: GuardianState) {
 
     for (const event of session.tabEventLog) {
       if (event.type !== 'tab') continue;
-      if (classifyUrl(event.url) === 'distraction') {
+      if (classifyUrlForGuardian(event.url) === 'distraction') {
         distractionEvents += 1;
         const domain = getDomain(event.url);
         if (domain) {
           domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
         }
-      } else if (classifyUrl(event.url) === 'on_topic') {
+      } else if (classifyUrlForGuardian(event.url) === 'on_topic') {
         productiveEvents += 1;
       } else {
         neutralEvents += 1;
@@ -438,7 +438,7 @@ async function generateSessionReflection(session: GuardianState) {
     const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
     const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
     const distractionCount = session.tabEventLog.filter(
-      (e) => e.type === 'tab' && classifyUrl(e.url) === 'distraction'
+      (e) => e.type === 'tab' && classifyUrlForGuardian(e.url) === 'distraction'
     ).length;
 
     const focusQuality =
@@ -547,7 +547,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const history = session.focusScoreHistory;
   const recentEvents = session.tabEventLog.filter((event) => event.timestamp >= Date.now() - 300_000);
   const tabSwitchesLast5Min = recentEvents.filter((event) => event.type === 'tab').length;
-  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrl(event.url) === 'distraction').length;
+  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrlForGuardian(event.url, session.sessionClassificationCache) === 'distraction').length;
   const idleSeconds = recentEvents
     .filter((event) => event.type === 'idle')
     .reduce((sum, event) => sum + (event.idleSeconds || 0), 0);
@@ -789,6 +789,11 @@ async function executeDecision(session: GuardianState, decision: GuardianDecisio
   }
 }
 
+export function setImmediateBlockDomains(sessionId: string, domains: string[]) {
+  const session = guardianSessions.get(sessionId);
+  if (session) session.immediateBlockDomains = domains;
+}
+
 export function listGuardianSessions() {
   if (guardianSessions.size === 0) restoreSessionsFromDb();
   return Array.from(guardianSessions.values()).map(cloneSession);
@@ -834,6 +839,16 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   });
 
   guardianSessions.set(sessionId, session);
+
+  // Restore any previously persisted session classifications (handles server restart mid-session)
+  try {
+    const cached = getDb().prepare(
+      'SELECT domain, classification FROM session_domain_classifications WHERE session_id = ?'
+    ).all(sessionId) as { domain: string; classification: string }[];
+    for (const row of cached) {
+      session.sessionClassificationCache[row.domain] = row.classification as 'on_topic' | 'distraction' | 'unknown';
+    }
+  } catch { /* non-fatal — migration 020 may not have run yet */ }
 
   // Persist to DB so the session survives server restarts
   try {
@@ -902,6 +917,38 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
 export function endGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   if (!session) return null;
+
+  // Flush the final tab's dwell time — the last page visited never gets a navigate-away event,
+  // so its duration would otherwise be lost entirely. Fire-and-forget, non-blocking.
+  if (
+    session.currentUrl &&
+    !session.currentUrl.startsWith('chrome://') &&
+    session.currentTabStartedAt
+  ) {
+    const finalDwellSeconds = Math.round((Date.now() - session.currentTabStartedAt) / 1000);
+    if (finalDwellSeconds > 5) {
+      const finalUrl = session.currentUrl;
+      const finalTitle = session.currentTitle;
+      const finalTarget = session.targetTitle;
+      const tabStartedAt = session.currentTabStartedAt; // capture before async
+      void (async () => {
+        try {
+          let domain = '';
+          try { domain = new URL(finalUrl).hostname.replace(/^www\./, ''); } catch { return; }
+          const classification = await classifyActivity(finalUrl, finalTitle, domain, undefined);
+          // Use the exact tab activation time — no retrocomputation drift
+          const startedAt = new Date(tabStartedAt).toISOString();
+          getDb().prepare(`
+            INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, device_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(finalUrl, domain, finalTitle, classification.category, classification.subcategory, startedAt, finalDwellSeconds, JSON.stringify({ ...classification, sessionTarget: finalTarget }), 'LifeOS Guardian');
+        } catch (err) {
+          console.warn('[guardian] Failed to log final tab dwell:', err);
+        }
+      })();
+    }
+  }
+
   session.state = 'COMPLETE';
   clearHeartbeat(sessionId);
   persistSessionSummary(session);
@@ -1114,7 +1161,7 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
     domain: event.domain || getDomain(event.url),
     payload: {
       ...(event.payload || {}),
-      classification: event.url ? classifyUrl(event.url) : undefined,
+      classification: event.url ? classifyUrlForGuardian(event.url, session.sessionClassificationCache) : undefined,
       attentionCategory: event.url ? getAttentionCategory(session, event.url) : undefined,
     },
   };
@@ -1122,7 +1169,45 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
   if (normalized.type === 'tab') {
     session.currentUrl = normalized.url || '';
     session.currentTitle = normalized.title || '';
-    session.currentClassification = classifyUrl(normalized.url);
+    session.currentClassification = classifyUrlForGuardian(normalized.url, session.sessionClassificationCache);
+    session.currentTabStartedAt = normalized.timestamp;
+
+    // Fire-and-forget: run classifyActivity with session context so classification is
+    // session-aware (YouTube = productive during "Watch lecture", distraction otherwise).
+    // Uses the existing pipeline: domain cache → behavioral memory → AI with session goal.
+    // Result is stored in sessionClassificationCache only — NOT in domain_categories,
+    // because a session-specific result (YouTube = productive) must not pollute the general cache.
+    if (normalized.url && session.currentClassification === 'unknown') {
+      const sessionId = session.sessionId;
+      const targetTitle = session.targetTitle;
+      const goalTitle = session.goalTitle ?? null;
+      const urlToClassify = normalized.url;
+      const titleToClassify = normalized.title || '';
+      void (async () => {
+        try {
+          let domain = '';
+          try { domain = new URL(urlToClassify).hostname.replace(/^www\./, ''); } catch { return; }
+          if (!domain || domain.startsWith('chrome')) return;
+          const r = await classifyActivity(urlToClassify, titleToClassify, domain, undefined, { targetTitle, goalTitle });
+          const mapped: 'on_topic' | 'distraction' | 'unknown' =
+            r.category === 'productive' ? 'on_topic' :
+            r.category === 'distraction' ? 'distraction' : 'unknown';
+          const live = guardianSessions.get(sessionId);
+          if (live) {
+            live.sessionClassificationCache[domain] = mapped;
+            if (live.currentUrl === urlToClassify) live.currentClassification = mapped;
+            // Write-through to DB so classification survives server restarts
+            try {
+              getDb().prepare(`
+                INSERT OR REPLACE INTO session_domain_classifications
+                  (session_id, domain, classification, classified_at)
+                VALUES (?, ?, ?, ?)
+              `).run(sessionId, domain, mapped, Date.now());
+            } catch { /* non-fatal — table created by migration 020 */ }
+          }
+        } catch { /* non-fatal */ }
+      })();
+    }
   }
 
   if (normalized.type === 'idle') {
@@ -1243,7 +1328,7 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
       ttlMinutes: requestedMinutes,
       reviewedAt: nowIso(),
     };
-  } else if (isProductiveUrl(request.url) || looksWorkRelated) {
+  } else if (classifyUrlForGuardian(request.url) === 'on_topic' || looksWorkRelated) {
     decision = {
       approved: true,
       reason: 'Targeted override approved',
@@ -1251,7 +1336,7 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
       ttlMinutes: requestedMinutes,
       reviewedAt: nowIso(),
     };
-  } else if (isDistractionUrl(request.url)) {
+  } else if (classifyUrlForGuardian(request.url) === 'distraction') {
     decision = {
       approved: false,
       reason: 'Override denied for distraction target',

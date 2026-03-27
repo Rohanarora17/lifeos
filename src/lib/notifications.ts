@@ -430,23 +430,27 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
         // 2. Focus Drop — only fires during an active guardian session.
         // Browsing data is only meaningful when the guardian is watching.
+        // Skip if the guardian's live focus score is > 60 — it's already intervening appropriately.
         const { activeSession } = getGuardianContext();
         if (activeSession) {
-            const todayStats = db.prepare(`
-        SELECT
-          COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
-          COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist,
-          COALESCE(SUM(duration_seconds), 0) as total
-        FROM activities WHERE started_at >= datetime('now', '-2 hours')
-      `).get() as { prod: number; dist: number; total: number };
+            const latestScore = activeSession.focusScoreHistory?.slice(-1)[0] ?? 0;
+            if (latestScore <= 60) {
+                const todayStats = db.prepare(`
+          SELECT
+            COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
+            COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist,
+            COALESCE(SUM(duration_seconds), 0) as total
+          FROM activities WHERE started_at >= datetime('now', '-2 hours')
+        `).get() as { prod: number; dist: number; total: number };
 
-            if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
-                const sent = await sendAlert(
-                    'focus_drop',
-                    `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,
-                    'warning'
-                );
-                if (sent) triggered.push('focus_drop');
+                if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
+                    const sent = await sendAlert(
+                        'focus_drop',
+                        `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,
+                        'warning'
+                    );
+                    if (sent) triggered.push('focus_drop');
+                }
             }
         }
 

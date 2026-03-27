@@ -104,7 +104,10 @@ function extractYouTubeVideoId(url: string): string | null {
     return videoIdMatch ? videoIdMatch[1] : null;
 }
 
-export async function classifyActivityBatch(activities: any[]): Promise<(CategoryResult & { reasoning?: string })[]> {
+export async function classifyActivityBatch(
+    activities: any[],
+    sessionContext?: { targetTitle?: string; goalTitle?: string | null }
+): Promise<(CategoryResult & { reasoning?: string })[]> {
     const results: (CategoryResult & { reasoning?: string })[] = new Array(activities.length);
     const toClassifyIndices: number[] = [];
     const itemsToClassify: { id: number, url: string, domain: string, title?: string, youtube_channel?: string | null, meta_description?: string, h1_text?: string }[] = [];
@@ -206,11 +209,16 @@ export async function classifyActivityBatch(activities: any[]): Promise<(Categor
                 }
             } catch (e) { }
 
+            // Active guardian session provides the highest-context signal — inject as top priority
+            const sessionLine = sessionContext?.targetTitle
+                ? `\nACTIVE FOCUS SESSION: "${sessionContext.targetTitle}"${sessionContext.goalTitle ? ` (goal: "${sessionContext.goalTitle}")` : ''}\n(This is what the user is actively studying RIGHT NOW. Use this to resolve ambiguous sites — e.g. YouTube = productive if the session is about watching a lecture, distraction otherwise.)\n`
+                : '';
+
             const prompt = `Classify these browsing activities for a productivity tracker. Respond ONLY with a valid JSON ARRAY of objects, matching the exact input order. Do not use markdown blocks.
-            
+
 INPUT:
 ${JSON.stringify(chunk, null, 2)}
-
+${sessionLine}
 ${goalsContext}
 ${taskContext}
 ${memoryContext}
@@ -260,9 +268,12 @@ RULES:
                     };
                     results[originalIdx] = aiResult;
 
-                    // 4. Update the Domain Cache for future use
+                    // 4. Update the Domain Cache for future use.
+                    // Skip when a session context is active: the session can flip a domain's
+                    // classification temporarily (YouTube = productive during a lecture) and
+                    // we don't want that to permanently overwrite the general domain_categories.
                     const act = activities[originalIdx];
-                    if (act && !act.domain.includes('youtube.com')) {
+                    if (act && !act.domain.includes('youtube.com') && !sessionContext?.targetTitle) {
                         try {
                             const confScore = aiResult.confidence === 'high' ? 0.9 : (aiResult.confidence === 'medium' ? 0.7 : 0.4);
                             db.prepare(`
@@ -292,8 +303,17 @@ RULES:
 
     return results;
 }
-export async function classifyActivity(url: string, title: string, domain: string, youtubeChannel?: string): Promise<CategoryResult & { reasoning?: string }> {
-    const results = await classifyActivityBatch([{ url, title, domain, youtube_channel: youtubeChannel }]);
+export async function classifyActivity(
+    url: string,
+    title: string,
+    domain: string,
+    youtubeChannel?: string,
+    sessionContext?: { targetTitle?: string; goalTitle?: string | null }
+): Promise<CategoryResult & { reasoning?: string }> {
+    const results = await classifyActivityBatch(
+        [{ url, title, domain, youtube_channel: youtubeChannel }],
+        sessionContext
+    );
     return results[0];
 }
 
@@ -454,6 +474,13 @@ Use the behavioral profile to personalize this briefing. Reference their typical
 }
 
 export async function shouldNudge(url: string, currentDomain: string, minutesOnSite: number, currentTitle: string, videoId?: string | null, focusGoal?: string, thresholdOverride?: number): Promise<{ shouldNudge: boolean; message: string }> {
+    // Guardian session is the primary intervention authority — defer entirely when active.
+    // Dynamic import avoids the circular dependency (guardian-runtime imports classifyActivity from this file).
+    try {
+        const { getActiveGuardianSession } = await import('./guardian-runtime');
+        if (getActiveGuardianSession()) return { shouldNudge: false, message: '' };
+    } catch { /* non-fatal */ }
+
     const threshold = thresholdOverride || parseInt(getSetting('nudge_threshold_minutes') || '15');
 
     if (minutesOnSite < threshold) {

@@ -5,28 +5,20 @@ import {
   GuardianPolicyBundle,
   GuardianState,
 } from './guardian-types';
+import { getDb } from './db';
 
-const DISTRACTION_DOMAINS = ['youtube.com', 'twitter.com', 'x.com', 'reddit.com', 'instagram.com', 'facebook.com'];
-const PRODUCTIVE_DOMAINS = ['docs.', 'developer.mozilla.org', 'leetcode.com', 'khanacademy.org', 'coursera.org', 'edx.org', 'wikipedia.org'];
-
-function getDomain(url: string | undefined): string | undefined {
-  if (!url) return undefined;
+function classifyUrlSync(url: string | undefined): 'on_topic' | 'distraction' | 'unknown' {
+  if (!url) return 'unknown';
+  let domain: string;
+  try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch { return 'unknown'; }
+  if (!domain || domain.startsWith('chrome')) return 'unknown';
   try {
-    return new URL(url).hostname;
-  } catch {
-    return undefined;
-  }
-}
-
-function classifyUrl(url: string | undefined): 'on_topic' | 'distraction' | 'unknown' {
-  const domain = getDomain(url);
-  if (!domain) return 'unknown';
-  if (DISTRACTION_DOMAINS.some((candidate) => domain === candidate || domain.endsWith(`.${candidate}`))) {
-    return 'distraction';
-  }
-  if (PRODUCTIVE_DOMAINS.some((candidate) => domain === candidate || domain.endsWith(`.${candidate}`))) {
-    return 'on_topic';
-  }
+    const row = getDb().prepare('SELECT category, confidence FROM domain_categories WHERE domain = ?').get(domain) as { category: string; confidence: number } | undefined;
+    if (row && row.confidence >= 0.6) {
+      if (row.category === 'productive') return 'on_topic';
+      if (row.category === 'distraction') return 'distraction';
+    }
+  } catch { /* DB not ready */ }
   return 'unknown';
 }
 
@@ -58,6 +50,9 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     targetTitle: scenario.targetTitle,
     personalBestFocusScore: null,
     energyComposite: null,
+    sessionClassificationCache: {},
+    immediateBlockDomains: [],
+    currentTabStartedAt: null,
   };
 }
 
@@ -69,7 +64,7 @@ function shouldSpeak(session: GuardianState, policy: GuardianPolicyBundle, focus
 function simulateDecision(session: GuardianState, policy: GuardianPolicyBundle, focusScore: number) {
   const recentEvents = session.tabEventLog.filter((event) => event.timestamp >= session.startedAt - 1 || true);
   const tabSwitchesLast5Min = recentEvents.filter((event) => event.type === 'tab').length;
-  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrl(event.url) === 'distraction').length;
+  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrlSync(event.url) === 'distraction').length;
   const idleSeconds = recentEvents.filter((event) => event.type === 'idle').reduce((sum, event) => sum + (event.idleSeconds || 0), 0);
 
   if (session.currentClassification === 'distraction' && distractionRevisits >= policy.thresholds.distractionRevisitBlockCount) {
@@ -114,7 +109,7 @@ export function evaluateGuardianPolicyScenario(
     if (event.type === 'tab') {
       session.currentUrl = event.url || '';
       session.currentTitle = event.title || '';
-      session.currentClassification = classifyUrl(event.url);
+      session.currentClassification = classifyUrlSync(event.url);
     } else if (event.type === 'idle') {
       session.currentClassification = 'unknown';
     }
