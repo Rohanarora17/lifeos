@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { classifyActivity } from '@/lib/ai';
 import { extractDomain } from '@/lib/categories';
+import { getActiveGuardianSession } from '@/lib/guardian-runtime';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -15,8 +16,12 @@ export async function POST(request: NextRequest) {
 
         const domain = extractDomain(url);
 
-        // Classify activity
-        const classification = await classifyActivity(url, title || '', domain, youtube_channel);
+        // Classify with session context so the same URL isn't mis-classified during an active study session
+        const activeSession = getActiveGuardianSession();
+        const sessionContext = activeSession
+            ? { targetTitle: activeSession.targetTitle, goalTitle: activeSession.goalTitle ?? null }
+            : undefined;
+        const classification = await classifyActivity(url, title || '', domain, youtube_channel, sessionContext);
 
         const db = getDb();
         const stmt = db.prepare(`
