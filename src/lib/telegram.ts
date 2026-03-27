@@ -121,6 +121,21 @@ export function buildReviewKeyboard(completionId: number): InlineKeyboard {
   ];
 }
 
+/**
+ * Build a per-activity classification review keyboard.
+ * c = confirm (AI was right), f = flip (AI was wrong), s = skip.
+ * Callback format: classify:ACTID:c|f|s
+ */
+export function buildClassifyKeyboard(actId: number): InlineKeyboard {
+  return [
+    [
+      { text: '✅ Correct', callback_data: `classify:${actId}:c` },
+      { text: '❌ Wrong', callback_data: `classify:${actId}:f` },
+      { text: '⏭ Skip', callback_data: `classify:${actId}:s` },
+    ],
+  ];
+}
+
 /** Build a keyboard with up to 3 task-start chips. */
 export function buildTaskChipsKeyboard(tasks: Array<{ id: number; title: string }>): InlineKeyboard {
   const chips = tasks.slice(0, 3).map(t => ({

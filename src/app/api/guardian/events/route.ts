@@ -30,9 +30,16 @@ async function logActivityAsync(
       ? new Date(event.tabStartedAt).toISOString()
       : new Date(Date.now() - dwellSeconds * 1000).toISOString();
 
+    // Embed sessionTarget so the Telegram review callback can write context-specific
+    // behavioral memory rules (e.g. "github.com during 'ZK Proofs' = distraction").
+    const aiClassificationJson = JSON.stringify({
+      ...classification,
+      sessionTarget: targetTitle ?? null,
+    });
+
     getDb().prepare(`
-      INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, device_name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, classification_confidence, device_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       activityUrl,
       domainStr,
@@ -41,7 +48,8 @@ async function logActivityAsync(
       classification.subcategory,
       started_at,
       dwellSeconds,
-      JSON.stringify(classification),
+      aiClassificationJson,
+      classification.confidence ?? null,
       'LifeOS Guardian'
     );
   } catch (err) {

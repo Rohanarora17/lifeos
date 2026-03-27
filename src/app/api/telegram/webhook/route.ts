@@ -6,6 +6,7 @@ import {
     FULL_MENU_KEYBOARD,
     buildReviewKeyboard,
     buildTaskChipsKeyboard,
+    buildClassifyKeyboard,
     formatHabitStatus,
     formatPendingReviews,
     formatWeeklyPlanSummary,
@@ -74,6 +75,8 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
             await handleFeedbackCallback(rest);
         } else if (type === 'session') {
             await handleSessionCallback(rest);
+        } else if (type === 'classify') {
+            await handleClassifyCallback(rest);
         } else {
             await sendTelegram(`Unknown callback: ${actionData}`, '');
         }
@@ -363,5 +366,138 @@ async function handleFeedbackCallback(payload: string) {
             setSetting('telegram_awaiting_feedback_session', lastSession.session_id);
         }
         await sendTelegram('💬 Reply with your reflection for this session.', '');
+    }
+}
+
+// ─── classify: callbacks ──────────────────────────────────────────────────────
+
+/**
+ * Handles classification review from post-session calibration prompts.
+ * payload = "ACTID:c" (confirm), "ACTID:f" (flip), or "ACTID:s" (skip).
+ *
+ * On confirm: marks reviewed, boosts domain_categories confidence.
+ * On flip:    marks reviewed, flips category in activities, writes context-specific
+ *             behavioral_memory rule so future sessions learn from this.
+ * On skip:    marks reviewed, no learning signal.
+ */
+async function handleClassifyCallback(payload: string) {
+    const colonIdx = payload.lastIndexOf(':');
+    if (colonIdx === -1) { await sendTelegram('Invalid classify callback.', ''); return; }
+    const actId = parseInt(payload.slice(0, colonIdx), 10);
+    const action = payload.slice(colonIdx + 1); // 'c', 'f', or 's'
+    if (isNaN(actId)) { await sendTelegram('Invalid activity ID.', ''); return; }
+
+    const db = getDb();
+    const act = db.prepare(`
+        SELECT id, domain, category, subcategory, ai_classification, classification_confidence
+        FROM activities WHERE id = ?
+    `).get(actId) as {
+        id: number;
+        domain: string;
+        category: string;
+        subcategory: string;
+        ai_classification: string;
+        classification_confidence: string;
+    } | undefined;
+
+    if (!act) { await sendTelegram('Activity not found.', '', FULL_MENU_KEYBOARD); return; }
+
+    // Mark as reviewed regardless of action
+    db.prepare(`UPDATE activities SET classification_reviewed = 1 WHERE id = ?`).run(actId);
+
+    let feedbackMsg = '';
+
+    if (action === 'c') {
+        // Confirm: AI was right — reinforce domain_categories confidence
+        feedbackMsg = `✅ Got it — <b>${act.domain}</b> = ${act.category}. Noted.`;
+        try {
+            db.prepare(`
+                INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
+                VALUES (?, ?, ?, 0.95, 'user confirmed')
+                ON CONFLICT(domain) DO UPDATE SET
+                    category = excluded.category,
+                    subcategory = excluded.subcategory,
+                    confidence = MIN(0.99, confidence + 0.05),
+                    updated_at = datetime('now')
+            `).run(act.domain, act.category, act.subcategory);
+        } catch { /* non-fatal */ }
+
+    } else if (action === 'f') {
+        // Flip: AI was wrong — invert category and write behavioral memory rule
+        const flippedCategory = act.category === 'productive' ? 'distraction'
+            : act.category === 'distraction' ? 'productive'
+            : act.category;
+
+        db.prepare(`UPDATE activities SET category = ?, classification_reviewed = 1 WHERE id = ?`)
+            .run(flippedCategory, actId);
+
+        // Parse sessionTarget from stored JSON (if present)
+        let sessionTarget: string | null = null;
+        try {
+            const parsed = JSON.parse(act.ai_classification);
+            sessionTarget = parsed.sessionTarget ?? null;
+        } catch { /* ignore */ }
+
+        // Write context-specific behavioral memory rule
+        const today = new Date().toISOString().slice(0, 10);
+        const rule = sessionTarget
+            ? `${act.domain} during "${sessionTarget}" sessions = ${flippedCategory} (user corrected ${today})`
+            : `${act.domain} = ${flippedCategory} (user corrected ${today})`;
+
+        try {
+            db.prepare(`
+                INSERT INTO behavioral_memory (memory_type, content, source, confidence)
+                VALUES ('categorization_rule', ?, 'user_feedback', 0.95)
+                ON CONFLICT DO NOTHING
+            `).run(rule);
+        } catch { /* non-fatal */ }
+
+        // Also update domain_categories so future in-session classification uses this
+        try {
+            db.prepare(`
+                INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
+                VALUES (?, ?, ?, 0.9, 'user corrected')
+                ON CONFLICT(domain) DO UPDATE SET
+                    category = excluded.category,
+                    subcategory = excluded.subcategory,
+                    confidence = 0.9,
+                    ai_reasoning = 'user corrected',
+                    updated_at = datetime('now')
+            `).run(act.domain, flippedCategory, act.subcategory);
+        } catch { /* non-fatal */ }
+
+        feedbackMsg = `🔄 Corrected — <b>${act.domain}</b> = ${flippedCategory}. I'll remember this.`;
+
+    } else {
+        // Skip
+        feedbackMsg = `⏭ Skipped.`;
+    }
+
+    // Find next unreviewed low/medium confidence activity
+    const next = db.prepare(`
+        SELECT id, domain, title, category, classification_confidence
+        FROM activities
+        WHERE classification_confidence IN ('low', 'medium')
+          AND classification_reviewed = 0
+          AND duration_seconds >= 30
+          AND started_at >= datetime('now', '-4 hours')
+        GROUP BY domain
+        ORDER BY classification_confidence ASC, duration_seconds DESC
+        LIMIT 1
+    `).get() as { id: number; domain: string; title: string; category: string; classification_confidence: string } | undefined;
+
+    if (next) {
+        const confLabel = next.classification_confidence === 'low' ? '🟡 not sure' : '🟠 unsure';
+        const catLabel = next.category === 'productive' ? '✅ productive' : next.category === 'distraction' ? '❌ distraction' : '⚪ neutral';
+        await sendTelegram(
+            `${feedbackMsg}\n\n` +
+            `🤔 Next: <b>${next.domain}</b> → ${catLabel} (${confLabel})\n` +
+            (next.title ? `📄 <i>${next.title.slice(0, 60)}</i>\n` : '') +
+            `\nWas I right?`,
+            'HTML',
+            buildClassifyKeyboard(next.id)
+        );
+    } else {
+        await sendTelegram(`${feedbackMsg}\n\n🎓 All done! Calibration complete.`, 'HTML', FULL_MENU_KEYBOARD);
     }
 }

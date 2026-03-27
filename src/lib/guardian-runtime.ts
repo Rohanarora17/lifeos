@@ -20,6 +20,7 @@ import {
   SESSION_START_KEYBOARD,
   SESSION_END_KEYBOARD,
   SOFT_WATCH_KEYBOARD,
+  buildClassifyKeyboard,
 } from './telegram';
 import { createCalendarEvent, updateCalendarEvent, isCalendarConfigured } from './google-calendar';
 import {
@@ -91,24 +92,35 @@ function getDomain(url: string | undefined): string | undefined {
  */
 function classifyUrlForGuardian(
   url: string | undefined,
-  sessionClassificationCache?: Record<string, 'on_topic' | 'distraction' | 'unknown'>
+  sessionClassificationCache?: Record<string, 'on_topic' | 'distraction' | 'unknown'>,
+  hasSession?: boolean // when true, only trust user-confirmed domain_categories entries
 ): 'on_topic' | 'distraction' | 'unknown' {
   if (!url) return 'unknown';
   let domain: string;
   try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch { return 'unknown'; }
   if (!domain || domain.startsWith('chrome') || domain === 'newtab') return 'unknown';
 
-  // 1. Session-scoped cache (set by async classifyActivity with session context)
+  // 1. Session-scoped cache (set by async classifyActivity with session context — highest authority)
   if (sessionClassificationCache?.[domain]) return sessionClassificationCache[domain];
 
-  // 2. Persistent domain_categories (written by classifyActivity, learnDomainClassifications, user overrides)
+  // 2. Persistent domain_categories.
+  // During an active session, only trust user-confirmed entries (ai_reasoning starts with 'user').
+  // AI-only cached results are bypassed so the async session-aware classification can run and
+  // overwrite the cache with the correct session-scoped result.
   try {
     const row = getDb().prepare(
-      'SELECT category, confidence FROM domain_categories WHERE domain = ?'
-    ).get(domain) as { category: string; confidence: number } | undefined;
-    if (row && row.confidence >= 0.6) {
-      if (row.category === 'productive') return 'on_topic';
-      if (row.category === 'distraction') return 'distraction';
+      'SELECT category, confidence, ai_reasoning FROM domain_categories WHERE domain = ?'
+    ).get(domain) as { category: string; confidence: number; ai_reasoning?: string } | undefined;
+    if (row) {
+      const isUserConfirmed = typeof row.ai_reasoning === 'string' &&
+        (row.ai_reasoning.startsWith('user confirm') || row.ai_reasoning.startsWith('user correct'));
+      const meetsThreshold = hasSession
+        ? (isUserConfirmed && row.confidence >= 0.9) // session: only human-confirmed overrides
+        : row.confidence >= 0.6;                      // no session: any cached result
+      if (meetsThreshold) {
+        if (row.category === 'productive') return 'on_topic';
+        if (row.category === 'distraction') return 'distraction';
+      }
     }
   } catch { /* DB not ready */ }
 
@@ -351,13 +363,13 @@ function persistSessionSummary(session: GuardianState) {
 
     for (const event of session.tabEventLog) {
       if (event.type !== 'tab') continue;
-      if (classifyUrlForGuardian(event.url) === 'distraction') {
+      if (classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'distraction') {
         distractionEvents += 1;
         const domain = getDomain(event.url);
         if (domain) {
           domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
         }
-      } else if (classifyUrlForGuardian(event.url) === 'on_topic') {
+      } else if (classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'on_topic') {
         productiveEvents += 1;
       } else {
         neutralEvents += 1;
@@ -438,7 +450,7 @@ async function generateSessionReflection(session: GuardianState) {
     const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
     const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
     const distractionCount = session.tabEventLog.filter(
-      (e) => e.type === 'tab' && classifyUrlForGuardian(e.url) === 'distraction'
+      (e) => e.type === 'tab' && classifyUrlForGuardian(e.url, session.sessionClassificationCache, true) === 'distraction'
     ).length;
 
     const focusQuality =
@@ -547,7 +559,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const history = session.focusScoreHistory;
   const recentEvents = session.tabEventLog.filter((event) => event.timestamp >= Date.now() - 300_000);
   const tabSwitchesLast5Min = recentEvents.filter((event) => event.type === 'tab').length;
-  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrlForGuardian(event.url, session.sessionClassificationCache) === 'distraction').length;
+  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'distraction').length;
   const idleSeconds = recentEvents
     .filter((event) => event.type === 'idle')
     .reduce((sum, event) => sum + (event.idleSeconds || 0), 0);
@@ -1037,6 +1049,11 @@ export function endGuardianSession(sessionId: string) {
 
     await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection), 'HTML', SESSION_END_KEYBOARD);
 
+    // Fire post-session classification review for low/medium confidence activities.
+    // Small delay gives logActivityAsync time to flush final tab events.
+    await new Promise(r => setTimeout(r, 5000));
+    void sendSessionClassifyReview(sessionId);
+
     // Update calendar event with actual duration and focus score
     const eventId = calendarEventIds.get(sessionId);
     if (eventId && isCalendarConfigured()) {
@@ -1125,6 +1142,59 @@ export function endGuardianSession(sessionId: string) {
   return cloneSession(session);
 }
 
+// ─── Post-session classification review ───────────────────────────────────────
+
+/**
+ * After session ends, find activities the AI wasn't confident about and send
+ * the first one to Telegram with a confirm/flip/skip keyboard.
+ * Each button press advances to the next item (handled by handleClassifyCallback
+ * in the webhook route).
+ */
+async function sendSessionClassifyReview(sessionId: string) {
+  try {
+    const db = getDb();
+    // Low/medium confidence, meaningful dwell, not yet reviewed, deduplicated by domain.
+    // Limit 5 so the review queue doesn't feel overwhelming.
+    const rows = db.prepare(`
+      SELECT id, domain, title, category, subcategory, classification_confidence, ai_classification
+      FROM activities
+      WHERE device_name = 'LifeOS Guardian'
+        AND classification_confidence IN ('low', 'medium')
+        AND classification_reviewed = 0
+        AND duration_seconds >= 30
+        AND started_at >= datetime('now', '-4 hours')
+      GROUP BY domain
+      ORDER BY classification_confidence ASC, duration_seconds DESC
+      LIMIT 5
+    `).all() as Array<{
+      id: number;
+      domain: string;
+      title: string;
+      category: string;
+      subcategory: string;
+      classification_confidence: string;
+      ai_classification: string;
+    }>;
+
+    if (rows.length === 0) return;
+
+    const first = rows[0];
+    const confLabel = first.classification_confidence === 'low' ? '🟡 not sure' : '🟠 unsure';
+    const catLabel = first.category === 'productive' ? '✅ productive' : first.category === 'distraction' ? '❌ distraction' : '⚪ neutral';
+
+    await sendTelegram(
+      `🤔 <b>Quick calibration</b> (${rows.length} item${rows.length > 1 ? 's' : ''})\n\n` +
+      `I classified <b>${first.domain}</b> as <b>${catLabel}</b> but I'm ${confLabel}.\n` +
+      (first.title ? `📄 <i>${first.title.slice(0, 60)}</i>\n` : '') +
+      `\nWas I right?`,
+      'HTML',
+      buildClassifyKeyboard(first.id)
+    );
+  } catch (err) {
+    console.error('[guardian] sendSessionClassifyReview failed:', err);
+  }
+}
+
 export function pauseGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   if (!session) return null;
@@ -1161,7 +1231,7 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
     domain: event.domain || getDomain(event.url),
     payload: {
       ...(event.payload || {}),
-      classification: event.url ? classifyUrlForGuardian(event.url, session.sessionClassificationCache) : undefined,
+      classification: event.url ? classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) : undefined,
       attentionCategory: event.url ? getAttentionCategory(session, event.url) : undefined,
     },
   };
@@ -1169,15 +1239,17 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
   if (normalized.type === 'tab') {
     session.currentUrl = normalized.url || '';
     session.currentTitle = normalized.title || '';
-    session.currentClassification = classifyUrlForGuardian(normalized.url, session.sessionClassificationCache);
+    session.currentClassification = classifyUrlForGuardian(normalized.url, session.sessionClassificationCache, true);
     session.currentTabStartedAt = normalized.timestamp;
 
     // Fire-and-forget: run classifyActivity with session context so classification is
     // session-aware (YouTube = productive during "Watch lecture", distraction otherwise).
-    // Uses the existing pipeline: domain cache → behavioral memory → AI with session goal.
-    // Result is stored in sessionClassificationCache only — NOT in domain_categories,
-    // because a session-specific result (YouTube = productive) must not pollute the general cache.
-    if (normalized.url && session.currentClassification === 'unknown') {
+    // Fires whenever the domain has NOT yet been classified in this specific session —
+    // even if domain_categories has a cached result, because a general cache entry
+    // (e.g. github.com = productive) may be wrong for THIS session topic.
+    let tabDomain = '';
+    try { tabDomain = new URL(normalized.url || '').hostname.replace(/^www\./, ''); } catch { /* */ }
+    if (normalized.url && tabDomain && !session.sessionClassificationCache[tabDomain]) {
       const sessionId = session.sessionId;
       const targetTitle = session.targetTitle;
       const goalTitle = session.goalTitle ?? null;
@@ -1185,8 +1257,7 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
       const titleToClassify = normalized.title || '';
       void (async () => {
         try {
-          let domain = '';
-          try { domain = new URL(urlToClassify).hostname.replace(/^www\./, ''); } catch { return; }
+          const domain = tabDomain;
           if (!domain || domain.startsWith('chrome')) return;
           const r = await classifyActivity(urlToClassify, titleToClassify, domain, undefined, { targetTitle, goalTitle });
           const mapped: 'on_topic' | 'distraction' | 'unknown' =
@@ -1328,7 +1399,7 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
       ttlMinutes: requestedMinutes,
       reviewedAt: nowIso(),
     };
-  } else if (classifyUrlForGuardian(request.url) === 'on_topic' || looksWorkRelated) {
+  } else if (classifyUrlForGuardian(request.url, session?.sessionClassificationCache, true) === 'on_topic' || looksWorkRelated) {
     decision = {
       approved: true,
       reason: 'Targeted override approved',
@@ -1336,7 +1407,7 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
       ttlMinutes: requestedMinutes,
       reviewedAt: nowIso(),
     };
-  } else if (classifyUrlForGuardian(request.url) === 'distraction') {
+  } else if (classifyUrlForGuardian(request.url, session?.sessionClassificationCache, true) === 'distraction') {
     decision = {
       approved: false,
       reason: 'Override denied for distraction target',

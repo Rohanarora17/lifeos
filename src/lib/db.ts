@@ -76,6 +76,9 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE guardian_semantic_profiles ADD COLUMN commitment_follow_through_rate REAL DEFAULT NULL').run(); } catch (e) { }
   // mem_facts: embedding vector (JSON float array) for semantic search at scale
   try { db.prepare('ALTER TABLE mem_facts ADD COLUMN embedding TEXT DEFAULT NULL').run(); } catch (e) { }
+  // activities: AI confidence level + user review flag (migration 021)
+  try { db.prepare("ALTER TABLE activities ADD COLUMN classification_confidence TEXT DEFAULT NULL").run(); } catch (e) { }
+  try { db.prepare("ALTER TABLE activities ADD COLUMN classification_reviewed INTEGER DEFAULT 0").run(); } catch (e) { }
 
   // ─── P0.2: tasks — energy routing + friction detection ────────────────────
   try { db.prepare("ALTER TABLE tasks ADD COLUMN energy_required TEXT DEFAULT 'medium'").run(); } catch (e) { }

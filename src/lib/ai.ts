@@ -115,6 +115,12 @@ export async function classifyActivityBatch(
 
     const db = getDb();
 
+    // When an active guardian session is running, domain relevance depends on the
+    // session topic — so the general domain cache must be bypassed.
+    // User-confirmed entries (ai_reasoning starts with 'user') ARE respected because
+    // they represent explicit human judgment that overrides session context.
+    const hasSessionContext = !!sessionContext?.targetTitle;
+
     // 1. Initial pass: Check domain cache and recent activity
     for (let i = 0; i < activities.length; i++) {
         const act = activities[i];
@@ -123,24 +129,36 @@ export async function classifyActivityBatch(
         const isYouTube = domain.includes('youtube.com');
         let isCached = false;
 
-        // 2. Check persistent Domain Cache for standard websites
+        // 2. Check persistent Domain Cache for standard websites.
+        // During a session, only trust user-confirmed entries (confidence >= 0.9 AND
+        // user-sourced). AI-cached entries are bypassed so session context drives classification.
         if (!isYouTube) {
             try {
                 const cachedDomain = db.prepare('SELECT category, subcategory, confidence, ai_reasoning FROM domain_categories WHERE domain = ?').get(domain) as any;
-                if (cachedDomain && cachedDomain.confidence >= 0.7) {
-                    results[i] = {
-                        category: cachedDomain.category,
-                        subcategory: cachedDomain.subcategory,
-                        confidence: cachedDomain.confidence < 0.8 ? 'medium' : 'high',
-                        reasoning: cachedDomain.ai_reasoning || 'Cached domain classification'
-                    };
-                    isCached = true;
+                if (cachedDomain) {
+                    const isUserConfirmed = typeof cachedDomain.ai_reasoning === 'string' &&
+                        (cachedDomain.ai_reasoning.startsWith('user confirm') ||
+                         cachedDomain.ai_reasoning.startsWith('user correct'));
+                    const meetsThreshold = hasSessionContext
+                        ? (isUserConfirmed && cachedDomain.confidence >= 0.9) // strict: user override only
+                        : cachedDomain.confidence >= 0.7;                    // normal: any cached result
+                    if (meetsThreshold) {
+                        results[i] = {
+                            category: cachedDomain.category,
+                            subcategory: cachedDomain.subcategory,
+                            confidence: cachedDomain.confidence < 0.8 ? 'medium' : 'high',
+                            reasoning: cachedDomain.ai_reasoning || 'Cached domain classification'
+                        };
+                        isCached = true;
+                    }
                 }
             } catch (e) { /* ignore sqlite errors if migration hasn't run yet */ }
         }
 
-        // 3. Check recent exact-URL cache (especially for YouTube videos)
-        if (!isCached && url) {
+        // 3. Check recent exact-URL cache (especially for YouTube videos).
+        // Skip during active sessions — a URL classified yesterday without session context
+        // may be a distraction today under a specific study topic.
+        if (!isCached && !hasSessionContext && url) {
             const cached = lookupRecentClassification(url, domain, isYouTube ? extractYouTubeVideoId(url) : null);
             if (cached) {
                 results[i] = cached;
@@ -214,6 +232,32 @@ export async function classifyActivityBatch(
                 ? `\nACTIVE FOCUS SESSION: "${sessionContext.targetTitle}"${sessionContext.goalTitle ? ` (goal: "${sessionContext.goalTitle}")` : ''}\n(This is what the user is actively studying RIGHT NOW. Use this to resolve ambiguous sites — e.g. YouTube = productive if the session is about watching a lecture, distraction otherwise.)\n`
                 : '';
 
+            const sessionRules = sessionContext?.targetTitle ? `
+SESSION-AWARE CLASSIFICATION RULES (active session overrides everything):
+- The user is actively studying: "${sessionContext.targetTitle}". This is the ONLY lens that matters.
+- A site is productive ONLY if it directly helps with "${sessionContext.targetTitle}".
+- Generically useful sites (GitHub, StackOverflow, Wikipedia, Khan Academy) are DISTRACTIONS
+  if their content is unrelated to "${sessionContext.targetTitle}". Looking at a random GitHub
+  repo, unrelated StackOverflow question, or off-topic Wikipedia article during this session = distraction.
+- Use the page title and URL path to judge relevance to the session topic. Be specific.
+- When uncertain whether a site is on-topic, lean toward "distraction" with confidence "medium" or "low"
+  so the user can correct you — don't assume productive.
+- YouTube: only productive if it's a tutorial/lecture directly about "${sessionContext.targetTitle}".
+- confidence = "high" only when relevance to the session topic is unambiguous.
+- confidence = "medium" when the site is generically useful but topic overlap is unclear.
+- confidence = "low" when you cannot determine relevance from the URL/title alone.` : `
+GENERAL CLASSIFICATION RULES (no active session):
+- Generically productive sites (coding, docs, educational platforms like Wikipedia, Khan Academy) → productive.
+- Use Active Tasks to determine if ambiguous sites (YouTube, Reddit, blogs) are currently on-topic.
+- YouTube tutorials, courses, tech talks, coding, educational content → productive / youtube-educational
+- YouTube entertainment, vlogs, random browsing → distraction / youtube-entertainment
+- YouTube gaming livestreams → distraction / gaming (unless explicitly educational)
+- YouTube music/ambient/study beats → neutral / youtube-music
+- Coding sites, docs, learning platforms → productive
+- Social media (Twitter, Instagram, Reddit casual) → distraction
+- Reddit programming/tech subreddits → productive / research
+- News sites → neutral / news`;
+
             const prompt = `Classify these browsing activities for a productivity tracker. Respond ONLY with a valid JSON ARRAY of objects, matching the exact input order. Do not use markdown blocks.
 
 INPUT:
@@ -227,24 +271,13 @@ OUTPUT FORMAT: Return a JSON array matching this schema:
 [
   {
     "id": <input id as number>,
-    "category": "productive|neutral|distraction", 
-    "subcategory": "coding|documentation|research|learning|youtube-educational|youtube-entertainment|youtube-music|social-media|news|shopping|gaming|entertainment|communication|productivity-tool|finance|other", 
+    "category": "productive|neutral|distraction",
+    "subcategory": "coding|documentation|research|learning|youtube-educational|youtube-entertainment|youtube-music|social-media|news|shopping|gaming|entertainment|communication|productivity-tool|finance|other",
     "confidence": "high|medium|low",
-    "reasoning": "Brief 1-sentence explanation of why"
+    "reasoning": "Brief 1-sentence explanation referencing the session topic if active"
   }
 ]
-
-RULES:
-- If a site is generically productive (coding sites, docs, educational platforms like Wikipedia or Khan Academy), classify it as productive EVEN IF it does not perfectly match the active tasks.
-- Use Active Tasks primarily to determine if ambiguous sites (YouTube, Reddit, blogs) are currently productive/on-topic or are distractions.
-- YouTube tutorials, courses, tech talks, coding, educational content → productive / youtube-educational
-- YouTube entertainment, vlogs, random browsing → distraction / youtube-entertainment
-- YouTube gaming livestreams (e.g., CS:GO, Valorant), unless explicitly educational → distraction / gaming
-- YouTube music/ambient/study beats → neutral / youtube-music
-- Coding sites, docs, learning platforms → productive
-- Social media (Twitter, Instagram, Reddit casual) → distraction
-- Reddit programming/tech subreddits → productive / research
-- News sites → neutral / news`;
+${sessionRules}`;
 
             const result = await generateWithFallback(ai, {
                 model: MODEL_FLASH,
@@ -272,6 +305,7 @@ RULES:
                     // Skip when a session context is active: the session can flip a domain's
                     // classification temporarily (YouTube = productive during a lecture) and
                     // we don't want that to permanently overwrite the general domain_categories.
+                    // Never overwrite user-confirmed/corrected entries — those take permanent precedence.
                     const act = activities[originalIdx];
                     if (act && !act.domain.includes('youtube.com') && !sessionContext?.targetTitle) {
                         try {
@@ -281,6 +315,7 @@ RULES:
                                     VALUES (?, ?, ?, ?, ?)
                                     ON CONFLICT(domain) DO UPDATE SET
                                         category = ?, subcategory = ?, confidence = ?, ai_reasoning = ?, updated_at = datetime('now')
+                                        WHERE ai_reasoning NOT LIKE 'user%'
                                 `).run(
                                 act.domain, aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning,
                                 aiResult.category, aiResult.subcategory, confScore, aiResult.reasoning
