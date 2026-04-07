@@ -16,7 +16,8 @@ import {
     formatTasksList,
 } from '@/lib/telegram';
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
-import { startGuardianSession, endGuardianSession, getActiveGuardianSession } from '@/lib/guardian-runtime';
+import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
+import { learnMemory } from '@/lib/behavior';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -375,10 +376,14 @@ async function handleFeedbackCallback(payload: string) {
  * Handles classification review from post-session calibration prompts.
  * payload = "ACTID:c" (confirm), "ACTID:f" (flip), or "ACTID:s" (skip).
  *
- * On confirm: marks reviewed, boosts domain_categories confidence.
- * On flip:    marks reviewed, flips category in activities, writes context-specific
- *             behavioral_memory rule so future sessions learn from this.
- * On skip:    marks reviewed, no learning signal.
+ * Learning signal design:
+ * - Confirm: reinforce domain_categories + any matching behavioral_memory rule.
+ * - Flip (session-specific): write behavioral_memory context rule only — do NOT
+ *   write a general domain_categories entry, because a session-specific correction
+ *   (github.com = distraction during ZK Proofs) must not affect all-time classification.
+ * - Flip (no session context): write behavioral_memory + update domain_categories
+ *   as a general override.
+ * - All flips: call applyUserClassificationFeedback() to update live session cache.
  */
 async function handleClassifyCallback(payload: string) {
     const colonIdx = payload.lastIndexOf(':');
@@ -402,13 +407,25 @@ async function handleClassifyCallback(payload: string) {
 
     if (!act) { await sendTelegram('Activity not found.', '', FULL_MENU_KEYBOARD); return; }
 
+    // Parse sessionTarget from the stored ai_classification JSON
+    let sessionTarget: string | null = null;
+    try {
+        const parsed = JSON.parse(act.ai_classification);
+        sessionTarget = parsed.sessionTarget ?? null;
+    } catch { /* ignore */ }
+
     // Mark as reviewed regardless of action
     db.prepare(`UPDATE activities SET classification_reviewed = 1 WHERE id = ?`).run(actId);
 
     let feedbackMsg = '';
 
     if (action === 'c') {
-        // Confirm: AI was right — reinforce domain_categories confidence
+        // ── CONFIRM ────────────────────────────────────────────────────────────
+        // AI was right. Reinforce:
+        // 1. domain_categories — bump confidence so it's served from cache sooner.
+        //    Use 'user confirmed' reasoning so AI cache writes can't overwrite it.
+        // 2. Any matching behavioral_memory rule — call learnMemory() to reinforce
+        //    (increments reinforcement_count, grows confidence logarithmically).
         feedbackMsg = `✅ Got it — <b>${act.domain}</b> = ${act.category}. Noted.`;
         try {
             db.prepare(`
@@ -418,12 +435,24 @@ async function handleClassifyCallback(payload: string) {
                     category = excluded.category,
                     subcategory = excluded.subcategory,
                     confidence = MIN(0.99, confidence + 0.05),
+                    ai_reasoning = 'user confirmed',
                     updated_at = datetime('now')
+                    WHERE ai_reasoning NOT LIKE 'user correct%'
             `).run(act.domain, act.category, act.subcategory);
         } catch { /* non-fatal */ }
 
+        // Reinforce matching behavioral memory rules via learnMemory (reinforcement counting)
+        try {
+            const today = new Date().toISOString().slice(0, 10);
+            if (sessionTarget) {
+                learnMemory('categorization_rule',
+                    `${act.domain} during "${sessionTarget}" sessions = ${act.category} (user confirmed ${today})`,
+                    'user_feedback', 0.95);
+            }
+        } catch { /* non-fatal */ }
+
     } else if (action === 'f') {
-        // Flip: AI was wrong — invert category and write behavioral memory rule
+        // ── FLIP ───────────────────────────────────────────────────────────────
         const flippedCategory = act.category === 'productive' ? 'distraction'
             : act.category === 'distraction' ? 'productive'
             : act.category;
@@ -431,45 +460,45 @@ async function handleClassifyCallback(payload: string) {
         db.prepare(`UPDATE activities SET category = ?, classification_reviewed = 1 WHERE id = ?`)
             .run(flippedCategory, actId);
 
-        // Parse sessionTarget from stored JSON (if present)
-        let sessionTarget: string | null = null;
-        try {
-            const parsed = JSON.parse(act.ai_classification);
-            sessionTarget = parsed.sessionTarget ?? null;
-        } catch { /* ignore */ }
-
-        // Write context-specific behavioral memory rule
         const today = new Date().toISOString().slice(0, 10);
-        const rule = sessionTarget
-            ? `${act.domain} during "${sessionTarget}" sessions = ${flippedCategory} (user corrected ${today})`
-            : `${act.domain} = ${flippedCategory} (user corrected ${today})`;
 
-        try {
-            db.prepare(`
-                INSERT INTO behavioral_memory (memory_type, content, source, confidence)
-                VALUES ('categorization_rule', ?, 'user_feedback', 0.95)
-                ON CONFLICT DO NOTHING
-            `).run(rule);
-        } catch { /* non-fatal */ }
+        if (sessionTarget) {
+            // SESSION-SPECIFIC CORRECTION
+            // Write context-specific behavioral_memory rule via learnMemory()
+            // (gets reinforcement counting if the same correction appears again).
+            // Do NOT write a general domain_categories entry — this correction only
+            // applies when studying this specific topic.
+            learnMemory('categorization_rule',
+                `${act.domain} during "${sessionTarget}" sessions = ${flippedCategory} (user corrected ${today})`,
+                'user_feedback', 0.95);
+        } else {
+            // GENERAL CORRECTION (no session context)
+            // Write both behavioral_memory and domain_categories.
+            learnMemory('categorization_rule',
+                `${act.domain} = ${flippedCategory} (user corrected ${today})`,
+                'user_feedback', 0.95);
+            try {
+                db.prepare(`
+                    INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
+                    VALUES (?, ?, ?, 0.9, 'user corrected')
+                    ON CONFLICT(domain) DO UPDATE SET
+                        category = excluded.category,
+                        subcategory = excluded.subcategory,
+                        confidence = 0.9,
+                        ai_reasoning = 'user corrected',
+                        updated_at = datetime('now')
+                `).run(act.domain, flippedCategory, act.subcategory);
+            } catch { /* non-fatal */ }
+        }
 
-        // Also update domain_categories so future in-session classification uses this
-        try {
-            db.prepare(`
-                INSERT INTO domain_categories (domain, category, subcategory, confidence, ai_reasoning)
-                VALUES (?, ?, ?, 0.9, 'user corrected')
-                ON CONFLICT(domain) DO UPDATE SET
-                    category = excluded.category,
-                    subcategory = excluded.subcategory,
-                    confidence = 0.9,
-                    ai_reasoning = 'user corrected',
-                    updated_at = datetime('now')
-            `).run(act.domain, flippedCategory, act.subcategory);
-        } catch { /* non-fatal */ }
+        // Update live session cache immediately so guardian blocking reacts now
+        applyUserClassificationFeedback(act.domain,
+            flippedCategory === 'productive' ? 'on_topic' : flippedCategory === 'distraction' ? 'distraction' : 'unknown');
 
         feedbackMsg = `🔄 Corrected — <b>${act.domain}</b> = ${flippedCategory}. I'll remember this.`;
 
     } else {
-        // Skip
+        // ── SKIP ───────────────────────────────────────────────────────────────
         feedbackMsg = `⏭ Skipped.`;
     }
 

@@ -217,13 +217,45 @@ export async function classifyActivityBatch(
                 }
             } catch { /* tasks table may not exist yet */ }
 
-            // Get behavioral memory context
+            // Get behavioral memory context — ordered by relevance.
+            // User feedback rules are injected at top priority so the LLM always follows them.
+            // Session-specific rules (content contains the active session topic) are hoisted
+            // above general rules so topic-specific corrections take precedence.
             let memoryContext = '';
             try {
-                const memories = _db.prepare('SELECT content FROM behavioral_memory WHERE memory_type = "categorization_rule"').all() as { content: string }[];
+                const memories = _db.prepare(`
+                    SELECT content, confidence, source
+                    FROM behavioral_memory
+                    WHERE memory_type = 'categorization_rule' AND superseded = 0
+                    ORDER BY confidence DESC
+                    LIMIT 30
+                `).all() as { content: string; confidence: number; source: string }[];
+
                 if (memories.length > 0) {
-                    memoryContext = "\nUSER MANUAL OVERRIDES (CRITICAL - ALWAYS FOLLOW THESE):\n" +
-                        memories.map(m => `- ${m.content}`).join('\n');
+                    const sessionTopic = sessionContext?.targetTitle?.toLowerCase() ?? '';
+                    // Hoist rules that mention the current session topic
+                    const [sessionRules, generalRules] = memories.reduce<[string[], string[]]>(
+                        ([s, g], m) => {
+                            if (sessionTopic && m.content.toLowerCase().includes(sessionTopic)) {
+                                s.push(`- ${m.content}`);
+                            } else {
+                                g.push(`- ${m.content}`);
+                            }
+                            return [s, g];
+                        },
+                        [[], []]
+                    );
+
+                    const parts: string[] = [];
+                    if (sessionRules.length > 0) {
+                        parts.push(`SESSION-SPECIFIC OVERRIDES FOR "${sessionContext?.targetTitle}" (highest priority):\n${sessionRules.join('\n')}`);
+                    }
+                    if (generalRules.length > 0) {
+                        parts.push(`GENERAL USER OVERRIDES:\n${generalRules.join('\n')}`);
+                    }
+                    if (parts.length > 0) {
+                        memoryContext = '\nUSER MANUAL OVERRIDES (CRITICAL — ALWAYS FOLLOW THESE, THEY OVERRIDE ALL OTHER RULES):\n' + parts.join('\n\n');
+                    }
                 }
             } catch (e) { }
 

@@ -806,6 +806,32 @@ export function setImmediateBlockDomains(sessionId: string, domains: string[]) {
   if (session) session.immediateBlockDomains = domains;
 }
 
+/**
+ * Apply a user classification correction to all live active sessions in real-time.
+ * Called from the Telegram classify callback so the guardian reacts immediately
+ * without waiting for the next AI classification cycle.
+ */
+export function applyUserClassificationFeedback(
+  domain: string,
+  classification: 'on_topic' | 'distraction' | 'unknown'
+) {
+  for (const session of guardianSessions.values()) {
+    if (session.state !== 'ACTIVE') continue;
+    session.sessionClassificationCache[domain] = classification;
+    if (getDomain(session.currentUrl) === domain) {
+      session.currentClassification = classification;
+    }
+    // Persist the update through to the session_domain_classifications table
+    try {
+      getDb().prepare(`
+        INSERT OR REPLACE INTO session_domain_classifications
+          (session_id, domain, classification, classified_at)
+        VALUES (?, ?, ?, ?)
+      `).run(session.sessionId, domain, classification, Date.now());
+    } catch { /* non-fatal */ }
+  }
+}
+
 export function listGuardianSessions() {
   if (guardianSessions.size === 0) restoreSessionsFromDb();
   return Array.from(guardianSessions.values()).map(cloneSession);
