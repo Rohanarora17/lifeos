@@ -9,6 +9,8 @@ import {
 import { listUpcomingEvents } from './google-calendar';
 import { forceSynthesis, getIntelligenceContext } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
+import { captureAndAnalyze } from './screenshot-pipeline';
+import { runContinuityCheck } from './continuity-guardian';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -170,6 +172,16 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerIntervalJob('uil_synthesis', 2 * 60 * 60 * 1000, async () => {
         console.log('[Scheduler] Running UIL background synthesis...');
         await forceSynthesis('scheduled_2h');
+    });
+
+    // Screenshot pipeline — every 60 seconds, waking hours only (7am-11pm enforced inside captureAndAnalyze)
+    registerIntervalJob('screenshot_pipeline', 60 * 1000, async () => {
+        await captureAndAnalyze();
+    });
+
+    // Continuity guardian — every 30 minutes
+    registerIntervalJob('continuity_guardian', 30 * 60 * 1000, async () => {
+        await runContinuityCheck();
     });
 
     // Achievement engine - runs every 10 minutes
