@@ -18,7 +18,7 @@ import {
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
-import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse } from '@/lib/checkin';
+import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -56,6 +56,13 @@ export async function POST(request: Request) {
             }
             if (pendingCheckin === 'evening') {
                 await handleEveningReflectionResponse(body.message.text);
+                return NextResponse.json({ ok: true });
+            }
+
+            // Check if user is replying to an override follow-up
+            const recentFollowUp = getRecentUnansweredFollowUp();
+            if (recentFollowUp) {
+                await handleOverrideFollowupResponse(body.message.text, recentFollowUp.id);
                 return NextResponse.json({ ok: true });
             }
 

@@ -1517,6 +1517,18 @@ JSON schema:
       sourceEventType: 'override_decision',
       createdAt: Date.now(),
     });
+
+    // Schedule a follow-up message 20 minutes after the approved override
+    try {
+      const db = getDb();
+      const followUpAt = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+      db.prepare(`
+        INSERT INTO override_follow_ups (session_id, override_url, override_reason, follow_up_at)
+        VALUES (?, ?, ?, ?)
+      `).run(request.sessionId, request.url, request.reason, followUpAt);
+    } catch (followUpErr) {
+      console.error('[GuardianRuntime] Failed to schedule override follow-up', followUpErr);
+    }
   }
 
   emitSessionEvent(request.sessionId, {

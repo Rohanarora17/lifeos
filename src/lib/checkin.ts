@@ -137,3 +137,37 @@ export function getPendingCheckinType(): 'morning' | 'evening' | null {
   if (val === 'evening') return 'evening';
   return null;
 }
+
+// ─── Override Follow-Up ───────────────────────────────────────────────────────
+
+interface FollowUpRow {
+  id: number;
+  session_id: string;
+  override_url: string;
+  override_reason: string;
+}
+
+/**
+ * Returns the most recent sent follow-up that hasn't been answered yet (within last 30 min).
+ */
+export function getRecentUnansweredFollowUp(): FollowUpRow | null {
+  const db = getDb();
+  const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  return db.prepare(`
+    SELECT id, session_id, override_url, override_reason
+    FROM override_follow_ups
+    WHERE sent = 1 AND response IS NULL AND sent_at >= ?
+    ORDER BY sent_at DESC
+    LIMIT 1
+  `).get(thirtyMinsAgo) as FollowUpRow | null;
+}
+
+/**
+ * Record a user's response to an override follow-up.
+ */
+export async function handleOverrideFollowupResponse(text: string, followUpId: number): Promise<void> {
+  const db = getDb();
+  db.prepare(`UPDATE override_follow_ups SET response = ? WHERE id = ?`).run(text, followUpId);
+  await sendTelegram('Got it. Noted.');
+  console.log(`[Checkin] Override follow-up ${followUpId} response recorded: "${text}"`);
+}

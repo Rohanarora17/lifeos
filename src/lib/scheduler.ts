@@ -302,6 +302,38 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
+    // Override follow-up poll — every 5 minutes
+    registerIntervalJob('override_followup_poll', 5 * 60 * 1000, async () => {
+        const db = getDb();
+        const now = new Date().toISOString();
+        const pending = db.prepare(`
+            SELECT * FROM override_follow_ups
+            WHERE sent = 0 AND follow_up_at <= ?
+            ORDER BY follow_up_at ASC
+            LIMIT 5
+        `).all(now) as Array<{
+            id: number;
+            session_id: string;
+            override_url: string;
+            override_reason: string;
+            follow_up_at: string;
+        }>;
+
+        for (const f of pending) {
+            try {
+                const domain = new URL(f.override_url).hostname.replace('www.', '');
+                await sendTelegram(
+                    `<b>Override check-in</b>\n\nYou visited <code>${domain}</code> 20 min ago.\nReason you gave: "${f.override_reason || 'none'}"\n\nWas it worth it? Reply yes/no or what actually happened.`,
+                    'HTML'
+                );
+                db.prepare(`UPDATE override_follow_ups SET sent = 1, sent_at = ? WHERE id = ?`)
+                  .run(new Date().toISOString(), f.id);
+            } catch (err) {
+                console.error('[Scheduler] override_followup_poll failed for id', f.id, err);
+            }
+        }
+    });
+
     console.log(`[Scheduler] ${jobs.size} jobs registered`);
 }
 
