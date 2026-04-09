@@ -338,6 +338,7 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_daily_domain_aggregates_category ON daily_domain_aggregates(category);
   `);
 
+  // Daily check-in records: morning commitment + evening reflection responses
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_checkins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,9 +353,12 @@ function initSchema(db: Database.Database) {
       raw_transcript TEXT,
       memory_extracted INTEGER DEFAULT 0,
       received_at TEXT DEFAULT (datetime('now','localtime'))
-    )
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_checkins_date ON daily_checkins(checkin_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_daily_checkins_type ON daily_checkins(checkin_type, checkin_date DESC);
   `);
 
+  // Override follow-up tracking: 20-min post-override outcome questions
   db.exec(`
     CREATE TABLE IF NOT EXISTS override_follow_ups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -366,7 +370,9 @@ function initSchema(db: Database.Database) {
       response TEXT,
       sent_at TEXT,
       created_at TEXT DEFAULT (datetime('now','localtime'))
-    )
+    );
+    CREATE INDEX IF NOT EXISTS idx_override_follow_ups_follow_up_at ON override_follow_ups(follow_up_at) WHERE sent = 0;
+    CREATE INDEX IF NOT EXISTS idx_override_follow_ups_session ON override_follow_ups(session_id);
   `);
 
   // Insert default settings if not present
