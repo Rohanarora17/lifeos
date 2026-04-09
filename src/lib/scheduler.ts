@@ -9,6 +9,7 @@ import {
 import { listUpcomingEvents } from './google-calendar';
 import { forceSynthesis, getIntelligenceContext } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
+import { sendMorningCheckin, sendEveningReflection } from './checkin';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -251,6 +252,16 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Memory consolidation — runs nightly at 02:30 (merge duplicates, purge stale)
     registerDailyJob('memory_consolidation', '02:30', async () => {
         await consolidateFacts();
+    });
+
+    // Daily morning check-in — 08:00
+    registerDailyJob('morning_checkin', '08:00', async () => {
+        await sendMorningCheckin();
+    });
+
+    // Daily evening reflection — 21:30
+    registerDailyJob('evening_reflection', '21:30', async () => {
+        await sendEveningReflection();
     });
 
     // Nightly Database Backup — runs every day at 03:00
