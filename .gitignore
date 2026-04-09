@@ -53,3 +53,4 @@ client_secret*.json
 
 # Logs
 logs/
+.worktrees/

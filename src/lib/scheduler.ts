@@ -9,6 +9,7 @@ import {
 import { listUpcomingEvents } from './google-calendar';
 import { forceSynthesis, getIntelligenceContext } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
+import { sendMorningCheckin, sendEveningReflection } from './checkin';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -253,6 +254,16 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await consolidateFacts();
     });
 
+    // Daily morning check-in — 08:00
+    registerDailyJob('morning_checkin', '08:00', async () => {
+        await sendMorningCheckin();
+    });
+
+    // Daily evening reflection — 21:30
+    registerDailyJob('evening_reflection', '21:30', async () => {
+        await sendEveningReflection();
+    });
+
     // Nightly Database Backup — runs every day at 03:00
     registerDailyJob('db_backup', '03:00', async () => {
         await fetch(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
@@ -288,6 +299,38 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         const dayOfWeek = new Date().getDay();
         if (dayOfWeek === 0) { // Sunday
             await fetch(`${baseUrl}/api/cron?action=archive`, { method: 'POST' });
+        }
+    });
+
+    // Override follow-up poll — every 5 minutes
+    registerIntervalJob('override_followup_poll', 5 * 60 * 1000, async () => {
+        const db = getDb();
+        const now = new Date().toISOString();
+        const pending = db.prepare(`
+            SELECT * FROM override_follow_ups
+            WHERE sent = 0 AND follow_up_at <= ?
+            ORDER BY follow_up_at ASC
+            LIMIT 5
+        `).all(now) as Array<{
+            id: number;
+            session_id: string;
+            override_url: string;
+            override_reason: string;
+            follow_up_at: string;
+        }>;
+
+        for (const f of pending) {
+            try {
+                const domain = new URL(f.override_url).hostname.replace('www.', '');
+                await sendTelegram(
+                    `<b>Override check-in</b>\n\nYou visited <code>${domain}</code> 20 min ago.\nReason you gave: "${f.override_reason || 'none'}"\n\nWas it worth it? Reply yes/no or what actually happened.`,
+                    'HTML'
+                );
+                db.prepare(`UPDATE override_follow_ups SET sent = 1, sent_at = ? WHERE id = ?`)
+                  .run(new Date().toISOString(), f.id);
+            } catch (err) {
+                console.error('[Scheduler] override_followup_poll failed for id', f.id, err);
+            }
         }
     });
 
