@@ -853,11 +853,6 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   const durationMinutes = input.durationMinutes || 60;
   const targetTitle = input.conceptNodeName || input.goalTitle || input.topic || 'Deep Work';
   const briefing = getDayBriefing('default');
-  const openingLine = generateOpeningLine(briefing, {
-    durationMinutes,
-    topic: targetTitle,
-    mood: input.mood,
-  });
 
   // Compute energy composite at session start and persist for calibration
   const energyComponents = computeEnergyComposite();
@@ -923,8 +918,16 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     explainability: 'Guardian session started and runtime ownership is now active for this session.',
   });
 
-  void speak(sessionId, openingLine, 'urgent', 'flow_confirmed');
   session.lastSpeechAt = Date.now();
+  // Fire-and-forget: generate personalized opening line via UIL then speak it
+  void (async () => {
+    const openingLine = await generateOpeningLine(briefing, {
+      durationMinutes,
+      topic: targetTitle,
+      mood: input.mood,
+    });
+    void speak(sessionId, openingLine, 'urgent', 'flow_confirmed');
+  })();
 
   // Fire-and-forget: Telegram notification + Google Calendar event
   void (async () => {
