@@ -318,3 +318,134 @@ export async function generateAndStoreEmbedding(factId: number, text: string): P
     // Embedding failure is non-fatal — fact is still useful without it
   }
 }
+
+export async function extractMemoryFromCheckin(checkin: {
+  type: 'morning' | 'evening';
+  date: string;
+  commitment?: string | null;
+  likelihoodScore?: number | null;
+  rawTranscript: string;
+  tomorrowScore?: number | null;
+}): Promise<void> {
+  try {
+    const db = getDb();
+
+    // Build context string for LLM extraction
+    let contextLines: string;
+
+    if (checkin.type === 'morning') {
+      contextLines = [
+        `DATE: ${checkin.date}`,
+        `TYPE: morning check-in`,
+        `COMMITMENT: ${checkin.commitment || '(none stated)'}`,
+        `SELF-ASSESSED LIKELIHOOD: ${checkin.likelihoodScore !== null && checkin.likelihoodScore !== undefined ? `${checkin.likelihoodScore}/10` : '(not given)'}`,
+        `RAW: ${checkin.rawTranscript}`,
+      ].join('\n');
+    } else {
+      // Evening: pull today's behavioral data to cross-reference
+      const todayStart = `${checkin.date} 00:00:00`;
+      const todayEnd = `${checkin.date} 23:59:59`;
+
+      const sessions = db.prepare(`
+        SELECT target_title, elapsed_minutes, ROUND(average_focus_score) as score
+        FROM guardian_session_summaries
+        WHERE completed_at BETWEEN ? AND ?
+        ORDER BY completed_at DESC LIMIT 5
+      `).all(todayStart, todayEnd) as Array<{ target_title: string; elapsed_minutes: number; score: number }>;
+
+      const screenCats = db.prepare(`
+        SELECT category, ROUND(SUM(duration_seconds)/3600.0, 1) as hours
+        FROM activities
+        WHERE started_at BETWEEN ? AND ?
+        GROUP BY category ORDER BY hours DESC
+      `).all(todayStart, todayEnd) as Array<{ category: string; hours: number }>;
+
+      const morningCheckin = db.prepare(`
+        SELECT commitment, likelihood_score FROM daily_checkins
+        WHERE checkin_date = ? AND checkin_type = 'morning' LIMIT 1
+      `).get(checkin.date) as { commitment: string; likelihood_score: number } | undefined;
+
+      contextLines = [
+        `DATE: ${checkin.date}`,
+        `TYPE: evening reflection`,
+        `REFLECTION: ${checkin.rawTranscript}`,
+        sessions.length > 0
+          ? `SESSIONS TODAY: ${sessions.map(s => `${s.target_title} (${s.elapsed_minutes}m, score ${s.score})`).join('; ')}`
+          : 'SESSIONS TODAY: none',
+        screenCats.length > 0
+          ? `SCREEN TIME: ${screenCats.map(c => `${c.category} ${c.hours}h`).join(', ')}`
+          : '',
+        morningCheckin
+          ? `MORNING COMMITMENT: "${morningCheckin.commitment}" (likelihood ${morningCheckin.likelihood_score}/10)`
+          : '',
+        checkin.tomorrowScore !== null && checkin.tomorrowScore !== undefined
+          ? `TOMORROW SCORE: ${checkin.tomorrowScore}/10`
+          : '',
+        `KNOWN PATTERNS: 4-5 day streaks then sudden disengagement; avoids complex topics when hard; deadline-driven; starts many things and doesn't finish`,
+      ].filter(Boolean).join('\n');
+    }
+
+    // Create a mem_episodes entry for this check-in
+    const episodeId = insertEpisode(
+      'manual',
+      checkin.type === 'morning'
+        ? `Morning check-in: "${(checkin.commitment || '').slice(0, 80)}" (${checkin.likelihoodScore}/10)`
+        : `Evening reflection (${checkin.date}): "${checkin.rawTranscript.slice(0, 80)}"`,
+      {
+        rawContext: { contextLines },
+        importance: checkin.type === 'evening' ? 0.8 : 0.5,
+      },
+    );
+
+    // Extract memory ops using existing LLM extraction pipeline
+    const topicQuery = checkin.commitment || checkin.rawTranscript.slice(0, 50);
+    const ops = await runLLMExtraction(contextLines, `daily_checkin_${checkin.type}`, topicQuery);
+    if (ops.length > 0) {
+      await applyOps(ops, episodeId);
+    }
+
+    // For evening reflections: run a second AI call to determine if guardian response is needed tonight
+    if (checkin.type === 'evening') {
+      const ai = getGenAI();
+      if (ai) {
+        const responsePrompt = `Analyze this evening reflection and decide if the guardian should respond tonight.
+
+${contextLines}
+
+Determine if there is something urgent or important that warrants an immediate guardian response tonight (within the next hour). Examples: signs the cliff pattern is starting, explicit emotional distress, a direct question, avoiding a critical deadline.
+
+Do NOT respond if things seem fine or if the reflection is routine.
+
+Return JSON ONLY:
+{"respond": true|false, "text": "response text if respond is true, else null"}`;
+
+        try {
+          const result = await generateWithFallback(ai, {
+            model: MODEL_FLASH,
+            contents: responsePrompt,
+            config: { responseMimeType: 'application/json' },
+          });
+          const parsed = JSON.parse((result.text || '').trim()) as { respond: boolean; text: string | null };
+          if (parsed.respond && parsed.text) {
+            const { sendTelegram } = await import('./telegram');
+            setTimeout(() => {
+              void sendTelegram(parsed.text!, 'HTML');
+            }, 5 * 60 * 1000); // 5 min delay
+          }
+        } catch {
+          // Non-fatal — guardian response is best-effort
+        }
+      }
+    }
+
+    // Mark check-in as memory-extracted
+    db.prepare(`
+      UPDATE daily_checkins SET memory_extracted = 1
+      WHERE checkin_date = ? AND checkin_type = ?
+    `).run(checkin.date, checkin.type);
+
+    console.log(`[MemoryExtractor] Check-in memory extracted: ${checkin.type} ${checkin.date}, ${ops.length} ops applied`);
+  } catch (err) {
+    console.error('[MemoryExtractor] extractMemoryFromCheckin failed:', err);
+  }
+}
