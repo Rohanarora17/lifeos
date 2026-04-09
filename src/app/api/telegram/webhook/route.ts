@@ -16,6 +16,7 @@ import {
     formatTasksList,
 } from '@/lib/telegram';
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
+import { parseScreenTimeReport, storeScreenTimeReport, formatPhoneScreenTimeSummary } from '@/lib/phone-screen-time';
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
@@ -48,6 +49,21 @@ export async function POST(request: Request) {
                 await sendTelegram('Sorry, I am a private LifeOS assistant.', 'HTML');
                 return NextResponse.json({ ok: true });
             }
+            const text: string = body.message.text;
+
+            // Screen time report from iOS Shortcut
+            if (text.includes('SCREEN_TIME_REPORT')) {
+                const report = parseScreenTimeReport(text);
+                if (report) {
+                    storeScreenTimeReport(report, text);
+                    const summary = formatPhoneScreenTimeSummary(report);
+                    await sendTelegram(summary, 'HTML');
+                } else {
+                    await sendTelegram('Could not parse screen time report. Check format.', 'HTML');
+                }
+                return NextResponse.json({ ok: true });
+            }
+
             // Check if there's a pending check-in response
             const pendingCheckin = getPendingCheckinType();
             if (pendingCheckin === 'morning') {

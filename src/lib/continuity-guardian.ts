@@ -4,6 +4,7 @@
 import { getDb, getSetting } from './db';
 import { sendTelegram } from './telegram';
 import { getRecentObservations } from './screenshot-pipeline';
+import { getTodayPhoneScreenTime } from './phone-screen-time';
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -47,6 +48,8 @@ interface ContinuityState {
   activeGoalLastTouchedDaysAgo: Record<string, number>;
   recentObsSummary: ReturnType<typeof getRecentObservations>;
   hasActiveSession: boolean;
+  phoneTotalMinutesToday: number | null;
+  phoneInstagramMinutesToday: number | null;
 }
 
 function getContinuityState(): ContinuityState {
@@ -118,6 +121,8 @@ function getContinuityState(): ContinuityState {
   const { getActiveGuardianSession } = require('./guardian-runtime');
   const hasActiveSession = getActiveGuardianSession() !== null;
 
+  const phoneST = getTodayPhoneScreenTime();
+
   return {
     hour: now.getHours(),
     laptopOpenedToday: firstObsToday.first !== null,
@@ -129,6 +134,8 @@ function getContinuityState(): ContinuityState {
     activeGoalLastTouchedDaysAgo,
     recentObsSummary: getRecentObservations(180), // last 3 hours
     hasActiveSession,
+    phoneTotalMinutesToday: phoneST?.totalMinutes ?? null,
+    phoneInstagramMinutesToday: phoneST?.instagramMinutes ?? null,
   };
 }
 
@@ -217,6 +224,30 @@ function evaluateTriggers(state: ContinuityState): string | null {
   // 6. Morning commitment score ≤ 4, now it's 2pm
   if (morningLikelihoodScore !== null && morningLikelihoodScore <= 4 && morningCommitment && hour >= 14 && hour < 15) {
     return `This morning you said "${morningCommitment.slice(0, 60)}" but gave yourself ${morningLikelihoodScore}/10 on likelihood. It's 2pm. The data matches your prediction. What do you want to do with the rest of today?`;
+  }
+
+  // 7. Phone screen time > 3 hours before 6pm
+  if (
+    state.phoneTotalMinutesToday !== null &&
+    state.phoneTotalMinutesToday > 180 &&
+    hour < 18
+  ) {
+    const totalHours = Math.round(state.phoneTotalMinutesToday / 60 * 10) / 10;
+    const instaHours = state.phoneInstagramMinutesToday !== null
+      ? Math.round(state.phoneInstagramMinutesToday / 60 * 10) / 10
+      : null;
+
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const laptopHours = (db.prepare(`
+      SELECT COUNT(*) as count FROM screen_observations
+      WHERE date(observed_at) = ? AND source IN ('screenshot','daemon') AND category != 'idle'
+    `).get(today) as { count: number }).count / 60;
+
+    const instaLine = instaHours ? `, ${instaHours}h of that was Instagram` : '';
+    const laptopLine = laptopHours > 0 ? ` Your laptop has been active for ${Math.round(laptopHours * 10) / 10} hours.` : '';
+
+    return `Phone screen time is at ${totalHours} hours already today${instaLine}.${laptopLine} The ratio is off. What's happening today?`;
   }
 
   return null;

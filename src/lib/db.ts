@@ -398,6 +398,25 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_screen_obs_observed_at ON screen_observations(observed_at DESC)
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS phone_screen_time (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      report_date TEXT NOT NULL,
+      report_type TEXT NOT NULL CHECK(report_type IN ('morning','midday','evening','manual')),
+      total_minutes INTEGER,
+      instagram_minutes INTEGER,
+      youtube_minutes INTEGER,
+      tiktok_minutes INTEGER,
+      safari_minutes INTEGER,
+      other_data TEXT,
+      pickup_count INTEGER,
+      first_pickup_time TEXT,
+      longest_phone_free_minutes INTEGER,
+      raw_text TEXT,
+      received_at TEXT DEFAULT (datetime('now','localtime'))
+    )
+  `);
+
   // Insert default settings if not present
   const insertSetting = db.prepare(
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
