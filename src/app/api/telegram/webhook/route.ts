@@ -18,6 +18,7 @@ import {
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
+import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse } from '@/lib/checkin';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -47,6 +48,17 @@ export async function POST(request: Request) {
                 await sendTelegram('Sorry, I am a private LifeOS assistant.', 'HTML');
                 return NextResponse.json({ ok: true });
             }
+            // Check if there's a pending check-in response
+            const pendingCheckin = getPendingCheckinType();
+            if (pendingCheckin === 'morning') {
+                await handleMorningCheckinResponse(body.message.text);
+                return NextResponse.json({ ok: true });
+            }
+            if (pendingCheckin === 'evening') {
+                await handleEveningReflectionResponse(body.message.text);
+                return NextResponse.json({ ok: true });
+            }
+
             await handleTelegramCommand(body.message.text);
             return NextResponse.json({ ok: true });
         }
