@@ -44,11 +44,23 @@ interface DashboardData {
   };
 }
 
+interface InsightsData {
+  profile: {
+    coachingInsights: string[];
+    nextBestFocusWindow: string | null;
+    focusTrend: string;
+    preferredCoachingStyle: string | null;
+    weeklyProgressSummary: string | null;
+  };
+  habits: { completionRate: number | null };
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [insights, setInsights] = useState<InsightsData | null>(null);
   const { session, start: startSession, end: endSession } = useGuardianSession();
   const focusSessions: any[] = []; // Legacy section hidden — guardian history is at /guardian
   const [liveFocusStats, setLiveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
@@ -66,6 +78,10 @@ export default function DashboardPage() {
     fetch('/api/alerts')
       .then(r => r.json())
       .then(d => setAlerts(d.alerts || []))
+      .catch(() => { });
+    fetch('/api/guardian/insights')
+      .then(r => r.json())
+      .then(d => { if (!d.error) setInsights(d as InsightsData); })
       .catch(() => { });
   }, []);
 
@@ -455,7 +471,71 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Intelligence Row: What to Work On + Goal Progress + Brain Health */}
+      {/* UIL Coaching Card — live insights from the intelligence profile */}
+      {insights && (insights.profile.coachingInsights.length > 0 || insights.profile.nextBestFocusWindow) && (
+        <div className="card" style={{
+          borderColor: 'rgba(245,158,11,0.25)',
+          background: 'linear-gradient(135deg, rgba(245,158,11,0.04), rgba(234,179,8,0.02))',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px' }}>
+            {/* Left: label + trend */}
+            <div style={{ flexShrink: 0, paddingTop: '2px' }}>
+              <p className="text-xs font-semibold" style={{
+                color: 'rgba(245,158,11,0.8)', letterSpacing: '0.06em', textTransform: 'uppercase',
+              }}>Intelligence</p>
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}>
+                {insights.profile.focusTrend && (
+                  <span style={{
+                    fontSize: '10px', padding: '2px 8px', borderRadius: '12px',
+                    background: 'rgba(245,158,11,0.1)', color: '#f59e0b',
+                    border: '1px solid rgba(245,158,11,0.2)',
+                  }}>Trend: {insights.profile.focusTrend}</span>
+                )}
+                {insights.profile.preferredCoachingStyle && (
+                  <span style={{
+                    fontSize: '10px', padding: '2px 8px', borderRadius: '12px',
+                    background: 'rgba(245,158,11,0.08)', color: '#d97706',
+                    border: '1px solid rgba(245,158,11,0.15)',
+                  }}>{insights.profile.preferredCoachingStyle}</span>
+                )}
+                {insights.habits.completionRate !== null && (
+                  <span style={{
+                    fontSize: '10px', padding: '2px 8px', borderRadius: '12px',
+                    background: insights.habits.completionRate >= 80
+                      ? 'rgba(34,197,94,0.1)' : insights.habits.completionRate >= 50
+                      ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+                    color: insights.habits.completionRate >= 80 ? '#22c55e'
+                      : insights.habits.completionRate >= 50 ? '#f59e0b' : '#ef4444',
+                    border: `1px solid ${insights.habits.completionRate >= 80
+                      ? 'rgba(34,197,94,0.25)' : insights.habits.completionRate >= 50
+                      ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                  }}>Habits {insights.habits.completionRate}%</span>
+                )}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(245,158,11,0.15)', flexShrink: 0 }} />
+
+            {/* Right: insights + window */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {insights.profile.coachingInsights.slice(0, 2).map((ins, i) => (
+                <p key={i} className="text-sm" style={{
+                  color: i === 0 ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  marginBottom: i === 0 && insights.profile.coachingInsights.length > 1 ? '6px' : '0',
+                  lineHeight: '1.5',
+                }}>{ins}</p>
+              ))}
+              {!session.active && insights.profile.nextBestFocusWindow && (
+                <p className="text-xs mt-2" style={{ color: 'rgba(245,158,11,0.7)' }}>
+                  Best focus window today: <strong style={{ color: '#f59e0b' }}>{insights.profile.nextBestFocusWindow}</strong>
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {data?.intelligence && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* Daily Plan */}

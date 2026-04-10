@@ -17,6 +17,10 @@ import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adj
 import { getMemoryContext } from './memory';
 import { getDb, getSetting, setSetting } from './db';
 import { getIntelligenceContext } from './intelligence';
+import { extractMemoryFromVoice } from './memory-extractor';
+
+// Track LLM-parsed message count for memory extraction cadence
+let tgLlmTurnCount = 0;
 
 const TELEGRAM_SYSTEM_PROMPT = `You are Jarvis, the LifeOS AI guardian assistant on Telegram.
 You must be concise, parse user intents into structured actions.
@@ -468,6 +472,20 @@ export async function handleTelegramCommand(text: string): Promise<void> {
                 db.prepare('INSERT INTO voice_turns (session_key, role, text, action) VALUES (?, ?, ?, ?)').run(tgKey, 'model', parsed.replyText, parsed.action ?? null);
             }
         } catch { /* non-fatal */ }
+
+        // Memory extraction every 8 TG LLM messages (same pattern as voice every-5-turns)
+        tgLlmTurnCount++;
+        if (tgLlmTurnCount % 8 === 0) {
+            try {
+                const db = getDb();
+                const rows = db.prepare(
+                    `SELECT role, text FROM voice_turns WHERE session_key = 'telegram'
+                     ORDER BY created_at DESC LIMIT 20`
+                ).all() as { role: string; text: string }[];
+                const turns = rows.reverse();
+                extractMemoryFromVoice(turns, 'telegram').catch(() => {});
+            } catch { /* non-fatal */ }
+        }
 
         await executeAction(parsed.action, parsed.replyText, parsed.payload ?? {}, activeSession);
 
