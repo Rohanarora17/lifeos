@@ -33,6 +33,13 @@ type VoiceAction =
   | 'resume_session'
   | 'log_habit'
   | 'create_task'
+  | 'create_goal'
+  | 'clear_done_tasks'
+  | 'archive_all_goals'
+  | 'show_tasks'
+  | 'show_goals'
+  | 'confirm_pending'
+  | 'reject_pending'
   | 'schedule_session'
   | 'guardian_status'
   | 'request_override'
@@ -50,11 +57,13 @@ interface ParsedVoiceIntent {
   requestedMinutes?: number;
   responseText?: string;
   intendedStartAt?: number;
-  // new fields
   habitName?: string;       // for log_habit
   taskTitle?: string;       // for create_task
   taskPriority?: string;    // for create_task
   taskDueDate?: string;     // for create_task (YYYY-MM-DD or null)
+  goalTitle?: string;       // for create_goal
+  goalCategory?: string;    // for create_goal
+  goalDeadline?: string;    // for create_goal (YYYY-MM-DD or null)
 }
 
 interface ProcessVoiceCommandInput {
@@ -71,6 +80,9 @@ interface VoiceActionResult {
     | 'session_resumed'
     | 'habit_logged'
     | 'task_created'
+    | 'goal_created'
+    | 'tasks_cleared'
+    | 'goals_archived'
     | 'session_scheduled'
     | 'guardian_status'
     | 'override_decision'
@@ -97,6 +109,14 @@ interface VoiceTurn {
 // In-memory ring buffer: sessionKey → last 20 turns
 const voiceHistory = new Map<string, VoiceTurn[]>();
 const HISTORY_LIMIT = 20;
+
+// Pending confirmation state: destructive actions queue here until user confirms
+interface PendingAction {
+  action: VoiceAction;
+  description: string; // human-readable: "delete 7 done tasks"
+  payload: Record<string, unknown>;
+}
+const pendingActions = new Map<string, PendingAction>(); // historyKey → pending
 
 function sessionKey(sessionId: string | null): string {
   return sessionId || 'voice-assistant';
@@ -342,10 +362,16 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
     // UIL gives the parser full user context: goals, topics, energy, patterns
     const contextBlock = getIntelligenceContext({ maxInsights: 0, includeToday: true, includeThresholds: false });
 
-    // Recent conversation context — so "do that again" or "change to 90 minutes" resolves correctly
+    // Recent conversation context — ESSENTIAL: allows "do that", "no don't", corrections
     const recentContext = getRecentContextText(historyKey);
 
-    // Live session state — critical for adjust_session vs start_session disambiguation
+    // Pending action — tells parser if we're awaiting confirmation
+    const pending = pendingActions.get(historyKey);
+    const pendingBlock = pending
+      ? `PENDING CONFIRMATION: "${pending.description}" — if user confirms (yes/go ahead/do it/confirm) use action=confirm_pending. If user cancels (no/stop/cancel/don't) use action=reject_pending.`
+      : '';
+
+    // Live session state
     const liveSession = getActiveGuardianSession();
     const sessionBlock = liveSession
       ? [
@@ -360,47 +386,64 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
 
     const result = await generateWithFallback(ai, {
       model: MODEL_FLASH,
-      contents: `You are the LifeOS Guardian intent parser. Extract structured intent from the user's voice transcript.
+      contents: `You are the LifeOS Guardian — a highly intelligent, conversational personal AI assistant. You understand the full context of what a person is trying to accomplish across multiple voice messages. You are NOT just a session manager.
 
 CURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs}, ISO: ${nowIso})
 TIMEZONE: Asia/Kolkata (IST, UTC+5:30)
 ${sessionBlock}
 ${contextBlock}
 ${recentContext}
+${pendingBlock}
 
 TRANSCRIPT: "${sanitizedTranscript}"
 
-RULES:
-- Resolve all relative times ("today", "tonight", "in 2 hours", "at 5:30pm") to absolute Unix ms using the current time above.
-- If the user says "from X to Y", compute durationMinutes as (Y - X) in minutes.
-- For topic, extract the clean study/work subject. If it matches an active goal or task, use that exact name.
-- durationMinutes: derive from explicit duration ("for 2 hours" = 120) or start/end range ("5:30 to 7:30" = 120). Default 60.
-- mood: infer from words like "tired", "energised", "rough day". Default null.
-- intendedStartAt: Unix ms. 0 if not specified.
-- responseText: only for "tutor" or "unknown" actions — a brief direct answer.
-- If the transcript references something from RECENT CONVERSATION (e.g. "that topic", "same duration", "remind me again"), resolve it using context.
-- adjust_session: use when the user wants to CHANGE the duration/topic of the CURRENT active session (e.g. "make it 25 minutes", "reduce to 30 mins"). Set durationMinutes to the new target total.
-- end_session: use when the user wants to STOP/END the current session (e.g. "stop the session", "end session", "we're done", "cancel").
-- pause_session: use when the user is stepping away temporarily (e.g. "taking a break", "pause", "brb", "stepping out").
-- resume_session: use when the user returns from a break (e.g. "I'm back", "resume", "let's continue", "back at it").
-- log_habit: use when the user says they completed a habit (e.g. "log workout", "mark meditation done", "done with reading"). Set habitName to the matched habit name.
-- create_task: use when the user wants to add a task (e.g. "add task review the PR", "remind me to call mum", "note: submit assignment"). Set taskTitle, taskPriority (low/medium/high, default medium), taskDueDate (YYYY-MM-DD or null).
-- start_session: ONLY use when ACTIVE SESSION is "none" or the user explicitly requests a brand new separate session.
+ACTIONS YOU CAN TAKE:
+- create_task: user wants to add a task ("add task", "note:", "remind me to"). Fields: taskTitle, taskPriority (low/medium/high), taskDueDate.
+- create_goal: user wants to set a goal/objective for a period ("make X a goal", "I want to focus on X for Y weeks"). Fields: goalTitle, goalCategory (study/work/health/personal), goalDeadline (end of the stated period).
+- clear_done_tasks: user wants to remove/archive completed tasks ("clear done tasks", "clean up finished tasks", "remove done items"). Requires confirmation first — set responseText to ask.
+- archive_all_goals: user wants to remove/archive all existing goals ("clear all goals", "remove old goals", "start fresh with goals"). Requires confirmation first — set responseText to ask.
+- show_tasks: user wants to hear their current task list.
+- show_goals: user wants to hear their current goals.
+- confirm_pending: user confirms a pending destructive action ("yes", "go ahead", "do it", "confirm", "yeah").
+- reject_pending: user cancels a pending action ("no", "cancel", "stop", "don't do that", "never mind").
+- start_session: START a new focus session. ONLY use if ACTIVE SESSION is none AND the user explicitly says "start", "begin", "let's go", "lock in" on a specific topic for a specific duration. DO NOT infer this from context.
+- adjust_session: user wants to change duration/topic of current session.
+- end_session: user wants to stop the current session.
+- pause_session / resume_session: temporary break.
+- log_habit: user completed a habit. Field: habitName.
+- schedule_session: plan a future session for a specific time. Fields: topic, durationMinutes, intendedStartAt.
+- guardian_status: user asks about current state, score, focus.
+- day_briefing: user wants a summary of their day.
+- request_override: user wants to unblock a site.
+- tutor: user is asking a knowledge/learning question about their session topic.
+- unknown: ONLY if none of the above fit. Try to have a helpful conversation via responseText.
+
+CRITICAL RULES:
+1. NEVER start a session without being explicitly asked. "I want to focus on X for 2 weeks" = create_goal + create_task, NOT start_session.
+2. NEVER schedule a session without being explicitly asked.
+3. For destructive actions (clear_done_tasks, archive_all_goals): set the action but also set responseText to ask for confirmation. The system will queue it as pending.
+4. If the user says "clear all tasks and goals and create new ones" — break it into sequence: first archive_all_goals (ask confirm), then user responds, then create the new goal.
+5. Use RECENT CONVERSATION to resolve references. "that" = the last mentioned topic. "no, don't" = correction of previous action.
+6. If user corrects you ("no I didn't mean that"), infer what they actually wanted from context.
+7. Be direct. Don't add filler. This is voice — responses must be < 40 words.
 
 OUTPUT JSON only, no markdown:
 {
-  "action": "start_session" | "adjust_session" | "end_session" | "pause_session" | "resume_session" | "log_habit" | "create_task" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
-  "topic": "clean topic string or empty",
+  "action": "<action>",
+  "topic": "",
   "durationMinutes": 60,
-  "mood": "high" | "medium" | "low" | null,
-  "overrideTarget": "url or domain string or empty",
-  "overrideReason": "reason string or empty",
-  "requestedMinutes": 10,
+  "mood": null,
+  "overrideTarget": "",
+  "overrideReason": "",
+  "requestedMinutes": 0,
   "intendedStartAt": 0,
-  "habitName": "exact habit name or best match or empty",
-  "taskTitle": "clean task title or empty",
-  "taskPriority": "low" | "medium" | "high",
-  "taskDueDate": "YYYY-MM-DD or null",
+  "habitName": "",
+  "taskTitle": "",
+  "taskPriority": "medium",
+  "taskDueDate": null,
+  "goalTitle": "",
+  "goalCategory": "study",
+  "goalDeadline": null,
   "responseText": ""
 }`,
       config: {
@@ -426,6 +469,9 @@ OUTPUT JSON only, no markdown:
       taskTitle: (parsed as Record<string, string>).taskTitle || undefined,
       taskPriority: (parsed as Record<string, string>).taskPriority || undefined,
       taskDueDate: (parsed as Record<string, string>).taskDueDate || undefined,
+      goalTitle: (parsed as Record<string, string>).goalTitle || undefined,
+      goalCategory: (parsed as Record<string, string>).goalCategory || undefined,
+      goalDeadline: (parsed as Record<string, string>).goalDeadline || undefined,
     };
   } catch {
     return heuristicParseVoiceIntent(transcript);
@@ -764,6 +810,172 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     } catch {
       const response = 'Failed to log the habit. Try again in a moment.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── show_tasks ─────────────────────────────────────────────
+
+  if (intent.action === 'show_tasks') {
+    try {
+      const db = getDb();
+      const tasks = db.prepare(
+        `SELECT title, priority, status FROM tasks WHERE status IN ('todo','doing') ORDER BY priority DESC LIMIT 5`
+      ).all() as { title: string; priority: string; status: string }[];
+      const response = tasks.length
+        ? `You have ${tasks.length} active tasks: ${tasks.map((t, i) => `${i + 1}. ${t.title}`).join('; ')}.`
+        : 'No active tasks right now.';
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Could not load tasks.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── show_goals ─────────────────────────────────────────────
+
+  if (intent.action === 'show_goals') {
+    try {
+      const db = getDb();
+      const goals = db.prepare(
+        `SELECT title, category FROM goals WHERE archived = 0 ORDER BY created_at DESC LIMIT 5`
+      ).all() as { title: string; category: string }[];
+      const response = goals.length
+        ? `You have ${goals.length} active goals: ${goals.map((g, i) => `${i + 1}. ${g.title}`).join('; ')}.`
+        : 'No active goals.';
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Could not load goals.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── clear_done_tasks (asks confirmation first) ─────────────────────
+
+  if (intent.action === 'clear_done_tasks') {
+    try {
+      const db = getDb();
+      const count = (db.prepare(`SELECT COUNT(*) as n FROM tasks WHERE status = 'done'`).get() as { n: number }).n;
+      if (count === 0) {
+        const response = 'No done tasks to clear.';
+        await maybeSpeakVoiceResponse(activeSessionId, response);
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+        return { type: 'intent_only', transcript, intent, responseText: response };
+      }
+      pendingActions.set(hKey, { action: 'clear_done_tasks', description: `delete ${count} done tasks`, payload: {} });
+      const response = intent.responseText || `You have ${count} done tasks. Should I delete them all?`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Could not read task list.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── archive_all_goals (asks confirmation first) ───────────────────
+
+  if (intent.action === 'archive_all_goals') {
+    try {
+      const db = getDb();
+      const count = (db.prepare(`SELECT COUNT(*) as n FROM goals WHERE archived = 0`).get() as { n: number }).n;
+      if (count === 0) {
+        const response = 'No active goals to archive.';
+        await maybeSpeakVoiceResponse(activeSessionId, response);
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+        return { type: 'intent_only', transcript, intent, responseText: response };
+      }
+      pendingActions.set(hKey, { action: 'archive_all_goals', description: `archive all ${count} active goals`, payload: {} });
+      const response = intent.responseText || `You have ${count} active goals. Archive all of them?`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Could not read goals.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── confirm_pending ─────────────────────────────────────────
+
+  if (intent.action === 'confirm_pending') {
+    const pending = pendingActions.get(hKey);
+    if (!pending) {
+      const response = 'Nothing pending to confirm.';
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    pendingActions.delete(hKey);
+    const db = getDb();
+
+    if (pending.action === 'clear_done_tasks') {
+      const deleted = db.prepare(`DELETE FROM tasks WHERE status = 'done'`).run();
+      const response = `Done. Removed ${deleted.changes} completed tasks.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'tasks_cleared', transcript, intent, responseText: response };
+    }
+
+    if (pending.action === 'archive_all_goals') {
+      const archived = db.prepare(`UPDATE goals SET archived = 1 WHERE archived = 0`).run();
+      const response = `Done. Archived ${archived.changes} goals. You're starting fresh.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'goals_archived', transcript, intent, responseText: response };
+    }
+
+    const response = 'Done.';
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+    return { type: 'intent_only', transcript, intent, responseText: response };
+  }
+
+  // ── reject_pending ─────────────────────────────────────────
+
+  if (intent.action === 'reject_pending') {
+    pendingActions.delete(hKey);
+    const response = 'Cancelled. What would you like to do instead?';
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+    return { type: 'intent_only', transcript, intent, responseText: response };
+  }
+
+  // ── create_goal ─────────────────────────────────────────────
+
+  if (intent.action === 'create_goal') {
+    const goalTitle = intent.goalTitle?.trim();
+    if (!goalTitle) {
+      const response = 'What should the goal be called?';
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    try {
+      const db = getDb();
+      const safeCategory = ['study', 'work', 'health', 'personal'].includes(intent.goalCategory ?? '') ? intent.goalCategory : 'study';
+      const result = db.prepare(
+        `INSERT INTO goals (title, category, deadline, archived) VALUES (?, ?, ?, 0)`
+      ).run(goalTitle, safeCategory, intent.goalDeadline ?? null);
+      const goalId = Number(result.lastInsertRowid);
+      // Auto-link existing tasks to this goal
+      try { const { autoLinkGoalTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkGoalTasks?.(goalId).catch(() => {}); } catch { /* non-fatal */ }
+      const deadlineStr = intent.goalDeadline ? `, deadline ${intent.goalDeadline}` : '';
+      const response = `Goal created: "${goalTitle}"${deadlineStr}. What tasks should I add for it?`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'goal_created', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Failed to create the goal.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
   }
