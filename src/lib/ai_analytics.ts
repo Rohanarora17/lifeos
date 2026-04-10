@@ -130,10 +130,13 @@ Keep insights specific, data-driven, and actionable. Only return the JSON array.
 
         const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
-            contents: prompt
+            contents: prompt,
+            config: { responseMimeType: 'application/json' },
         });
+        // Strip markdown code fences the model sometimes wraps output in
         const text = (result.text || '').trim();
-        const jsonMatch = text.match(/\\[[\\s\\S]*\\]/);
+        const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const jsonMatch = stripped.match(/\[[\s\S]*\]/);
 
         if (jsonMatch) {
             try {
