@@ -1,7 +1,7 @@
 import { getDayBriefing } from './longitudinal-engine';
 import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning, sanitizeTranscriptForCloud } from './cloud-privacy';
-import { MODEL_THINKING } from './models';
+import { MODEL_PRO } from './models';
 import { speak } from './tts';
 import {
   adjudicateOverride,
@@ -429,7 +429,7 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
       : 'ACTIVE SESSION: none';
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_THINKING,
+      model: MODEL_PRO,
       contents: `You are the LifeOS Guardian — an extremely intelligent, conversational personal AI assistant that manages every aspect of a person's productivity, habits, tasks, goals and self-improvement. You understand multi-turn voice conversations and always reason from full context.
 
 CURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs}, ISO: ${nowIso})
@@ -597,7 +597,7 @@ async function runTutorMode(
     ].join('\n');
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_THINKING,
+      model: MODEL_PRO,
       contents,
       config: {
         systemInstruction,
@@ -646,7 +646,7 @@ async function runFreeformConversation(
     ].join('\n');
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_THINKING,
+      model: MODEL_PRO,
       contents,
       config: {
         systemInstruction,
@@ -1190,7 +1190,7 @@ COACHING INSIGHTS: ${profile.coachingInsights?.join('; ') || 'none'}
 
 RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach.`;
 
-      const result = await generateWithFallback(ai, { model: MODEL_THINKING, contents: analysisPrompt, config: { temperature: 1 } });
+      const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: analysisPrompt, config: { temperature: 0.3 } });
       const response = (result.text || '').trim().replace(/[•\*\-] /g, '').replace(/\n+/g, ' ').slice(0, 300);
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
