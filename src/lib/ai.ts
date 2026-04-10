@@ -41,14 +41,20 @@ const FALLBACK_PRO = 'gemini-2.5-pro';
 
 /**
  * Returns true for errors that mean "model overloaded / unreachable" —
- * covers HTTP 503, UNAVAILABLE status, and undici HeadersTimeoutError
- * (the server accepted the TCP connection but never sent response headers).
+ * covers HTTP 503, UNAVAILABLE status, undici timeouts, and network errors.
  */
 function isOverloadedError(err: any): boolean {
+    const msg: string = (err?.message || '').toLowerCase();
     return (
         err?.status === 503 ||
-        err?.message?.includes('503') ||
-        err?.message?.includes('UNAVAILABLE') ||
+        msg.includes('503') ||
+        msg.includes('unavailable') ||
+        msg.includes('high demand') ||
+        msg.includes('overloaded') ||
+        msg.includes('etimedout') ||
+        msg.includes('fetch failed') ||
+        msg.includes('econnreset') ||
+        msg.includes('socket hang up') ||
         err?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
         err?.cause?.message?.includes('Headers Timeout') ||
         err?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
@@ -61,41 +67,65 @@ function fallbackModel(originalModel: string): string {
 }
 
 /**
- * Wrapper around ai.models.generateContent that automatically retries
- * once with a stable fallback model when a 503 / UNAVAILABLE error or
- * a headers timeout is returned (preview models under high demand).
+ * Wrapper around ai.models.generateContent with exponential backoff + model fallback.
+ * Retries up to 3 times on overload/network errors (4s, 8s delays), then falls back
+ * to a stable model for a final attempt.
  */
 export async function generateWithFallback(
     ai: GoogleGenAI,
     params: Parameters<GoogleGenAI['models']['generateContent']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContent']> {
-    try {
-        return await ai.models.generateContent(params);
-    } catch (err: any) {
-        if (!isOverloadedError(err)) throw err;
-        const originalModel = typeof params.model === 'string' ? params.model : '';
-        const fallback = fallbackModel(originalModel);
-        console.warn(`[AI] ${originalModel} overloaded/timeout — falling back to ${fallback}`);
-        return await ai.models.generateContent({ ...params, model: fallback });
+    const originalModel = typeof params.model === 'string' ? params.model : '';
+    let lastErr: any;
+
+    // 3 attempts on primary model with backoff
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            return await ai.models.generateContent(params);
+        } catch (err: any) {
+            lastErr = err;
+            if (!isOverloadedError(err)) throw err;
+            if (attempt < 2) {
+                const delay = (attempt + 1) * 4000;
+                console.warn(`[AI] ${originalModel} overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
     }
+
+    // Final attempt with stable fallback model
+    const fallback = fallbackModel(originalModel);
+    console.warn(`[AI] ${originalModel} exhausted — falling back to ${fallback}`);
+    return await ai.models.generateContent({ ...params, model: fallback });
 }
 
 /**
- * Streaming variant of generateWithFallback — retries with stable model on 503.
+ * Streaming variant of generateWithFallback — same backoff + fallback strategy.
  */
 export async function generateStreamWithFallback(
     ai: GoogleGenAI,
     params: Parameters<GoogleGenAI['models']['generateContentStream']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContentStream']> {
-    try {
-        return await ai.models.generateContentStream(params);
-    } catch (err: any) {
-        if (!isOverloadedError(err)) throw err;
-        const originalModel = typeof params.model === 'string' ? params.model : '';
-        const fallback = fallbackModel(originalModel);
-        console.warn(`[AI] ${originalModel} overloaded/timeout — stream falling back to ${fallback}`);
-        return await ai.models.generateContentStream({ ...params, model: fallback });
+    const originalModel = typeof params.model === 'string' ? params.model : '';
+    let lastErr: any;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            return await ai.models.generateContentStream(params);
+        } catch (err: any) {
+            lastErr = err;
+            if (!isOverloadedError(err)) throw err;
+            if (attempt < 2) {
+                const delay = (attempt + 1) * 4000;
+                console.warn(`[AI] ${originalModel} stream overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
     }
+
+    const fallback = fallbackModel(originalModel);
+    console.warn(`[AI] ${originalModel} stream exhausted — falling back to ${fallback}`);
+    return await ai.models.generateContentStream({ ...params, model: fallback });
 }
 
 // Helper to extract YouTube video ID

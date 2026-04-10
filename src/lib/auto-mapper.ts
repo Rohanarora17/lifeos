@@ -1,4 +1,4 @@
-import { getGenAI } from './ai';
+import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import getDb from './db';
 
@@ -30,7 +30,7 @@ Return ONLY a JSON object:
 { "conceptNodeId": number | null, "confidence": number }
 `;
 
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_FLASH || 'gemini-2.5-flash',
             contents: prompt,
             config: { responseMimeType: 'application/json' }

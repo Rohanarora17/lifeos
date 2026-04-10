@@ -104,15 +104,12 @@ interface ScreenAnalysis {
 
 async function analyzeWithGemini(base64Image: string): Promise<ScreenAnalysis | null> {
   try {
-    // Dynamic import to avoid circular deps
-    const { GoogleGenAI } = await import('@google/genai');
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    if (!apiKey) {
-      console.error('[Screenshot] No Gemini API key');
+    const { getGenAI } = await import('./ai');
+    const genai = getGenAI();
+    if (!genai) {
+      console.error('[Screenshot] No Gemini client — check GEMINI_API_KEY');
       return null;
     }
-
-    const genai = new GoogleGenAI({ apiKey });
 
     const prompt = `Analyze this screenshot and return ONLY a JSON object describing what the person is doing.
 
@@ -138,7 +135,7 @@ Categories:
 
 Return ONLY the JSON. No markdown, no explanation.`;
 
-    const models = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite-preview-06-17'];
+    const { generateWithFallback } = await import('./ai');
     const contents = [
       {
         role: 'user' as const,
@@ -149,42 +146,17 @@ Return ONLY the JSON. No markdown, no explanation.`;
       },
     ];
 
-    let lastErr: unknown;
-    for (const model of models) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const result = await genai.models.generateContent({ model, contents });
-          let text = result.text?.trim() ?? '';
-          // Strip markdown code fences if model wraps JSON
-          text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-          const parsed = JSON.parse(text) as ScreenAnalysis;
-          return parsed;
-        } catch (err: unknown) {
-          lastErr = err;
-          const msg = String(err);
-          const msgLower = msg.toLowerCase();
-          const isRetryable = msg.includes('503')
-            || msgLower.includes('high demand')
-            || msgLower.includes('overloaded')
-            || msgLower.includes('etimedout')
-            || msgLower.includes('fetch failed')
-            || msgLower.includes('network')
-            || msgLower.includes('econnreset')
-            || msgLower.includes('socket hang up');
-          if (isRetryable && attempt < 2) {
-            const delay = (attempt + 1) * 4000;
-            console.warn(`[Screenshot] ${model} transient error, retry in ${delay}ms (attempt ${attempt + 1}/3): ${msg.slice(0, 80)}`);
-            await new Promise(r => setTimeout(r, delay));
-            continue;
-          }
-          // Non-retryable or exhausted retries — try next model
-          console.warn(`[Screenshot] ${model} failed: ${msg}`);
-          break;
-        }
-      }
+    try {
+      // generateWithFallback handles backoff (3 attempts, 4s/8s) + model fallback
+      const result = await generateWithFallback(genai, { model: 'gemini-2.5-flash', contents });
+      let text = result.text?.trim() ?? '';
+      // Strip markdown code fences if model wraps JSON
+      text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+      return JSON.parse(text) as ScreenAnalysis;
+    } catch (err) {
+      console.error('[Screenshot] All models failed:', err);
+      return null;
     }
-    console.error('[Screenshot] All models failed:', lastErr);
-    return null;
   } catch (err) {
     console.error('[Screenshot] Gemini Vision analysis failed:', err);
     return null;
