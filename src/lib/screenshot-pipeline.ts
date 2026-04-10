@@ -60,7 +60,7 @@ export async function captureAndAnalyze(): Promise<void> {
 
   try {
     // Capture screenshot (JPEG, quality 50 — enough for analysis, smaller payload)
-    await execAsync(`screencapture -x -t jpg "${imagePath}"`);
+    await execAsync(`/usr/sbin/screencapture -x -t jpg "${imagePath}"`);
 
     if (!fs.existsSync(imagePath)) {
       console.error('[Screenshot] screencapture produced no file');
