@@ -85,11 +85,11 @@ export default function SettingsPage() {
     const groups = [
         {
             title: '🔑 API Keys & Accounts',
-            description: 'Connect your services',
+            description: 'Connect your services (Vertex AI is the required Gemini runtime path)',
             fields: [
-                { key: 'gemini_api_key', label: 'Gemini API Key (Free Tier)', type: 'password', placeholder: 'AIzaSy...' },
-                { key: 'gcp_project_id', label: 'GCP Project ID (Vertex AI)', type: 'text', placeholder: 'my-gcp-project-123' },
-                { key: 'gcp_location', label: 'GCP Location', type: 'text', placeholder: 'us-central1' },
+                { key: 'gemini_api_key', label: 'Gemini API Key (Deprecated, not used by runtime)', type: 'password', placeholder: 'AIzaSy...' },
+                { key: 'gcp_project_id', label: 'Vertex Project ID (legacy fallback for GOOGLE_CLOUD_PROJECT)', type: 'text', placeholder: 'my-gcp-project-123' },
+                { key: 'gcp_location', label: 'Vertex Location (legacy fallback for GOOGLE_CLOUD_LOCATION)', type: 'text', placeholder: 'us-central1' },
                 { key: 'github_pat', label: 'GitHub Personal Access Token', type: 'password', placeholder: 'ghp_...' },
                 { key: 'github_username', label: 'GitHub Username', type: 'text', placeholder: 'your-username' },
                 { key: 'calendar_ics_url', label: 'Google Calendar ICS URL', type: 'text', placeholder: 'https://calendar.google.com/calendar/ical/...' },

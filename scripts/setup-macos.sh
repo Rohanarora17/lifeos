@@ -53,8 +53,12 @@ fi
 # ── Warn if .env.local missing ────────────────────────────────────────────────
 
 if [ ! -f "$ENV_FILE" ]; then
-  echo "⚠️  .env.local not found — services will start without API keys."
-  echo "   Create $ENV_FILE with at minimum: GEMINI_API_KEY=..."
+  echo "⚠️  .env.local not found — services will start without Vertex AI credentials."
+  echo "   Create $ENV_FILE with at minimum:"
+  echo "     GOOGLE_GENAI_USE_VERTEXAI=true"
+  echo "     GOOGLE_CLOUD_PROJECT=your-project-id"
+  echo "     GOOGLE_CLOUD_LOCATION=us-central1"
+  echo "     GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json"
   echo ""
 fi
 

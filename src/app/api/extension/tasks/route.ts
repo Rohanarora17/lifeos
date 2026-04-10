@@ -15,7 +15,6 @@ export async function POST(request: NextRequest) {
         }
 
         const ai = getGenAI();
-        if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
 
         const db = getDb();
         const activeGoals = db.prepare("SELECT id, title FROM goals WHERE active = 1").all() as { id: number, title: string }[];
@@ -65,8 +64,8 @@ Return JSON matching this schema:
         );
 
         return NextResponse.json({ success: true, task: extracted });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Extension Task API Error:', error);
-        return NextResponse.json({ error: 'Failed to process task extraction' }, { status: 500 });
+        return NextResponse.json({ error: error?.message || 'Failed to process task extraction' }, { status: 500 });
     }
 }

@@ -46,6 +46,9 @@ data/
 
 # Secrets and credentials
 client_secret*.json
+*-sa.json
+*service-account*.json
+*gcp-key*.json
 
 # Binary / large local files
 *.docx

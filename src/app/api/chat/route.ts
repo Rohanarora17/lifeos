@@ -132,7 +132,6 @@ export async function POST(request: NextRequest) {
         }
 
         const ai = getGenAI();
-        if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
 
         const intelligenceContext = getIntelligenceContext({ maxInsights: 4, includeThresholds: true, includeToday: true });
         const knowledgeContext = getKnowledgeGapSummary();

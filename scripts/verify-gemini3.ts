@@ -1,6 +1,6 @@
 /**
  * verify-gemini3.ts
- * Tests all Gemini 3 model calls that were upgraded in LifeOS.
+ * Tests core Gemini model calls used in LifeOS.
  * Run with: npx tsx scripts/verify-gemini3.ts
  */
 
@@ -23,30 +23,27 @@ if (fs.existsSync(envPath)) {
     }
 }
 
-const MODEL_PRO = 'gemini-3.1-pro-preview';
-const MODEL_FLASH = 'gemini-3-flash-preview';
+const MODEL_PRO = 'gemini-2.5-pro';
+const MODEL_FLASH = 'gemini-2.5-flash';
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
-const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
+const GCP_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
+const GCP_LOCATION = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
+const GOOGLE_APPLICATION_CREDENTIALS = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const USE_VERTEX =
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
 
-if (!GEMINI_API_KEY && !GCP_PROJECT_ID) {
-    console.error('❌ No GEMINI_API_KEY/API_KEY or GCP_PROJECT_ID found in .env');
+if (!USE_VERTEX || !GCP_PROJECT_ID || !GOOGLE_APPLICATION_CREDENTIALS) {
+    console.error(
+        '❌ Vertex-only verification requires GOOGLE_GENAI_USE_VERTEXAI=true, GOOGLE_CLOUD_PROJECT (or GCP_PROJECT_ID), and GOOGLE_APPLICATION_CREDENTIALS.'
+    );
     process.exit(1);
 }
 
-// Mirror exactly the same priority logic as the fixed getGenAI() in ai.ts:
-// - API key present → standard Gemini Developer API (works with GCP API keys)
-// - No API key but project ID → Vertex AI via Application Default Credentials
+// Mirror strict Vertex-only runtime logic from src/lib/ai.ts.
 let ai: GoogleGenAI;
-if (GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-    console.log('[init] Using standard Gemini Developer API (API key)');
-} else {
-    const location = process.env.GCP_LOCATION || 'us-central1';
-    // @ts-ignore
-    ai = new GoogleGenAI({ vertexai: { project: GCP_PROJECT_ID, location } });
-    console.log(`[init] Using Vertex AI ADC — project: ${GCP_PROJECT_ID}`);
-}
+ai = new GoogleGenAI({ vertexai: true, project: GCP_PROJECT_ID, location: GCP_LOCATION });
+console.log(`[init] Using Vertex AI OAuth — project: ${GCP_PROJECT_ID}, location: ${GCP_LOCATION}`);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

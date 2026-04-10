@@ -14,7 +14,6 @@ import { MODEL_FLASH } from '@/lib/models';
  */
 async function resolveImmediateBlockDomains(targetTitle: string, goalTitle: string | null): Promise<string[]> {
   const ai = getGenAI();
-  if (!ai) return [];
 
   try {
     const db = getDb();

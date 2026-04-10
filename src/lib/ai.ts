@@ -1,4 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
+import fs from 'fs';
+import path from 'path';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
@@ -6,38 +8,75 @@ import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_FLASH } from './models';
 
 let genAI: GoogleGenAI | null = null;
+let vertexFallbackAI: GoogleGenAI | null = null;
 
-export function getGenAI(): GoogleGenAI | null {
+function resolvePrimaryApiKey(): string {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || getSetting('gemini_api_key');
+    if (!apiKey) {
+        throw new Error(
+            'Gemini API configuration error: missing GEMINI_API_KEY/API_KEY (or settings.gemini_api_key).'
+        );
+    }
+    return apiKey;
+}
+
+function resolveVertexConfig() {
+    const useVertex =
+        process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
+        process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
+    const projectId =
+        process.env.GOOGLE_CLOUD_PROJECT ||
+        process.env.GCP_PROJECT_ID ||
+        getSetting('gcp_project_id');
+    const location =
+        process.env.GOOGLE_CLOUD_LOCATION ||
+        process.env.GCP_LOCATION ||
+        getSetting('gcp_location') ||
+        'us-central1';
+    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+
+    if (!useVertex) return null;
+    if (!projectId || !credentialsPath) return null;
+    if (!projectId) {
+        return null;
+    }
+    if (!credentialsPath) {
+        return null;
+    }
+    if (!path.isAbsolute(credentialsPath)) {
+        return null;
+    }
+    if (!fs.existsSync(credentialsPath)) {
+        return null;
+    }
+
+    return { projectId, location };
+}
+
+export function getGenAI(): GoogleGenAI {
     if (!genAI) {
-        const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY || getSetting('gemini_api_key');
-        const projectId = process.env.GCP_PROJECT_ID || getSetting('gcp_project_id');
-        const location = process.env.GCP_LOCATION || getSetting('gcp_location') || 'us-central1';
-        // Set USE_VERTEX_AI=true to route through Vertex AI (aiplatform.googleapis.com)
-        // which uses GCP credits and has better quota than the Developer API.
-        // Requires Application Default Credentials on the host machine:
-        //   gcloud auth application-default login
-        const useVertex = process.env.USE_VERTEX_AI === 'true';
-
-        console.log(`[getGenAI] mode: ${useVertex ? 'vertex' : 'developer-api'}, hasApiKey: ${!!apiKey}, projectId: ${projectId || 'none'}`);
-
-        if (useVertex && projectId) {
-            // Vertex AI — uses GCP credits, better quota, requires ADC (no API key).
-            // @ts-ignore
-            genAI = new GoogleGenAI({ vertexai: { project: projectId, location } });
-        } else if (apiKey) {
-            // Gemini Developer API — generativelanguage.googleapis.com
-            // Works with GCP API keys. Has lower shared quota than Vertex AI.
-            genAI = new GoogleGenAI({ apiKey });
-        } else if (projectId) {
-            // Vertex AI fallback if no API key present
-            // @ts-ignore
-            genAI = new GoogleGenAI({ vertexai: { project: projectId, location } });
-        } else {
-            console.log('[getGenAI] No credentials found — returning null');
-            return null;
-        }
+        const apiKey = resolvePrimaryApiKey();
+        genAI = new GoogleGenAI({
+            // Force Developer API as the primary lane even when Vertex env vars exist.
+            vertexai: false,
+            apiKey,
+        });
+        console.log('[getGenAI] mode: developer-api-primary');
     }
     return genAI;
+}
+
+function getVertexFallbackAI(): GoogleGenAI | null {
+    if (vertexFallbackAI) return vertexFallbackAI;
+    const config = resolveVertexConfig();
+    if (!config) return null;
+    vertexFallbackAI = new GoogleGenAI({
+        vertexai: true,
+        project: config.projectId,
+        location: config.location,
+    });
+    console.log(`[getVertexFallbackAI] mode: vertex-fallback, projectId: ${config.projectId}, location: ${config.location}`);
+    return vertexFallbackAI;
 }
 
 // Stable fallback when preview models are overloaded (503)
@@ -81,15 +120,15 @@ export async function generateWithFallback(
     params: Parameters<GoogleGenAI['models']['generateContent']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContent']> {
     const originalModel = typeof params.model === 'string' ? params.model : '';
-    let lastErr: any;
+    let primaryErr: any;
 
     // 3 attempts on primary model with backoff
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             return await ai.models.generateContent(params);
         } catch (err: any) {
-            lastErr = err;
-            if (!isOverloadedError(err)) throw err;
+            primaryErr = err;
+            if (!isOverloadedError(err)) break;
             if (attempt < 2) {
                 const delay = (attempt + 1) * 4000;
                 console.warn(`[AI] ${originalModel} overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
@@ -98,10 +137,12 @@ export async function generateWithFallback(
         }
     }
 
-    // Final attempt with stable fallback model
+    // Vertex fallback with stable model when primary lane fails.
+    const vertexAI = getVertexFallbackAI();
     const fallback = fallbackModel(originalModel);
-    console.warn(`[AI] ${originalModel} exhausted — falling back to ${fallback}`);
-    return await ai.models.generateContent({ ...params, model: fallback });
+    if (!vertexAI) throw primaryErr;
+    console.warn(`[AI] primary failed for ${originalModel} — routing to Vertex fallback ${fallback}`);
+    return await vertexAI.models.generateContent({ ...params, model: fallback });
 }
 
 /**
@@ -112,14 +153,14 @@ export async function generateStreamWithFallback(
     params: Parameters<GoogleGenAI['models']['generateContentStream']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContentStream']> {
     const originalModel = typeof params.model === 'string' ? params.model : '';
-    let lastErr: any;
+    let primaryErr: any;
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             return await ai.models.generateContentStream(params);
         } catch (err: any) {
-            lastErr = err;
-            if (!isOverloadedError(err)) throw err;
+            primaryErr = err;
+            if (!isOverloadedError(err)) break;
             if (attempt < 2) {
                 const delay = (attempt + 1) * 4000;
                 console.warn(`[AI] ${originalModel} stream overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
@@ -128,9 +169,11 @@ export async function generateStreamWithFallback(
         }
     }
 
+    const vertexAI = getVertexFallbackAI();
     const fallback = fallbackModel(originalModel);
-    console.warn(`[AI] ${originalModel} stream exhausted — falling back to ${fallback}`);
-    return await ai.models.generateContentStream({ ...params, model: fallback });
+    if (!vertexAI) throw primaryErr;
+    console.warn(`[AI] primary stream failed for ${originalModel} — routing to Vertex fallback ${fallback}`);
+    return await vertexAI.models.generateContentStream({ ...params, model: fallback });
 }
 
 // Helper to extract YouTube video ID
@@ -222,13 +265,6 @@ export async function classifyActivityBatch(
 
     // AI Classification pass (Only for missing items)
     const ai = getGenAI();
-    if (!ai) {
-        // Fallback if no AI setup
-        for (const idx of toClassifyIndices) {
-            results[idx] = { category: 'neutral', subcategory: 'other', confidence: 'low', reasoning: 'No AI key configured' };
-        }
-        return results;
-    }
 
     try {
         // Process in chunks to avoid prompt limits
@@ -472,9 +508,6 @@ export async function generateDailySummary(date: string, stats: {
     xp: number;
 }): Promise<string> {
     const ai = getGenAI();
-    if (!ai) {
-        return buildFallbackSummary(date, stats);
-    }
 
     try {
         const userContext = getIntelligenceContext({ maxInsights: 4, includeToday: true });
@@ -537,9 +570,6 @@ export async function generateMorningBrief(date: string, data: {
     yesterdayDistractionMinutes: number;
 }): Promise<string> {
     const ai = getGenAI();
-    if (!ai) {
-        return buildFallbackMorningBrief(date, data);
-    }
 
     try {
         const userContext = getIntelligenceContext({ maxInsights: 3, includeToday: true });
@@ -673,8 +703,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
 
     // For YouTube and ambiguous sites, use AI
     const ai = getGenAI();
-    if (ai) {
-        try {
+    try {
             // FLASH: Fast context processing for real-time nudge
             const nudgeContext = getSmartNudgeContext();
             const userContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
@@ -745,9 +774,9 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
                 }
                 return { shouldNudge: false, message: '' };
             }
-        } catch (err) {
-            console.error('AI nudge check failed:', err);
-        }
+    } catch (err) {
+        console.error('AI nudge check failed:', err);
+        throw err;
     }
 
     // Fallback: nudge if over threshold

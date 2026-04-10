@@ -12,9 +12,6 @@ export async function POST(req: NextRequest) {
         }
 
         const ai = getGenAI();
-        if (!ai) {
-            return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
-        }
 
         const prompt = `You are an expert tutor and productivity coach. Create a highly optimized study plan for the topic: "${topic}".
 The user has ${durationMinutes} minutes available and their current knowledge level is "${difficulty || 'beginner'}".
@@ -57,8 +54,8 @@ CRITICAL RULES:
         } else {
             return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 });
         }
-    } catch (error) {
+    } catch (error: any) {
         console.error('Study plan generation error:', error);
-        return NextResponse.json({ error: 'Failed to generate study plan' }, { status: 500 });
+        return NextResponse.json({ error: error?.message || 'Failed to generate study plan' }, { status: 500 });
     }
 }

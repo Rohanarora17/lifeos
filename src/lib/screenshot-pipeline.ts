@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { getDb } from './db';
 import { getActiveGuardianSession } from './guardian-runtime';
+import { MODEL_FLASH } from './models';
 
 const execAsync = promisify(exec);
 
@@ -106,10 +107,6 @@ async function analyzeWithGemini(base64Image: string): Promise<ScreenAnalysis | 
   try {
     const { getGenAI } = await import('./ai');
     const genai = getGenAI();
-    if (!genai) {
-      console.error('[Screenshot] No Gemini client — check GEMINI_API_KEY');
-      return null;
-    }
 
     const prompt = `Analyze this screenshot and return ONLY a JSON object describing what the person is doing.
 

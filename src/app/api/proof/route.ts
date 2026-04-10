@@ -20,7 +20,6 @@ export async function POST(request: NextRequest) {
         if (!habit) return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
 
         const ai = getGenAI();
-        if (!ai) return NextResponse.json({ error: 'AI not configured' }, { status: 500 });
 
 
         // Clean base64 string

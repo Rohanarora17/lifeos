@@ -1,4 +1,6 @@
 import { AccessToken } from 'livekit-server-sdk';
+import fs from 'fs';
+import path from 'path';
 
 const DEFAULT_ROOM_PREFIX = 'lifeos-guardian';
 const DEFAULT_APP_URL = 'http://127.0.0.1:3000';
@@ -7,14 +9,17 @@ function normalizeRoomSegment(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 48);
 }
 
-function getGoogleApiKey() {
-  return (
-    process.env.GOOGLE_API_KEY ||
-    process.env.GOOGLE_GENAI_API_KEY ||
-    process.env.API_KEY ||
-    process.env.GEMINI_API_KEY ||
-    ''
-  );
+function hasVertexVoiceConfig() {
+  const useVertex =
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
+  const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+
+  if (!useVertex || !project || !location || !credentialsPath) return false;
+  if (!path.isAbsolute(credentialsPath)) return false;
+  return fs.existsSync(credentialsPath);
 }
 
 export type GuardianVoiceMode = 'local' | 'google-live';
@@ -59,7 +64,7 @@ export function isGuardianVoiceAgentConfigured() {
   return Boolean(
     getGuardianVoiceMode() === 'google-live' &&
     isLiveKitConfigured() &&
-    getGoogleApiKey() &&
+    hasVertexVoiceConfig() &&
     getLifeOSAppUrl()
   );
 }

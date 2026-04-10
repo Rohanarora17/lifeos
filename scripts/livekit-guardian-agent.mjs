@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import process from 'node:process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Modality } from '@google/genai';
 import { AutoSubscribe, cli, defineAgent, llm, voice, WorkerOptions } from '@livekit/agents';
 import * as google from '@livekit/agents-plugin-google';
@@ -13,14 +15,39 @@ const DEFAULT_VOICE = process.env.LIVEKIT_GUARDIAN_VOICE || 'Aoede';
 const DEFAULT_AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || 'lifeos-guardian-agent';
 const VOICE_MODE = process.env.VOICE_MODE || 'local';
 
-function getGoogleApiKey() {
-  return (
-    process.env.GOOGLE_API_KEY ||
-    process.env.GOOGLE_GENAI_API_KEY ||
-    process.env.API_KEY ||
-    process.env.GEMINI_API_KEY ||
-    ''
-  );
+function getVertexConfigOrThrow() {
+  const useVertex =
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
+    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
+  const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+
+  if (!useVertex) {
+    throw new Error(
+      'Vertex AI is required for guardian voice. Set GOOGLE_GENAI_USE_VERTEXAI=true.'
+    );
+  }
+  if (!project) {
+    throw new Error(
+      'Vertex AI is required for guardian voice. Set GOOGLE_CLOUD_PROJECT (or legacy GCP_PROJECT_ID).'
+    );
+  }
+  if (!credentialsPath) {
+    throw new Error(
+      'Vertex AI is required for guardian voice. Set GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON path.'
+    );
+  }
+  if (!path.isAbsolute(credentialsPath)) {
+    throw new Error(
+      `GOOGLE_APPLICATION_CREDENTIALS must be an absolute path. Got "${credentialsPath}".`
+    );
+  }
+  if (!fs.existsSync(credentialsPath)) {
+    throw new Error(`GOOGLE_APPLICATION_CREDENTIALS file not found at "${credentialsPath}".`);
+  }
+
+  return { project, location };
 }
 
 function getAppBaseUrl() {
@@ -89,10 +116,7 @@ const agentDefinition = defineAgent({
       throw new Error('Guardian realtime worker requires VOICE_MODE=google-live');
     }
 
-    const apiKey = getGoogleApiKey();
-    if (!apiKey) {
-      throw new Error('Missing GOOGLE_API_KEY / GOOGLE_GENAI_API_KEY / API_KEY / GEMINI_API_KEY for guardian voice agent');
-    }
+    const { project, location } = getVertexConfigOrThrow();
 
     await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
 
@@ -106,7 +130,9 @@ const agentDefinition = defineAgent({
         : 'current study target';
 
     const realtimeModel = new google.beta.realtime.RealtimeModel({
-      apiKey,
+      vertexai: true,
+      project,
+      location,
       model: DEFAULT_MODEL,
       voice: DEFAULT_VOICE,
       modalities: [Modality.AUDIO],
