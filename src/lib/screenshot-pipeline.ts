@@ -138,7 +138,7 @@ Categories:
 
 Return ONLY the JSON. No markdown, no explanation.`;
 
-    const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    const models = ['gemini-2.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite-preview-06-17'];
     const contents = [
       {
         role: 'user' as const,
@@ -154,7 +154,9 @@ Return ONLY the JSON. No markdown, no explanation.`;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const result = await genai.models.generateContent({ model, contents });
-          const text = result.text?.trim() ?? '';
+          let text = result.text?.trim() ?? '';
+          // Strip markdown code fences if model wraps JSON
+          text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
           const parsed = JSON.parse(text) as ScreenAnalysis;
           return parsed;
         } catch (err: unknown) {
