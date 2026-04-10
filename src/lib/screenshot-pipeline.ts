@@ -84,7 +84,7 @@ export async function captureAndAnalyze(): Promise<void> {
   } catch (err) {
     // Always clean up the image file even on error
     if (fs.existsSync(imagePath)) {
-      try { fs.unlinkSync(imagePath); } catch {}
+      try { fs.unlinkSync(imagePath); } catch { }
     }
     console.error('[Screenshot] captureAndAnalyze failed:', err);
   }
@@ -231,7 +231,7 @@ export function getRecentObservations(lookbackMinutes: number = 180): RecentObse
   const rows = db.prepare(`
     SELECT category, app, specific_content, observed_at
     FROM screen_observations
-    WHERE observed_at >= ? AND source = 'screenshot'
+    WHERE observed_at >= ? AND source IN ('screenshot','extension_screenshot')
     ORDER BY observed_at DESC
   `).all(since) as Array<{ category: string; app: string; specific_content: string; observed_at: string }>;
 

@@ -391,7 +391,7 @@ function initSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS screen_observations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       observed_at TEXT NOT NULL,
-      source TEXT NOT NULL DEFAULT 'screenshot' CHECK(source IN ('screenshot','daemon')),
+      source TEXT NOT NULL DEFAULT 'screenshot' CHECK(source IN ('screenshot','daemon','extension_screenshot','extension_daemon')),
       app TEXT,
       window_title TEXT,
       activity TEXT,

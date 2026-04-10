@@ -50,7 +50,7 @@ async function sendBlockToTab(tabId, blockData) {
             await chrome.scripting.executeScript({ target: { tabId }, files: ['guardian.js'] });
             // Small delay to let the script register its listener
             await new Promise(r => setTimeout(r, 50));
-            chrome.tabs.sendMessage(tabId, blockData).catch(() => {});
+            chrome.tabs.sendMessage(tabId, blockData).catch(() => { });
         } catch (e2) {
             console.warn('[LifeOS] Could not inject guardian.js into tab', tabId, e2);
         }
@@ -175,14 +175,14 @@ async function applyGuardianCommands(commands = [], tabIdHint = null) {
                 reason: command.reason,
                 explainability: command.explainability,
                 ttlSeconds: command.ttlSeconds,
-            }).catch(() => {});
+            }).catch(() => { });
         }
 
         if (command.type === 'classify') {
             chrome.tabs.sendMessage(targetTabId, {
                 type: 'CLASSIFY_TOAST',
                 conceptTitle: command.conceptTitle,
-            }).catch(() => {});
+            }).catch(() => { });
         }
     }
 }
@@ -523,7 +523,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                         title: tab.title || '',
                         dwellSeconds: 0,
                         timestamp: sessionStart,
-                    }).catch(() => {});
+                    }).catch(() => { });
                 }
             }
         });
@@ -549,7 +549,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     timestamp: Date.now(),
                     prevUrl: current.url,
                     prevTitle: current.title || '',
-                }).catch(() => {});
+                }).catch(() => { });
             }
         }
 
@@ -678,6 +678,26 @@ async function ensureOffscreenDocument() {
         reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
         justification: 'Push-to-talk microphone capture and TTS audio playback',
     });
+    // Wait until the offscreen document's message listener is registered.
+    // Without this, sendMessage immediately after createDocument throws
+    // "Receiving end does not exist" due to a race condition.
+    await waitForOffscreenReady();
+}
+
+async function waitForOffscreenReady(maxWaitMs = 2000) {
+    const step = 50;
+    let waited = 0;
+    while (waited < maxWaitMs) {
+        try {
+            // PING the offscreen doc — it replies when its listener is live.
+            await chrome.runtime.sendMessage({ target: 'offscreen', type: 'PING' });
+            return; // got a reply — ready
+        } catch {
+            await new Promise(r => setTimeout(r, step));
+            waited += step;
+        }
+    }
+    // Timed out — proceed anyway (best-effort)
 }
 
 chrome.commands.onCommand.addListener(async (command) => {
@@ -760,9 +780,9 @@ function startGuardianSSE(sessionId) {
                     type: 'PLAY_AUDIO_TEXT',
                     text: data.text,
                     sessionId,
-                });
+                }).catch(() => { }); // offscreen may have closed between events — ignore
             }
-        } catch {}
+        } catch { }
     };
 
     sseSource.onerror = () => {

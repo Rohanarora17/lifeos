@@ -15,6 +15,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
 
   switch (msg.type) {
+    case 'PING':
+      sendResponse({ ok: true });
+      return true;
+
     case 'START_RECORDING':
       startRecording(msg.sessionId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
       return true;
