@@ -160,14 +160,22 @@ Return ONLY the JSON. No markdown, no explanation.`;
         } catch (err: unknown) {
           lastErr = err;
           const msg = String(err);
-          const is503 = msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('overloaded');
-          if (is503 && attempt < 2) {
-            const delay = (attempt + 1) * 3000;
-            console.warn(`[Screenshot] ${model} 503, retry in ${delay}ms (attempt ${attempt + 1}/3)`);
+          const msgLower = msg.toLowerCase();
+          const isRetryable = msg.includes('503')
+            || msgLower.includes('high demand')
+            || msgLower.includes('overloaded')
+            || msgLower.includes('etimedout')
+            || msgLower.includes('fetch failed')
+            || msgLower.includes('network')
+            || msgLower.includes('econnreset')
+            || msgLower.includes('socket hang up');
+          if (isRetryable && attempt < 2) {
+            const delay = (attempt + 1) * 4000;
+            console.warn(`[Screenshot] ${model} transient error, retry in ${delay}ms (attempt ${attempt + 1}/3): ${msg.slice(0, 80)}`);
             await new Promise(r => setTimeout(r, delay));
             continue;
           }
-          // Non-503 or exhausted retries — try next model
+          // Non-retryable or exhausted retries — try next model
           console.warn(`[Screenshot] ${model} failed: ${msg}`);
           break;
         }
