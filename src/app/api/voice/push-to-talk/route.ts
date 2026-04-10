@@ -3,7 +3,10 @@ import { processGuardianVoiceCommand } from '@/lib/guardian-voice';
 
 async function transcribeAudio(audio: Blob): Promise<string | null> {
     const whisperUrl = (process.env.WHISPER_CPP_URL || '').trim();
-    if (!whisperUrl) return null;
+    if (!whisperUrl) {
+        console.warn('[PTT] WHISPER_CPP_URL not set — transcription skipped. Set it to a Groq or OpenAI Whisper endpoint.');
+        return null;
+    }
 
     const filename = 'speech.webm';
     const file = new File([audio], filename, { type: audio.type || 'audio/webm' });
