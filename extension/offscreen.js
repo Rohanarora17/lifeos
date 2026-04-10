@@ -10,6 +10,8 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let audioContext = null;
+let recordingStartTime = 0;  // ms timestamp when recording started
+const MIN_RECORDING_MS = 500; // minimum duration to capture real audio frames
 
 // ── Message handler from background ──────────────────────────────────────────
 
@@ -93,6 +95,7 @@ async function startRecording(sessionId) {
 
     mediaRecorder.start(100); // collect in 100ms chunks
     isRecording = true;
+    recordingStartTime = Date.now();
 
     // Notify background that recording started (for UI indicator)
     chrome.runtime.sendMessage({ type: 'RECORDING_STARTED' });
@@ -107,9 +110,19 @@ async function startRecording(sessionId) {
 
 async function stopRecording(sessionId) {
   if (!isRecording || !mediaRecorder) return;
+
+  // Enforce minimum recording duration — a WebM blob with < MIN_RECORDING_MS
+  // of audio contains only container headers (< ~200 bytes) and can't be transcribed.
+  const elapsed = Date.now() - recordingStartTime;
+  if (elapsed < MIN_RECORDING_MS) {
+    const wait = MIN_RECORDING_MS - elapsed;
+    console.log(`[Offscreen] Recording too short (${elapsed}ms), waiting ${wait}ms more...`);
+    await new Promise(r => setTimeout(r, wait));
+  }
+
   isRecording = false;
   mediaRecorder.stop();
-  console.log('[Offscreen] Recording stopped, sending audio...');
+  console.log(`[Offscreen] Recording stopped after ${Date.now() - recordingStartTime}ms`);
 }
 
 async function sendAudio(sessionId) {
