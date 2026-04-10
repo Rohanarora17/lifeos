@@ -33,10 +33,19 @@ async function forwardToWhisperCpp(audio: Blob | File) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Number(process.env.WHISPER_CPP_TIMEOUT_MS || '60000'));
 
+    // Add Authorization header for external APIs (Groq, OpenAI)
+    const headers: Record<string, string> = {};
+    if (process.env.GROQ_API_KEY && whisperUrl.includes('groq.com')) {
+        headers['Authorization'] = `Bearer ${process.env.GROQ_API_KEY}`;
+    } else if (process.env.OPENAI_API_KEY && whisperUrl.includes('openai.com')) {
+        headers['Authorization'] = `Bearer ${process.env.OPENAI_API_KEY}`;
+    }
+
     try {
         const upstream = await fetch(whisperUrl, {
             method: 'POST',
             body: upstreamFormData,
+            headers,
             signal: controller.signal,
         });
 

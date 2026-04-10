@@ -13,10 +13,17 @@ interface DaemonPayload {
 
 export async function POST(request: Request) {
   try {
+    const contentType = request.headers.get('content-type') || '';
+
+    // Extension screenshot: multipart form with JPEG blob
+    if (contentType.includes('multipart/form-data')) {
+      return handleExtensionScreenshot(request);
+    }
+
+    // Mac Mini daemon: JSON payload
     const payload = await request.json() as DaemonPayload;
     const db = getDb();
 
-    // Classify daemon event as a screen observation
     const category = classifyApp(payload.frontmost_app, payload.window_title, payload.idle_seconds);
 
     db.prepare(`
@@ -37,6 +44,38 @@ export async function POST(request: Request) {
   } catch (err) {
     console.error('[Daemon Ingest] Error:', err);
     return NextResponse.json({ ok: false }, { status: 500 });
+  }
+}
+
+async function handleExtensionScreenshot(request: Request): Promise<Response> {
+  try {
+    const form = await request.formData();
+    const screenshotBlob = form.get('screenshot') as Blob | null;
+    const url = form.get('url') as string | null;
+    const title = form.get('title') as string | null;
+    const sessionId = form.get('sessionId') as string | null;
+
+    if (!screenshotBlob) {
+      return NextResponse.json({ error: 'Missing screenshot' }, { status: 400 });
+    }
+
+    // Fire async Gemini Vision analysis — don't block response
+    void analyzeExtensionScreenshot(screenshotBlob, url || '', title || '', sessionId);
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error('[Extension Screenshot] Error:', err);
+    return NextResponse.json({ ok: false }, { status: 500 });
+  }
+}
+
+async function analyzeExtensionScreenshot(blob: Blob, url: string, title: string, sessionId: string | null) {
+  try {
+    const { captureAndAnalyzeBuffer } = await import('@/lib/screenshot-pipeline');
+    const imageBuffer = Buffer.from(await blob.arrayBuffer());
+    await captureAndAnalyzeBuffer(imageBuffer, { url, title, sessionId, source: 'extension_screenshot' });
+  } catch (err) {
+    console.error('[Extension Screenshot] Analysis failed:', err);
   }
 }
 

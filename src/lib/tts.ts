@@ -52,9 +52,6 @@ function getTtsAdapter(): TtsAdapter {
     return {
         name: provider,
         speak(request: SpeechRequest) {
-            if (provider === 'say') {
-                return spawn('say', ['-v', voice, request.text]);
-            }
             return spawn('say', ['-v', voice, request.text]);
         },
         stop() {
@@ -66,12 +63,35 @@ function getTtsAdapter(): TtsAdapter {
     };
 }
 
+function getElevenLabsAdapter(): TtsAdapter {
+    return {
+        name: 'elevenlabs',
+        speak(request: SpeechRequest) {
+            // Emit SSE tts_speak event — extension fetches /api/voice/tts and plays on MacBook
+            setImmediate(() => {
+                emitGuardianRuntimeEvent(request.sessionId, {
+                    type: 'tts_speak',
+                    text: request.text,
+                    tone: request.tone,
+                    provider: 'elevenlabs',
+                });
+            });
+            // ElevenLabs is async/SSE-driven — no child process to track
+            return null;
+        },
+        stop() {
+            // No-op: extension handles its own playback stop
+        },
+    };
+}
+
 function processQueue() {
     if (isSpeaking || speechQueue.length === 0) return;
 
     isSpeaking = true;
     const request = speechQueue.shift()!;
-    const adapter = getTtsAdapter();
+    const provider = (process.env.LIFEOS_TTS_PROVIDER || 'say').toLowerCase();
+    const adapter = provider === 'elevenlabs' ? getElevenLabsAdapter() : getTtsAdapter();
 
     emitGuardianRuntimeEvent(request.sessionId, {
         type: 'jarvis_speech',

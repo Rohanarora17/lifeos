@@ -181,18 +181,47 @@ Return ONLY the JSON. No markdown, no explanation.`;
   }
 }
 
+// ─── External buffer entry point (extension screenshots) ─────────────────────
+
+interface ExtensionScreenshotContext {
+  url?: string;
+  title?: string;
+  sessionId?: string | null;
+  source?: string;
+}
+
+export async function captureAndAnalyzeBuffer(
+  imageBuffer: Buffer,
+  ctx: ExtensionScreenshotContext = {}
+): Promise<void> {
+  try {
+    const base64Image = imageBuffer.toString('base64');
+    const description = await analyzeWithGemini(base64Image);
+    if (!description) return;
+    await storeObservation(description, ctx.sessionId ?? null, ctx.source ?? 'extension_screenshot');
+  } catch (err) {
+    console.error('[Screenshot] captureAndAnalyzeBuffer failed:', err);
+  }
+}
+
 // ─── Store Observation ───────────────────────────────────────────────────────
 
-async function storeObservation(analysis: ScreenAnalysis): Promise<void> {
+async function storeObservation(
+  analysis: ScreenAnalysis,
+  overrideSessionId?: string | null,
+  source: string = 'screenshot'
+): Promise<void> {
   const db = getDb();
   const session = getActiveGuardianSession();
+  const sessionId = overrideSessionId !== undefined ? overrideSessionId : (session?.sessionId ?? null);
 
   db.prepare(`
     INSERT INTO screen_observations
       (observed_at, source, app, activity, category, content_type, attention_quality, specific_content, productive_for_goals, confidence, session_id)
     VALUES
-      (datetime('now','localtime'), 'screenshot', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
+    source,
     analysis.app,
     analysis.activity,
     analysis.category,
@@ -201,7 +230,7 @@ async function storeObservation(analysis: ScreenAnalysis): Promise<void> {
     analysis.specific_content,
     analysis.productive_for_goals ? 1 : 0,
     analysis.confidence,
-    session?.sessionId ?? null,
+    sessionId,
   );
 }
 

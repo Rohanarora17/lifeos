@@ -497,6 +497,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
         activeTabs.clear();
         chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+        // Start SSE listener for ElevenLabs TTS playback
+        if (sessionContext?.sessionId) startGuardianSSE(sessionContext.sessionId);
         // Capture the currently active tab IMMEDIATELY — tracks dwell from session start, not from first navigation.
         // Without this, the time on the first tab is always lost (activeTabs was just cleared).
         chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -557,6 +559,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.action.setBadgeText({ text: '' });
         activeTabs.clear();
         chrome.alarms.clear('lifeos-guardian-heartbeat');
+        stopGuardianSSE();
         // Collapse the session group so it's preserved but out of the way
         if (sessionGroupId !== null) {
             chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
@@ -657,4 +660,168 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     return true;
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOICE — Push-to-Talk (Cmd+Shift+Space) + ElevenLabs playback
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let pttRecording = false;
+
+async function ensureOffscreenDocument() {
+    const existingContexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+    });
+    if (existingContexts.length > 0) return;
+    await chrome.offscreen.createDocument({
+        url: chrome.runtime.getURL('offscreen.html'),
+        reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
+        justification: 'Push-to-talk microphone capture and TTS audio playback',
+    });
+}
+
+chrome.commands.onCommand.addListener(async (command) => {
+    if (command !== 'push-to-talk') return;
+
+    if (!pttRecording) {
+        // Start recording
+        pttRecording = true;
+        try {
+            await ensureOffscreenDocument();
+            await chrome.runtime.sendMessage({
+                target: 'offscreen',
+                type: 'START_RECORDING',
+                sessionId: sessionContext?.sessionId || null,
+            });
+            chrome.action.setBadgeText({ text: '🎙' });
+            chrome.action.setBadgeBackgroundColor({ color: '#f97316' });
+        } catch (e) {
+            console.error('[PTT] Start recording failed:', e);
+            pttRecording = false;
+        }
+    } else {
+        // Stop recording — offscreen will send audio to server and play response
+        pttRecording = false;
+        try {
+            await chrome.runtime.sendMessage({
+                target: 'offscreen',
+                type: 'STOP_RECORDING',
+                sessionId: sessionContext?.sessionId || null,
+            });
+            chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
+            chrome.action.setBadgeBackgroundColor({ color: guardianActive ? '#ef4444' : '#6b7280' });
+        } catch (e) {
+            console.error('[PTT] Stop recording failed:', e);
+        }
+    }
+});
+
+// Handle messages from offscreen document
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'RECORDING_STARTED') {
+        console.log('[PTT] Recording started');
+    }
+    if (msg.type === 'PTT_SENDING') {
+        console.log('[PTT] Sending audio to server...');
+    }
+    if (msg.type === 'PTT_DONE') {
+        console.log(`[PTT] Done. Transcript: "${msg.transcript}"`);
+        // Reset badge
+        chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
+    }
+    if (msg.type === 'PTT_ERROR') {
+        console.error('[PTT] Error:', msg.error);
+        chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
+        pttRecording = false;
+    }
+    if (msg.type === 'RECORDING_ERROR') {
+        console.error('[PTT] Mic error:', msg.error);
+        pttRecording = false;
+        chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
+    }
+});
+
+// SSE listener — guardian speaks via ElevenLabs → play on MacBook
+let sseSource = null;
+
+function startGuardianSSE(sessionId) {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    const url = `${API_BASE}/guardian/stream?sessionId=${encodeURIComponent(sessionId)}`;
+    sseSource = new EventSource(url);
+
+    sseSource.onmessage = async (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'tts_speak' && data.text) {
+                // Guardian wants to say something — play via ElevenLabs on MacBook
+                await ensureOffscreenDocument();
+                chrome.runtime.sendMessage({
+                    target: 'offscreen',
+                    type: 'PLAY_AUDIO_TEXT',
+                    text: data.text,
+                    sessionId,
+                });
+            }
+        } catch {}
+    };
+
+    sseSource.onerror = () => {
+        console.warn('[SSE] Stream error, will retry on next session');
+        sseSource?.close();
+        sseSource = null;
+    };
+}
+
+function stopGuardianSSE() {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCREENSHOTS — Capture MacBook screen every 60s via captureVisibleTab()
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SCREENSHOT_SENSITIVE_PATTERNS = [
+    /1password/i, /keychain/i, /bitwarden/i, /lastpass/i,
+    /chrome:\/\/password/i, /accounts\.google\.com/i,
+];
+
+chrome.alarms.create('lifeos-screenshot', { periodInMinutes: 1 });
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name !== 'lifeos-screenshot') return;
+
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab?.id || !tab.url) return;
+
+        // Skip sensitive pages
+        if (SCREENSHOT_SENSITIVE_PATTERNS.some(p => p.test(tab.url) || p.test(tab.title || ''))) return;
+        if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
+
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 50 });
+        if (!dataUrl) return;
+
+        // Convert data URL to blob
+        const base64 = dataUrl.split(',')[1];
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'image/jpeg' });
+
+        const form = new FormData();
+        form.append('screenshot', blob, 'screen.jpg');
+        form.append('url', tab.url);
+        form.append('title', tab.title || '');
+        form.append('source', 'extension_screenshot');
+        if (sessionContext?.sessionId) form.append('sessionId', sessionContext.sessionId);
+
+        const headers = await getAuthHeaders();
+        delete headers['Content-Type']; // let browser set multipart boundary
+        await fetch(`${API_BASE}/daemon/ingest`, { method: 'POST', body: form, headers });
+    } catch (e) {
+        // Silent fail — screenshots are best-effort
+        if (!String(e).includes('No tab') && !String(e).includes('capture')) {
+            console.warn('[Screenshot] Capture failed:', e);
+        }
+    }
 });

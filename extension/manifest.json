@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LifeOS Tracker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Track your browsing, YouTube, and screen time. Stay accountable.",
   "permissions": [
     "tabs",
@@ -14,8 +14,18 @@
     "contextMenus",
     "sidePanel",
     "scripting",
-    "windows"
+    "windows",
+    "offscreen"
   ],
+  "commands": {
+    "push-to-talk": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "Command+Shift+Space"
+      },
+      "description": "Push to talk — hold to record, release to send"
+    }
+  },
   "host_permissions": [
     "http://localhost:3000/*",
     "<all_urls>"
