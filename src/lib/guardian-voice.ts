@@ -22,48 +22,86 @@ import { sendTelegram } from './telegram';
 import { getDb } from './db';
 import { getIntelligenceContext, getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
+import {
+  computeFocusSessions,
+  computeFocusScore,
+  computeConsistencyIndex,
+  computeGoalAlignment,
+  classifyArchetype,
+  recallMemories,
+} from './behavior';
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type VoiceAction =
+  // ── Session management ──
   | 'start_session'
   | 'adjust_session'
   | 'end_session'
   | 'pause_session'
   | 'resume_session'
-  | 'log_habit'
-  | 'create_task'
+  | 'schedule_session'
+  // ── Task management ──
+  | 'create_task'          // "add task X"
+  | 'create_session_task'  // "schedule 25min session on X for today" → task with task_type='session'
+  | 'update_task'          // "mark X done", "prioritize X", "move X to tomorrow"
+  | 'delete_task'          // "delete task X" (requires confirm)
+  | 'show_tasks'           // "what are my tasks today/this week/high priority"
+  | 'clear_done_tasks'     // "clear done tasks" (requires confirm)
+  // ── Habit management ──
+  | 'log_habit'            // "log meditation", "done with workout"
+  | 'create_habit'         // "add a new daily habit: read for 30 min"
+  | 'delete_habit'         // "delete habit X" (requires confirm)
+  | 'show_habits'          // "how are my habits?"
+  // ── Goal management ──
   | 'create_goal'
-  | 'clear_done_tasks'
-  | 'archive_all_goals'
-  | 'show_tasks'
+  | 'update_goal'          // "update progress on X", "mark X complete"
   | 'show_goals'
+  | 'archive_all_goals'
+  // ── Intelligence & analytics ──
+  | 'deep_analysis'        // "analyse my week", "why am I distracted?", "how am I doing?"
+  | 'guardian_status'
+  | 'day_briefing'
+  // ── Confirmation flow ──
   | 'confirm_pending'
   | 'reject_pending'
-  | 'schedule_session'
-  | 'guardian_status'
+  // ── Other ──
   | 'request_override'
-  | 'day_briefing'
   | 'tutor'
   | 'unknown';
 
 interface ParsedVoiceIntent {
   action: VoiceAction;
+  // Session fields
   topic?: string;
   durationMinutes?: number;
   mood?: 'high' | 'medium' | 'low' | null;
+  intendedStartAt?: number;
+  // Override fields
   overrideTarget?: string;
   overrideReason?: string;
   requestedMinutes?: number;
+  // Task fields
+  taskTitle?: string;
+  taskPriority?: string;           // 'low' | 'medium' | 'high'
+  taskDueDate?: string;            // YYYY-MM-DD
+  taskStatus?: string;             // 'backlog'|'next'|'this_week'|'today'|'doing'|'done'
+  taskId?: number;                 // for update/delete by id
+  taskFilterScope?: string;        // 'today'|'this_week'|'high_priority'|'blocked'|'all'
+  // Habit fields
+  habitName?: string;
+  habitFrequency?: string;         // 'daily' | 'weekly'
+  habitGoalMinutes?: number;       // for time-based habits
+  // Goal fields
+  goalTitle?: string;
+  goalCategory?: string;
+  goalDeadline?: string;           // YYYY-MM-DD
+  goalProgressValue?: number;      // for update_goal
+  // Analysis fields
+  analysisQuery?: string;          // free-form question for deep_analysis
+  // Freeform response (tutor / unknown)
   responseText?: string;
-  intendedStartAt?: number;
-  habitName?: string;       // for log_habit
-  taskTitle?: string;       // for create_task
-  taskPriority?: string;    // for create_task
-  taskDueDate?: string;     // for create_task (YYYY-MM-DD or null)
-  goalTitle?: string;       // for create_goal
-  goalCategory?: string;    // for create_goal
-  goalDeadline?: string;    // for create_goal (YYYY-MM-DD or null)
 }
 
 interface ProcessVoiceCommandInput {
@@ -79,14 +117,20 @@ interface VoiceActionResult {
     | 'session_paused'
     | 'session_resumed'
     | 'habit_logged'
+    | 'habit_created'
+    | 'habit_deleted'
     | 'task_created'
+    | 'task_updated'
+    | 'task_deleted'
     | 'goal_created'
+    | 'goal_updated'
     | 'tasks_cleared'
     | 'goals_archived'
     | 'session_scheduled'
     | 'guardian_status'
     | 'override_decision'
     | 'day_briefing'
+    | 'deep_analysis'
     | 'tutor_response'
     | 'intent_only';
   transcript: string;
@@ -386,7 +430,7 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
 
     const result = await generateWithFallback(ai, {
       model: MODEL_FLASH,
-      contents: `You are the LifeOS Guardian — a highly intelligent, conversational personal AI assistant. You understand the full context of what a person is trying to accomplish across multiple voice messages. You are NOT just a session manager.
+      contents: `You are the LifeOS Guardian — an extremely intelligent, conversational personal AI assistant that manages every aspect of a person's productivity, habits, tasks, goals and self-improvement. You understand multi-turn voice conversations and always reason from full context.
 
 CURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs}, ISO: ${nowIso})
 TIMEZONE: Asia/Kolkata (IST, UTC+5:30)
@@ -397,53 +441,81 @@ ${pendingBlock}
 
 TRANSCRIPT: "${sanitizedTranscript}"
 
-ACTIONS YOU CAN TAKE:
-- create_task: user wants to add a task ("add task", "note:", "remind me to"). Fields: taskTitle, taskPriority (low/medium/high), taskDueDate.
-- create_goal: user wants to set a goal/objective for a period ("make X a goal", "I want to focus on X for Y weeks"). Fields: goalTitle, goalCategory (study/work/health/personal), goalDeadline (end of the stated period).
-- clear_done_tasks: user wants to remove/archive completed tasks ("clear done tasks", "clean up finished tasks", "remove done items"). Requires confirmation first — set responseText to ask.
-- archive_all_goals: user wants to remove/archive all existing goals ("clear all goals", "remove old goals", "start fresh with goals"). Requires confirmation first — set responseText to ask.
-- show_tasks: user wants to hear their current task list.
-- show_goals: user wants to hear their current goals.
-- confirm_pending: user confirms a pending destructive action ("yes", "go ahead", "do it", "confirm", "yeah").
-- reject_pending: user cancels a pending action ("no", "cancel", "stop", "don't do that", "never mind").
-- start_session: START a new focus session. ONLY use if ACTIVE SESSION is none AND the user explicitly says "start", "begin", "let's go", "lock in" on a specific topic for a specific duration. DO NOT infer this from context.
-- adjust_session: user wants to change duration/topic of current session.
-- end_session: user wants to stop the current session.
-- pause_session / resume_session: temporary break.
-- log_habit: user completed a habit. Field: habitName.
-- schedule_session: plan a future session for a specific time. Fields: topic, durationMinutes, intendedStartAt.
-- guardian_status: user asks about current state, score, focus.
-- day_briefing: user wants a summary of their day.
-- request_override: user wants to unblock a site.
-- tutor: user is asking a knowledge/learning question about their session topic.
-- unknown: ONLY if none of the above fit. Try to have a helpful conversation via responseText.
+━━━ ACTIONS ━━━
 
-CRITICAL RULES:
-1. NEVER start a session without being explicitly asked. "I want to focus on X for 2 weeks" = create_goal + create_task, NOT start_session.
-2. NEVER schedule a session without being explicitly asked.
-3. For destructive actions (clear_done_tasks, archive_all_goals): set the action but also set responseText to ask for confirmation. The system will queue it as pending.
-4. If the user says "clear all tasks and goals and create new ones" — break it into sequence: first archive_all_goals (ask confirm), then user responds, then create the new goal.
-5. Use RECENT CONVERSATION to resolve references. "that" = the last mentioned topic. "no, don't" = correction of previous action.
-6. If user corrects you ("no I didn't mean that"), infer what they actually wanted from context.
-7. Be direct. Don't add filler. This is voice — responses must be < 40 words.
+SESSION:
+- start_session: Start a new live focus session RIGHT NOW. ONLY if user explicitly says "start", "lock in", "let's begin" on a topic+duration. topic, durationMinutes, mood.
+- adjust_session: Change duration/topic of the ACTIVE session. durationMinutes = new total.
+- end_session: Stop current session.
+- pause_session / resume_session: Temporary break/return.
+- schedule_session: Schedule a session for a FUTURE time. topic, durationMinutes, intendedStartAt (unix ms).
 
-OUTPUT JSON only, no markdown:
+TASK MANAGEMENT (full CRUD):
+- create_task: Plain task (not session-linked). taskTitle, taskPriority (low/medium/high), taskDueDate (YYYY-MM-DD).
+- create_session_task: "Schedule a 25min session on Polkadot for today" → creates a task with type=session and estimated_minutes. Fields: taskTitle (topic), durationMinutes (the session length), taskDueDate (when to do it, YYYY-MM-DD). This is the primary way to plan work.
+- update_task: Modify an existing task. taskTitle (name to search), taskStatus (backlog/next/this_week/today/doing/done), taskPriority (low/medium/high), taskDueDate. Use when user says "mark X done", "move X to tomorrow", "prioritize X", "block X".
+- delete_task: Delete a specific task by name. taskTitle. Requires confirm — set responseText asking.
+- show_tasks: Read current tasks. taskFilterScope: "today" | "this_week" | "high_priority" | "blocked" | "all". Default "today".
+- clear_done_tasks: Archive all done tasks. Requires confirm — set responseText asking.
+
+HABIT MANAGEMENT (full CRUD):
+- log_habit: Mark a habit as done today. habitName.
+- create_habit: Add a new habit. habitName, habitFrequency (daily/weekly), habitGoalMinutes (for time-based, else 0).
+- delete_habit: Remove a habit permanently. habitName. Requires confirm — set responseText asking.
+- show_habits: See habit list + today's completion status.
+
+GOAL MANAGEMENT:
+- create_goal: New goal/objective. goalTitle, goalCategory (study/work/health/personal), goalDeadline (YYYY-MM-DD, end of stated period).
+- update_goal: Update progress or status. goalTitle, goalProgressValue (0-100 percent).
+- show_goals: List current goals.
+- archive_all_goals: Archive everything. Requires confirm — set responseText asking.
+
+INTELLIGENCE & ANALYTICS (all voice-accessible):
+- deep_analysis: User asks about patterns, behaviour, why they're distracted, weekly review, goal progress analysis, focus trends, memory insights, coaching. analysisQuery = the core question verbatim.
+- guardian_status: Live session status + focus score + UIL coaching.
+- day_briefing: Today's session count, focus avg, habits, tasks summary.
+
+CONFIRMATION:
+- confirm_pending: User says yes/go ahead/do it/yeah/confirm.
+- reject_pending: User says no/cancel/stop/don't/never mind.
+
+KNOWLEDGE:
+- tutor: User asks an academic/technical question related to their topic.
+- request_override: Unblock a blocked site. overrideTarget, overrideReason, requestedMinutes.
+- unknown: Nothing fits. Use responseText for a short helpful reply.
+
+━━━ RULES ━━━
+1. DO NOT start_session unless explicitly asked. "I want to focus on X" = create_session_task.
+2. DO NOT schedule_session unless a future time is mentioned. Same day = create_session_task.
+3. Destructive ops (delete_task, clear_done_tasks, archive_all_goals, delete_habit): set that action AND set responseText asking for confirmation. System queues it as pending.
+4. Resolve "that", "it", "same topic" from RECENT CONVERSATION context.
+5. "mark X done" = update_task with taskStatus=done. "block X" = update_task with taskStatus=doing (keep as is, note blocked).
+6. Responses ≤ 35 words. No filler. Voice only.
+7. If user gives a complex multi-step command, handle step 1 and signal what comes next.
+
+━━━ JSON OUTPUT ━━━
 {
   "action": "<action>",
   "topic": "",
-  "durationMinutes": 60,
+  "durationMinutes": 0,
   "mood": null,
+  "intendedStartAt": 0,
   "overrideTarget": "",
   "overrideReason": "",
   "requestedMinutes": 0,
-  "intendedStartAt": 0,
-  "habitName": "",
   "taskTitle": "",
   "taskPriority": "medium",
   "taskDueDate": null,
+  "taskStatus": "",
+  "taskFilterScope": "today",
+  "habitName": "",
+  "habitFrequency": "daily",
+  "habitGoalMinutes": 0,
   "goalTitle": "",
   "goalCategory": "study",
   "goalDeadline": null,
+  "goalProgressValue": 0,
+  "analysisQuery": "",
   "responseText": ""
 }`,
       config: {
@@ -455,23 +527,30 @@ OUTPUT JSON only, no markdown:
     const parsed = JSON.parse((result.text || '').trim() || '{}') as Partial<ParsedVoiceIntent>;
     if (!parsed.action) return heuristicParseVoiceIntent(transcript);
 
+    const p = parsed as Record<string, unknown>;
     return {
       action: parsed.action,
-      topic: parsed.topic || undefined,
-      durationMinutes: typeof parsed.durationMinutes === 'number' && parsed.durationMinutes > 0 ? parsed.durationMinutes : undefined,
+      topic: (p.topic as string) || undefined,
+      durationMinutes: typeof p.durationMinutes === 'number' && (p.durationMinutes as number) > 0 ? p.durationMinutes as number : undefined,
       mood: normalizeMood(parsed.mood),
-      overrideTarget: parsed.overrideTarget || undefined,
-      overrideReason: parsed.overrideReason || undefined,
-      requestedMinutes: typeof parsed.requestedMinutes === 'number' ? parsed.requestedMinutes : undefined,
-      intendedStartAt: typeof parsed.intendedStartAt === 'number' && parsed.intendedStartAt > 0 ? parsed.intendedStartAt : undefined,
-      responseText: parsed.responseText || undefined,
-      habitName: (parsed as Record<string, string>).habitName || undefined,
-      taskTitle: (parsed as Record<string, string>).taskTitle || undefined,
-      taskPriority: (parsed as Record<string, string>).taskPriority || undefined,
-      taskDueDate: (parsed as Record<string, string>).taskDueDate || undefined,
-      goalTitle: (parsed as Record<string, string>).goalTitle || undefined,
-      goalCategory: (parsed as Record<string, string>).goalCategory || undefined,
-      goalDeadline: (parsed as Record<string, string>).goalDeadline || undefined,
+      intendedStartAt: typeof p.intendedStartAt === 'number' && (p.intendedStartAt as number) > 0 ? p.intendedStartAt as number : undefined,
+      overrideTarget: (p.overrideTarget as string) || undefined,
+      overrideReason: (p.overrideReason as string) || undefined,
+      requestedMinutes: typeof p.requestedMinutes === 'number' ? p.requestedMinutes as number : undefined,
+      responseText: (p.responseText as string) || undefined,
+      taskTitle: (p.taskTitle as string) || undefined,
+      taskPriority: (p.taskPriority as string) || undefined,
+      taskDueDate: (p.taskDueDate as string) || undefined,
+      taskStatus: (p.taskStatus as string) || undefined,
+      taskFilterScope: (p.taskFilterScope as string) || undefined,
+      habitName: (p.habitName as string) || undefined,
+      habitFrequency: (p.habitFrequency as string) || undefined,
+      habitGoalMinutes: typeof p.habitGoalMinutes === 'number' ? p.habitGoalMinutes as number : undefined,
+      goalTitle: (p.goalTitle as string) || undefined,
+      goalCategory: (p.goalCategory as string) || undefined,
+      goalDeadline: (p.goalDeadline as string) || undefined,
+      goalProgressValue: typeof p.goalProgressValue === 'number' ? p.goalProgressValue as number : undefined,
+      analysisQuery: (p.analysisQuery as string) || undefined,
     };
   } catch {
     return heuristicParseVoiceIntent(transcript);
@@ -933,17 +1012,29 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       return { type: 'goals_archived', transcript, intent, responseText: response };
     }
 
+    if (pending.action === 'delete_task') {
+      const taskId = pending.payload.taskId as number | undefined;
+      if (taskId) {
+        db.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+        const response = `Done. Task deleted.`;
+        await maybeSpeakVoiceResponse(activeSessionId, response);
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+        return { type: 'task_deleted', transcript, intent, responseText: response };
+      }
+    }
+
+    if (pending.action === 'delete_habit') {
+      const habitId = pending.payload.habitId as number | undefined;
+      if (habitId) {
+        db.prepare(`UPDATE habits SET archived = 1 WHERE id = ?`).run(habitId);
+        const response = `Done. Habit archived.`;
+        await maybeSpeakVoiceResponse(activeSessionId, response);
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+        return { type: 'habit_deleted', transcript, intent, responseText: response };
+      }
+    }
+
     const response = 'Done.';
-    await maybeSpeakVoiceResponse(activeSessionId, response);
-    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
-    return { type: 'intent_only', transcript, intent, responseText: response };
-  }
-
-  // ── reject_pending ─────────────────────────────────────────
-
-  if (intent.action === 'reject_pending') {
-    pendingActions.delete(hKey);
-    const response = 'Cancelled. What would you like to do instead?';
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
     return { type: 'intent_only', transcript, intent, responseText: response };
@@ -967,7 +1058,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       ).run(goalTitle, safeCategory, intent.goalDeadline ?? null);
       const goalId = Number(result.lastInsertRowid);
       // Auto-link existing tasks to this goal
-      try { const { autoLinkGoalTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkGoalTasks?.(goalId).catch(() => {}); } catch { /* non-fatal */ }
+      try { const { autoLinkAllUnlinkedTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => {}); } catch { /* non-fatal */ }
       const deadlineStr = intent.goalDeadline ? `, deadline ${intent.goalDeadline}` : '';
       const response = `Goal created: "${goalTitle}"${deadlineStr}. What tasks should I add for it?`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
@@ -1030,6 +1121,85 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     await maybeSpeakVoiceResponse(session.sessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_started', transcript, intent, session, responseText: response };
+  }
+
+  // ── deep_analysis (full intelligence + behavior query) ──────────────
+
+  if (intent.action === 'deep_analysis') {
+    const query = (intent.analysisQuery || transcript).trim();
+    const ai = getGenAI();
+    if (!ai || !canUseCloudTextReasoning()) {
+      const response = 'Deep analysis needs cloud reasoning. Check your API key.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    try {
+      // Pull everything the brain knows
+      const profile = getIntelligenceProfile();
+      const contextBlock = getIntelligenceContext({ maxInsights: 5, includeToday: true, includeThresholds: true });
+      const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+      // Focus score last 7 days
+      const focusTrend: string[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(Date.now() + 19800000 - i * 86400000).toISOString().slice(0, 10);
+        try {
+          const sessions = computeFocusSessions(d);
+          const score = computeFocusScore(sessions);
+          focusTrend.push(`${d}: ${Math.round(score.score)}/100`);
+        } catch { focusTrend.push(`${d}: n/a`); }
+      }
+      // Consistency + archetype
+      let consistencyStr = 'n/a';
+      let archetypeStr = 'n/a';
+      let goalAlignStr = 'n/a';
+      let memoriesStr = 'n/a';
+      try { const c = computeConsistencyIndex(14); consistencyStr = `${Math.round(c.overallScore)}% overall (${c.streakDays}d streak, ${c.trend})`; } catch { /* */ }
+      try { const a = classifyArchetype(14); archetypeStr = `${a.primary} — ${a.description}`; } catch { /* */ }
+      try { const g = computeGoalAlignment(); goalAlignStr = `${Math.round(g.alignmentScore * 100)}% aligned`; } catch { /* */ }
+      try { const mems = recallMemories(undefined, 10).map(m => m.content).join('; '); memoriesStr = mems || 'none'; } catch { /* */ }
+
+      const db = getDb();
+      const recentSessions = db.prepare(`
+        SELECT target_title, elapsed_minutes, average_focus_score, completed_at
+        FROM guardian_session_summaries
+        WHERE date(completed_at, 'localtime') >= date('now', '-7 days', 'localtime')
+        ORDER BY completed_at DESC LIMIT 8
+      `).all() as { target_title: string; elapsed_minutes: number; average_focus_score: number; completed_at: string }[];
+      const sessionsStr = recentSessions.map(s =>
+        `${s.completed_at.slice(0, 10)}: ${s.target_title} (${s.elapsed_minutes}min, score ${Math.round(s.average_focus_score)})`
+      ).join('\n');
+
+      const analysisPrompt = `You are LifeOS's deep intelligence layer. Answer this exact question from the user with brutally honest, data-driven insights.
+
+USER QUESTION: "${query}"
+
+DATA YOU HAVE:
+${contextBlock}
+
+FOCUS TREND (7 days):
+${focusTrend.join('\n')}
+
+RECENT SESSIONS:
+${sessionsStr || 'No recent sessions.'}
+
+CONSISTENCY: ${consistencyStr}
+ARCHETYPE: ${archetypeStr}
+GOAL ALIGNMENT: ${goalAlignStr}
+MEMORY PATTERNS: ${memoriesStr}
+COACHING INSIGHTS: ${profile.coachingInsights?.join('; ') || 'none'}
+
+RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach.`;
+
+      const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: analysisPrompt, config: { temperature: 0.3 } });
+      const response = (result.text || '').trim().replace(/[•\*\-] /g, '').replace(/\n+/g, ' ').slice(0, 300);
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'deep_analysis', transcript, intent, responseText: response };
+    } catch (err) {
+      const response = 'Could not run deep analysis right now. Try again.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
   }
 
   // ── guardian_status ──────────────────────────────────────────────────────

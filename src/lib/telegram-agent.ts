@@ -323,7 +323,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             const elapsed = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
             const remaining = Math.max(0, session.durationMinutes - elapsed);
             const focusScore = session.focusScoreHistory?.at(-1) ?? 100;
-            const stateIcon = session.state === 'PAUSED' ? '⏸' : focusScore >= 75 ? '🟢' : focusScore >= 50 ? '🟡' : '🔴';
+            const stateIcon = session.state === 'BREAK' ? '⏸' : focusScore >= 75 ? '🟢' : focusScore >= 50 ? '🟡' : '🔴';
             lines.push(`${stateIcon} <b>Active:</b> ${session.targetTitle}`);
             lines.push(`⏱ <b>Time:</b> ${elapsed}m elapsed · ${remaining}m remaining`);
             lines.push(`🎯 <b>Focus:</b> ${focusScore}/100  |  <b>State:</b> ${session.state}`);
