@@ -87,7 +87,15 @@ export async function createCalendarEvent(input: CalendarEventInput): Promise<st
     });
     return res.data.id ?? null;
   } catch (err) {
-    console.error('[GCal] createEvent failed:', err);
+    // invalid_grant means the refresh token has expired/been revoked.
+    // Clear it so isCalendarConfigured() returns false and we stop retrying.
+    const errMsg = String(err);
+    if (errMsg.includes('invalid_grant') || (err as { code?: number }).code === 400) {
+      console.warn('[GCal] Refresh token invalid — clearing stored token. Re-authenticate at /api/calendar/google/auth.');
+      setSetting('google_calendar_refresh_token', '');
+    } else {
+      console.error('[GCal] createEvent failed:', err);
+    }
     return null;
   }
 }

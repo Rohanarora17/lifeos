@@ -837,6 +837,29 @@ export function listGuardianSessions() {
   return Array.from(guardianSessions.values()).map(cloneSession);
 }
 
+/**
+ * Adjust the duration of a live active session.
+ * Mutates the live session in-memory and persists the change to DB.
+ * Returns a clone of the updated session, or null if not found.
+ */
+export function adjustGuardianSessionDuration(sessionId: string, newDurationMinutes: number): GuardianState | null {
+  const session = guardianSessions.get(sessionId);
+  if (!session || session.state !== 'ACTIVE') return null;
+
+  session.durationMinutes = newDurationMinutes;
+  // Reset midpoint/final_push milestones so they re-fire at the correct % of the new duration
+  session.emittedMilestones = session.emittedMilestones.filter(m => m !== 'midpoint' && m !== 'final_push');
+
+  try {
+    getDb().prepare(
+      `UPDATE guardian_sessions SET duration_minutes = ? WHERE session_id = ?`
+    ).run(newDurationMinutes, sessionId);
+  } catch { /* non-fatal */ }
+
+  return cloneSession(session);
+}
+
+
 export function getGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   return session ? cloneSession(session) : null;

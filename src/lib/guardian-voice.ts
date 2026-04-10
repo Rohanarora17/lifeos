@@ -5,7 +5,9 @@ import { MODEL_FLASH } from './models';
 import { speak } from './tts';
 import {
   adjudicateOverride,
+  adjustGuardianSessionDuration,
   createSoftWatchCommitment,
+  endGuardianSession,
   getGuardianContext,
   getGuardianSession,
   listGuardianSessions,
@@ -22,6 +24,8 @@ import { extractMemoryFromVoice } from './memory-extractor';
 
 type VoiceAction =
   | 'start_session'
+  | 'adjust_session'
+  | 'end_session'
   | 'schedule_session'
   | 'guardian_status'
   | 'request_override'
@@ -49,6 +53,8 @@ interface ProcessVoiceCommandInput {
 interface VoiceActionResult {
   type:
     | 'session_started'
+    | 'session_adjusted'
+    | 'session_ended'
     | 'session_scheduled'
     | 'guardian_status'
     | 'override_decision'
@@ -291,10 +297,13 @@ RULES:
 - intendedStartAt: Unix ms. 0 if not specified.
 - responseText: only for "tutor" or "unknown" actions — a brief direct answer.
 - If the transcript references something from RECENT CONVERSATION (e.g. "that topic", "same duration", "remind me again"), resolve it using context.
+- adjust_session: use when the user wants to CHANGE the duration/topic of the CURRENT active session (e.g. "make it 25 minutes", "reduce to 30 mins", "change the topic to algorithms"). Do NOT use start_session in this case. Set durationMinutes to the new target duration.
+- end_session: use when the user wants to STOP/END the current session (e.g. "stop the session", "end session", "we're done", "cancel session").
+- start_session: ONLY use when there is NO active session, or the user explicitly asks to start a brand new separate session.
 
 OUTPUT JSON only, no markdown:
 {
-  "action": "start_session" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
+  "action": "start_session" | "adjust_session" | "end_session" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
   "topic": "clean topic string, or empty",
   "durationMinutes": 60,
   "mood": "high" | "medium" | "low" | null,
@@ -544,6 +553,53 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr}. Calendar event created with reminders.`;
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_scheduled', transcript, intent, session: commitment, responseText: response };
+  }
+
+  // ── adjust_session ────────────────────────────────────────────────────────
+
+  if (intent.action === 'adjust_session') {
+    if (!activeSessionId) {
+      const response = 'There is no active session to adjust right now.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+
+    const newDuration = intent.durationMinutes;
+    if (!newDuration || newDuration < 1) {
+      const response = 'What duration should I change the session to?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+
+    const adjusted = adjustGuardianSessionDuration(activeSessionId, newDuration);
+    if (!adjusted) {
+      const response = 'Could not find the active session to adjust.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+
+    const elapsed = Math.max(0, Math.round((Date.now() - adjusted.startedAt) / 60_000));
+    const remaining = Math.max(0, newDuration - elapsed);
+    const response = `Done. Session adjusted to ${newDuration} minutes. You have ${remaining} minutes remaining.`;
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_adjusted', transcript, intent, session: adjusted, responseText: response };
+  }
+
+  // ── end_session ───────────────────────────────────────────────────────────
+
+  if (intent.action === 'end_session') {
+    if (!activeSessionId) {
+      const response = 'There is no active session to end.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    const ended = endGuardianSession(activeSessionId);
+    const elapsed = ended ? Math.max(1, Math.round((Date.now() - (ended as { startedAt: number }).startedAt) / 60_000)) : 0;
+    const response = `Session ended. You worked for ${elapsed} minutes. Good work.`;
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_ended', transcript, intent, session: ended, responseText: response };
   }
 
   // ── start_session ────────────────────────────────────────────────────────
