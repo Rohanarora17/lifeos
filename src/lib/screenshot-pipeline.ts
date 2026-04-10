@@ -106,7 +106,7 @@ async function analyzeWithGemini(base64Image: string): Promise<ScreenAnalysis | 
   try {
     // Dynamic import to avoid circular deps
     const { GoogleGenAI } = await import('@google/genai');
-    const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
     if (!apiKey) {
       console.error('[Screenshot] No Gemini API key');
       return null;
