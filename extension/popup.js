@@ -16,6 +16,67 @@ document.getElementById('openDashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: APP_URL });
 });
 
+// ── Voice permission management ───────────────────────────────────────────────
+// MV3 offscreen documents cannot trigger the browser permission dialog on their
+// own — it requires a user gesture in a visible context (the popup).
+// This button calls getUserMedia from the popup, granting mic access that the
+// offscreen document then inherits for push-to-talk.
+
+async function checkMicPermission() {
+  try {
+    const result = await navigator.permissions.query({ name: 'microphone' });
+    return result.state; // 'granted' | 'prompt' | 'denied'
+  } catch {
+    return 'prompt';
+  }
+}
+
+async function initVoiceButton() {
+  const btn = document.getElementById('enableVoiceBtn');
+  const row = document.getElementById('voice-permission-row');
+  if (!btn || !row) return;
+
+  const state = await checkMicPermission();
+
+  if (state === 'granted') {
+    // Already granted — show a subtle green indicator, no button needed
+    row.innerHTML = `<span style="font-size: 11px; color: #4ade80; display: flex; align-items: center; gap: 5px;">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      Voice enabled — Cmd+Shift+Space to talk
+    </span>`;
+    return;
+  }
+
+  if (state === 'denied') {
+    row.innerHTML = `<span style="font-size: 11px; color: #f87171;">Mic blocked — allow in Chrome site settings</span>`;
+    return;
+  }
+
+  btn.addEventListener('click', async () => {
+    btn.textContent = 'Waiting for permission...';
+    btn.disabled = true;
+    try {
+      // This triggers the browser permission dialog (requires user gesture)
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // Immediately release the stream — we only needed to trigger the grant
+      stream.getTracks().forEach(t => t.stop());
+      row.innerHTML = `<span style="font-size: 11px; color: #4ade80; display: flex; align-items: center; gap: 5px;">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Voice enabled — Cmd+Shift+Space to talk
+      </span>`;
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        row.innerHTML = `<span style="font-size: 11px; color: #f87171;">Permission denied — allow mic in Chrome settings</span>`;
+      } else {
+        btn.textContent = 'Enable Voice (Cmd+Shift+Space)';
+        btn.disabled = false;
+      }
+    }
+  });
+}
+
+initVoiceButton();
+
 // --- Live time-on-site counter ---
 let liveTimerInterval = null;
 

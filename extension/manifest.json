@@ -15,8 +15,7 @@
     "sidePanel",
     "scripting",
     "windows",
-    "offscreen",
-    "microphone"
+    "offscreen"
   ],
   "commands": {
     "push-to-talk": {
