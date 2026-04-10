@@ -5,7 +5,8 @@ import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
 import { getIntelligenceContext } from './intelligence';
-import { MODEL_PRO, MODEL_FLASH } from './models';
+import { MODEL_PRO, MODEL_FLASH, MODEL_THINKING } from './models';
+
 
 let genAI: GoogleGenAI | null = null;
 let vertexFallbackAI: GoogleGenAI | null = null;
@@ -79,9 +80,11 @@ function getVertexFallbackAI(): GoogleGenAI | null {
     return vertexFallbackAI;
 }
 
-// Stable fallback when preview models are overloaded (503)
-const FALLBACK_FLASH = 'gemini-2.5-flash';
-const FALLBACK_PRO = 'gemini-2.5-pro';
+// Stable Vertex fallbacks when preview models are overloaded (503)
+const FALLBACK_FLASH   = 'gemini-2.5-flash';
+const FALLBACK_PRO     = 'gemini-2.5-pro';
+const FALLBACK_THINKING = 'gemini-2.5-pro'; // best stable thinking-capable model on Vertex
+
 
 /**
  * Returns true for errors that mean "model overloaded / unreachable" —
@@ -107,8 +110,11 @@ function isOverloadedError(err: any): boolean {
 }
 
 function fallbackModel(originalModel: string): string {
+    // Thinking-tier → the most capable stable model (retains reasoning quality on Vertex)
+    if (originalModel.includes('thinking') || originalModel === MODEL_THINKING) return FALLBACK_THINKING;
     return originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
 }
+
 
 /**
  * Wrapper around ai.models.generateContent with exponential backoff + model fallback.
@@ -216,7 +222,7 @@ export async function classifyActivityBatch(
                 if (cachedDomain) {
                     const isUserConfirmed = typeof cachedDomain.ai_reasoning === 'string' &&
                         (cachedDomain.ai_reasoning.startsWith('user confirm') ||
-                         cachedDomain.ai_reasoning.startsWith('user correct'));
+                            cachedDomain.ai_reasoning.startsWith('user correct'));
                     const meetsThreshold = hasSessionContext
                         ? (isUserConfirmed && cachedDomain.confidence >= 0.9) // strict: user override only
                         : cachedDomain.confidence >= 0.7;                    // normal: any cached result
@@ -704,39 +710,39 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
     // For YouTube and ambiguous sites, use AI
     const ai = getGenAI();
     try {
-            // FLASH: Fast context processing for real-time nudge
-            const nudgeContext = getSmartNudgeContext();
-            const userContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
+        // FLASH: Fast context processing for real-time nudge
+        const nudgeContext = getSmartNudgeContext();
+        const userContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
 
-            // Phase 9: Inject active tasks into nudge prompt
-            let taskContext = '';
-            try {
-                const activeTasks = db.prepare(`
+        // Phase 9: Inject active tasks into nudge prompt
+        let taskContext = '';
+        try {
+            const activeTasks = db.prepare(`
                     SELECT title, status FROM tasks
                     WHERE status IN ('todo', 'doing')
                     ORDER BY status DESC
                 `).all() as { title: string; status: string }[];
-                if (activeTasks.length > 0) {
-                    taskContext = "\nUSER'S ACTIVE TASKS (if browsing is related to these, do NOT nudge):\n" +
-                        activeTasks.map(t => `- [${t.status.toUpperCase()}] ${t.title}`).join('\n');
-                }
-            } catch { /* tasks table may not exist */ }
+            if (activeTasks.length > 0) {
+                taskContext = "\nUSER'S ACTIVE TASKS (if browsing is related to these, do NOT nudge):\n" +
+                    activeTasks.map(t => `- [${t.status.toUpperCase()}] ${t.title}`).join('\n');
+            }
+        } catch { /* tasks table may not exist */ }
 
-            let intentionsContext = '';
-            try {
-                const intentions = db.prepare(`SELECT id, if_condition, then_action FROM intentions WHERE active = 1`).all() as any[];
-                if (intentions.length > 0) {
-                    intentionsContext = "\nUSER'S IMPLEMENTATION INTENTIONS (If one of these 'IF' conditions matches the current situation, you MUST use its 'THEN' action as the nudge reason):\n" +
-                        intentions.map(i => `- IF ${i.if_condition}, THEN ${i.then_action} (Intention ID: ${i.id})`).join('\n');
-                }
-            } catch { /* intentions table may not exist */ }
+        let intentionsContext = '';
+        try {
+            const intentions = db.prepare(`SELECT id, if_condition, then_action FROM intentions WHERE active = 1`).all() as any[];
+            if (intentions.length > 0) {
+                intentionsContext = "\nUSER'S IMPLEMENTATION INTENTIONS (If one of these 'IF' conditions matches the current situation, you MUST use its 'THEN' action as the nudge reason):\n" +
+                    intentions.map(i => `- IF ${i.if_condition}, THEN ${i.then_action} (Intention ID: ${i.id})`).join('\n');
+            }
+        } catch { /* intentions table may not exist */ }
 
-            // Focus session context
-            const focusContext = focusGoal
-                ? `\n\n⚠️ FOCUS SESSION ACTIVE: The user is in a focus session for "${focusGoal}". They should NOT be on ${currentDomain} unless it's directly relevant to this goal. Be assertive — they chose to focus.`
-                : '';
+        // Focus session context
+        const focusContext = focusGoal
+            ? `\n\n⚠️ FOCUS SESSION ACTIVE: The user is in a focus session for "${focusGoal}". They should NOT be on ${currentDomain} unless it's directly relevant to this goal. Be assertive — they chose to focus.`
+            : '';
 
-            const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
+        const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
 ${userContext}
@@ -750,30 +756,30 @@ Use their behavioral profile to decide. If this site matches their known distrac
 If an Implementation Intention matches their current distraction (e.g., they are on social media and have an intention for that), use that intention's THEN action as the nudge reason and include the Intention ID.
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
-            const result = await generateWithFallback(ai, {
-                model: MODEL_FLASH,
-                contents: prompt,
-                config: {
-                    responseMimeType: 'application/json'
-                }
-            });
-            const text = (result.text || '').trim();
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (parsed.nudge) {
-                    if (parsed.triggered_intention_id) {
-                        try {
-                            db.prepare('UPDATE intentions SET times_triggered = times_triggered + 1 WHERE id = ?').run(parsed.triggered_intention_id);
-                        } catch { /* ignore */ }
-                    }
-                    return {
-                        shouldNudge: true,
-                        message: `⚠️ ${parsed.reason} (${minutesOnSite}min elapsed)`,
-                    };
-                }
-                return { shouldNudge: false, message: '' };
+        const result = await generateWithFallback(ai, {
+            model: MODEL_FLASH,
+            contents: prompt,
+            config: {
+                responseMimeType: 'application/json'
             }
+        });
+        const text = (result.text || '').trim();
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.nudge) {
+                if (parsed.triggered_intention_id) {
+                    try {
+                        db.prepare('UPDATE intentions SET times_triggered = times_triggered + 1 WHERE id = ?').run(parsed.triggered_intention_id);
+                    } catch { /* ignore */ }
+                }
+                return {
+                    shouldNudge: true,
+                    message: `⚠️ ${parsed.reason} (${minutesOnSite}min elapsed)`,
+                };
+            }
+            return { shouldNudge: false, message: '' };
+        }
     } catch (err) {
         console.error('AI nudge check failed:', err);
         throw err;

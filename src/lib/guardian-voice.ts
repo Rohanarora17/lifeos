@@ -1,7 +1,7 @@
 import { getDayBriefing } from './longitudinal-engine';
 import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning, sanitizeTranscriptForCloud } from './cloud-privacy';
-import { MODEL_FLASH } from './models';
+import { MODEL_THINKING } from './models';
 import { speak } from './tts';
 import {
   adjudicateOverride,
@@ -111,28 +111,28 @@ interface ProcessVoiceCommandInput {
 
 interface VoiceActionResult {
   type:
-    | 'session_started'
-    | 'session_adjusted'
-    | 'session_ended'
-    | 'session_paused'
-    | 'session_resumed'
-    | 'habit_logged'
-    | 'habit_created'
-    | 'habit_deleted'
-    | 'task_created'
-    | 'task_updated'
-    | 'task_deleted'
-    | 'goal_created'
-    | 'goal_updated'
-    | 'tasks_cleared'
-    | 'goals_archived'
-    | 'session_scheduled'
-    | 'guardian_status'
-    | 'override_decision'
-    | 'day_briefing'
-    | 'deep_analysis'
-    | 'tutor_response'
-    | 'intent_only';
+  | 'session_started'
+  | 'session_adjusted'
+  | 'session_ended'
+  | 'session_paused'
+  | 'session_resumed'
+  | 'habit_logged'
+  | 'habit_created'
+  | 'habit_deleted'
+  | 'task_created'
+  | 'task_updated'
+  | 'task_deleted'
+  | 'goal_created'
+  | 'goal_updated'
+  | 'tasks_cleared'
+  | 'goals_archived'
+  | 'session_scheduled'
+  | 'guardian_status'
+  | 'override_decision'
+  | 'day_briefing'
+  | 'deep_analysis'
+  | 'tutor_response'
+  | 'intent_only';
   transcript: string;
   intent: ParsedVoiceIntent;
   session?: unknown;
@@ -419,17 +419,17 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
     const liveSession = getActiveGuardianSession();
     const sessionBlock = liveSession
       ? [
-          'ACTIVE SESSION:',
-          `  topic:     "${liveSession.targetTitle}"`,
-          `  elapsed:   ${Math.max(0, Math.round((Date.now() - liveSession.startedAt) / 60_000))} min`,
-          `  remaining: ${Math.max(0, liveSession.durationMinutes - Math.round((Date.now() - liveSession.startedAt) / 60_000))} min (of ${liveSession.durationMinutes} planned)`,
-          `  focus:     ${liveSession.focusScoreHistory.at(-1) ?? 100}/100`,
-          `  state:     ${liveSession.state}`,
-        ].join('\n')
+        'ACTIVE SESSION:',
+        `  topic:     "${liveSession.targetTitle}"`,
+        `  elapsed:   ${Math.max(0, Math.round((Date.now() - liveSession.startedAt) / 60_000))} min`,
+        `  remaining: ${Math.max(0, liveSession.durationMinutes - Math.round((Date.now() - liveSession.startedAt) / 60_000))} min (of ${liveSession.durationMinutes} planned)`,
+        `  focus:     ${liveSession.focusScoreHistory.at(-1) ?? 100}/100`,
+        `  state:     ${liveSession.state}`,
+      ].join('\n')
       : 'ACTIVE SESSION: none';
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_THINKING,
       contents: `You are the LifeOS Guardian — an extremely intelligent, conversational personal AI assistant that manages every aspect of a person's productivity, habits, tasks, goals and self-improvement. You understand multi-turn voice conversations and always reason from full context.
 
 CURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs}, ISO: ${nowIso})
@@ -597,7 +597,7 @@ async function runTutorMode(
     ].join('\n');
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_THINKING,
       contents,
       config: {
         systemInstruction,
@@ -646,7 +646,7 @@ async function runFreeformConversation(
     ].join('\n');
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_THINKING,
       contents,
       config: {
         systemInstruction,
@@ -698,7 +698,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     touchIntelligence('voice_turns');
     // Extract semantic memory from recent voice turns (background)
     const recentTurns = (voiceHistory.get(hKey) ?? []).slice(-20).map(t => ({ role: t.role, text: t.text }));
-    extractMemoryFromVoice(recentTurns, activeSessionId ?? hKey).catch(() => {});
+    extractMemoryFromVoice(recentTurns, activeSessionId ?? hKey).catch(() => { });
   }
 
   const intent = await parseGuardianVoiceIntent(transcript, hKey);
@@ -1058,7 +1058,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       ).run(goalTitle, safeCategory, intent.goalDeadline ?? null);
       const goalId = Number(result.lastInsertRowid);
       // Auto-link existing tasks to this goal
-      try { const { autoLinkAllUnlinkedTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => {}); } catch { /* non-fatal */ }
+      try { const { autoLinkAllUnlinkedTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => { }); } catch { /* non-fatal */ }
       const deadlineStr = intent.goalDeadline ? `, deadline ${intent.goalDeadline}` : '';
       const response = `Goal created: "${goalTitle}"${deadlineStr}. What tasks should I add for it?`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
@@ -1088,7 +1088,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       ).run(taskTitle, safePriority, intent.taskDueDate ?? null);
       const taskId = Number(result.lastInsertRowid);
       // Background: auto-link to goal and re-rank
-      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => {}); } catch { /* non-fatal */ }
+      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* non-fatal */ }
       try { const { triggerPrioritize } = require('./task-priority-ranker') as typeof import('./task-priority-ranker'); triggerPrioritize(); } catch { /* non-fatal */ }
 
       const dueStr = intent.taskDueDate ? `, due ${intent.taskDueDate}` : '';
@@ -1190,7 +1190,7 @@ COACHING INSIGHTS: ${profile.coachingInsights?.join('; ') || 'none'}
 
 RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach.`;
 
-      const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: analysisPrompt, config: { temperature: 0.3 } });
+      const result = await generateWithFallback(ai, { model: MODEL_THINKING, contents: analysisPrompt, config: { temperature: 1 } });
       const response = (result.text || '').trim().replace(/[•\*\-] /g, '').replace(/\n+/g, ' ').slice(0, 300);
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
