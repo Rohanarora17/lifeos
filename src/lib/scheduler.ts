@@ -13,6 +13,7 @@ import { sendMorningCheckin, sendEveningReflection } from './checkin';
 import { captureAndAnalyze } from './screenshot-pipeline';
 import { runContinuityCheck } from './continuity-guardian';
 import { sendWeeklyReckoning } from './weekly-reckoning';
+import { sendOpenLoopsAudit, sendMonthlyPatternLetter } from './open-loops';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -404,6 +405,20 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         const dayOfWeek = new Date().getDay(); // 0 = Sunday
         if (dayOfWeek !== 0) return;
         await sendWeeklyReckoning();
+    });
+
+    // Weekly open loops audit — Monday morning at 08:15
+    registerDailyJob('open_loops_audit', '08:15', async () => {
+        const dayOfWeek = new Date().getDay(); // 1 = Monday
+        if (dayOfWeek !== 1) return;
+        await sendOpenLoopsAudit();
+    });
+
+    // Monthly pattern letter — 1st of each month at 19:00
+    registerDailyJob('monthly_pattern_letter', '19:00', async () => {
+        const dayOfMonth = new Date().getDate();
+        if (dayOfMonth !== 1) return;
+        await sendMonthlyPatternLetter();
     });
 
     console.log(`[Scheduler] ${jobs.size} jobs registered`);
