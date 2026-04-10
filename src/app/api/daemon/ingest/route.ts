@@ -51,16 +51,41 @@ async function handleExtensionScreenshot(request: Request): Promise<Response> {
   try {
     const form = await request.formData();
     const screenshotBlob = form.get('screenshot') as Blob | null;
-    const url = form.get('url') as string | null;
-    const title = form.get('title') as string | null;
-    const sessionId = form.get('sessionId') as string | null;
+    const source = (form.get('source') as string | null) || 'extension_screenshot';
 
+    // macbook_daemon: has app/title metadata + optional screenshot
+    if (source === 'macbook_daemon') {
+      const app = (form.get('app') as string | null) || '';
+      const title = (form.get('title') as string | null) || '';
+      const idleSeconds = parseInt((form.get('idle_seconds') as string | null) || '0', 10);
+      const sessionId = (form.get('sessionId') as string | null);
+
+      if (screenshotBlob && screenshotBlob.size > 0) {
+        // Full screenshot + Gemini Vision analysis
+        void analyzeExtensionScreenshot(screenshotBlob, app, title, sessionId, 'macbook_daemon');
+      } else {
+        // No screenshot — store app/title as a lightweight observation
+        const { getDb } = await import('@/lib/db');
+        const db = getDb();
+        const category = classifyApp(app, title, idleSeconds);
+        db.prepare(`
+          INSERT INTO screen_observations
+            (observed_at, source, app, window_title, activity, category, attention_quality, productive_for_goals, confidence)
+          VALUES (datetime('now','localtime'), 'macbook_daemon', ?, ?, ?, ?, ?, 0, 0.6)
+        `).run(app, title, `${app}: ${title}`.slice(0, 200), category, idleSeconds > 300 ? 'idle' : 'focused');
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    // Extension screenshot (browser tab capture)
     if (!screenshotBlob) {
       return NextResponse.json({ error: 'Missing screenshot' }, { status: 400 });
     }
+    const url = (form.get('url') as string | null) || '';
+    const title = (form.get('title') as string | null) || '';
+    const sessionId = (form.get('sessionId') as string | null);
 
-    // Fire async Gemini Vision analysis — don't block response
-    void analyzeExtensionScreenshot(screenshotBlob, url || '', title || '', sessionId);
+    void analyzeExtensionScreenshot(screenshotBlob, url, title, sessionId, source);
 
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -69,11 +94,11 @@ async function handleExtensionScreenshot(request: Request): Promise<Response> {
   }
 }
 
-async function analyzeExtensionScreenshot(blob: Blob, url: string, title: string, sessionId: string | null) {
+async function analyzeExtensionScreenshot(blob: Blob, url: string, title: string, sessionId: string | null, source = 'extension_screenshot') {
   try {
     const { captureAndAnalyzeBuffer } = await import('@/lib/screenshot-pipeline');
     const imageBuffer = Buffer.from(await blob.arrayBuffer());
-    await captureAndAnalyzeBuffer(imageBuffer, { url, title, sessionId, source: 'extension_screenshot' });
+    await captureAndAnalyzeBuffer(imageBuffer, { url, title, sessionId, source });
   } catch (err) {
     console.error('[Extension Screenshot] Analysis failed:', err);
   }
