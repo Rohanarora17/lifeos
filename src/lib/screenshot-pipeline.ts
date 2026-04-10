@@ -138,22 +138,43 @@ Categories:
 
 Return ONLY the JSON. No markdown, no explanation.`;
 
-    const result = await genai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
-          ],
-        },
-      ],
-    });
+    const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    const contents = [
+      {
+        role: 'user' as const,
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+        ],
+      },
+    ];
 
-    const text = result.text?.trim() ?? '';
-    const parsed = JSON.parse(text) as ScreenAnalysis;
-    return parsed;
+    let lastErr: unknown;
+    for (const model of models) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await genai.models.generateContent({ model, contents });
+          const text = result.text?.trim() ?? '';
+          const parsed = JSON.parse(text) as ScreenAnalysis;
+          return parsed;
+        } catch (err: unknown) {
+          lastErr = err;
+          const msg = String(err);
+          const is503 = msg.includes('503') || msg.toLowerCase().includes('high demand') || msg.toLowerCase().includes('overloaded');
+          if (is503 && attempt < 2) {
+            const delay = (attempt + 1) * 3000;
+            console.warn(`[Screenshot] ${model} 503, retry in ${delay}ms (attempt ${attempt + 1}/3)`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          // Non-503 or exhausted retries — try next model
+          console.warn(`[Screenshot] ${model} failed: ${msg}`);
+          break;
+        }
+      }
+    }
+    console.error('[Screenshot] All models failed:', lastErr);
+    return null;
   } catch (err) {
     console.error('[Screenshot] Gemini Vision analysis failed:', err);
     return null;
