@@ -8,9 +8,12 @@ import {
   adjustGuardianSessionDuration,
   createSoftWatchCommitment,
   endGuardianSession,
+  getActiveGuardianSession,
   getGuardianContext,
   getGuardianSession,
   listGuardianSessions,
+  pauseGuardianSession,
+  resumeGuardianSession,
   startGuardianSession,
   tickGuardianSession,
 } from './guardian-runtime';
@@ -26,6 +29,10 @@ type VoiceAction =
   | 'start_session'
   | 'adjust_session'
   | 'end_session'
+  | 'pause_session'
+  | 'resume_session'
+  | 'log_habit'
+  | 'create_task'
   | 'schedule_session'
   | 'guardian_status'
   | 'request_override'
@@ -43,6 +50,11 @@ interface ParsedVoiceIntent {
   requestedMinutes?: number;
   responseText?: string;
   intendedStartAt?: number;
+  // new fields
+  habitName?: string;       // for log_habit
+  taskTitle?: string;       // for create_task
+  taskPriority?: string;    // for create_task
+  taskDueDate?: string;     // for create_task (YYYY-MM-DD or null)
 }
 
 interface ProcessVoiceCommandInput {
@@ -55,6 +67,10 @@ interface VoiceActionResult {
     | 'session_started'
     | 'session_adjusted'
     | 'session_ended'
+    | 'session_paused'
+    | 'session_resumed'
+    | 'habit_logged'
+    | 'task_created'
     | 'session_scheduled'
     | 'guardian_status'
     | 'override_decision'
@@ -252,6 +268,26 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
     };
   }
 
+  // Pause / resume (session-aware fallback)
+  if (/(taking a break|take a break|pause session|pause|brb|stepping out|step away)/.test(lower)) {
+    return { action: 'pause_session' };
+  }
+  if (/(i'?m back|i am back|resume|let'?s continue|back at it|back to work|continuing)/.test(lower)) {
+    return { action: 'resume_session' };
+  }
+
+  // Log habit
+  const habitLogMatch = lower.match(/(?:log|mark|done with|completed?|finished?)\s+(?:my\s+)?(.+?)(?:\s+habit)?(?:\s+today)?$/);
+  if (habitLogMatch && /(log|mark|done with|completed?|finished?)/.test(lower)) {
+    return { action: 'log_habit', habitName: habitLogMatch[1].trim() };
+  }
+
+  // Create task
+  const taskMatch = lower.match(/(?:add task|create task|note:|remind me to|add to my list)\s*[:\.\-]?\s*(.+)/);
+  if (taskMatch) {
+    return { action: 'create_task', taskTitle: taskMatch[1].trim(), taskPriority: 'medium' };
+  }
+
   return { action: 'unknown' };
 }
 
@@ -277,12 +313,26 @@ async function parseGuardianVoiceIntent(transcript: string, historyKey: string):
     // Recent conversation context — so "do that again" or "change to 90 minutes" resolves correctly
     const recentContext = getRecentContextText(historyKey);
 
+    // Live session state — critical for adjust_session vs start_session disambiguation
+    const liveSession = getActiveGuardianSession();
+    const sessionBlock = liveSession
+      ? [
+          'ACTIVE SESSION:',
+          `  topic:     "${liveSession.targetTitle}"`,
+          `  elapsed:   ${Math.max(0, Math.round((Date.now() - liveSession.startedAt) / 60_000))} min`,
+          `  remaining: ${Math.max(0, liveSession.durationMinutes - Math.round((Date.now() - liveSession.startedAt) / 60_000))} min (of ${liveSession.durationMinutes} planned)`,
+          `  focus:     ${liveSession.focusScoreHistory.at(-1) ?? 100}/100`,
+          `  state:     ${liveSession.state}`,
+        ].join('\n')
+      : 'ACTIVE SESSION: none';
+
     const result = await generateWithFallback(ai, {
       model: MODEL_FLASH,
       contents: `You are the LifeOS Guardian intent parser. Extract structured intent from the user's voice transcript.
 
 CURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs}, ISO: ${nowIso})
 TIMEZONE: Asia/Kolkata (IST, UTC+5:30)
+${sessionBlock}
 ${contextBlock}
 ${recentContext}
 
@@ -297,20 +347,28 @@ RULES:
 - intendedStartAt: Unix ms. 0 if not specified.
 - responseText: only for "tutor" or "unknown" actions — a brief direct answer.
 - If the transcript references something from RECENT CONVERSATION (e.g. "that topic", "same duration", "remind me again"), resolve it using context.
-- adjust_session: use when the user wants to CHANGE the duration/topic of the CURRENT active session (e.g. "make it 25 minutes", "reduce to 30 mins", "change the topic to algorithms"). Do NOT use start_session in this case. Set durationMinutes to the new target duration.
-- end_session: use when the user wants to STOP/END the current session (e.g. "stop the session", "end session", "we're done", "cancel session").
-- start_session: ONLY use when there is NO active session, or the user explicitly asks to start a brand new separate session.
+- adjust_session: use when the user wants to CHANGE the duration/topic of the CURRENT active session (e.g. "make it 25 minutes", "reduce to 30 mins"). Set durationMinutes to the new target total.
+- end_session: use when the user wants to STOP/END the current session (e.g. "stop the session", "end session", "we're done", "cancel").
+- pause_session: use when the user is stepping away temporarily (e.g. "taking a break", "pause", "brb", "stepping out").
+- resume_session: use when the user returns from a break (e.g. "I'm back", "resume", "let's continue", "back at it").
+- log_habit: use when the user says they completed a habit (e.g. "log workout", "mark meditation done", "done with reading"). Set habitName to the matched habit name.
+- create_task: use when the user wants to add a task (e.g. "add task review the PR", "remind me to call mum", "note: submit assignment"). Set taskTitle, taskPriority (low/medium/high, default medium), taskDueDate (YYYY-MM-DD or null).
+- start_session: ONLY use when ACTIVE SESSION is "none" or the user explicitly requests a brand new separate session.
 
 OUTPUT JSON only, no markdown:
 {
-  "action": "start_session" | "adjust_session" | "end_session" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
-  "topic": "clean topic string, or empty",
+  "action": "start_session" | "adjust_session" | "end_session" | "pause_session" | "resume_session" | "log_habit" | "create_task" | "schedule_session" | "guardian_status" | "request_override" | "day_briefing" | "tutor" | "unknown",
+  "topic": "clean topic string or empty",
   "durationMinutes": 60,
   "mood": "high" | "medium" | "low" | null,
-  "overrideTarget": "url or domain string, or empty",
-  "overrideReason": "reason string, or empty",
+  "overrideTarget": "url or domain string or empty",
+  "overrideReason": "reason string or empty",
   "requestedMinutes": 10,
   "intendedStartAt": 0,
+  "habitName": "exact habit name or best match or empty",
+  "taskTitle": "clean task title or empty",
+  "taskPriority": "low" | "medium" | "high",
+  "taskDueDate": "YYYY-MM-DD or null",
   "responseText": ""
 }`,
       config: {
@@ -332,6 +390,10 @@ OUTPUT JSON only, no markdown:
       requestedMinutes: typeof parsed.requestedMinutes === 'number' ? parsed.requestedMinutes : undefined,
       intendedStartAt: typeof parsed.intendedStartAt === 'number' && parsed.intendedStartAt > 0 ? parsed.intendedStartAt : undefined,
       responseText: parsed.responseText || undefined,
+      habitName: (parsed as Record<string, string>).habitName || undefined,
+      taskTitle: (parsed as Record<string, string>).taskTitle || undefined,
+      taskPriority: (parsed as Record<string, string>).taskPriority || undefined,
+      taskDueDate: (parsed as Record<string, string>).taskDueDate || undefined,
     };
   } catch {
     return heuristicParseVoiceIntent(transcript);
@@ -600,6 +662,109 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_ended', transcript, intent, session: ended, responseText: response };
+  }
+
+  // ── pause_session ─────────────────────────────────────────────────────────
+
+  if (intent.action === 'pause_session') {
+    if (!activeSessionId) {
+      const response = 'No active session to pause.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    pauseGuardianSession(activeSessionId);
+    const response = 'Session paused. Take your time — I\'ll be here when you\'re back.';
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_paused', transcript, intent, responseText: response };
+  }
+
+  // ── resume_session ────────────────────────────────────────────────────────
+
+  if (intent.action === 'resume_session') {
+    if (!activeSessionId) {
+      const response = 'No paused session found. Want to start a new one?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    resumeGuardianSession(activeSessionId);
+    const session = getGuardianSession(activeSessionId);
+    const remaining = session ? Math.max(0, session.durationMinutes - Math.round((Date.now() - session.startedAt) / 60_000)) : 0;
+    const response = `Welcome back. ${remaining} minutes remaining on ${session?.targetTitle || 'your session'}. Lock in.`;
+    await maybeSpeakVoiceResponse(activeSessionId, response);
+    addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_resumed', transcript, intent, responseText: response };
+  }
+
+  // ── log_habit ─────────────────────────────────────────────────────────────
+
+  if (intent.action === 'log_habit') {
+    const habitName = intent.habitName?.trim();
+    if (!habitName) {
+      const response = 'Which habit should I log? Tell me the name.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    try {
+      const db = getDb();
+      const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+      const habit = db.prepare(
+        `SELECT id, name FROM habits WHERE archived = 0 AND LOWER(name) LIKE ? LIMIT 1`
+      ).get(`%${habitName.toLowerCase()}%`) as { id: number; name: string } | undefined;
+
+      if (!habit) {
+        const response = `I couldn't find a habit matching "${habitName}". Check the name and try again.`;
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+        return { type: 'intent_only', transcript, intent, responseText: response };
+      }
+
+      db.prepare(`
+        INSERT INTO habit_checkins (habit_id, date, completed, value, source)
+        VALUES (?, ?, 1, NULL, 'voice')
+        ON CONFLICT(habit_id, date) DO UPDATE SET completed = 1, source = 'voice'
+      `).run(habit.id, today);
+
+      const response = `Logged ${habit.name}. Keep the streak going.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'habit_logged', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Failed to log the habit. Try again in a moment.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── create_task ───────────────────────────────────────────────────────────
+
+  if (intent.action === 'create_task') {
+    const taskTitle = intent.taskTitle?.trim();
+    if (!taskTitle) {
+      const response = 'What should I call the task?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    try {
+      const db = getDb();
+      const safePriority = ['low', 'medium', 'high'].includes(intent.taskPriority ?? '') ? intent.taskPriority : 'medium';
+      const result = db.prepare(
+        `INSERT INTO tasks (title, status, priority, task_type, due_date) VALUES (?, 'todo', ?, 'task', ?)`
+      ).run(taskTitle, safePriority, intent.taskDueDate ?? null);
+      const taskId = Number(result.lastInsertRowid);
+      // Background: auto-link to goal and re-rank
+      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => {}); } catch { /* non-fatal */ }
+      try { const { triggerPrioritize } = require('./task-priority-ranker') as typeof import('./task-priority-ranker'); triggerPrioritize(); } catch { /* non-fatal */ }
+
+      const dueStr = intent.taskDueDate ? `, due ${intent.taskDueDate}` : '';
+      const response = `Task added: "${taskTitle}"${dueStr}.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'task_created', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Failed to create the task. Try again.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
   }
 
   // ── start_session ────────────────────────────────────────────────────────

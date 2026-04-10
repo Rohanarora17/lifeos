@@ -13,15 +13,17 @@ import {
     formatCalibrationStatus,
     buildTaskChipsKeyboard,
 } from './telegram';
-import { startGuardianSession, endGuardianSession, getActiveGuardianSession } from './guardian-runtime';
+import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adjustGuardianSessionDuration } from './guardian-runtime';
 import { getMemoryContext } from './memory';
 import { getDb, getSetting, setSetting } from './db';
+import { getIntelligenceContext } from './intelligence';
 
 const TELEGRAM_SYSTEM_PROMPT = `You are Jarvis, the LifeOS AI guardian assistant on Telegram.
 You must be concise, parse user intents into structured actions.
 
 AVAILABLE ACTIONS:
 - "START_SESSION": Start a focus session. Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
+- "ADJUST_SESSION": Change duration or topic of the CURRENT active session. Payload: durationMinutes (new total), topic (new subject if changing).
 - "END_SESSION": End the current session.
 - "LOG_HABIT": Log a habit. Payload: habitTitle.
 - "LOG_STANDUP": Set today's goal + mood. Payload: goal (string), mood (high/medium/low).
@@ -395,11 +397,21 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     const memoryCtx = getMemoryContext(3);
     const activeSession = getActiveGuardianSession();
-    const contextBlock = `
---- CURRENT STATE ---
-ACTIVE SESSION: ${activeSession ? `YES (${activeSession.targetTitle}, ${Math.floor((Date.now() - activeSession.startedAt) / 60000)}m elapsed)` : 'NO'}
-USER MEMORY: ${memoryCtx || 'None'}
----------------------`;
+
+    // Build the same rich context block the voice parser uses
+    const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true, includeThresholds: false });
+    const sessionBlock = activeSession
+      ? [
+          'ACTIVE SESSION:',
+          `  topic:     "${activeSession.targetTitle}"`,
+          `  elapsed:   ${Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000))} min`,
+          `  remaining: ${Math.max(0, activeSession.durationMinutes - Math.round((Date.now() - activeSession.startedAt) / 60_000))} min (of ${activeSession.durationMinutes} planned)`,
+          `  focus:     ${activeSession.focusScoreHistory?.at(-1) ?? 100}/100`,
+          `  state:     ${activeSession.state}`,
+        ].join('\n')
+      : 'ACTIVE SESSION: none';
+
+    const contextBlock = `--- CURRENT STATE ---\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
 
     try {
         const response = await generateWithFallback(ai, {
@@ -436,7 +448,13 @@ export async function executeAction(
 
         case 'START_SESSION': {
             if (session) {
-                await sendTelegram(`⚠️ Already in session: <b>${session.targetTitle}</b>. End it first.`, 'HTML', SESSION_START_KEYBOARD);
+                // Active session exists — offer to adjust instead of hard-blocking
+                const elapsed = Math.max(0, Math.floor((Date.now() - session.startedAt) / 60000));
+                const remaining = Math.max(0, session.durationMinutes - elapsed);
+                await sendTelegram(
+                    `Session already active: <b>${session.targetTitle}</b> (${elapsed}m elapsed, ${remaining}m left).\n\nDid you mean to adjust it? Use <code>/adjust &lt;minutes&gt;</code> or end it first.`,
+                    'HTML', SESSION_START_KEYBOARD
+                );
                 break;
             }
             const title = (payload.targetTitle as string | undefined) || 'General Focus';
@@ -445,6 +463,31 @@ export async function executeAction(
             const mood = (moodRaw === 'high' || moodRaw === 'medium' || moodRaw === 'low') ? moodRaw : undefined;
             startGuardianSession({ topic: title, durationMinutes: duration, mood, source: 'api' });
             await sendTelegram(`🛡️ ${replyText || `Session started: <b>${title}</b> for ${duration}m`}`, 'HTML', SESSION_START_KEYBOARD);
+            break;
+        }
+
+        case 'ADJUST_SESSION': {
+            if (!session) {
+                await sendTelegram('No active session to adjust.', 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
+            const newDuration = Number(payload.durationMinutes);
+            if (!newDuration || newDuration < 1) {
+                await sendTelegram('What duration should I change the session to? (in minutes)', 'HTML');
+                break;
+            }
+            const { adjustGuardianSessionDuration } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+            const adjusted = adjustGuardianSessionDuration(session.sessionId, newDuration);
+            if (!adjusted) {
+                await sendTelegram('Could not find the session to adjust.', 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
+            const adjElapsed = Math.max(0, Math.round((Date.now() - adjusted.startedAt) / 60_000));
+            const adjRemaining = Math.max(0, newDuration - adjElapsed);
+            await sendTelegram(
+                `✅ Session adjusted to <b>${newDuration} min</b>.\n⏱️ ${adjElapsed}m elapsed · ${adjRemaining}m remaining`,
+                'HTML', SESSION_START_KEYBOARD
+            );
             break;
         }
 
