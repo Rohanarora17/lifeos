@@ -164,15 +164,29 @@ function getHistoryAsContents(key: string, limit = 10): Array<{ role: string; pa
 
 /**
  * Return a human-readable recent context string for the intent parser prompt.
- * Uses last 3 exchanges (up to 6 turns).
+ * Merges the last 3 session turns + last 4 TG turns for cross-channel continuity.
  */
 function getRecentContextText(key: string): string {
-  const history = voiceHistory.get(key) ?? [];
-  if (!history.length) return '';
+  const sessionHistory = voiceHistory.get(key) ?? [];
+  const tgHistory = voiceHistory.get('telegram') ?? [];
 
-  const recent = history.slice(-6);
-  const lines = recent.map(t => `${t.role === 'user' ? 'User' : 'Guardian'}: ${t.text}`);
-  return `\nRECENT CONVERSATION:\n${lines.join('\n')}`;
+  if (!sessionHistory.length && !tgHistory.length) return '';
+
+  const lines: string[] = [];
+
+  // Recent TG turns (last 4) — prefixed so parser knows channel
+  if (tgHistory.length) {
+    const recentTg = tgHistory.slice(-4);
+    recentTg.forEach(t => lines.push(`[TG] ${t.role === 'user' ? 'User' : 'Jarvis'}: ${t.text}`));
+  }
+
+  // Recent voice turns (last 6)
+  if (sessionHistory.length) {
+    const recentSession = sessionHistory.slice(-6);
+    recentSession.forEach(t => lines.push(`${t.role === 'user' ? 'User' : 'Guardian'}: ${t.text}`));
+  }
+
+  return lines.length ? `\nRECENT CONVERSATION:\n${lines.join('\n')}` : '';
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -548,6 +562,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   // Load history from DB on first access for this session key
   loadVoiceHistory(hKey);
+  loadVoiceHistory('telegram'); // cross-channel: make TG context available to parser
 
   // Record this user turn before parsing (so the parser can see it in context for the NEXT call)
   addVoiceTurn(hKey, { role: 'user', text: transcript, timestamp: Date.now() });

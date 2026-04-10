@@ -40,11 +40,29 @@ function getChromeRuntime(): ChromeRuntime | undefined {
     return (window as Window & typeof globalThis & { chrome?: { runtime?: ChromeRuntime } }).chrome?.runtime;
 }
 
+interface InsightsData {
+    session: null | {
+        topic: string;
+        elapsed: number;
+        remaining: number;
+        focusScore: number;
+        state: string;
+    };
+    profile: {
+        coachingInsights: string[];
+        nextBestFocusWindow: string | null;
+        focusTrend: string;
+        preferredCoachingStyle: string | null;
+    };
+    habits: { completionRate: number | null };
+}
+
 export default function ExtensionSidebar() {
     const { session, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
     const [tasks, setTasks] = useState<Task[]>([]);
     const [goals, setGoals] = useState<Goal[]>([]);
     const [stats, setStats] = useState<DashStats | null>(null);
+    const [insights, setInsights] = useState<InsightsData | null>(null);
     const [focusTarget, setFocusTarget] = useState('');
     const [focusDuration, setFocusDuration] = useState(60);
 
@@ -62,12 +80,14 @@ export default function ExtensionSidebar() {
     // Poll tasks/goals/stats (separate from session — handled by hook)
     const fetchContext = useCallback(async () => {
         try {
-            const [contextRes, dashRes] = await Promise.all([
+            const [contextRes, dashRes, insightsRes] = await Promise.all([
                 fetch('/api/guardian/state'),
                 fetch('/api/dashboard'),
+                fetch('/api/guardian/insights'),
             ]);
             const contextData = await contextRes.json();
             const dashData = await dashRes.json();
+            const insightsData = await insightsRes.json();
             if (contextData.activeTasks) setTasks(contextData.activeTasks);
             if (contextData.activeGoals) setGoals(contextData.activeGoals);
             if (dashData.today) {
@@ -78,6 +98,7 @@ export default function ExtensionSidebar() {
                     streak: dashData.today.streak || 0,
                 });
             }
+            if (!insightsData.error) setInsights(insightsData as InsightsData);
         } catch { }
     }, []);
 
@@ -314,6 +335,61 @@ export default function ExtensionSidebar() {
 
             {/* Divider */}
             <div style={{ borderTop: '1px solid #2a2a40', margin: '0 10px' }} />
+
+            {/* UIL Coaching Card */}
+            {insights && (insights.profile.coachingInsights.length > 0 || insights.profile.nextBestFocusWindow || insights.habits.completionRate !== null) && (
+                <div style={{ padding: '8px 10px' }}>
+                    <div style={{
+                        background: 'linear-gradient(135deg, rgba(245,158,11,0.06), rgba(234,179,8,0.04))',
+                        border: '1px solid rgba(245,158,11,0.2)',
+                        borderRadius: '10px', padding: '10px',
+                    }}>
+                        <div style={{
+                            fontSize: '10px', color: '#a07830', textTransform: 'uppercase' as const,
+                            letterSpacing: '0.5px', marginBottom: '6px', fontWeight: 600,
+                        }}>
+                            Intelligence
+                        </div>
+
+                        {/* Top coaching insight */}
+                        {insights.profile.coachingInsights[0] && (
+                            <div style={{
+                                fontSize: '11px', color: '#e0c070', lineHeight: '1.4',
+                                marginBottom: insights.profile.nextBestFocusWindow || insights.habits.completionRate !== null ? '6px' : '0',
+                            }}>
+                                {insights.profile.coachingInsights[0]}
+                            </div>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' as const }}>
+                            {/* Next best focus window — only when no session */}
+                            {!session.active && insights.profile.nextBestFocusWindow && (
+                                <div style={{
+                                    background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)',
+                                    borderRadius: '6px', padding: '3px 7px', fontSize: '10px', color: '#f59e0b',
+                                }}>
+                                    Best window: {insights.profile.nextBestFocusWindow}
+                                </div>
+                            )}
+                            {/* Habit completion badge */}
+                            {insights.habits.completionRate !== null && (
+                                <div style={{
+                                    background: insights.habits.completionRate >= 80
+                                        ? 'rgba(34,197,94,0.1)' : insights.habits.completionRate >= 50
+                                        ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+                                    border: `1px solid ${insights.habits.completionRate >= 80
+                                        ? 'rgba(34,197,94,0.3)' : insights.habits.completionRate >= 50
+                                        ? 'rgba(245,158,11,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                                    borderRadius: '6px', padding: '3px 7px', fontSize: '10px',
+                                    color: insights.habits.completionRate >= 80 ? '#22c55e' : insights.habits.completionRate >= 50 ? '#f59e0b' : '#ef4444',
+                                }}>
+                                    Habits {insights.habits.completionRate}%
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Task Checklist */}
             <div style={{ padding: '8px 10px', flex: 1, overflowY: 'auto' }}>

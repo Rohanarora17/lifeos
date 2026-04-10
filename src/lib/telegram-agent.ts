@@ -309,6 +309,39 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         );
         return;
     }
+    if (cmdLower === '/status') {
+        const session = getActiveGuardianSession();
+        const { getIntelligenceProfile: getProfile } = require('./intelligence') as typeof import('./intelligence');
+        const profile = getProfile();
+        const lines: string[] = [];
+
+        if (session) {
+            const elapsed = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
+            const remaining = Math.max(0, session.durationMinutes - elapsed);
+            const focusScore = session.focusScoreHistory?.at(-1) ?? 100;
+            const stateIcon = session.state === 'PAUSED' ? '⏸' : focusScore >= 75 ? '🟢' : focusScore >= 50 ? '🟡' : '🔴';
+            lines.push(`${stateIcon} <b>Active:</b> ${session.targetTitle}`);
+            lines.push(`⏱ <b>Time:</b> ${elapsed}m elapsed · ${remaining}m remaining`);
+            lines.push(`🎯 <b>Focus:</b> ${focusScore}/100  |  <b>State:</b> ${session.state}`);
+        } else {
+            lines.push(`💤 <b>No active session</b>`);
+            if (profile.nextBestFocusWindow) {
+                lines.push(`⚡ <b>Best window:</b> ${profile.nextBestFocusWindow}`);
+            }
+        }
+
+        lines.push('');
+        lines.push(`📈 <b>Trend:</b> ${profile.focusTrend || 'stable'}  ·  <b>Style:</b> ${profile.preferredCoachingStyle || 'balanced'}`);
+
+        if (profile.coachingInsights?.length) {
+            lines.push('');
+            lines.push(`<b>Insights:</b>`);
+            profile.coachingInsights.slice(0, 3).forEach((ins: string) => lines.push(`• ${ins}`));
+        }
+
+        await sendTelegram(lines.join('\n'), 'HTML', SESSION_START_KEYBOARD);
+        return;
+    }
     if (cmdLower === '/endsession') {
         await executeAction('END_SESSION', '', {});
         return;
