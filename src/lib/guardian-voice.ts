@@ -20,7 +20,7 @@ import {
 import { createCalendarEvent, getConflictingEvents, isCalendarConfigured } from './google-calendar';
 import { sendTelegram } from './telegram';
 import { getDb } from './db';
-import { getIntelligenceContext, touchIntelligence } from './intelligence';
+import { getIntelligenceContext, getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ function normalizeMood(value: string | null | undefined): 'high' | 'medium' | 'l
   return null;
 }
 
-// ─── Heuristic intent parser (offline fallback) ───────────────────────────────
+// ─── Heuristic intent parser (offline fallback, session-aware) ──────────────
 
 function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
   const lower = transcript.toLowerCase().trim();
@@ -201,6 +201,10 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
     const unit = durationMatch[2];
     durationMinutes = unit.startsWith('hour') || unit.startsWith('hr') ? value * 60 : value;
   }
+
+  // Check live session — determines adjust vs start
+  const liveSession = getActiveGuardianSession();
+  const hasActiveSession = !!liveSession;
 
   if (/(how am i doing|guardian status|status|am i focused|focus score)/.test(lower)) {
     return { action: 'guardian_status', durationMinutes };
@@ -222,7 +226,25 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
     return { action: 'tutor' };
   }
 
-  if (/(schedule|remind me|plan a session|set a session|i want to study|i'll work on|i plan to)/.test(lower)) {
+  // end_session — must check before adjust/start to avoid conflict
+  if (/(stop session|end session|cancel session|we're done|i'm done|that's enough|stop the session)/.test(lower)) {
+    return { action: 'end_session' };
+  }
+
+  // adjust_session — only if a session exists AND a new duration is mentioned
+  if (hasActiveSession && durationMinutes && /(change|adjust|make it|reduce|cut|extend|set it to|update)/.test(lower)) {
+    return { action: 'adjust_session', durationMinutes };
+  }
+
+  // Pause / resume
+  if (/(taking a break|take a break|pause session|\bpause\b|brb|stepping out|step away)/.test(lower)) {
+    return { action: 'pause_session' };
+  }
+  if (/(i'?m back|i am back|\bresume\b|let'?s continue|back at it|back to work|continuing)/.test(lower)) {
+    return { action: 'resume_session' };
+  }
+
+  if (/(schedule|plan a session|set a session|i want to study|i'll work on|i plan to)/.test(lower)) {
     let intendedStartAt: number | undefined;
     const atTimeMatch = lower.match(/at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
     const inHoursMatch = lower.match(/in\s+(\d+)\s*hours?/);
@@ -242,7 +264,7 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
 
     const topic = transcript
       .replace(/^(hey\s+lifeos[, ]*)/i, '')
-      .replace(/(schedule|remind me|plan a session|set a session|i want to study|i'll work on|i plan to)/gi, '')
+      .replace(/(schedule|plan a session|set a session|i want to study|i'll work on|i plan to)/gi, '')
       .replace(/at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?/gi, '')
       .replace(/in\s+\d+\s*hours?/gi, '')
       .replace(/for\s+\d+\s*(minute|min|hour|hr)s?/gi, '')
@@ -253,6 +275,10 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
   }
 
   if (/(lock in|start session|focus session|study session|we need to finish|today we have to finish)/.test(lower)) {
+    // If a session is already active — treat as adjust if duration mentioned, else status
+    if (hasActiveSession && durationMinutes) return { action: 'adjust_session', durationMinutes };
+    if (hasActiveSession) return { action: 'guardian_status' };
+
     const topic =
       transcript
         .replace(/^(hey\s+lifeos[, ]*)/i, '')
@@ -268,14 +294,6 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
     };
   }
 
-  // Pause / resume (session-aware fallback)
-  if (/(taking a break|take a break|pause session|pause|brb|stepping out|step away)/.test(lower)) {
-    return { action: 'pause_session' };
-  }
-  if (/(i'?m back|i am back|resume|let'?s continue|back at it|back to work|continuing)/.test(lower)) {
-    return { action: 'resume_session' };
-  }
-
   // Log habit
   const habitLogMatch = lower.match(/(?:log|mark|done with|completed?|finished?)\s+(?:my\s+)?(.+?)(?:\s+habit)?(?:\s+today)?$/);
   if (habitLogMatch && /(log|mark|done with|completed?|finished?)/.test(lower)) {
@@ -283,7 +301,7 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
   }
 
   // Create task
-  const taskMatch = lower.match(/(?:add task|create task|note:|remind me to|add to my list)\s*[:\.\-]?\s*(.+)/);
+  const taskMatch = lower.match(/(?:add task|create task|note:|remind me to|add to my list)\s*[:.\-]?\s*(.+)/);
   if (taskMatch) {
     return { action: 'create_task', taskTitle: taskMatch[1].trim(), taskPriority: 'medium' };
   }
@@ -777,7 +795,12 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       source: 'voice',
     });
 
-    const response = `Starting a guarded session for ${session.targetTitle} for ${session.durationMinutes} minutes.`;
+    // Proactive coaching: speak top UIL insight with the session start confirmation
+    const profile = getIntelligenceProfile();
+    const topInsight = profile.coachingInsights?.[0];
+    const response = `Starting a guarded session for ${session.targetTitle} for ${session.durationMinutes} minutes.` +
+      (topInsight ? ` ${topInsight}` : ' Lock in.');
+    await maybeSpeakVoiceResponse(session.sessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_started', transcript, intent, session, responseText: response };
   }
@@ -786,10 +809,25 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'guardian_status') {
     const session = activeSessionId ? getGuardianSession(activeSessionId) : null;
+    const profile = getIntelligenceProfile();
     const latestScore = session?.focusScoreHistory[session.focusScoreHistory.length - 1] ?? null;
-    const responseText = session
-      ? `You are ${session.currentClassification === 'distraction' ? 'drifting' : 'currently'} on ${session.targetTitle}. Focus score is ${latestScore ?? 100}.`
-      : 'No active guardian session right now.';
+
+    let responseText: string;
+    if (session) {
+      const elapsed = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
+      const remaining = Math.max(0, session.durationMinutes - elapsed);
+      const classification = session.currentClassification === 'distraction' ? 'drifting' : 'focused';
+      const topInsight = profile.coachingInsights?.[0];
+      responseText = `You're ${classification} on ${session.targetTitle}. ` +
+        `Focus score ${latestScore ?? 100}. ${elapsed} minutes in, ${remaining} remaining.` +
+        (topInsight ? ` ${topInsight}` : '');
+    } else {
+      const topInsight = profile.coachingInsights?.[0];
+      const nextWindow = profile.nextBestFocusWindow;
+      responseText = 'No active session right now.' +
+        (nextWindow ? ` Best focus window: ${nextWindow}.` : '') +
+        (topInsight ? ` ${topInsight}` : '');
+    }
 
     await maybeSpeakVoiceResponse(activeSessionId, responseText);
     addVoiceTurn(hKey, { role: 'model', text: responseText, timestamp: Date.now(), action: intent.action });

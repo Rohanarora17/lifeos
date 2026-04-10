@@ -426,6 +426,16 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             payload?: Record<string, unknown>;
         };
 
+        // Cross-channel memory: persist TG turns to voice_turns so voice parser has TG context
+        try {
+            const db = getDb();
+            const tgKey = 'telegram';
+            db.prepare('INSERT INTO voice_turns (session_key, role, text, action) VALUES (?, ?, ?, ?)').run(tgKey, 'user', text, null);
+            if (parsed.replyText) {
+                db.prepare('INSERT INTO voice_turns (session_key, role, text, action) VALUES (?, ?, ?, ?)').run(tgKey, 'model', parsed.replyText, parsed.action ?? null);
+            }
+        } catch { /* non-fatal */ }
+
         await executeAction(parsed.action, parsed.replyText, parsed.payload ?? {}, activeSession);
 
     } catch (err) {
