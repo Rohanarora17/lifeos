@@ -298,18 +298,47 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Log rotation — runs nightly at 04:00, keeps logs under 10 MB each
     registerDailyJob('log_rotation', '04:00', async () => {
-        const { execFile } = await import('child_process');
-        const { promisify } = await import('util');
-        const execFileAsync = promisify(execFile);
+        const fs = await import('fs');
         const path = await import('path');
-        const script = path.join(process.cwd(), 'scripts', 'rotate-logs.mjs');
+
+        const MAX_BYTES = 10 * 1024 * 1024; // 10 MB per log file
+        const logsDir = path.join(process.cwd(), 'logs');
+
+        let rotated = 0;
+        let skipped = 0;
+
         try {
-            const { stdout } = await execFileAsync(process.execPath, [script], { timeout: 30_000 });
-            if (stdout) console.log('[Scheduler] log_rotation:', stdout.trim());
+            if (!fs.existsSync(logsDir)) {
+                console.log('[Scheduler] log_rotation: logs/ directory not found, skipping');
+                return;
+            }
+
+            const files = fs.readdirSync(logsDir).filter(f => f.endsWith('.log'));
+            for (const file of files) {
+                const filePath = path.join(logsDir, file);
+                try {
+                    const stat = fs.statSync(filePath);
+                    if (stat.size <= MAX_BYTES) { skipped++; continue; }
+
+                    // Read, trim to last MAX_BYTES worth of content (keep newest lines)
+                    const content = fs.readFileSync(filePath, 'utf8');
+                    const trimmed = content.slice(-MAX_BYTES);
+                    // Align to the next newline so we don't start mid-line
+                    const firstNewline = trimmed.indexOf('\n');
+                    const clean = firstNewline >= 0 ? trimmed.slice(firstNewline + 1) : trimmed;
+                    fs.writeFileSync(filePath, clean, 'utf8');
+                    rotated++;
+                    console.log(`[Scheduler] log_rotation: trimmed ${file} from ${Math.round(stat.size / 1024)}KB to ${Math.round(clean.length / 1024)}KB`);
+                } catch (fileErr) {
+                    console.error(`[Scheduler] log_rotation: failed on ${file}:`, fileErr);
+                }
+            }
+            console.log(`[Scheduler] log_rotation: done — ${rotated} rotated, ${skipped} under limit`);
         } catch (err) {
             console.error('[Scheduler] log_rotation failed:', err);
         }
     });
+
 
     // Guardian policy optimization — runs nightly at 03:30, off hot path, skipped during active sessions
     registerDailyJob('guardian_optimize', '03:30', async () => {
