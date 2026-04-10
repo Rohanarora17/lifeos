@@ -1,4 +1,4 @@
-import { getSetting, getDb } from './db';
+import { getSetting, setSetting, getDb } from './db';
 import {
   sendTelegram,
   formatDailyReport,
@@ -12,6 +12,7 @@ import { consolidateFacts } from './memory-extractor';
 import { sendMorningCheckin, sendEveningReflection } from './checkin';
 import { captureAndAnalyze } from './screenshot-pipeline';
 import { runContinuityCheck } from './continuity-guardian';
+import { sendWeeklyReckoning } from './weekly-reckoning';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -344,6 +345,65 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                 console.error('[Scheduler] override_followup_poll failed for id', f.id, err);
             }
         }
+    });
+
+    // Morning UIL synthesis — before Rohan picks up his phone
+    registerDailyJob('morning_uil_synthesis', '07:30', async () => {
+        try {
+            // Trigger intelligence synthesis if function exists
+            const { forceSynthesis } = await import('./intelligence');
+            if (typeof forceSynthesis === 'function') {
+                await forceSynthesis('morning_7:30');
+            }
+            console.log('[Scheduler] Morning UIL synthesis complete');
+        } catch (err) {
+            console.error('[Scheduler] morning_uil_synthesis failed:', err);
+        }
+    });
+
+    // Streak cliff detection — day 4 of strong streak, fire at 20:00
+    registerDailyJob('streak_cliff_detection', '20:00', async () => {
+        try {
+            const db = getDb();
+
+            const sessionDays = db.prepare(`
+                SELECT DISTINCT date(completed_at) as day
+                FROM guardian_session_summaries
+                WHERE completed_at >= datetime('now', '-7 days')
+                ORDER BY day DESC
+            `).all() as Array<{ day: string }>;
+
+            let streak = 0;
+            for (let i = 0; i < sessionDays.length; i++) {
+                const expected = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+                if (sessionDays[i]?.day === expected) {
+                    streak++;
+                } else {
+                    break;
+                }
+            }
+
+            if (streak === 4) {
+                const today = new Date().toISOString().slice(0, 10);
+                const alreadySent = getSetting('streak_cliff_sent_date') === today;
+                if (!alreadySent) {
+                    await sendTelegram(
+                        `You're on day 4. Your strongest stretches look exactly like this. Tomorrow is historically when the slide starts — not because you decide to stop, but because you find reasons. What's the plan for tomorrow morning specifically? Not in general. The first 30 minutes.`,
+                        'HTML'
+                    );
+                    setSetting('streak_cliff_sent_date', today);
+                }
+            }
+        } catch (err) {
+            console.error('[Scheduler] streak_cliff_detection failed:', err);
+        }
+    });
+
+    // Weekly reckoning — Sunday at 20:00
+    registerDailyJob('weekly_reckoning', '20:00', async () => {
+        const dayOfWeek = new Date().getDay(); // 0 = Sunday
+        if (dayOfWeek !== 0) return;
+        await sendWeeklyReckoning();
     });
 
     console.log(`[Scheduler] ${jobs.size} jobs registered`);
