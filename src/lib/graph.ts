@@ -252,7 +252,7 @@ export function getKnowledgeMasteryBonus(): number {
  * Returns an array of suggested concept nodes (not persisted yet).
  */
 export async function generateConceptsForGoal(goalTitle: string, difficulty: string = 'intermediate'): Promise<{ title: string; description: string; node_type: 'concept' | 'skill' | 'topic'; prerequisites: number[] }[]> {
-    const { getGenAI } = await import('./ai');
+    const { getGenAI, generateWithFallback } = await import('./ai');
     const { MODEL_FLASH } = await import('./models');
 
     const ai = getGenAI();
@@ -269,7 +269,7 @@ Return ONLY a valid JSON array (no markdown) where each object has:
 Order from foundational to advanced. Ensure a clear dependency chain.`;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_FLASH,
             contents: prompt,
             config: { responseMimeType: 'application/json' }

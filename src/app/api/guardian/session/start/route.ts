@@ -3,7 +3,7 @@ import { parseLockInIntent } from '@/lib/intent-engine';
 import { startGuardianSession, setImmediateBlockDomains } from '@/lib/guardian-runtime';
 import { getConflictingEvents, isCalendarConfigured } from '@/lib/google-calendar';
 import { getDb } from '@/lib/db';
-import { getGenAI } from '@/lib/ai';
+import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_FLASH } from '@/lib/models';
 
 /**
@@ -63,7 +63,7 @@ CANDIDATE DOMAINS:\n${domainList.map(d => `- ${d}`).join('\n')}
 Remove any domain that could legitimately support this goal (e.g. youtube.com when goal is "Watch lecture").
 Respond ONLY with a JSON array from the list above (no markdown): ["domain1.com", ...]`;
 
-    const result = await ai.models.generateContent({ model: MODEL_FLASH, contents: prompt });
+    const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: prompt });
     const text = (result.text ?? '').trim().replace(/```json\n?|\n?```/g, '');
     const domains = JSON.parse(text) as string[];
     if (Array.isArray(domains) && domains.every(d => typeof d === 'string')) {

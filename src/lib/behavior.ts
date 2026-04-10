@@ -7,7 +7,7 @@
 // Shannon entropy for attention scattering, and Atomic Habits consistency models.
 
 import { getDb, getSetting } from './db';
-import { getGenAI } from './ai';
+import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 
 // ============================================================
@@ -1198,7 +1198,7 @@ Respond with:
 Generate 6-8 insights across ALL categories. Reference specific numbers. Be direct.
 Generate 3-5 behavioral_memories — these are durable patterns you want to remember for future analysis.`;
 
-      const result = await ai.models.generateContent({
+      const result = await generateWithFallback(ai, {
         model: MODEL_PRO,
         contents: prompt,
         config: { responseMimeType: 'application/json' }

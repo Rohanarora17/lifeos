@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getGenAI } from '@/lib/ai';
+import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_FLASH } from '@/lib/models';
 
 // POST: Accepts highlighted text from the Chrome Extension context menu,
@@ -39,7 +39,7 @@ Return JSON matching this schema:
   "goal_id": (number or null) The ID of the most relevant goal, or null if unrelated.
 }`;
 
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_FLASH,
             contents: prompt,
             config: {

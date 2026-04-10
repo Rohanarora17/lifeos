@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getGenAI } from '@/lib/ai';
+import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_FLASH } from '@/lib/models';
 
 export async function POST(req: NextRequest) {
@@ -41,7 +41,7 @@ CRITICAL RULES:
 4. The final block should be a "study" block for review, or a short break if the time ends exactly after a long study block.
 5. All durations must be integers.`;
 
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_FLASH,
             contents: prompt,
             config: {

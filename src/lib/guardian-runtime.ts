@@ -5,7 +5,7 @@ import { logGoalTime } from './goal-health';
 import { propagateMastery } from './graph';
 import { speak } from './tts';
 import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } from './longitudinal-engine';
-import { getGenAI, classifyActivity } from './ai';
+import { getGenAI, classifyActivity, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
 import { emitGuardianRuntimeEvent } from './guardian-bus';
@@ -471,7 +471,7 @@ Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distract
 
 ${uilContext}`;
 
-    const result = await ai.models.generateContent({ model: MODEL_FLASH, contents: prompt });
+    const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: prompt });
     const reflectionText = (result.text ?? '').trim().slice(0, 400);
 
     db.prepare(`
@@ -1484,7 +1484,7 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
   const ai = getGenAI();
   if (ai) {
     try {
-      const result = await ai.models.generateContent({
+      const result = await generateWithFallback(ai, {
         model: MODEL_FLASH,
         contents: `Decide whether to approve this temporary browsing override during a hard study session. Return JSON only.
 Session target: ${session?.targetTitle || 'unknown'}

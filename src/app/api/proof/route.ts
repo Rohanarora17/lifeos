@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getGenAI } from '@/lib/ai';
+import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_PRO } from '@/lib/models';
 
 
@@ -50,7 +50,7 @@ Return EXACTLY a JSON object with this schema:
             },
         };
 
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: [prompt, imagePart]
         });

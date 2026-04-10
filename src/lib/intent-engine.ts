@@ -1,4 +1,4 @@
-import { getGenAI } from './ai';
+import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning, sanitizeTranscriptForCloud } from './cloud-privacy';
 import { MODEL_FLASH } from './models';
 
@@ -25,7 +25,7 @@ JSON Schema:
 }`;
 
     try {
-        const result = await ai.models.generateContent({
+        const result = await generateWithFallback(ai, {
             model: MODEL_FLASH || 'gemini-2.5-flash',
             contents: prompt,
             config: {
