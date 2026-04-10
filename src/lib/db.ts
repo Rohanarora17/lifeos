@@ -289,6 +289,18 @@ function initSchema(db: Database.Database) {
       status TEXT DEFAULT 'active'
     );
     CREATE INDEX IF NOT EXISTS idx_weekly_plans_week ON weekly_plans(week_start DESC);
+
+    -- Weekly reckonings: end-of-week reflections + open questions + user responses
+    CREATE TABLE IF NOT EXISTS weekly_reckonings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      week_start TEXT NOT NULL,
+      reckoning_text TEXT,
+      open_question TEXT,
+      response_text TEXT,
+      response_received_at TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_weekly_reckonings_week ON weekly_reckonings(week_start DESC);
   `);
 
   // FTS5 full-text search over mem_facts (topic + content)

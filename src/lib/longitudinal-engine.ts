@@ -325,24 +325,70 @@ export function detectGoalDrift(): Array<{ goalTitle: string; daysSinceLastSessi
   `).all() as Array<{ goalTitle: string; daysSinceLastSession: number | null }>;
 }
 
-export function generateOpeningLine(
+export async function generateOpeningLine(
   briefing: Pick<DayBriefing, 'avgFocusScore' | 'energyForecast' | 'coachingStyle' | 'upcomingFocusTarget'>,
   intent: { durationMinutes?: number; topic?: string; mood?: 'high' | 'medium' | 'low' | null }
-) {
-  const duration = intent.durationMinutes || 60;
-  const topic = intent.topic || briefing.upcomingFocusTarget || 'deep work';
+): Promise<string> {
+  try {
+    const { getIntelligenceContext } = await import('./intelligence');
+    const context = getIntelligenceContext({ maxInsights: 2, includeToday: true });
 
-  if (intent.mood === 'low' || briefing.energyForecast === 'low') {
-    return `Energy is lower today. Keep it simple: ${duration} minutes on ${topic}.`;
+    const { getDb } = await import('./db');
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const morningCheckin = db.prepare(`
+      SELECT commitment, likelihood_score FROM daily_checkins
+      WHERE checkin_date = ? AND checkin_type = 'morning' LIMIT 1
+    `).get(today) as { commitment: string; likelihood_score: number } | undefined;
+
+    const morningLine = morningCheckin
+      ? `Today's commitment: "${morningCheckin.commitment}" (likelihood: ${morningCheckin.likelihood_score}/10)`
+      : '';
+
+    const prompt = `Given this intelligence profile about this person:
+${context}
+
+${morningLine}
+
+Write ONE sentence to open this guardian session on "${intent.topic || 'their task'}" for ${intent.durationMinutes || 30} minutes.
+
+Rules:
+- Be specific to what you know about this person — reference actual recent patterns, not generic motivation
+- Do not use filler phrases like "Let's get started" or "You've got this"
+- Speak like a coach who has been watching, not an app notification
+- If they said something honest in their morning check-in, reference it
+- If they have a pattern of avoiding this specific topic, name it directly
+- If their energy is low, suggest something smaller
+- Maximum 25 words
+- Return ONLY the sentence, no quotes, no explanation`;
+
+    const { getGenAI, generateWithFallback } = await import('./ai');
+    const { MODEL_FLASH } = await import('./models');
+    const ai = getGenAI();
+    if (ai) {
+      const result = await generateWithFallback(ai, {
+        model: MODEL_FLASH,
+        contents: prompt,
+        config: { temperature: 0.7, maxOutputTokens: 60 },
+      });
+      const text = result.text;
+      if (text && text.trim().length > 0) {
+        return text.trim().replace(/^["']|["']$/g, '');
+      }
+    }
+  } catch (err) {
+    console.error('[LongitudinalEngine] generateOpeningLine failed, using fallback:', err);
   }
 
-  if (briefing.coachingStyle === 'direct') {
-    return `Starting ${duration} minutes on ${topic}. Recent average focus is ${Math.round(briefing.avgFocusScore)}. Beat it.`;
-  }
+  // Fallback to original template logic
+  const { durationMinutes, topic, mood } = intent;
+  const { energyForecast, coachingStyle, avgFocusScore } = briefing;
 
-  if (briefing.coachingStyle === 'gentle') {
-    return `Starting ${duration} minutes on ${topic}. Settle in and build on your recent momentum.`;
+  if (mood === 'low' || energyForecast === 'low') {
+    return `Energy is lower today. Keep it simple: ${durationMinutes} minutes on ${topic}.`;
   }
-
-  return `Starting ${duration} minute focus block on ${topic}. Your recent sessions averaged ${Math.round(briefing.avgFocusScore)}.`;
+  if (coachingStyle === 'direct') {
+    return `Starting ${durationMinutes} minutes on ${topic}. Recent average focus is ${Math.round(avgFocusScore || 74)}. Beat it.`;
+  }
+  return `Starting ${durationMinutes} minute focus block on ${topic}. Your recent sessions averaged ${Math.round(avgFocusScore || 74)}.`;
 }

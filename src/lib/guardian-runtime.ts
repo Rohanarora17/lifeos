@@ -853,11 +853,6 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   const durationMinutes = input.durationMinutes || 60;
   const targetTitle = input.conceptNodeName || input.goalTitle || input.topic || 'Deep Work';
   const briefing = getDayBriefing('default');
-  const openingLine = generateOpeningLine(briefing, {
-    durationMinutes,
-    topic: targetTitle,
-    mood: input.mood,
-  });
 
   // Compute energy composite at session start and persist for calibration
   const energyComponents = computeEnergyComposite();
@@ -923,8 +918,16 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     explainability: 'Guardian session started and runtime ownership is now active for this session.',
   });
 
-  void speak(sessionId, openingLine, 'urgent', 'flow_confirmed');
   session.lastSpeechAt = Date.now();
+  // Fire-and-forget: generate personalized opening line via UIL then speak it
+  void (async () => {
+    const openingLine = await generateOpeningLine(briefing, {
+      durationMinutes,
+      topic: targetTitle,
+      mood: input.mood,
+    });
+    void speak(sessionId, openingLine, 'urgent', 'flow_confirmed');
+  })();
 
   // Fire-and-forget: Telegram notification + Google Calendar event
   void (async () => {
@@ -1074,6 +1077,41 @@ export function endGuardianSession(sessionId: string) {
     } catch { /* non-fatal */ }
 
     await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection), 'HTML', SESSION_END_KEYBOARD);
+
+    // Post-session insight delivery — top insights from UIL profile
+    void (async () => {
+      try {
+        const { getIntelligenceProfile } = await import('./intelligence');
+        const profile = getIntelligenceProfile();
+
+        const insights: string[] = [];
+
+        // Top 2 coaching insights
+        if (profile.coachingInsights && profile.coachingInsights.length > 0) {
+          const topInsights = profile.coachingInsights.slice(0, 2);
+          insights.push(...topInsights.map((i: string) => `💡 ${i}`));
+        }
+
+        // Goal momentum changes
+        if (profile.goalMomentum) {
+          for (const [goal, momentum] of Object.entries(profile.goalMomentum)) {
+            if (momentum === 'at_risk') {
+              insights.push(`⚠️ <b>${goal}</b> is at risk — low momentum`);
+            } else if (momentum === 'gaining') {
+              insights.push(`📈 <b>${goal}</b> — momentum building`);
+            }
+          }
+        }
+
+        if (insights.length > 0) {
+          const msg = insights.slice(0, 3).join('\n');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          await sendTelegram(msg, 'HTML');
+        }
+      } catch (err) {
+        console.error('[Guardian] Post-session insight delivery failed:', err);
+      }
+    })();
 
     // Fire post-session classification review for low/medium confidence activities.
     // Small delay gives logActivityAsync time to flush final tab events.

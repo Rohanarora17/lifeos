@@ -20,6 +20,7 @@ import { parseScreenTimeReport, storeScreenTimeReport, formatPhoneScreenTimeSumm
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
+import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -61,6 +62,12 @@ export async function POST(request: Request) {
                 } else {
                     await sendTelegram('Could not parse screen time report. Check format.', 'HTML');
                 }
+                return NextResponse.json({ ok: true });
+            }
+
+            // Weekly reckoning response
+            if (getSetting('pending_weekly_reckoning') === 'true') {
+                await handleWeeklyReckoningResponse(text);
                 return NextResponse.json({ ok: true });
             }
 
