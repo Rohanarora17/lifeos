@@ -12,19 +12,24 @@ export function getGenAI(): GoogleGenAI | null {
         const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY || getSetting('gemini_api_key');
         const projectId = process.env.GCP_PROJECT_ID || getSetting('gcp_project_id');
         const location = process.env.GCP_LOCATION || getSetting('gcp_location') || 'us-central1';
+        // Set USE_VERTEX_AI=true to route through Vertex AI (aiplatform.googleapis.com)
+        // which uses GCP credits and has better quota than the Developer API.
+        // Requires Application Default Credentials on the host machine:
+        //   gcloud auth application-default login
+        const useVertex = process.env.USE_VERTEX_AI === 'true';
 
-        console.log(`[getGenAI] hasApiKey: ${!!apiKey}, projectId: ${projectId || 'none'}`);
+        console.log(`[getGenAI] mode: ${useVertex ? 'vertex' : 'developer-api'}, hasApiKey: ${!!apiKey}, projectId: ${projectId || 'none'}`);
 
-        if (apiKey) {
-            // Standard Gemini Developer API (works with GCP API keys and AI Studio keys).
-            // Gemini 3 models are available on this path.
-            // NOTE: Vertex AI (aiplatform.googleapis.com) does NOT accept API keys —
-            //       it requires OAuth2 / Application Default Credentials (service account).
-            //       Only use Vertex AI mode when no API key is present (ADC path).
+        if (useVertex && projectId) {
+            // Vertex AI — uses GCP credits, better quota, requires ADC (no API key).
+            // @ts-ignore
+            genAI = new GoogleGenAI({ vertexai: { project: projectId, location } });
+        } else if (apiKey) {
+            // Gemini Developer API — generativelanguage.googleapis.com
+            // Works with GCP API keys. Has lower shared quota than Vertex AI.
             genAI = new GoogleGenAI({ apiKey });
         } else if (projectId) {
-            // Vertex AI mode via Application Default Credentials (no API key).
-            // Requires: gcloud auth application-default login OR a service account.
+            // Vertex AI fallback if no API key present
             // @ts-ignore
             genAI = new GoogleGenAI({ vertexai: { project: projectId, location } });
         } else {

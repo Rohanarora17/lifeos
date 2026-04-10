@@ -148,7 +148,7 @@ Return ONLY the JSON. No markdown, no explanation.`;
 
     try {
       // generateWithFallback handles backoff (3 attempts, 4s/8s) + model fallback
-      const result = await generateWithFallback(genai, { model: 'gemini-2.5-flash', contents });
+      const result = await generateWithFallback(genai, { model: MODEL_FLASH, contents });
       let text = result.text?.trim() ?? '';
       // Strip markdown code fences if model wraps JSON
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
