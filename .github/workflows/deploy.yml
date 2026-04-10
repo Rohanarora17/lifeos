@@ -36,6 +36,7 @@ jobs:
             REPO_URL=$(git remote get-url origin | sed 's|git@github.com:|https://github.com/|' | sed 's|\.git$||')
             git pull "https://x-access-token:${GH_TOKEN}@${REPO_URL#https://}" main
             npm ci --prefer-offline
+            rm -rf .next
             npm run build
             launchctl unload ~/Library/LaunchAgents/com.lifeos.server.plist
             launchctl load  ~/Library/LaunchAgents/com.lifeos.server.plist
