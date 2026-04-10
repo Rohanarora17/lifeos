@@ -2,7 +2,9 @@
 // Handles: microphone capture (MediaRecorder) + audio playback (Web Audio)
 // Background service worker can't do either — this is the audio bridge.
 
-const SERVER = 'http://localhost:3000';
+// Server URL is passed via message from background.js (which reads it from storage).
+// Fallback to localhost for local dev.
+let SERVER = 'http://localhost:3000';
 
 let mediaRecorder = null;
 let audioChunks = [];
@@ -25,6 +27,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       break; // ack already sent above
 
     case 'START_RECORDING':
+      // Store the server URL passed from background.js so sendAudio uses the right host
+      if (msg.serverUrl) SERVER = msg.serverUrl;
       startRecording(msg.sessionId).catch(e =>
         chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: e.message })
       );
@@ -112,8 +116,8 @@ async function sendAudio(sessionId) {
   const blob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
   audioChunks = [];
 
-  if (blob.size < 1000) {
-    console.warn('[Offscreen] Audio too short, skipping');
+  if (blob.size < 200) {  // 200 bytes — even 0.3s of opus audio exceeds this
+    console.warn(`[Offscreen] Audio too short (${blob.size} bytes), skipping`);
     chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: 'Audio too short' });
     return;
   }

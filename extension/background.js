@@ -2,6 +2,12 @@
 // GUARDIAN MODE ONLY — Zero passive tracking. Absolutely silent outside active sessions.
 
 let API_BASE = 'http://localhost:3000/api';
+
+// Load the configured server URL from storage (set via options page or popup)
+chrome.storage.local.get('apiUrl', (data) => {
+    if (data.apiUrl) API_BASE = data.apiUrl;
+});
+
 let guardianActive = false;
 
 // Domain config — loaded from server at startup so no hardcoded lists.
@@ -712,6 +718,7 @@ chrome.commands.onCommand.addListener(async (command) => {
                 target: 'offscreen',
                 type: 'START_RECORDING',
                 sessionId: sessionContext?.sessionId || null,
+                serverUrl: API_BASE.replace(/\/api$/, ''), // pass full server origin to offscreen
             });
             chrome.action.setBadgeText({ text: '\uD83C\uDF99' });
             chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
