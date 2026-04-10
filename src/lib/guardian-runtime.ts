@@ -1078,6 +1078,41 @@ export function endGuardianSession(sessionId: string) {
 
     await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection), 'HTML', SESSION_END_KEYBOARD);
 
+    // Post-session insight delivery — top insights from UIL profile
+    void (async () => {
+      try {
+        const { getIntelligenceProfile } = await import('./intelligence');
+        const profile = getIntelligenceProfile();
+
+        const insights: string[] = [];
+
+        // Top 2 coaching insights
+        if (profile.coachingInsights && profile.coachingInsights.length > 0) {
+          const topInsights = profile.coachingInsights.slice(0, 2);
+          insights.push(...topInsights.map((i: string) => `💡 ${i}`));
+        }
+
+        // Goal momentum changes
+        if (profile.goalMomentum) {
+          for (const [goal, momentum] of Object.entries(profile.goalMomentum)) {
+            if (momentum === 'at_risk') {
+              insights.push(`⚠️ <b>${goal}</b> is at risk — low momentum`);
+            } else if (momentum === 'gaining') {
+              insights.push(`📈 <b>${goal}</b> — momentum building`);
+            }
+          }
+        }
+
+        if (insights.length > 0) {
+          const msg = insights.slice(0, 3).join('\n');
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          await sendTelegram(msg, 'HTML');
+        }
+      } catch (err) {
+        console.error('[Guardian] Post-session insight delivery failed:', err);
+      }
+    })();
+
     // Fire post-session classification review for low/medium confidence activities.
     // Small delay gives logActivityAsync time to flush final tab events.
     await new Promise(r => setTimeout(r, 5000));
