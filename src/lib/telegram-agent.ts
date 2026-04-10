@@ -350,6 +350,16 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await executeAction('END_SESSION', '', {});
         return;
     }
+    if (cmdLower === '/reflect') {
+        const { sendEveningReflection } = require('./checkin') as typeof import('./checkin');
+        await sendEveningReflection();
+        return;
+    }
+    if (cmdLower === '/morning') {
+        const { sendMorningCheckin } = require('./checkin') as typeof import('./checkin');
+        await sendMorningCheckin();
+        return;
+    }
     // /addtask <title>
     if (cmdLower.startsWith('/addtask ')) {
         const title = cmd.slice('/addtask '.length).trim();

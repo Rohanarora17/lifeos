@@ -21,6 +21,7 @@ import { startGuardianSession, endGuardianSession, getActiveGuardianSession, app
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
 import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
+import { transcribeAudio, downloadTelegramVoice } from '@/lib/stt';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -43,7 +44,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ ok: true });
         }
 
-        // Handle standard messages
+        // Handle text messages
         if (body.message?.text) {
             const chatId = String(body.message.chat.id);
             if (chatId !== authorizedChatId) {
@@ -90,6 +91,43 @@ export async function POST(request: Request) {
             }
 
             await handleTelegramCommand(body.message.text);
+            return NextResponse.json({ ok: true });
+        }
+
+        // Handle voice notes (OGG/OPUS from Telegram)
+        if (body.message?.voice) {
+            const chatId = String(body.message.chat.id);
+            if (chatId !== authorizedChatId) return NextResponse.json({ ok: true });
+
+            const fileId = body.message.voice.file_id as string;
+            console.log(`[Webhook] Voice note received: file_id=${fileId}, duration=${body.message.voice.duration}s`);
+
+            // Download + transcribe
+            const audioBlob = await downloadTelegramVoice(fileId);
+            if (!audioBlob) {
+                await sendTelegram('Could not download your voice note. Please try again.', 'HTML');
+                return NextResponse.json({ ok: true });
+            }
+
+            const transcript = await transcribeAudio(audioBlob, 'voice.ogg');
+            if (!transcript) {
+                await sendTelegram('Could not transcribe your voice note. Try sending text instead.', 'HTML');
+                return NextResponse.json({ ok: true });
+            }
+
+            console.log(`[Webhook] Voice note transcript: "${transcript.slice(0, 100)}"`);
+
+            // Route transcript through the same pipeline as text
+            const pendingCheckin = getPendingCheckinType();
+            if (pendingCheckin === 'morning') {
+                await handleMorningCheckinResponse(transcript);
+            } else if (pendingCheckin === 'evening') {
+                await handleEveningReflectionResponse(transcript);
+            } else {
+                // No pending check-in — treat as a general voice command
+                await handleTelegramCommand(transcript);
+            }
+
             return NextResponse.json({ ok: true });
         }
 

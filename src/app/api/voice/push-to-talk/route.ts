@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { processGuardianVoiceCommand } from '@/lib/guardian-voice';
-
-// ── STT: ElevenLabs Scribe (primary) ─────────────────────────────────────────
+import { transcribeAudio } from '@/lib/stt';
 
 async function transcribeWithScribe(audio: Blob): Promise<string | null> {
     const apiKey = process.env.ELEVENLABS_API_KEY || '';
@@ -69,17 +68,7 @@ async function transcribeWithGroq(audio: Blob): Promise<string | null> {
     }
 }
 
-async function transcribeAudio(audio: Blob): Promise<string | null> {
-    const transcript = await transcribeWithScribe(audio);
-    if (transcript) {
-        console.log('[PTT] Scribe transcript:', transcript);
-        return transcript;
-    }
-    console.warn('[PTT] Scribe failed or not configured — trying Groq fallback');
-    const fallback = await transcribeWithGroq(audio);
-    if (fallback) console.log('[PTT] Groq fallback transcript:', fallback);
-    return fallback;
-}
+
 
 // ── TTS: ElevenLabs streaming (returns piped ReadableStream) ──────────────────
 

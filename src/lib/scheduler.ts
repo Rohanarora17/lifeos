@@ -268,13 +268,26 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await consolidateFacts();
     });
 
-    // Daily morning check-in — 08:00
-    registerDailyJob('morning_checkin', '08:00', async () => {
+    // Daily morning check-in — configurable via MORNING_CHECKIN_TIME (default 08:00)
+    const checkinMorningTime = (process.env.MORNING_CHECKIN_TIME || '08:00').trim();
+    registerDailyJob('morning_checkin', checkinMorningTime, async () => {
         await sendMorningCheckin();
     });
 
-    // Daily evening reflection — 21:30
-    registerDailyJob('evening_reflection', '21:30', async () => {
+    // Evening reflection — configurable via EVENING_REFLECTION_TIME (default 21:30)
+    // Also fires a 15-minute advance reminder to prompt the user to start thinking
+    const eveningTime = (process.env.EVENING_REFLECTION_TIME || '21:30').trim();
+    const [eveningHour, eveningMin] = eveningTime.split(':').map(Number);
+    const reminderMin = eveningMin - 15 < 0 ? eveningMin + 45 : eveningMin - 15;
+    const reminderHour = eveningMin - 15 < 0 ? eveningHour - 1 : eveningHour;
+    const reminderTime = `${String(reminderHour).padStart(2, '0')}:${String(reminderMin).padStart(2, '0')}`;
+
+    registerDailyJob('evening_reminder', reminderTime, async () => {
+        const { sendTelegram: tg } = await import('./telegram');
+        await tg(`📝 Evening reflection in 15 minutes.\n\nStart thinking: what did you avoid today, and why?`, 'HTML');
+    });
+
+    registerDailyJob('evening_reflection', eveningTime, async () => {
         await sendEveningReflection();
     });
 
