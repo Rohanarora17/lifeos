@@ -21,7 +21,7 @@ import { startGuardianSession, endGuardianSession, getActiveGuardianSession, app
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
 import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
-import { transcribeAudio, downloadTelegramVoice } from '@/lib/stt';
+import { downloadTelegramVoice, transcribeAudio } from '@/lib/stt';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {

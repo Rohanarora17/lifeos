@@ -2,75 +2,9 @@ import { NextResponse } from 'next/server';
 import { processGuardianVoiceCommand } from '@/lib/guardian-voice';
 import { transcribeAudio } from '@/lib/stt';
 
-async function transcribeWithScribe(audio: Blob): Promise<string | null> {
-    const apiKey = process.env.ELEVENLABS_API_KEY || '';
-    if (!apiKey) return null;
-
-    const form = new FormData();
-    form.set('audio', new File([audio], 'speech.webm', { type: audio.type || 'audio/webm' }));
-    form.set('model_id', 'scribe_v1');
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-        const res = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
-            method: 'POST',
-            headers: { 'xi-api-key': apiKey },
-            body: form,
-            signal: controller.signal,
-        });
-        const data = await res.json() as { text?: string; error?: unknown };
-        if (!res.ok) {
-            console.error(`[PTT] Scribe error ${res.status}:`, JSON.stringify(data));
-            return null;
-        }
-        return data.text || null;
-    } catch (err) {
-        console.error('[PTT] Scribe request failed:', err);
-        return null;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-// ── STT: Groq Whisper (fallback) ──────────────────────────────────────────────
-
-async function transcribeWithGroq(audio: Blob): Promise<string | null> {
-    const apiKey = process.env.GROQ_API_KEY || '';
-    const whisperUrl = (process.env.WHISPER_CPP_URL || '').trim();
-    if (!apiKey || !whisperUrl) return null;
-
-    const form = new FormData();
-    form.set('file', new File([audio], 'speech.webm', { type: audio.type || 'audio/webm' }));
-    form.set('model', process.env.WHISPER_CPP_OPENAI_MODEL || 'whisper-large-v3-turbo');
-    form.set('response_format', 'json');
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-        const res = await fetch(whisperUrl, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${apiKey}` },
-            body: form,
-            signal: controller.signal,
-        });
-        const data = await res.json() as { text?: string; error?: unknown };
-        if (!res.ok) {
-            console.error(`[PTT] Groq error ${res.status}:`, JSON.stringify(data));
-            return null;
-        }
-        return data.text || null;
-    } catch (err) {
-        console.error('[PTT] Groq request failed:', err);
-        return null;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-
 
 // ── TTS: ElevenLabs streaming (returns piped ReadableStream) ──────────────────
+
 
 async function streamElevenLabsTts(text: string): Promise<ReadableStream<Uint8Array> | null> {
     const apiKey = process.env.ELEVENLABS_API_KEY || '';
