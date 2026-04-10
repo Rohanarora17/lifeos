@@ -85,6 +85,15 @@ export async function POST(req: Request) {
             }
             transcript = t.trim();
             console.log(`[PTT] Transcript: "${transcript}"`);
+
+            // Filter ambient noise — Groq faithfully transcribes background audio as
+            // short phrases ("Thank you", "Okay", "."). Require at least 3 words before
+            // passing to the guardian to prevent AI calls + TTS on noise.
+            const wordCount = transcript.split(/\s+/).filter(w => /\w/.test(w)).length;
+            if (wordCount < 3) {
+                console.log(`[PTT] Transcript too short (${wordCount} word(s)) — likely ambient noise, skipping.`);
+                return NextResponse.json({ transcript: '', empty: true });
+            }
         } else {
             // JSON with pre-transcribed text (legacy / dashboard)
             const body = await req.json() as { transcript?: string; sessionId?: string };

@@ -7,6 +7,8 @@
 let SERVER = 'http://localhost:3000';
 
 let mediaRecorder = null;
+let pttInFlight = false; // prevent concurrent PTT requests
+let audioQueue = Promise.resolve(); // serialize all audio playback
 let audioChunks = [];
 let isRecording = false;
 let audioContext = null;
@@ -126,6 +128,13 @@ async function stopRecording(sessionId) {
 }
 
 async function sendAudio(sessionId) {
+  if (pttInFlight) {
+    console.warn('[Offscreen] PTT already in flight — dropping this send');
+    chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: '', responseText: '' });
+    return;
+  }
+  pttInFlight = true;
+
   const blob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
   audioChunks = [];
 
@@ -176,6 +185,8 @@ async function sendAudio(sessionId) {
   } catch (err) {
     console.error('[Offscreen] Send failed:', err);
     chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: err.message });
+  } finally {
+    pttInFlight = false;
   }
 }
 
@@ -202,6 +213,13 @@ async function playText(text, sessionId) {
 }
 
 async function playArrayBuffer(buffer) {
+  // Queue playback so multiple responses never overlap
+  const play = audioQueue.then(() => _playArrayBufferNow(buffer));
+  audioQueue = play.catch(() => {});
+  return play;
+}
+
+async function _playArrayBufferNow(buffer) {
   if (!audioContext) {
     audioContext = new AudioContext();
   }
