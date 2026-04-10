@@ -1,15 +1,7 @@
--- 023: Add archived column to goals table
--- The goals table originally used 'active INTEGER DEFAULT 1'.
--- Voice handlers and some newer code use 'archived' instead.
--- This migration adds 'archived' as the inverse of 'active' so both work.
+-- 023: Sync goals.archived ↔ goals.active
+-- ALTER TABLE ADD COLUMN statements for archived/category/deadline are handled
+-- by the try-catch backfills in db.ts so they run safely on all DB versions.
+-- This migration only does the idempotent data sync which is always safe to run.
 
-ALTER TABLE goals ADD COLUMN archived INTEGER DEFAULT 0;
-
--- Sync existing rows: archived = NOT active
-UPDATE goals SET archived = CASE WHEN active = 1 THEN 0 ELSE 1 END;
-
--- Also add a category column if missing (used by voice create_goal)
-ALTER TABLE goals ADD COLUMN category TEXT DEFAULT 'general';
-
--- Add deadline column if missing (used by voice create_goal and TG CREATE_GOAL)
-ALTER TABLE goals ADD COLUMN deadline TEXT DEFAULT NULL;
+UPDATE goals SET archived = CASE WHEN active = 1 THEN 0 ELSE 1 END
+WHERE archived IS NULL OR (active = 0 AND archived = 0) OR (active = 1 AND archived = 1);
