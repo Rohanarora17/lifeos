@@ -129,14 +129,17 @@ async function sendAudio(sessionId) {
   const blob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
   audioChunks = [];
 
-  if (blob.size < 200) {  // 200 bytes — even 0.3s of opus audio exceeds this
-    console.warn(`[Offscreen] Audio too short (${blob.size} bytes), skipping`);
-    chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: 'Audio too short' });
+  const blobSize = blob.size;
+  console.log(`[Offscreen] Sending audio (${blobSize} bytes) to ${SERVER}`);
+  chrome.runtime.sendMessage({ type: 'PTT_SENDING' });
+
+  // If truly empty (< 50 bytes = only file-level WebM header, no audio cluster at all),
+  // there is nothing the server can do with it.
+  if (blobSize < 50) {
+    console.warn(`[Offscreen] Audio blob empty (${blobSize} bytes) — mic may not have started yet`);
+    chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: 'No audio captured — try again' });
     return;
   }
-
-  console.log(`[Offscreen] Sending ${blob.size} bytes to server`);
-  chrome.runtime.sendMessage({ type: 'PTT_SENDING' });
 
   const form = new FormData();
   form.append('audio', blob, 'speech.webm');
@@ -161,6 +164,12 @@ async function sendAudio(sessionId) {
       chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript, responseText });
     } else {
       const data = await res.json();
+      if (data.empty || !data.transcript) {
+        // Silence or inaudible — show friendly overlay message
+        console.log('[Offscreen] Empty transcript (silence or too quiet)');
+        chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: '', responseText: '' });
+        return;
+      }
       console.log('[Offscreen] PTT response:', data);
       chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: data.transcript });
     }

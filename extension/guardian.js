@@ -278,8 +278,13 @@ function updatePttOverlay(state, transcript) {
     } else if (state === 'done') {
         iconDone.style.display = 'block';
         el.classList.add('lifeos-ptt-done');
-        label.textContent    = transcript ? `"${transcript.slice(0, 50)}"` : 'Done';
-        sublabel.textContent = 'Response sent';
+        if (transcript) {
+            label.textContent    = `"${transcript.slice(0, 50)}"`;
+            sublabel.textContent = 'Response sent';
+        } else {
+            label.textContent    = "Didn't catch that";
+            sublabel.textContent = 'Speak louder or try again';
+        }
         el.classList.add('lifeos-ptt-visible');
         // Auto-hide after 2.5s
         setTimeout(() => {

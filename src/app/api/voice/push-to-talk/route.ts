@@ -72,7 +72,9 @@ export async function POST(req: Request) {
             console.log(`[PTT] Received audio: ${audio.size} bytes, type: ${audio.type}`);
             const t = await transcribeAudio(audio);
             if (!t?.trim()) {
-                return NextResponse.json({ error: 'Transcription returned empty result' }, { status: 422 });
+                // Empty transcription = silence or header-only blob. Return 200 with empty
+                // transcript so the client can show a friendly message instead of an error.
+                return NextResponse.json({ transcript: '', empty: true });
             }
             transcript = t.trim();
             console.log(`[PTT] Transcript: "${transcript}"`);
