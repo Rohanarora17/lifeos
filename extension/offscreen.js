@@ -14,27 +14,37 @@ let audioContext = null;
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
 
+  // Acknowledge immediately for ALL message types — do NOT return true.
+  // Keeping the channel open (return true) causes "message channel closed before response"
+  // when the background service worker idles. Results are sent back via separate
+  // chrome.runtime.sendMessage calls (RECORDING_STARTED, PTT_DONE, PTT_ERROR, etc.).
+  sendResponse({ ok: true });
+
   switch (msg.type) {
     case 'PING':
-      sendResponse({ ok: true });
-      return; // synchronous response — do NOT return true (that signals async)
+      break; // ack already sent above
 
     case 'START_RECORDING':
-      startRecording(msg.sessionId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
-      return true;
+      startRecording(msg.sessionId).catch(e =>
+        chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: e.message })
+      );
+      break;
 
     case 'STOP_RECORDING':
-      stopRecording(msg.sessionId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
-      return true;
+      stopRecording(msg.sessionId).catch(e =>
+        chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: e.message })
+      );
+      break;
 
     case 'PLAY_AUDIO_URL':
-      playAudioUrl(msg.url).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
-      return true;
+      playAudioUrl(msg.url).catch(e => console.error('[Offscreen] PLAY_AUDIO_URL failed:', e));
+      break;
 
     case 'PLAY_AUDIO_TEXT':
-      playText(msg.text, msg.sessionId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
-      return true;
+      playText(msg.text, msg.sessionId).catch(e => console.error('[Offscreen] PLAY_AUDIO_TEXT failed:', e));
+      break;
   }
+  // No return true — channel is closed immediately after sendResponse above.
 });
 
 // ── Recording ─────────────────────────────────────────────────────────────────
@@ -67,7 +77,7 @@ async function startRecording(sessionId) {
     console.log('[Offscreen] Recording started');
   } catch (err) {
     console.error('[Offscreen] getUserMedia failed:', err);
-    chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: err.message });
+    chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: err.message || String(err) });
   }
 }
 
