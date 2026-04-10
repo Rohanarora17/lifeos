@@ -768,6 +768,23 @@ chrome.runtime.onMessage.addListener((msg) => {
         pttRecording = false;
         chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
     }
+    if (msg.type === 'MIC_PERMISSION_NEEDED') {
+        console.warn('[PTT] Mic permission not granted, reason:', msg.reason);
+        pttRecording = false;
+        chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
+        // Broadcast a special state so the overlay shows a clear instruction
+        broadcastPttState('permission');
+        // Show a Chrome notification directing user to the popup
+        chrome.notifications.create('lifeos-mic-permission', {
+            type: 'basic',
+            iconUrl: 'icons/icon48.png',
+            title: 'Microphone Access Needed',
+            message: msg.reason === 'denied'
+                ? 'Mic access is blocked. Go to Chrome \u2192 Settings \u2192 Site Settings to allow it for this extension.'
+                : 'Click the LifeOS icon \u2192 "Enable Voice" to allow microphone access.',
+            priority: 2,
+        });
+    }
 });
 
 /** Send PTT_STATE to the currently active tab so guardian.js can update the overlay. */

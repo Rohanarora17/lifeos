@@ -286,6 +286,18 @@ function updatePttOverlay(state, transcript) {
             el.classList.remove('lifeos-ptt-visible');
             setTimeout(() => el.remove(), 400);
         }, 2500);
+    } else if (state === 'permission') {
+        // Show mic permission instruction
+        iconMic.style.display = 'block';
+        el.style.setProperty('--ptt-mic-bg', 'rgba(234,179,8,0.25)');
+        label.textContent    = 'Microphone access needed';
+        sublabel.textContent = 'Click the LifeOS icon \u2192 Enable Voice';
+        el.classList.add('lifeos-ptt-visible');
+        // Auto-hide after 4s
+        setTimeout(() => {
+            el.classList.remove('lifeos-ptt-visible');
+            setTimeout(() => el.remove(), 400);
+        }, 4000);
     } else {
         // 'idle' or unknown — slide away
         el.classList.remove('lifeos-ptt-visible');

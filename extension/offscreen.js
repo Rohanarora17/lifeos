@@ -52,6 +52,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 async function startRecording(sessionId) {
   if (isRecording) return;
 
+  // Pre-flight mic permission check.
+  // Offscreen docs can call getUserMedia but Chrome shows a tiny non-obvious prompt.
+  // If permission isn't already granted, tell background to open the popup instead.
+  try {
+    const perm = await navigator.permissions.query({ name: 'microphone' });
+    if (perm.state === 'denied') {
+      chrome.runtime.sendMessage({ type: 'MIC_PERMISSION_NEEDED', reason: 'denied' });
+      return;
+    }
+    if (perm.state === 'prompt') {
+      // Not yet granted — ask background to open popup for a visible grant flow
+      chrome.runtime.sendMessage({ type: 'MIC_PERMISSION_NEEDED', reason: 'prompt' });
+      return;
+    }
+  } catch {
+    // permissions API not available — attempt getUserMedia anyway
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
@@ -76,8 +94,10 @@ async function startRecording(sessionId) {
     chrome.runtime.sendMessage({ type: 'RECORDING_STARTED' });
     console.log('[Offscreen] Recording started');
   } catch (err) {
-    console.error('[Offscreen] getUserMedia failed:', err);
-    chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: err.message || String(err) });
+    const name = err?.name || '';
+    const message = err?.message || String(err);
+    console.error(`[Offscreen] getUserMedia failed: ${name}: ${message}`);
+    chrome.runtime.sendMessage({ type: 'RECORDING_ERROR', error: `${name}: ${message}` });
   }
 }
 
