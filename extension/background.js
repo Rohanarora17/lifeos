@@ -762,6 +762,10 @@ chrome.runtime.onMessage.addListener((msg) => {
         console.log('[PTT] Sending audio to server...');
         broadcastPttState('sending');
     }
+    if (msg.type === 'PTT_SPEAKING') {
+        console.log(`[PTT] Speaking. Transcript: "${msg.transcript}"`);
+        broadcastPttState('speaking', msg.transcript);
+    }
     if (msg.type === 'PTT_DONE') {
         console.log(`[PTT] Done. Transcript: "${msg.transcript}"`);
         broadcastPttState('done', msg.transcript);

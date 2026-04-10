@@ -162,24 +162,48 @@ async function sendAudio(sessionId) {
 
     const contentType = res.headers.get('content-type') || '';
 
-    if (contentType.includes('audio/mpeg')) {
-      // Server returned ElevenLabs MP3 directly — play it
-      const transcript = decodeURIComponent(res.headers.get('x-transcript') || '');
+    if (contentType.includes('audio/mpeg') && res.body) {
+      const transcript   = decodeURIComponent(res.headers.get('x-transcript') || '');
       const responseText = decodeURIComponent(res.headers.get('x-response-text') || '');
-      console.log(`[Offscreen] Transcript: "${transcript}", Response: "${responseText}"`);
+      console.log(`[Offscreen] Streaming audio. Transcript: "${transcript}"`);
 
-      const audioBuffer = await res.arrayBuffer();
-      await playArrayBuffer(audioBuffer);
+      // Collect all audio chunks from the streaming response
+      const reader = res.body.getReader();
+      const chunks = [];
+      let firstChunk = true;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+
+        if (firstChunk) {
+          firstChunk = false;
+          // Signal speaking state immediately — overlay switches before audio plays
+          chrome.runtime.sendMessage({ type: 'PTT_SPEAKING', transcript, responseText });
+        }
+      }
+
+      // Combine all chunks into one ArrayBuffer and play
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      const combined    = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      await playArrayBuffer(combined.buffer);
       chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript, responseText });
+
     } else {
       const data = await res.json();
       if (data.empty || !data.transcript) {
-        // Silence or inaudible — show friendly overlay message
         console.log('[Offscreen] Empty transcript (silence or too quiet)');
         chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: '', responseText: '' });
         return;
       }
-      console.log('[Offscreen] PTT response:', data);
+      console.log('[Offscreen] PTT response (no audio):', data);
       chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: data.transcript });
     }
   } catch (err) {

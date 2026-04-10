@@ -158,6 +158,9 @@ function injectClassifyToast(data) {
 
 // ── PTT Floating Overlay ─────────────────────────────────────────────────────
 
+let pttTimerInterval = null;
+let pttTimerSeconds  = 0;
+
 function injectPttOverlay() {
     if (document.getElementById('lifeos-ptt-overlay')) return;
 
@@ -169,77 +172,119 @@ function injectPttOverlay() {
                 position: fixed;
                 bottom: 28px;
                 left: 50%;
-                transform: translateX(-50%) translateY(80px);
+                transform: translateX(-50%) translateY(120px);
                 z-index: 2147483647;
                 display: flex;
                 align-items: center;
-                gap: 12px;
-                background: rgba(10, 10, 14, 0.92);
-                border: 1px solid rgba(255,255,255,0.1);
-                border-radius: 50px;
-                padding: 10px 20px 10px 12px;
-                box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+                gap: 14px;
+                background: rgba(12, 12, 16, 0.94);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 56px;
+                padding: 12px 22px 12px 14px;
+                box-shadow: 0 12px 40px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03);
                 font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
-                backdrop-filter: blur(20px);
-                transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1), opacity 0.3s ease;
+                backdrop-filter: blur(24px);
+                transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1), opacity 0.3s ease;
                 opacity: 0;
+                pointer-events: none;
             }
             #lifeos-ptt-overlay.lifeos-ptt-visible {
                 transform: translateX(-50%) translateY(0);
                 opacity: 1;
             }
-            #lifeos-ptt-mic {
-                width: 38px;
-                height: 38px;
+
+            /* ── Icon circle ── */
+            #lifeos-ptt-icon-wrap {
+                width: 40px; height: 40px;
                 border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: rgba(255,255,255,0.08);
+                display: flex; align-items: center; justify-content: center;
                 flex-shrink: 0;
-                transition: background 0.2s;
+                background: rgba(255,255,255,0.07);
+                transition: background 0.25s;
             }
-            #lifeos-ptt-overlay.lifeos-ptt-recording #lifeos-ptt-mic {
+            #lifeos-ptt-overlay.lifeos-ptt-recording #lifeos-ptt-icon-wrap {
                 background: #dc2626;
-                animation: lifeos-ptt-pulse 1s ease-in-out infinite;
+                animation: lifeos-ptt-ring-pulse 1.2s ease-in-out infinite;
             }
-            #lifeos-ptt-overlay.lifeos-ptt-sending #lifeos-ptt-mic {
-                background: rgba(59,130,246,0.3);
+            #lifeos-ptt-overlay.lifeos-ptt-processing #lifeos-ptt-icon-wrap {
+                background: rgba(99,102,241,0.25);
             }
-            #lifeos-ptt-overlay.lifeos-ptt-done #lifeos-ptt-mic {
-                background: rgba(34,197,94,0.3);
+            #lifeos-ptt-overlay.lifeos-ptt-speaking #lifeos-ptt-icon-wrap {
+                background: rgba(34,197,94,0.2);
             }
-            @keyframes lifeos-ptt-pulse {
+            @keyframes lifeos-ptt-ring-pulse {
                 0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0.5); }
-                50% { box-shadow: 0 0 0 8px rgba(220,38,38,0); }
+                50%       { box-shadow: 0 0 0 10px rgba(220,38,38,0); }
             }
-            @keyframes lifeos-ptt-spin {
-                to { transform: rotate(360deg); }
+
+            /* ── Icons ── */
+            .lifeos-ptt-svg { display: none; }
+            #lifeos-ptt-overlay.lifeos-ptt-recording  .lifeos-ptt-svg-mic      { display: block; }
+            #lifeos-ptt-overlay.lifeos-ptt-processing .lifeos-ptt-svg-spinner  { display: block; animation: lifeos-ptt-spin 0.8s linear infinite; }
+            #lifeos-ptt-overlay.lifeos-ptt-speaking   .lifeos-ptt-svg-wave-ico { display: block; }
+            @keyframes lifeos-ptt-spin { to { transform: rotate(360deg); } }
+
+            /* ── Waveform bars (recording + speaking) ── */
+            #lifeos-ptt-bars {
+                display: none;
+                align-items: center;
+                gap: 3px;
+                height: 24px;
             }
+            #lifeos-ptt-overlay.lifeos-ptt-recording #lifeos-ptt-bars,
+            #lifeos-ptt-overlay.lifeos-ptt-speaking  #lifeos-ptt-bars {
+                display: flex;
+            }
+            .lifeos-ptt-bar {
+                width: 3px; border-radius: 3px;
+                animation: lifeos-bar-bounce 0.7s ease-in-out infinite alternate;
+            }
+            #lifeos-ptt-overlay.lifeos-ptt-recording .lifeos-ptt-bar { background: rgba(255,255,255,0.7); }
+            #lifeos-ptt-overlay.lifeos-ptt-speaking  .lifeos-ptt-bar { background: #22c55e; }
+            .lifeos-ptt-bar:nth-child(1) { height: 6px;  animation-delay: 0s;    animation-duration: 0.6s; }
+            .lifeos-ptt-bar:nth-child(2) { height: 14px; animation-delay: 0.1s;  animation-duration: 0.5s; }
+            .lifeos-ptt-bar:nth-child(3) { height: 22px; animation-delay: 0.2s;  animation-duration: 0.7s; }
+            .lifeos-ptt-bar:nth-child(4) { height: 14px; animation-delay: 0.15s; animation-duration: 0.55s; }
+            .lifeos-ptt-bar:nth-child(5) { height: 6px;  animation-delay: 0.05s; animation-duration: 0.65s; }
+            @keyframes lifeos-bar-bounce {
+                from { transform: scaleY(0.3); opacity: 0.6; }
+                to   { transform: scaleY(1);   opacity: 1; }
+            }
+
+            /* ── Labels ── */
             #lifeos-ptt-label {
-                font-size: 13px;
-                font-weight: 500;
-                color: #e5e7eb;
-                line-height: 1.3;
-                max-width: 220px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
+                font-size: 13px; font-weight: 500; color: #f3f4f6; line-height: 1.3;
             }
-            #lifeos-ptt-sublabel {
-                font-size: 11px;
-                color: #6b7280;
-                margin-top: 1px;
+            #lifeos-ptt-timer {
+                font-size: 12px; color: #9ca3af; margin-top: 2px; font-variant-numeric: tabular-nums;
             }
         </style>
-        <div id="lifeos-ptt-mic">
-            <svg id="lifeos-ptt-icon-mic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
-            <svg id="lifeos-ptt-icon-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round" style="display:none; animation: lifeos-ptt-spin 0.8s linear infinite;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-            <svg id="lifeos-ptt-icon-done" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><polyline points="20 6 9 17 4 12"/></svg>
+
+        <div id="lifeos-ptt-icon-wrap">
+            <svg class="lifeos-ptt-svg lifeos-ptt-svg-mic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="2" width="6" height="12" rx="3"/>
+                <path d="M5 10a7 7 0 0 0 14 0"/>
+                <line x1="12" y1="19" x2="12" y2="22"/>
+                <line x1="8" y1="22" x2="16" y2="22"/>
+            </svg>
+            <svg class="lifeos-ptt-svg lifeos-ptt-svg-spinner" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2.5" stroke-linecap="round">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <svg class="lifeos-ptt-svg lifeos-ptt-svg-wave-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round">
+                <path d="M2 12h3M7 6v12M12 3v18M17 6v12M22 12h-3"/>
+            </svg>
         </div>
+
         <div>
+            <div id="lifeos-ptt-bars">
+                <div class="lifeos-ptt-bar"></div>
+                <div class="lifeos-ptt-bar"></div>
+                <div class="lifeos-ptt-bar"></div>
+                <div class="lifeos-ptt-bar"></div>
+                <div class="lifeos-ptt-bar"></div>
+            </div>
             <div id="lifeos-ptt-label">Listening...</div>
-            <div id="lifeos-ptt-sublabel">Release Cmd+Shift+Space to send</div>
+            <div id="lifeos-ptt-timer"></div>
         </div>
     `;
     document.documentElement.appendChild(el);
@@ -247,66 +292,55 @@ function injectPttOverlay() {
 
 function updatePttOverlay(state, transcript) {
     injectPttOverlay();
-    const el = document.getElementById('lifeos-ptt-overlay');
-    if (!el) return;
-
+    const el       = document.getElementById('lifeos-ptt-overlay');
     const label    = document.getElementById('lifeos-ptt-label');
-    const sublabel = document.getElementById('lifeos-ptt-sublabel');
-    const iconMic  = document.getElementById('lifeos-ptt-icon-mic');
-    const iconSpin = document.getElementById('lifeos-ptt-icon-spin');
-    const iconDone = document.getElementById('lifeos-ptt-icon-done');
+    const timer    = document.getElementById('lifeos-ptt-timer');
+    if (!el || !label || !timer) return;
 
-    // Reset icon visibility
-    iconMic.style.display  = 'none';
-    iconSpin.style.display = 'none';
-    iconDone.style.display = 'none';
+    // Clear any existing hide timer
+    if (el._hideTimeout) { clearTimeout(el._hideTimeout); el._hideTimeout = null; }
+    // Clear recording timer
+    if (pttTimerInterval) { clearInterval(pttTimerInterval); pttTimerInterval = null; }
 
-    el.classList.remove('lifeos-ptt-recording', 'lifeos-ptt-sending', 'lifeos-ptt-done');
+    el.classList.remove(
+        'lifeos-ptt-visible',
+        'lifeos-ptt-recording',
+        'lifeos-ptt-processing',
+        'lifeos-ptt-speaking'
+    );
+    timer.textContent = '';
 
     if (state === 'recording') {
-        iconMic.style.display = 'block';
-        el.classList.add('lifeos-ptt-recording');
-        label.textContent    = 'Listening...';
-        sublabel.textContent = 'Press Cmd+Shift+Space again to send';
-        el.classList.add('lifeos-ptt-visible');
-    } else if (state === 'sending') {
-        iconSpin.style.display = 'block';
-        el.classList.add('lifeos-ptt-sending');
-        label.textContent    = 'Processing...';
-        sublabel.textContent = transcript ? `"${transcript.slice(0, 40)}..."` : 'Sending audio';
-        el.classList.add('lifeos-ptt-visible');
-    } else if (state === 'done') {
-        iconDone.style.display = 'block';
-        el.classList.add('lifeos-ptt-done');
-        if (transcript) {
-            label.textContent    = `"${transcript.slice(0, 50)}"`;
-            sublabel.textContent = 'Response sent';
-        } else {
-            label.textContent    = "Didn't catch that";
-            sublabel.textContent = 'Speak louder or try again';
-        }
-        el.classList.add('lifeos-ptt-visible');
-        // Auto-hide after 2.5s
-        setTimeout(() => {
-            el.classList.remove('lifeos-ptt-visible');
-            setTimeout(() => el.remove(), 400);
-        }, 2500);
-    } else if (state === 'permission') {
-        // Show mic permission instruction
-        iconMic.style.display = 'block';
-        el.style.setProperty('--ptt-mic-bg', 'rgba(234,179,8,0.25)');
-        label.textContent    = 'Microphone access needed';
-        sublabel.textContent = 'Click the LifeOS icon \u2192 Enable Voice';
-        el.classList.add('lifeos-ptt-visible');
-        // Auto-hide after 4s
-        setTimeout(() => {
-            el.classList.remove('lifeos-ptt-visible');
-            setTimeout(() => el.remove(), 400);
-        }, 4000);
-    } else {
-        // 'idle' or unknown — slide away
+        el.classList.add('lifeos-ptt-visible', 'lifeos-ptt-recording');
+        label.textContent = 'Listening...';
+        timer.textContent = '0:00';
+        pttTimerSeconds = 0;
+        pttTimerInterval = setInterval(() => {
+            pttTimerSeconds++;
+            const m = Math.floor(pttTimerSeconds / 60);
+            const s = String(pttTimerSeconds % 60).padStart(2, '0');
+            const t = document.getElementById('lifeos-ptt-timer');
+            if (t) t.textContent = `${m}:${s}`;
+        }, 1000);
+
+    } else if (state === 'sending' || state === 'processing') {
+        el.classList.add('lifeos-ptt-visible', 'lifeos-ptt-processing');
+        label.textContent = 'Thinking...';
+
+    } else if (state === 'speaking') {
+        el.classList.add('lifeos-ptt-visible', 'lifeos-ptt-speaking');
+        label.textContent = 'Guardian';
+
+    } else if (state === 'done' || state === 'idle') {
+        // Slide out
         el.classList.remove('lifeos-ptt-visible');
-        setTimeout(() => el.remove(), 400);
+
+    } else if (state === 'permission') {
+        el.classList.add('lifeos-ptt-visible', 'lifeos-ptt-processing');
+        label.textContent = 'Mic permission needed';
+        el._hideTimeout = setTimeout(() => {
+            el.classList.remove('lifeos-ptt-visible');
+        }, 4000);
     }
 }
 

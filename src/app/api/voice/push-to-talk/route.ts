@@ -1,61 +1,121 @@
 import { NextResponse } from 'next/server';
 import { processGuardianVoiceCommand } from '@/lib/guardian-voice';
 
-async function transcribeAudio(audio: Blob): Promise<string | null> {
-    const whisperUrl = (process.env.WHISPER_CPP_URL || '').trim();
-    if (!whisperUrl) {
-        console.warn('[PTT] WHISPER_CPP_URL not set — transcription skipped. Set it to a Groq or OpenAI Whisper endpoint.');
-        return null;
-    }
+// ── STT: ElevenLabs Scribe (primary) ─────────────────────────────────────────
 
-    const filename = 'speech.webm';
-    const file = new File([audio], filename, { type: audio.type || 'audio/webm' });
+async function transcribeWithScribe(audio: Blob): Promise<string | null> {
+    const apiKey = process.env.ELEVENLABS_API_KEY || '';
+    if (!apiKey) return null;
 
     const form = new FormData();
-    form.set('file', file, filename);
-    form.set('model', process.env.WHISPER_CPP_OPENAI_MODEL || 'whisper-large-v3-turbo');
-    form.set('response_format', 'json');
-
-    const headers: Record<string, string> = {};
-    if (process.env.GROQ_API_KEY && whisperUrl.includes('groq.com')) {
-        headers['Authorization'] = `Bearer ${process.env.GROQ_API_KEY}`;
-    } else if (process.env.OPENAI_API_KEY && whisperUrl.includes('openai.com')) {
-        headers['Authorization'] = `Bearer ${process.env.OPENAI_API_KEY}`;
-    }
+    form.set('audio', new File([audio], 'speech.webm', { type: audio.type || 'audio/webm' }));
+    form.set('model_id', 'scribe_v1');
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
-        const res = await fetch(whisperUrl, { method: 'POST', body: form, headers, signal: controller.signal });
-        const data = await res.json() as { text?: string; transcript?: string; error?: unknown };
+        const res = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+            method: 'POST',
+            headers: { 'xi-api-key': apiKey },
+            body: form,
+            signal: controller.signal,
+        });
+        const data = await res.json() as { text?: string; error?: unknown };
         if (!res.ok) {
-            console.error(`[PTT] Transcription API error ${res.status}:`, JSON.stringify(data));
+            console.error(`[PTT] Scribe error ${res.status}:`, JSON.stringify(data));
             return null;
         }
-        return data.text || data.transcript || null;
+        return data.text || null;
+    } catch (err) {
+        console.error('[PTT] Scribe request failed:', err);
+        return null;
     } finally {
         clearTimeout(timeout);
     }
 }
 
-async function synthesizeSpeech(text: string): Promise<ArrayBuffer | null> {
-    const apiKey = process.env.ELEVENLABS_API_KEY;
+// ── STT: Groq Whisper (fallback) ──────────────────────────────────────────────
+
+async function transcribeWithGroq(audio: Blob): Promise<string | null> {
+    const apiKey = process.env.GROQ_API_KEY || '';
+    const whisperUrl = (process.env.WHISPER_CPP_URL || '').trim();
+    if (!apiKey || !whisperUrl) return null;
+
+    const form = new FormData();
+    form.set('file', new File([audio], 'speech.webm', { type: audio.type || 'audio/webm' }));
+    form.set('model', process.env.WHISPER_CPP_OPENAI_MODEL || 'whisper-large-v3-turbo');
+    form.set('response_format', 'json');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+        const res = await fetch(whisperUrl, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+            body: form,
+            signal: controller.signal,
+        });
+        const data = await res.json() as { text?: string; error?: unknown };
+        if (!res.ok) {
+            console.error(`[PTT] Groq error ${res.status}:`, JSON.stringify(data));
+            return null;
+        }
+        return data.text || null;
+    } catch (err) {
+        console.error('[PTT] Groq request failed:', err);
+        return null;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function transcribeAudio(audio: Blob): Promise<string | null> {
+    const transcript = await transcribeWithScribe(audio);
+    if (transcript) {
+        console.log('[PTT] Scribe transcript:', transcript);
+        return transcript;
+    }
+    console.warn('[PTT] Scribe failed or not configured — trying Groq fallback');
+    const fallback = await transcribeWithGroq(audio);
+    if (fallback) console.log('[PTT] Groq fallback transcript:', fallback);
+    return fallback;
+}
+
+// ── TTS: ElevenLabs streaming (returns piped ReadableStream) ──────────────────
+
+async function streamElevenLabsTts(text: string): Promise<ReadableStream<Uint8Array> | null> {
+    const apiKey = process.env.ELEVENLABS_API_KEY || '';
+    const voice  = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
     if (!apiKey) return null;
 
-    const voice = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
+    // eleven_flash_v2_5 is the lowest-latency model (~75-150ms TTFB).
+    // Fall back to eleven_turbo_v2_5 if flash is unavailable on your plan.
+    const model = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
+
     try {
-        const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_128`, {
-            method: 'POST',
-            headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text: text.trim(),
-                model_id: 'eleven_turbo_v2_5',
-                voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
-            }),
-        });
-        if (!res.ok) return null;
-        return res.arrayBuffer();
-    } catch {
+        const res = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream`,
+            {
+                method: 'POST',
+                headers: {
+                    'xi-api-key': apiKey,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    text: text.trim(),
+                    model_id: model,
+                    voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.0, use_speaker_boost: true },
+                    output_format: 'mp3_44100_128',
+                }),
+            }
+        );
+        if (!res.ok || !res.body) {
+            console.error(`[PTT] ElevenLabs TTS error ${res.status}`);
+            return null;
+        }
+        return res.body;
+    } catch (err) {
+        console.error('[PTT] ElevenLabs TTS request failed:', err);
         return null;
     }
 }
@@ -86,7 +146,7 @@ export async function POST(req: Request) {
             transcript = t.trim();
             console.log(`[PTT] Transcript: "${transcript}"`);
 
-            // Filter ambient noise — Groq faithfully transcribes background audio as
+            // Filter ambient noise — Scribe/Groq faithfully transcribes background audio as
             // short phrases ("Thank you", "Okay", "."). Require at least 3 words before
             // passing to the guardian to prevent AI calls + TTS on noise.
             const wordCount = transcript.split(/\s+/).filter(w => /\w/.test(w)).length;
@@ -107,17 +167,15 @@ export async function POST(req: Request) {
 
         const result = await processGuardianVoiceCommand({ transcript, sessionId });
 
-        // Synthesize response audio if guardian produced a spoken response
         const responseText: string | undefined =
             (result as { spokenResponse?: string; responseText?: string; response?: string }).spokenResponse ||
             (result as { spokenResponse?: string; responseText?: string; response?: string }).responseText ||
             (result as { spokenResponse?: string; responseText?: string; response?: string }).response;
 
         if (responseText) {
-            const audioBuffer = await synthesizeSpeech(responseText);
-            if (audioBuffer) {
-                // Return MP3 directly — extension plays it on MacBook speakers
-                return new Response(audioBuffer, {
+            const audioStream = await streamElevenLabsTts(responseText);
+            if (audioStream) {
+                return new Response(audioStream, {
                     headers: {
                         'Content-Type': 'audio/mpeg',
                         'X-Transcript': encodeURIComponent(transcript),
