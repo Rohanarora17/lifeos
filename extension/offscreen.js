@@ -17,7 +17,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
     case 'PING':
       sendResponse({ ok: true });
-      return true;
+      return; // synchronous response — do NOT return true (that signals async)
 
     case 'START_RECORDING':
       startRecording(msg.sessionId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
