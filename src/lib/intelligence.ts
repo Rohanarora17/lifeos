@@ -780,6 +780,57 @@ export function getIntelligenceContext(opts?: {
     lines.push(`\n🔧 Adaptive thresholds: drop_alert=${t.focusDropAlertScore}, load=${t.cognitiveLoadThreshold} tasks, nudge=${t.distractionAlertMinutes}min, sprint=${t.sessionDurationSweetSpot}min`);
   }
 
+  // Append today's screen observation summary (what they've actually been doing)
+  if (includeToday) {
+    try {
+      const db = getDb();
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Category breakdown for today
+      const cats = db.prepare(`
+        SELECT category, COUNT(*) as count
+        FROM screen_observations
+        WHERE date(observed_at) = ?
+        GROUP BY category
+        ORDER BY count DESC
+      `).all(today) as Array<{ category: string; count: number }>;
+
+      // Most recent specific content (last 3 observations with real content)
+      const recent = db.prepare(`
+        SELECT app, specific_content, attention_quality, observed_at
+        FROM screen_observations
+        WHERE date(observed_at) = ?
+          AND specific_content IS NOT NULL
+          AND specific_content != ''
+          AND specific_content != 'idle'
+        ORDER BY observed_at DESC
+        LIMIT 3
+      `).all(today) as Array<{ app: string; specific_content: string; attention_quality: string; observed_at: string }>;
+
+      // Consecutive distraction minutes (last 2h)
+      const distractionBlocks = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM screen_observations
+        WHERE observed_at >= datetime('now', '-2 hours')
+          AND category IN ('distraction', 'consumption')
+      `).get() as { count: number };
+
+      if (cats.length > 0) {
+        const catSummary = cats.map(c => `${c.category}(${c.count})`).join(', ');
+        lines.push(`\n🖥️ Today's screen: ${catSummary}`);
+      }
+
+      if (distractionBlocks.count >= 3) {
+        lines.push(`⚠️ ${distractionBlocks.count} distraction observations in last 2h`);
+      }
+
+      if (recent.length > 0) {
+        const recentStr = recent.map(r => `${r.app}: ${r.specific_content.slice(0, 60)}`).join(' → ');
+        lines.push(`🔍 Recent activity: ${recentStr}`);
+      }
+    } catch { /* screen_observations may not exist yet */ }
+  }
+
   // Append active semantic facts so every prompt sees long-term distilled memory
   try {
     const memCtx = getMemoryContext(6);
