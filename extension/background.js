@@ -1,12 +1,15 @@
 // LifeOS Guardian — Background Service Worker
 // GUARDIAN MODE ONLY — Zero passive tracking. Absolutely silent outside active sessions.
 
-let API_BASE = 'http://localhost:3000/api';
+const DEFAULT_API_BASE = 'http://localhost:3000/api';
+let API_BASE = DEFAULT_API_BASE;
 
-// Load the configured server URL from storage (set via options page or popup)
-chrome.storage.local.get('apiUrl', (data) => {
-    if (data.apiUrl) API_BASE = data.apiUrl;
-});
+/** Always reads storage fresh — safe across service worker restarts. */
+async function getApiBase() {
+    const { apiUrl } = await chrome.storage.local.get('apiUrl');
+    if (apiUrl) API_BASE = apiUrl;
+    return API_BASE;
+}
 
 let guardianActive = false;
 
@@ -714,11 +717,13 @@ chrome.commands.onCommand.addListener(async (command) => {
         pttRecording = true;
         try {
             await ensureOffscreenDocument();
+            // Read storage fresh — service worker may have restarted and lost API_BASE
+            const serverOrigin = (await getApiBase()).replace(/\/api$/, '');
             await chrome.runtime.sendMessage({
                 target: 'offscreen',
                 type: 'START_RECORDING',
                 sessionId: sessionContext?.sessionId || null,
-                serverUrl: API_BASE.replace(/\/api$/, ''), // pass full server origin to offscreen
+                serverUrl: serverOrigin,
             });
             chrome.action.setBadgeText({ text: '\uD83C\uDF99' });
             chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
