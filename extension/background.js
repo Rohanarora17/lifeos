@@ -713,16 +713,19 @@ chrome.commands.onCommand.addListener(async (command) => {
                 type: 'START_RECORDING',
                 sessionId: sessionContext?.sessionId || null,
             });
-            chrome.action.setBadgeText({ text: '🎙' });
-            chrome.action.setBadgeBackgroundColor({ color: '#f97316' });
+            chrome.action.setBadgeText({ text: '\uD83C\uDF99' });
+            chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+            broadcastPttState('recording');
         } catch (e) {
             console.error('[PTT] Start recording failed:', e);
             pttRecording = false;
+            broadcastPttState('idle');
         }
     } else {
         // Stop recording — offscreen will send audio to server and play response
         pttRecording = false;
         try {
+            broadcastPttState('sending');
             await chrome.runtime.sendMessage({
                 target: 'offscreen',
                 type: 'STOP_RECORDING',
@@ -732,6 +735,7 @@ chrome.commands.onCommand.addListener(async (command) => {
             chrome.action.setBadgeBackgroundColor({ color: guardianActive ? '#ef4444' : '#6b7280' });
         } catch (e) {
             console.error('[PTT] Stop recording failed:', e);
+            broadcastPttState('idle');
         }
     }
 });
@@ -740,26 +744,40 @@ chrome.commands.onCommand.addListener(async (command) => {
 chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'RECORDING_STARTED') {
         console.log('[PTT] Recording started');
+        broadcastPttState('recording');
     }
     if (msg.type === 'PTT_SENDING') {
         console.log('[PTT] Sending audio to server...');
+        broadcastPttState('sending');
     }
     if (msg.type === 'PTT_DONE') {
         console.log(`[PTT] Done. Transcript: "${msg.transcript}"`);
+        broadcastPttState('done', msg.transcript);
         // Reset badge
         chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
     }
     if (msg.type === 'PTT_ERROR') {
         console.error('[PTT] Error:', msg.error);
+        broadcastPttState('idle');
         chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
         pttRecording = false;
     }
     if (msg.type === 'RECORDING_ERROR') {
         console.error('[PTT] Mic error:', msg.error);
+        broadcastPttState('idle');
         pttRecording = false;
         chrome.action.setBadgeText({ text: guardianActive ? 'ON' : '' });
     }
 });
+
+/** Send PTT_STATE to the currently active tab so guardian.js can update the overlay. */
+async function broadcastPttState(state, transcript = '') {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (!tab?.id) return;
+        chrome.tabs.sendMessage(tab.id, { type: 'PTT_STATE', state, transcript }).catch(() => {});
+    } catch {}
+}
 
 // SSE listener — guardian speaks via ElevenLabs → play on MacBook
 let sseSource = null;
