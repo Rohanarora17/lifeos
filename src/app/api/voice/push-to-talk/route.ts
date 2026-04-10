@@ -27,7 +27,11 @@ async function transcribeAudio(audio: Blob): Promise<string | null> {
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
         const res = await fetch(whisperUrl, { method: 'POST', body: form, headers, signal: controller.signal });
-        const data = await res.json() as { text?: string; transcript?: string };
+        const data = await res.json() as { text?: string; transcript?: string; error?: unknown };
+        if (!res.ok) {
+            console.error(`[PTT] Transcription API error ${res.status}:`, JSON.stringify(data));
+            return null;
+        }
         return data.text || data.transcript || null;
     } finally {
         clearTimeout(timeout);
