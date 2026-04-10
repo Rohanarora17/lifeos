@@ -2,11 +2,11 @@
 -- The original CHECK only allowed 'screenshot' | 'daemon'.
 -- Extension screenshots (captureAndAnalyzeBuffer) pass 'extension_screenshot',
 -- and the daemon ingest route passes 'extension_screenshot' too — these must be valid.
+--
+-- NOTE: No explicit BEGIN/COMMIT — db.ts migration runner wraps each file in a transaction.
+-- NOTE: No PRAGMA foreign_keys OFF — better-sqlite3 does not allow PRAGMAs inside transactions.
 
 -- SQLite cannot ALTER a CHECK constraint in-place, so we recreate the table.
-PRAGMA foreign_keys = OFF;
-
-BEGIN;
 
 CREATE TABLE screen_observations_new (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +36,3 @@ DROP TABLE screen_observations;
 ALTER TABLE screen_observations_new RENAME TO screen_observations;
 
 CREATE INDEX IF NOT EXISTS idx_screen_obs_observed_at ON screen_observations(observed_at DESC);
-
-COMMIT;
-
-PRAGMA foreign_keys = ON;
