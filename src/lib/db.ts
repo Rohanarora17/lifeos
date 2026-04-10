@@ -94,6 +94,12 @@ function initSchema(db: Database.Database) {
   try { db.prepare("ALTER TABLE goals ADD COLUMN health_status TEXT DEFAULT 'on_track'").run(); } catch (e) { }
   try { db.prepare('ALTER TABLE goals ADD COLUMN velocity_needed REAL DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE goals ADD COLUMN actual_velocity REAL DEFAULT NULL').run(); } catch (e) { }
+  // goals: archived + category + deadline — used by voice handlers and newer TG commands
+  try { db.prepare('ALTER TABLE goals ADD COLUMN archived INTEGER DEFAULT 0').run(); } catch (e) { }
+  try { db.prepare("ALTER TABLE goals ADD COLUMN category TEXT DEFAULT 'general'").run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE goals ADD COLUMN deadline TEXT DEFAULT NULL').run(); } catch (e) { }
+  // Sync archived to inverse of active for existing rows (idempotent)
+  try { db.prepare('UPDATE goals SET archived = CASE WHEN active = 1 THEN 0 ELSE 1 END WHERE archived IS NULL OR (active = 0 AND archived = 0)').run(); } catch (e) { }
 
   // ─── P0.4a: habit_checkins — source tagging for deduplication ─────────────
   try { db.prepare("ALTER TABLE habit_checkins ADD COLUMN source TEXT DEFAULT 'manual'").run(); } catch (e) { }

@@ -1005,7 +1005,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
 
     if (pending.action === 'archive_all_goals') {
-      const archived = db.prepare(`UPDATE goals SET archived = 1 WHERE archived = 0`).run();
+      const archived = db.prepare(`UPDATE goals SET archived = 1, active = 0 WHERE archived = 0`).run();
       const response = `Done. Archived ${archived.changes} goals. You're starting fresh.`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
@@ -1054,7 +1054,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       const db = getDb();
       const safeCategory = ['study', 'work', 'health', 'personal'].includes(intent.goalCategory ?? '') ? intent.goalCategory : 'study';
       const result = db.prepare(
-        `INSERT INTO goals (title, category, deadline, archived) VALUES (?, ?, ?, 0)`
+        `INSERT INTO goals (title, category, deadline, archived, active) VALUES (?, ?, ?, 0, 1)`
       ).run(goalTitle, safeCategory, intent.goalDeadline ?? null);
       const goalId = Number(result.lastInsertRowid);
       // Auto-link existing tasks to this goal
