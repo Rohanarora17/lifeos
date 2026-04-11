@@ -97,6 +97,7 @@ interface ParsedVoiceIntent {
   habitGoalMinutes?: number;       // for time-based habits
   // Goal fields
   goalTitle?: string;
+  goalType?: string;               // 'build_feature'|'learn_skill'|'launch_project'|'general'
   goalCategory?: string;
   goalDeadline?: string;           // YYYY-MM-DD
   goalProgressValue?: number;      // for update_goal
@@ -469,7 +470,7 @@ HABIT MANAGEMENT (full CRUD):
 - show_habits: See habit list + today's completion status.
 
 GOAL MANAGEMENT:
-- create_goal: New goal/objective. goalTitle, goalCategory (study/work/health/personal), goalDeadline (YYYY-MM-DD, end of stated period).
+- create_goal: New goal/objective. goalTitle, goalType (build_feature/learn_skill/launch_project/general), goalCategory (study/work/health/personal), goalDeadline (YYYY-MM-DD, end of stated period).
 - update_goal: Update progress or status. goalTitle, goalProgressValue (0-100 percent).
 - show_goals: List current goals.
 - archive_all_goals: Archive everything. Requires confirm — set responseText asking.
@@ -1163,12 +1164,19 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
+    const type = intent.goalType?.trim();
+    if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) {
+      const response = `What type of goal is "${goalTitle}"? Options are: build feature, learn skill, launch project, or general.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
     try {
       const db = getDb();
       const safeCategory = ['study', 'work', 'health', 'personal'].includes(intent.goalCategory ?? '') ? intent.goalCategory : 'study';
       const result = db.prepare(
-        `INSERT INTO goals (title, category, deadline, archived, active, type) VALUES (?, ?, ?, 0, 1, 'general')`
-      ).run(goalTitle, safeCategory, intent.goalDeadline ?? null);
+        `INSERT INTO goals (title, type, category, deadline, archived, active) VALUES (?, ?, ?, ?, 0, 1)`
+      ).run(goalTitle, type, safeCategory, intent.goalDeadline ?? null);
       const goalId = Number(result.lastInsertRowid);
       // Auto-link existing tasks to this goal
       try { const { autoLinkAllUnlinkedTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => { }); } catch { /* non-fatal */ }

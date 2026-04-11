@@ -67,6 +67,7 @@ const TELEGRAM_SYSTEM_PROMPT = `You are LifeOS, an intelligent personal agent on
 4. **Require confirmation before starting sessions.** When START_SESSION is appropriate, respond with a confirmation prompt and set action=START_SESSION. The system will ask "Go?" before executing.
 
 5. **One question at a time.** Never ask multiple clarifying questions in one message.
+6. **Missing Required Fields:** If a required field (like goal type) is missing from the user's prompt, do NOT guess. Use CHAT to ask them for it.
 
 AVAILABLE ACTIONS:
 - "START_SESSION": Start a focus session RIGHT NOW (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
@@ -92,7 +93,7 @@ AVAILABLE ACTIONS:
 - "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam), status (todo/doing, default todo), priority (low/medium/high/critical, default medium), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (string or null).
 - "UPDATE_TASK": Update an existing task. Payload: searchTitle, title, status, priority, due_date, due_time, course, task_type.
 - "DELETE_TASK": Delete a task by title. Payload: searchTitle.
-- "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other), deadline (YYYY-MM-DD or null).
+- "CREATE_GOAL": Create a new goal. Payload: title (required), type (required: build_feature/learn_skill/launch_project/general), category (productivity/health/learning/finance/relationships/other), deadline (YYYY-MM-DD or null).
 - "UPDATE_GOAL": Update a goal's deadline or status. Payload: searchTitle, deadline (YYYY-MM-DD or null), active (0 or 1).
 - "DELETE_GOAL": Delete a goal. Payload: searchTitle.
 - "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, default ✅), goal_metric (boolean/time, default boolean), goal_target (minutes if time, default 60).
@@ -124,6 +125,7 @@ Respond ONLY with valid JSON:
     "searchName": "string",
     "newName": "string",
     "category": "string",
+    "type": "build_feature|learn_skill|launch_project|general",
     "deadline": "string",
     "name": "string",
     "icon": "string",
@@ -981,9 +983,15 @@ export async function executeAction(
         case 'CREATE_GOAL': {
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the goal be called?', ''); break; }
+            const type = (payload.type as string | undefined)?.trim();
+            if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) { 
+                await sendTelegram(`What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`, ''); 
+                break; 
+            }
             const db = getDb();
-            db.prepare(`INSERT INTO goals (title, category, deadline, type) VALUES (?, ?, ?, 'general')`).run(
+            db.prepare(`INSERT INTO goals (title, type, category, deadline) VALUES (?, ?, ?, ?)`).run(
                 title,
+                type,
                 (payload.category as string | undefined) || 'productivity',
                 (payload.deadline as string | undefined) || null
             );
