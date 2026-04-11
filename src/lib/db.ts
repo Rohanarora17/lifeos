@@ -72,6 +72,14 @@ function initSchema(db: Database.Database) {
 
   try { db.prepare('ALTER TABLE alerts ADD COLUMN title TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE alerts ADD COLUMN priority TEXT DEFAULT NULL').run(); } catch (e) { }
+  // daily_checkins: sleep/wake/intention fields (migration 025) — idempotent guards
+  // SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so we try/catch each one.
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN sleep_time TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN wake_estimate TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN tomorrow_intention TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN inferred_goal_id INTEGER').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN inferred_goal_confidence REAL').run(); } catch (e) { }
+
   // knowledge_nodes: backfill columns added after initial inline creation
   try { db.prepare('ALTER TABLE knowledge_nodes ADD COLUMN bloom_level INTEGER DEFAULT 1').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE knowledge_nodes ADD COLUMN decay_rate REAL DEFAULT 0.02').run(); } catch (e) { }

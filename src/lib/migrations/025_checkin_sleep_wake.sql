@@ -1,7 +1,7 @@
--- Migration 025: Add sleep/wake/intention tracking to daily_checkins
-
-ALTER TABLE daily_checkins ADD COLUMN sleep_time TEXT;
-ALTER TABLE daily_checkins ADD COLUMN wake_estimate TEXT;
-ALTER TABLE daily_checkins ADD COLUMN tomorrow_intention TEXT;
-ALTER TABLE daily_checkins ADD COLUMN inferred_goal_id INTEGER REFERENCES goals(id);
-ALTER TABLE daily_checkins ADD COLUMN inferred_goal_confidence REAL;
+-- Migration 025: Sleep/wake/intention columns on daily_checkins
+-- These columns are added via try/catch backfills in db.ts (initSchema)
+-- because SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS.
+-- Running raw ALTER TABLE inside a transaction would crash on existing DBs
+-- that already have these columns. The backfills below in db.ts are idempotent.
+-- This file is intentionally a no-op so the migration is recorded as applied.
+SELECT 1;
