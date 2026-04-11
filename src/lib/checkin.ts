@@ -4,6 +4,8 @@
 import { getDb, setSetting, getSetting } from './db';
 import { sendTelegram } from './telegram';
 import { extractMemoryFromCheckin } from './memory-extractor';
+import { getGenAI, generateWithFallback } from './ai';
+import { MODEL_FLASH } from './models';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
 
@@ -48,10 +50,11 @@ export async function sendEveningReflection(): Promise<void> {
   }
 
   const message = [
-    `Three questions. Answer honestly.\n`,
+    `End-of-day check-in. Answer honestly.\n`,
     `1. <b>What did you avoid today</b>, and what's the honest reason — not the reason you'd tell someone else, the actual reason?`,
     `2. <b>What are you postponing</b> that you keep telling yourself is for tomorrow?`,
     `3. <b>How do you feel about showing up tomorrow, 1–10?</b> Why that number?`,
+    `4. <b>What time are you sleeping tonight</b>, and what's the one thing you want to accomplish tomorrow?`,
     `\nVoice note or text — doesn't matter.`,
   ].join('\n');
 
@@ -120,13 +123,79 @@ export async function handleEveningReflectionResponse(text: string): Promise<voi
   setSetting(PENDING_CHECKIN_KEY, '');
   setSetting(PENDING_CHECKIN_DATE_KEY, '');
 
-  // Simple acknowledgment — the real response comes from memory extraction
+  // Simple acknowledgment
   await sendTelegram(`Got it. I'll think about what you said tonight.`, 'HTML');
+
+  // Extract sleep/wake/intention non-blocking
+  void (async () => {
+    try {
+      const extractPrompt = `Extract from this evening check-in. Return JSON only, no markdown.
+
+Response: "${text}"
+
+Return: {
+  "sleepTime": "HH:MM in 24h format, or null if not mentioned",
+  "wakeEstimate": "HH:MM in 24h format — derive as sleepTime + 8h if not stated, or null",
+  "tomorrowIntention": "what they plan to do tomorrow in one phrase, or null"
+}
+
+Examples:
+- "sleeping at 1am" → sleepTime: "01:00", wakeEstimate: "09:00"
+- "bed by midnight" → sleepTime: "00:00", wakeEstimate: "08:00"
+- "want to finish module 3" → tomorrowIntention: "finish module 3"
+If nothing relevant, return nulls.`;
+
+      const ai = getGenAI();
+      if (!ai) throw new Error('No AI client');
+      const result = await generateWithFallback(ai, {
+        model: MODEL_FLASH,
+        contents: extractPrompt,
+        config: { temperature: 0.1, maxOutputTokens: 200 },
+      });
+      const raw = result.text ?? '';
+      const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+      const extracted = JSON.parse(cleaned) as { sleepTime: string | null; wakeEstimate: string | null; tomorrowIntention: string | null };
+
+      if (extracted.sleepTime || extracted.tomorrowIntention) {
+        db.prepare(`
+          UPDATE daily_checkins
+          SET sleep_time = COALESCE(?, sleep_time),
+              wake_estimate = COALESCE(?, wake_estimate),
+              tomorrow_intention = COALESCE(?, tomorrow_intention)
+          WHERE checkin_date = ? AND checkin_type = 'evening'
+        `).run(
+          extracted.sleepTime ?? null,
+          extracted.wakeEstimate ?? null,
+          extracted.tomorrowIntention ?? null,
+          today
+        );
+        console.log(`[Checkin] Sleep/wake extracted — sleep: ${extracted.sleepTime}, wake: ${extracted.wakeEstimate}, intention: ${extracted.tomorrowIntention}`);
+      }
+    } catch (err) {
+      console.error('[Checkin] sleep/wake extraction failed (non-blocking):', err);
+    }
+  })();
 
   // Deep analysis: run memory extraction with full day context
   void extractMemoryFromCheckin({ type: 'evening', rawTranscript: text, tomorrowScore, date: today });
 
   console.log(`[Checkin] Evening reflection recorded. Tomorrow score: ${tomorrowScore}`);
+}
+
+// ─── Wake Estimate ────────────────────────────────────────────────────────────
+
+/**
+ * Returns the most recent wake_estimate from evening check-ins.
+ * Used by the scheduler to fire morning check-in at the right time.
+ */
+export function getWakeEstimate(): string | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT wake_estimate FROM daily_checkins
+    WHERE checkin_type = 'evening' AND wake_estimate IS NOT NULL
+    ORDER BY received_at DESC LIMIT 1
+  `).get() as { wake_estimate: string } | undefined;
+  return row?.wake_estimate ?? null;
 }
 
 // ─── State Check ─────────────────────────────────────────────────────────────

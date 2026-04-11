@@ -9,7 +9,7 @@ import {
 import { listUpcomingEvents } from './google-calendar';
 import { forceSynthesis, getIntelligenceContext } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
-import { sendMorningCheckin, sendEveningReflection } from './checkin';
+import { sendMorningCheckin, sendEveningReflection, getWakeEstimate } from './checkin';
 import { captureAndAnalyze } from './screenshot-pipeline';
 import { runContinuityCheck } from './continuity-guardian';
 import { sendWeeklyReckoning } from './weekly-reckoning';
@@ -268,9 +268,28 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await consolidateFacts();
     });
 
-    // Daily morning check-in — configurable via MORNING_CHECKIN_TIME (default 08:00)
-    const checkinMorningTime = (process.env.MORNING_CHECKIN_TIME || '08:00').trim();
-    registerDailyJob('morning_checkin', checkinMorningTime, async () => {
+    // Daily morning check-in — fires within 15 minutes of the user's wake estimate
+    // Wake estimate comes from yesterday's evening check-in. Fallback: 08:00.
+    // Uses a polling approach: every minute we check if we're in the wake window.
+    registerIntervalJob('morning_checkin', 60 * 1000, async () => {
+        const now = new Date();
+        const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+        // Determine target window
+        const wakeEstimate = getWakeEstimate();
+        let windowStart: number;
+        if (wakeEstimate) {
+            const [wh, wm] = wakeEstimate.split(':').map(Number);
+            windowStart = wh * 60 + wm;
+        } else {
+            windowStart = 8 * 60; // 08:00 fallback
+        }
+        const windowEnd = windowStart + 15;
+
+        // Only fire inside the window
+        if (nowMinutes < windowStart || nowMinutes >= windowEnd) return;
+
+        // Deduplicate: sendMorningCheckin() already checks if already sent today
         await sendMorningCheckin();
     });
 
