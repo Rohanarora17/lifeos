@@ -102,20 +102,30 @@ All capabilities the agent can invoke. Defined as typed tool schemas (compatible
 - `read_calendar` — Google Calendar events
 - `write_calendar` — block focus windows
 
-### 3. Intelligence Model (`src/lib/agent-memory.ts`)
+### 3. Intelligence Model — the UIL (already exists)
 
-One source of truth. All surfaces read from here. All interactions write to here.
+**Do not build a new memory layer. Use the existing UIL.**
 
-**Four layers:**
+`intelligence.ts` already implements a full Unified Intelligence Layer (UIL):
+- `runUILSynthesis()` — Gemini AI synthesis producing a `UserIntelligenceProfile` with 30+ fields: peak focus hours, energy by hour, distraction triggers, archetype, coaching style, goal momentum, weekly narrative, adaptive thresholds
+- `getIntelligenceContext()` — THE function the agent calls before every LLM invocation
+- Re-synthesizes every 30 minutes; background refresh every 2 hours via scheduler
+- `touchIntelligence()` — debounced signal that new data arrived, triggers re-synthesis
 
-| Layer | Content | Storage |
-|-------|---------|---------|
-| Semantic | Behavioral fingerprint: energy band, coaching style, best start hour, distraction domains, strong/friction topics, sleep patterns, avg focus by day-of-week | `guardian_semantic_profiles` (extended) |
-| Episodic | Session summaries, reflections, interventions, check-in logs, daily intentions, mood logs | Existing tables + `agent_daily_intentions`, `agent_checkin_logs` |
-| Procedural | Policy bundles, agent skill snapshots, self-eval outcomes | `guardian_artifact_versions` (extended) |
-| Working | Today's intention, current mood/energy, active session context, last check-in time | In-memory, hydrated at agent startup from DB |
+The existing 4-tier memory is already in DB:
 
-**New DB tables:**
+| Layer | Table | What it stores |
+|-------|-------|----------------|
+| Episodic | `mem_episodes` | Raw events — sessions, check-ins, reflections |
+| Semantic | `mem_facts` | Distilled facts with confidence + half-life decay (Mem0-style) |
+| Procedural | `mem_procedures` | Coaching macros, agent skills |
+| Working | `mem_working` | Session state snapshots |
+
+Energy composite (`energy-composite.ts`) already computes a calibrated [0–100] energy estimate from standup mood, time-of-day prior, recent focus quality, and circadian pattern. Weights auto-adjust per-user via `guardian-calibration.ts` after every session.
+
+**What the agent adds — new INPUT signals to feed the UIL:**
+
+The UIL is already sophisticated but blind to sleep and daily intentions. Two new DB tables give it those signals:
 
 ```sql
 -- Daily intentions: what you plan to do, when you sleep/wake
@@ -129,20 +139,14 @@ agent_checkin_logs (
   id, checkin_type ('morning'|'evening'), mood, energy_score,
   free_text, created_at
 )
-
--- Self-eval outcomes: did agent actions produce good signal?
-agent_self_eval_log (
-  id, action_type, action_payload, outcome_signal,
-  helpful BOOLEAN, created_at
-)
 ```
 
-**Extended semantic profile fields:**
-- `avg_sleep_duration_hours` — rolling average
-- `avg_wake_hour` — rolling average
-- `energy_by_day_of_week` — JSON: `{0: 'low', 1: 'high', ...}`
-- `sleep_focus_correlation` — does more sleep = better focus? computed weekly
-- `intention_completion_rate` — how often does planned = done?
+`runUILSynthesis()` is extended to read these tables so the resulting profile includes:
+- `sleepPattern` — avg sleep duration, consistency, sleep time variance
+- `intentionCompletionRate` — how often planned = done
+- `morningEnergyBaseline` — from check-in logs, feeds energy composite as a new prior
+
+No `agent-memory.ts`. The UIL is the brain. The agent reads it, writes new signals into the input tables, and calls `touchIntelligence()` after every check-in to trigger re-synthesis.
 
 ### 4. Agent Gateway (`src/app/api/agent/route.ts`)
 
@@ -223,14 +227,18 @@ LifeOS doesn't need a rewrite. The existing architecture is the foundation.
 
 | Existing | Role in Agent Architecture |
 |----------|---------------------------|
+| `intelligence.ts` (UIL) | **The agent brain.** `getIntelligenceContext()` called before every LLM invocation. `touchIntelligence()` called after every check-in. |
+| `behavior.ts` | Feeds UIL synthesis — focus depth, entropy, archetype, behavioral memory |
+| `energy-composite.ts` | Energy prior for session planning — extended with morning check-in as new input signal |
+| `guardian-calibration.ts` | Self-improving loop — post-session feedback adjusts weights automatically |
+| `mem_facts / mem_episodes / mem_procedures` | Already the 4-tier memory. Agent reads and writes these directly. |
 | `guardian-runtime.ts` | Session-scoped tool the agent invokes |
-| `longitudinal-engine.ts` | Day briefing tool, feeds intelligence model |
-| `guardian-semantic-profiles` table | Semantic layer of intelligence model (extended) |
+| `longitudinal-engine.ts` | Day briefing tool, still used for session start context |
 | Telegram bot handlers | Become thin adapters → agent gateway |
 | Guardian SSE stream | Still exists, agent can read/push via `invoke_guardian` tool |
 | `guardian-optimizer.ts` | Procedural layer optimizer (still runs off hot path) |
 
-**Nothing is deleted. Everything is promoted.**
+**Nothing is deleted. Everything is promoted. The UIL was always the brain — the agent just gives it a face.**
 
 ---
 
@@ -245,10 +253,23 @@ LifeOS doesn't need a rewrite. The existing architecture is the foundation.
 
 ## Phase Boundary
 
+**New files this phase:**
+
+| File | Role |
+|------|------|
+| `src/lib/lifeos-agent.ts` | Central agent loop — context assembly via UIL, tool routing, LLM call, self-eval |
+| `src/lib/agent-tools.ts` | Tool definitions — read/write goals, tasks, sessions, intentions, Telegram, guardian invoke |
+| `src/lib/agent-scheduler.ts` | Heartbeat daemon — daily ritual triggers, proactive nudges, drift checks |
+| `src/app/api/agent/route.ts` | Gateway — all surfaces (Telegram, web, voice) route here |
+
+**Extended (not replaced):**
+- `intelligence.ts` — `runUILSynthesis()` reads new `agent_daily_intentions` + `agent_checkin_logs` tables
+- `energy-composite.ts` — morning check-in becomes a new energy prior
+
 **This spec covers:**
 - LifeOSAgent core loop
-- Agent tools (goals, tasks, sessions, memory, Telegram, guardian invoke)
-- Intelligence model (new DB tables + extended semantic profile)
+- Agent tools (goals, tasks, sessions, UIL read, Telegram, guardian invoke)
+- New input signal tables (daily intentions + check-in logs) feeding existing UIL
 - Agent gateway (unified inbound)
 - Autonomous scheduler (daily ritual loop)
 - Telegram as primary async surface
