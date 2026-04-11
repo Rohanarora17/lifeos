@@ -65,9 +65,10 @@ export async function sendWeeklyReckoning(): Promise<void> {
 
     // Goal progress
     const goals = db.prepare(`
-      SELECT title, health_status, progress_percentage
-      FROM goals WHERE status = 'active' LIMIT 8
-    `).all() as Array<{ title: string; health_status: string; progress_percentage: number }>;
+      SELECT title, health_status, progress_value
+      FROM goals WHERE active = 1 LIMIT 8
+    `).all() as Array<{ title: string; health_status: string; progress_value: number }>;
+
 
     // Last week's open question
     const lastReckoning = db.prepare(`
@@ -118,7 +119,8 @@ export async function sendWeeklyReckoning(): Promise<void> {
         const icon = g.health_status === 'on_track' ? '✓' : g.health_status === 'at_risk' ? '⚠' : '✗';
         const topicSessions = sessionsByTopic[g.title];
         const sessionNote = topicSessions ? `, ${topicSessions.sessions} sessions` : ', 0 sessions';
-        return `${icon} ${g.title}${sessionNote}`;
+        const pct = g.progress_value != null ? ` (${Math.round(g.progress_value)}%)` : '';
+        return `${icon} ${g.title}${pct}${sessionNote}`;
       }),
       ``,
       `SESSIONS THIS WEEK:`,
@@ -164,7 +166,7 @@ ONE QUESTION I'M NOT MOVING ON FROM:
 Keep total length under 400 words. No filler. No encouragement. Facts and one honest question.`;
 
     const { getGenAI, generateWithFallback } = await import('./ai');
-    const { MODEL_FLASH } = await import('./models');
+    const { MODEL_PRO } = await import('./models');
     const ai = getGenAI();
 
     if (!ai) {
@@ -173,10 +175,11 @@ Keep total length under 400 words. No filler. No encouragement. Facts and one ho
     }
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: prompt,
       config: { temperature: 0.3, maxOutputTokens: 600 },
     });
+
 
     const reckoningText = result.text;
 

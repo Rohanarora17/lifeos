@@ -105,8 +105,9 @@ function getContinuityState(): ContinuityState {
   // Active goals last touched
   const goals = db.prepare(`
     SELECT title, updated_at FROM goals
-    WHERE status = 'active' LIMIT 10
+    WHERE active = 1 LIMIT 10
   `).all() as Array<{ title: string; updated_at: string }>;
+
 
   const activeGoalLastTouchedDaysAgo: Record<string, number> = {};
   for (const g of goals) {
