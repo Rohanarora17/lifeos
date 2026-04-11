@@ -137,7 +137,7 @@ export interface SoftWatchCommitment {
   taskId: number | null;
   intendedStartAt: number;
   plannedMinutes: number;
-  source: 'voice' | 'dashboard' | 'calendar';
+  source: 'voice' | 'dashboard' | 'calendar' | 'telegram';
   reminderSentAt: number | null;
   checkInSentAt: number | null;
   status: 'pending' | 'locked_in' | 'expired' | 'dismissed';

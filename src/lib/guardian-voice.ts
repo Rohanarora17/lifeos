@@ -63,6 +63,8 @@ type VoiceAction =
   | 'deep_analysis'        // "analyse my week", "why am I distracted?", "how am I doing?"
   | 'guardian_status'
   | 'day_briefing'
+  | 'multi_action'
+
   // ── Confirmation flow ──
   | 'confirm_pending'
   | 'reject_pending'
@@ -102,6 +104,8 @@ interface ParsedVoiceIntent {
   analysisQuery?: string;          // free-form question for deep_analysis
   // Freeform response (tutor / unknown)
   responseText?: string;
+  // Multi-action array
+  actions?: ParsedVoiceIntent[];
 }
 
 interface ProcessVoiceCommandInput {
@@ -971,6 +975,35 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
   }
 
+  // ── create_session_task ──────────────────────────────────────────────────
+
+  if (intent.action === 'create_session_task') {
+    const taskTitle = intent.taskTitle?.trim();
+    if (!taskTitle) {
+      const response = 'What should the session be called?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    try {
+      const db = getDb();
+      const duration = intent.durationMinutes || 60;
+      const result = db.prepare(
+        `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, due_date) VALUES (?, 'todo', 'medium', 'session', ?, ?)`
+      ).run(taskTitle, duration, intent.taskDueDate || null);
+      const taskId = Number(result.lastInsertRowid);
+      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* ignore */ }
+      
+      const response = `Scheduled session task: ${taskTitle} for ${duration} minutes.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'task_created', transcript, intent, responseText: response };
+    } catch {
+      const response = 'Failed to create session task. Try again.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
   // ── clear_done_tasks (asks confirmation first) ─────────────────────
 
   if (intent.action === 'clear_done_tasks') {
@@ -991,6 +1024,48 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     } catch {
       const response = 'Could not read task list.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── update_goal ──────────────────────────────────────────────────────────
+
+  if (intent.action === 'update_goal') {
+    const goalTitle = intent.goalTitle?.trim();
+    if (!goalTitle) {
+      const response = 'Which goal should I update?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+    const db = getDb();
+    const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? AND archived = 0 LIMIT 1`).get(`%${goalTitle.toLowerCase()}%`) as { id: number; title: string } | undefined;
+    if (!goal) {
+      const response = `Goal matching ${goalTitle} not found.`;
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+
+    const sets: string[] = [];
+    const vals: (string | number)[] = [];
+    if (intent.goalProgressValue !== undefined) {
+      sets.push('progress_value = ?');
+      vals.push(intent.goalProgressValue);
+    }
+    if (intent.goalDeadline !== undefined) {
+      sets.push('deadline = ?');
+      vals.push(intent.goalDeadline);
+    }
+    
+    if (sets.length > 0) {
+      vals.push(goal.id);
+      db.prepare(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      const response = `Updated goal: ${goal.title}.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } else {
+      const response = `No update values provided for goal ${goal.title}.`;
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
   }

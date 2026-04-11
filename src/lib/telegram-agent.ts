@@ -69,7 +69,9 @@ const TELEGRAM_SYSTEM_PROMPT = `You are LifeOS, an intelligent personal agent on
 5. **One question at a time.** Never ask multiple clarifying questions in one message.
 
 AVAILABLE ACTIONS:
-- "START_SESSION": Start a focus session (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
+- "START_SESSION": Start a focus session RIGHT NOW (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
+- "CREATE_SESSION_TASK": Create a task indicating a planned session. Used when user says "I want to do a 50 min session on X". Payload: title (topic), durationMinutes, due_date (YYYY-MM-DD).
+- "SCHEDULE_SESSION": Schedule a session for a FUTURE time (adds to calendar). Payload: targetTitle, durationMinutes, intendedStartAt (unix ms).
 - "ADJUST_SESSION": Change duration of the CURRENT active session. Payload: durationMinutes (new total).
 - "END_SESSION": End the current session.
 - "STORE_INTENTION": Store a planned intention without starting anything. Payload: intention (string), when ("today"|"tomorrow"|"this_week").
@@ -91,19 +93,22 @@ AVAILABLE ACTIONS:
 - "UPDATE_TASK": Update an existing task. Payload: searchTitle, title, status, priority, due_date, due_time, course, task_type.
 - "DELETE_TASK": Delete a task by title. Payload: searchTitle.
 - "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other), deadline (YYYY-MM-DD or null).
+- "UPDATE_GOAL": Update a goal's deadline or status. Payload: searchTitle, deadline (YYYY-MM-DD or null), active (0 or 1).
 - "DELETE_GOAL": Delete a goal. Payload: searchTitle.
 - "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, default ✅), goal_metric (boolean/time, default boolean), goal_target (minutes if time, default 60).
 - "UPDATE_HABIT": Rename a habit. Payload: searchName, newName.
 - "DELETE_HABIT": Delete/archive a habit. Payload: searchName.
+- "MULTI_ACTION": Execute multiple actions in sequence (e.g. archiving X, prioritizing Y, scheduling Z). Payload: actions (array of action objects).
 - "CHAT": Conversational reply (no action).
 
 Respond ONLY with valid JSON:
 {
   "action": "<ACTION>",
-  "replyText": "<HTML reply to user, very brief, Telegram HTML allowed (<b>, <i>)>",
+  "replyText": "<HTML reply to user, very brief, Telegram HTML allowed (<b>, <i>). For MULTI_ACTION, put the final combined reply here.>",
   "payload": {
     "targetTitle": "string",
     "durationMinutes": 60,
+    "intendedStartAt": 1234567890,
     "mood": "high|medium|low",
     "habitTitle": "string",
     "goal": "string",
@@ -111,7 +116,7 @@ Respond ONLY with valid JSON:
     "title": "string",
     "status": "todo|doing|done",
     "priority": "string",
-    "task_type": "task|assignment|exam",
+    "task_type": "task|assignment|exam|session",
     "due_date": "YYYY-MM-DD or null",
     "due_time": "HH:MM or null",
     "course": "string or null",
@@ -123,7 +128,9 @@ Respond ONLY with valid JSON:
     "name": "string",
     "icon": "string",
     "goal_metric": "boolean|time",
-    "goal_target": 60
+    "goal_target": 60,
+    "active": 1,
+    "actions": [{"action": "string", "replyText": "string", "payload": {}}]
   }
 }`;
 
@@ -521,7 +528,9 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         ].join('\n')
       : 'ACTIVE SESSION: none';
 
-    const contextBlock = `--- CURRENT STATE ---\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
+    const nowMs = Date.now();
+    const localTimeStr = new Date(nowMs).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const contextBlock = `--- CURRENT STATE ---\nCURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs})\nTIMEZONE: Asia/Kolkata (IST, UTC+5:30)\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
 
     // Load recent conversation turns for multi-turn context
     let turnHistoryBlock = '';
@@ -607,7 +616,113 @@ export async function executeAction(
 
     switch (action) {
 
-        case 'START_SESSION': {
+        case 'MULTI_ACTION': {
+            const actions = payload.actions as Array<{action: string; replyText: string; payload: Record<string, unknown>}>;
+            if (Array.isArray(actions)) {
+                for (const sub of actions) {
+                    await executeAction(sub.action, '', sub.payload, activeSession);
+                }
+            }
+            if (replyText) {
+                await sendTelegram(replyText, 'HTML', session ? SESSION_START_KEYBOARD : FULL_MENU_KEYBOARD);
+            }
+            break;
+        }
+
+        case 'CREATE_SESSION_TASK': {
+            const title = (payload.title as string | undefined)?.trim();
+            if (!title) { await sendTelegram('What should the session task be called?', ''); break; }
+            const db = getDb();
+            const duration = Number(payload.durationMinutes) || 60;
+            const result = db.prepare(
+                `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, due_date) VALUES (?, 'todo', 'medium', 'session', ?, ?)`
+            ).run(
+                title,
+                duration,
+                (payload.due_date as string | undefined) || null
+            );
+            const taskId = Number(result.lastInsertRowid);
+            try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(console.error); } catch { /* non-fatal */ }
+            if (replyText) await sendTelegram(`✅ Session Task added: <b>${title}</b> (${duration}m)`, 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'SCHEDULE_SESSION': {
+            const title = (payload.targetTitle as string | undefined)?.trim();
+            if (!title) { await sendTelegram('What topic should I schedule?', ''); break; }
+            const intendedStartAt = Number(payload.intendedStartAt) || Date.now() + 60 * 60_000;
+            const plannedMinutes = Number(payload.durationMinutes) || 60;
+            
+            const { createSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+            const commitment = createSoftWatchCommitment({
+                targetTitle: title,
+                intendedStartAt,
+                plannedMinutes,
+                source: 'telegram',
+            });
+
+            const startTime = new Date(intendedStartAt);
+            const endTime = new Date(intendedStartAt + plannedMinutes * 60_000);
+            const startStr = startTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+            const endStr = endTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+            let conflictMsg = '';
+            try {
+                const { createCalendarEvent, getConflictingEvents, isCalendarConfigured } = require('./google-calendar') as typeof import('./google-calendar');
+                if (isCalendarConfigured()) {
+                    const conflicts = await getConflictingEvents(startTime, endTime);
+                    if (conflicts.length > 0) {
+                        conflictMsg = `\n⚠️ <b>Conflict:</b> You have ${conflicts.length} overlapping event(s). It was not added to calendar.`;
+                    } else {
+                        await createCalendarEvent({
+                            summary: `📚 ${commitment.targetTitle}`,
+                            description: `LifeOS Guardian session\\nScheduled via Telegram.`,
+                            startTime,
+                            endTime,
+                            colorId: '9',
+                        });
+                        conflictMsg = `\n🗓️ Added to Calendar!`;
+                    }
+                }
+            } catch { /* ignore calendar errors */ }
+
+            if (replyText) {
+                await sendTelegram(
+                    `📅 <b>Scheduled: ${title}</b>\n🕐 ${startStr} – ${endStr} (${plannedMinutes}m)${conflictMsg}`,
+                    'HTML', FULL_MENU_KEYBOARD
+                );
+            }
+            break;
+        }
+
+        case 'UPDATE_GOAL': {
+            const search = (payload.searchTitle as string | undefined)?.trim();
+            if (!search) { await sendTelegram('Which goal to update?', ''); break; }
+            const db = getDb();
+            const goal = db.prepare(`SELECT id, title, deadline, active FROM goals WHERE LOWER(title) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string; deadline: string|null; active: number } | undefined;
+            if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            
+            const sets: string[] = [];
+            const vals: (string | number)[] = [];
+            
+            if (payload.deadline !== undefined) {
+                sets.push('deadline = ?');
+                vals.push(payload.deadline as string | null ?? '');
+            }
+            if (payload.active !== undefined) {
+                sets.push('active = ?');
+                vals.push(Number(payload.active) ? 1 : 0);
+            }
+            
+            if (sets.length > 0) {
+                vals.push(goal.id);
+                db.prepare(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+                if (replyText) await sendTelegram(`✅ Updated goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+            } else {
+                if (replyText) await sendTelegram(`No changes provided for goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+            }
+            break;
+        }        case 'START_SESSION': {
             if (session) {
                 // Active session exists — offer to adjust instead of hard-blocking
                 const elapsed = Math.max(0, Math.floor((Date.now() - session.startedAt) / 60000));

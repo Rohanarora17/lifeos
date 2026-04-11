@@ -1760,7 +1760,7 @@ export function createSoftWatchCommitment(input: {
   taskId?: number | null;
   intendedStartAt: number;
   plannedMinutes?: number;
-  source?: 'voice' | 'dashboard' | 'calendar';
+  source?: 'voice' | 'dashboard' | 'calendar' | 'telegram';
 }): SoftWatchCommitment {
   const commitment: SoftWatchCommitment = {
     id: randomId('sw'),
