@@ -65,6 +65,11 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE behavior_insights ADD COLUMN feedback TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE behavioral_memory ADD COLUMN superseded INTEGER DEFAULT 0').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE behavioral_memory ADD COLUMN source TEXT DEFAULT NULL').run(); } catch (e) { }
+  // behavior_profile: confidence + tracking columns added after original key/value/updated_at schema
+  try { db.prepare('ALTER TABLE behavior_profile ADD COLUMN confidence REAL DEFAULT 0.5').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE behavior_profile ADD COLUMN update_count INTEGER DEFAULT 1').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE behavior_profile ADD COLUMN last_updated TEXT DEFAULT (datetime(\'now\'))').run(); } catch (e) { }
+
   try { db.prepare('ALTER TABLE alerts ADD COLUMN title TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE alerts ADD COLUMN priority TEXT DEFAULT NULL').run(); } catch (e) { }
   // knowledge_nodes: backfill columns added after initial inline creation
