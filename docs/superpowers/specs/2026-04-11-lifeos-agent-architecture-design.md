@@ -1,295 +1,224 @@
 # LifeOS Agent Architecture Design
 
-**Date:** 2026-04-11
-**Status:** Approved
-**Scope:** Transform LifeOS from a feature-based productivity app into a unified agentic companion — one brain, all surfaces, self-improving loop.
+**Date:** 2026-04-11  
+**Status:** Approved (revised after full codebase audit)  
+**Scope:** Transform LifeOS into a unified agentic companion — connect what exists, fix critical gaps, make the intelligence loop genuinely self-improving.
 
 ---
 
 ## North Star
 
-One agent whose sole directive is to make you better. Everything — sessions, check-ins, sleep patterns, goal drift, energy levels, future screen/activity tracking — is a sensor feeding one intelligence model. Every interaction sharpens the model. Nothing is logged and forgotten.
+One agent whose sole directive is to make you better. Everything — sessions, check-ins, sleep patterns, goal drift, energy, screen activity, corrections, feedback — feeds one intelligence model. Every interaction sharpens the model. Nothing is logged and forgotten. The agent learns from your data and becomes more capable the longer it runs (Hermes-style).
 
 ---
 
-## Inspiration
+## What Already Exists (Do Not Rebuild)
 
-**OpenClaw**: Three-layer architecture (channel → brain → body). Skills system. Heartbeat daemon for autonomous scheduling. Local-first.
+The codebase is significantly more complete than the first version of this spec assumed. These are all operational:
 
-**Hermes**: AIAgent loop as the core. Self-improving procedural skills. Persistent cross-session memory. Multi-platform gateway. The agent gets more capable the longer it runs.
+| Module | What it does |
+|--------|-------------|
+| `intelligence.ts` (UIL) | Gemini-powered synthesis of `UserIntelligenceProfile` (30+ fields). `getIntelligenceContext()` is the context function. Re-synthesizes every 30 min. |
+| `behavior.ts` | Focus depth, entropy, archetype, behavioral memory. Feeds UIL. |
+| `energy-composite.ts` | Per-user calibrated [0–100] energy estimate. Weights auto-adjust via calibration. |
+| `guardian-calibration.ts` | Post-session feedback → weight adjustment. The existing self-improving loop. |
+| `telegram-agent.ts` | Full Telegram command handler. Standup, goals, tasks, habits, sessions, overrides. |
+| `checkin.ts` | Morning/evening Telegram check-ins + response handlers. |
+| `scheduler.ts` | Daily/interval job scheduler. Already runs check-ins, weekly reckoning, screenshot pipeline. |
+| `screenshot-pipeline.ts` | macOS screenshots every 30s, Gemini Vision analysis. Screen tracking exists. |
+| `google-calendar.ts` | Full OAuth Google Calendar CRUD. Already integrated. |
+| `memory-extractor.ts` | LLM fact extraction from sessions, voice, check-ins → `mem_facts` with embeddings. |
+| `notifications.ts` | Deadline warnings, habit missed, focus drops, goal drift. Telegram + email. |
+| `open-loops.ts` | Weekly unfinished goal/task audit + monthly pattern letter. |
+| `weekly-planner.ts` | Energy-based weekly task assignment. |
+| `weekly-reckoning.ts` | Weekly Telegram recap + response handler. |
+| `goal-health.ts` | Nightly velocity check per goal: on_track / at_risk / off_track. |
+| `graph.ts` | Knowledge graph per goal, BKT mastery propagation. |
+| `mem_facts / mem_episodes / mem_procedures / mem_working` | 4-tier memory already in DB. |
+| `/api/chat/route.ts` | Streaming Gemini chat agent with tools (calendar, memory, tasks, guardian start). |
 
-LifeOS adopts the same structural principles but is purpose-built: single user, productivity domain, Mac-native, with a guardian session layer as the session-scoped expert.
-
----
-
-## Architecture
-
-### Three Layers
-
-```
-CHANNELS (surfaces)
-  Telegram ─┐
-  Web App  ─┤──► Agent Gateway ──► LifeOSAgent
-  Voice PTT─┤                      (the brain)
-  Extension─┘
-
-BRAIN (LifeOSAgent)
-  Context Builder → Tool Router → LLM → Self-Eval
-
-BODY (tools)
-  Goals, Tasks, Sessions, Memory, Scheduler, Telegram, Guardian
-  (later: Screen, App Usage, Calendar)
-```
-
-### Key Principle
-
-The Guardian Runtime is not replaced. It becomes a tool the agent can invoke — the session-scoped expert. The agent is the lifelong companion. The Guardian handles "what do I do during this 90-minute deep work block." The agent handles "who is this person, what do they need today, and how do I help them compound over weeks."
+**Nothing above gets replaced or rebuilt.**
 
 ---
 
-## Components
+## The Actual Gaps
 
-### 1. LifeOSAgent (`src/lib/lifeos-agent.ts`)
+### Gap 1 — Telegram is broken as an intelligence surface
 
-The central reasoning loop. Inspired by Hermes' `AIAgent` class.
+Diagnosed from a real bad interaction where:
+- "I want to finish PBA-x course today, 4 hours" → bot started a session on "Sonic ZK paper" (stale UIL topic)
+- "Not right now, not in one session" → bot ended a phantom session and prompted for reflection
 
-**Responsibilities:**
-- Assemble full context before every LLM call (see Intelligence Model below)
-- Route tool calls to the appropriate body functions
-- Evaluate outcomes and update the intelligence model
-- Never answer from stale context — always build fresh from the model
+**Root causes (confirmed by code audit):**
 
-**Loop:**
+| Problem | Location | Evidence |
+|---------|----------|----------|
+| Stale UIL context | `telegram-agent.ts:459` | Calls `getIntelligenceContext()` but never calls `touchIntelligence()` first — profile up to 30 min stale |
+| No conversation history | `telegram-agent.ts` | Each message processed in isolation. No `getRecentContextText()` equivalent. |
+| Session starts too eagerly | System prompt | No "DO NOT start_session unless explicitly asked" guardrail (voice has this at line ~437) |
+| No pending confirmation | `telegram-agent.ts` | Voice has `pendingActions` map. Telegram executes destructive actions immediately. |
+| Weak system prompt | `telegram-agent.ts:25–81` | 8 generic actions. Voice has 13+ with full parameter specs and numbered guardrails. |
+
+**Fix:**
+1. Call `touchIntelligence('telegram_message')` before UIL fetch in `handleTelegramCommand()`
+2. Store Telegram turns in DB (new `telegram_turns` table), pass recent history to every LLM call
+3. Add `pendingActions` map mirroring voice's confirmation pattern
+4. Rewrite system prompt with voice-style guardrails: planning intent vs immediate action, confirmation required for session starts
+5. Add `parseTelegramIntent()` as a dedicated intent-parsing phase (mirrors `parseGuardianVoiceIntent()`)
+
+### Gap 2 — User corrections are thrown away
+
+The richest learning signal is when the user corrects the agent. "No I meant...", "wrong topic", "not right now" are direct feedback that the agent made a wrong inference. Currently these are processed as new messages with no memory of the error.
+
+**Fix:** When a correction is detected (via intent classifier: `correction` type), write to `mem_facts`:
 ```
-receive message/event
-  → build context (semantic + episodic + working memory)
-  → construct prompt (system: directive + context; user: message/event)
-  → LLM call with tool definitions
-  → execute tool calls (may chain)
-  → emit response to surface (Telegram, web, voice)
-  → self-eval: did this action produce good signal? update model
+{ category: 'agent_error', topic: <action_that_was_wrong>, content: 'incorrectly inferred X when user meant Y', confidence: -0.9 }
 ```
+The UIL synthesis already reads `mem_facts` — negative confidence facts will inform future inferences.
 
-**System prompt directive (invariant):**
-> You are LifeOS — a personal agent whose only job is to make this person better. You have full context of their history, goals, energy patterns, and behavioral fingerprint. Act on it. Don't just respond — reason, decide, and when in doubt, ask one focused question.
+### Gap 3 — Memory extraction doesn't run on Telegram conversations
 
-### 2. Agent Tools (`src/lib/agent-tools.ts`)
+`memory-extractor.ts` has `extractMemoryFromSession()`, `extractMemoryFromVoice()`, `extractMemoryFromCheckin()` — but no equivalent for general Telegram conversations.
 
-All capabilities the agent can invoke. Defined as typed tool schemas (compatible with Gemini/Claude tool-use API).
+Every Telegram exchange where the user states a preference, corrects the agent, sets an intention, or describes their state is valuable signal being discarded.
 
-| Tool | Description |
-|------|-------------|
-| `read_goals` | Get active goals with status and linked tasks |
-| `update_goal` | Modify goal status, priority, notes |
-| `create_goal` | Create new goal with optional parent linkage |
-| `read_tasks` | Get tasks (filterable by goal, status, date) |
-| `create_task` | Create task, optionally linked to goal |
-| `complete_task` | Mark task done, log outcome |
-| `read_session_history` | Get recent session summaries with focus scores |
-| `read_reflections` | Get post-session reflections |
-| `read_intelligence_model` | Get the full current intelligence model snapshot |
-| `update_intelligence_model` | Write new signal into the model (sleep, energy, intention, pattern) |
-| `set_daily_intention` | Record tonight's sleep time, wake estimate, tomorrow's intention |
-| `get_daily_intention` | Read today's/tomorrow's intention |
-| `send_telegram` | Send proactive Telegram message to user |
-| `schedule_nudge` | Register a one-shot future nudge with the scheduler |
-| `invoke_guardian` | Start/end a guardian session, query current guardian state |
-| `infer_goal_linkage` | Internal only: LLM sub-call invoked by `set_daily_intention`, given free-form text returns best-matching goal ID or null. Not exposed as an external tool. |
+**Fix:** Add `extractMemoryFromTelegramConversation(turns: TelegramTurn[])` to `memory-extractor.ts`. Called after every Telegram exchange. Extracts preferences, corrections, intentions → `mem_facts`.
 
-**Future tools (Phase 3+):**
-- `read_screen_activity` — Mac helper daemon feed
-- `read_app_usage` — app/window usage outside browser
-- `read_calendar` — Google Calendar events
-- `write_calendar` — block focus windows
+### Gap 4 — No self-eval signal after agent actions
 
-### 3. Intelligence Model — the UIL (already exists)
+After every agent action (session start, nudge, recommendation), there's no mechanism to record whether it was effective. User corrections, immediate reversals, session aborts are all outcome signals that should feed back into UIL synthesis.
 
-**Do not build a new memory layer. Use the existing UIL.**
+**Fix:** New `agent_action_outcomes` table. After every significant action, log: action type, what was inferred, what the user actually did next. UIL synthesis reads this to calibrate inference accuracy over time.
 
-`intelligence.ts` already implements a full Unified Intelligence Layer (UIL):
-- `runUILSynthesis()` — Gemini AI synthesis producing a `UserIntelligenceProfile` with 30+ fields: peak focus hours, energy by hour, distraction triggers, archetype, coaching style, goal momentum, weekly narrative, adaptive thresholds
-- `getIntelligenceContext()` — THE function the agent calls before every LLM invocation
-- Re-synthesizes every 30 minutes; background refresh every 2 hours via scheduler
-- `touchIntelligence()` — debounced signal that new data arrived, triggers re-synthesis
+### Gap 5 — Sleep/wake time missing from check-ins
 
-The existing 4-tier memory is already in DB:
+`checkin.ts` has morning/evening check-ins but no sleep time or wake estimate fields. `scheduler.ts` fires at fixed times. The agent can't adapt its schedule to your actual sleep rhythm.
 
-| Layer | Table | What it stores |
-|-------|-------|----------------|
-| Episodic | `mem_episodes` | Raw events — sessions, check-ins, reflections |
-| Semantic | `mem_facts` | Distilled facts with confidence + half-life decay (Mem0-style) |
-| Procedural | `mem_procedures` | Coaching macros, agent skills |
-| Working | `mem_working` | Session state snapshots |
+**Fix:** Two new DB fields on `daily_checkins` (or new `agent_daily_intentions` table):
+- `sleep_time` — logged during evening check-in ("sleeping now, 3am")
+- `wake_estimate` — derived (sleep_time + 8h) or user-stated
+- `tomorrow_intention` — free-form text, LLM infers goal link
+- `inferred_goal_id` + `inferred_goal_confidence`
 
-Energy composite (`energy-composite.ts`) already computes a calibrated [0–100] energy estimate from standup mood, time-of-day prior, recent focus quality, and circadian pattern. Weights auto-adjust per-user via `guardian-calibration.ts` after every session.
-
-**What the agent adds — new INPUT signals to feed the UIL:**
-
-The UIL is already sophisticated but blind to sleep and daily intentions. Two new DB tables give it those signals:
-
-```sql
--- Daily intentions: what you plan to do, when you sleep/wake
-agent_daily_intentions (
-  id, date, sleep_time, wake_estimate, intention_text,
-  inferred_goal_id, inferred_goal_confidence, created_at
-)
-
--- Check-in logs: morning mood/energy, evening recap
-agent_checkin_logs (
-  id, checkin_type ('morning'|'evening'), mood, energy_score,
-  free_text, created_at
-)
-```
-
-`runUILSynthesis()` is extended to read these tables so the resulting profile includes:
-- `sleepPattern` — avg sleep duration, consistency, sleep time variance
-- `intentionCompletionRate` — how often planned = done
-- `morningEnergyBaseline` — from check-in logs, feeds energy composite as a new prior
-
-No `agent-memory.ts`. The UIL is the brain. The agent reads it, writes new signals into the input tables, and calls `touchIntelligence()` after every check-in to trigger re-synthesis.
-
-### 4. Agent Gateway (`src/app/api/agent/route.ts`)
-
-Single inbound endpoint. All surfaces route here.
-
-**Request shape:**
-```typescript
-{
-  surface: 'telegram' | 'web' | 'voice' | 'extension' | 'scheduler',
-  message?: string,
-  event?: GuardianEvent,
-  metadata?: { telegramChatId?: string, sessionId?: string }
-}
-```
-
-Gateway responsibilities:
-- Normalize inbound message/event into agent input
-- Invoke LifeOSAgent
-- Route response back to the correct surface (Telegram reply, SSE push, voice TTS)
-
-Existing Telegram webhook handler becomes a thin adapter that calls this gateway. Existing guardian event route similarly becomes an adapter.
-
-### 5. Autonomous Scheduler (`src/lib/agent-scheduler.ts`)
-
-Heartbeat daemon — always running, even when no session is active. This is what makes the agent proactive rather than reactive.
-
-**Scheduled behaviors:**
-
-| Trigger | Condition | Action |
-|---------|-----------|--------|
-| Evening ritual | `now >= sleep_time - 60min` AND no check-in today | Send Telegram: "How'd today go? What are you sleeping on?" |
-| No-check-in reminder | `now >= 23:30` AND still no evening check-in | Telegram reminder |
-| Morning wake-up | `now >= wake_estimate` AND user hasn't messaged | Telegram: mood + energy + confirm today's intention |
-| AFK at wake time | `now >= wake_estimate + 30min` AND no response | Follow-up Telegram |
-| Goal drift check | Daily at noon | Read goals, compare last 7 days of sessions, flag drift |
-| Session opportunity | Energy=high + no session today + it's within best_start_hour ± 2 | Proactive nudge: "Good time for a session?" |
-
-Scheduler is implemented as a `setInterval` loop started at Next.js server startup (Mac Mini runs 24/7, server is persistent). Checks fire every 5 minutes and evaluate trigger conditions against the intelligence model. It does not run on the guardian hot path.
+Scheduler reads these to fire morning check-in at `wake_estimate` instead of a fixed time.
 
 ---
 
-## The Unified Loop
+## Intelligence Layer: Making It Actually Learn
 
-```
-Evening check-in (Telegram)
-  "done for today, sleeping 3am, want to finish auth module"
-  → agent stores: sleep_time, intention, infers goal link
-  → intelligence model updated
+The UIL synthesizes behavioral data but the learning loop has gaps. Here's what turns it from "analytics display" into a Hermes-style self-improving agent:
 
-Morning check-in (~11am)
-  heartbeat fires, sends Telegram
-  "how's energy?" → user: "tired, 6/10"
-  → working memory: energy=low
-  → guardian will: shorter sprints, softer tone, no harsh blocks
+### Signal sources to add
 
-Afternoon session
-  guardian reads intelligence model
-  knows: energy low, intention is auth module, goal is LifeOS v1
-  → personalized coaching from minute one
+| New signal | Where it comes from | How it feeds UIL |
+|-----------|---------------------|-----------------|
+| User corrections | Telegram/voice intent classifier | Negative `mem_facts` entries → UIL reads these to avoid repeat errors |
+| Telegram conversation facts | `extractMemoryFromTelegramConversation()` | Preferences, intentions → `mem_facts` |
+| Action outcomes | `agent_action_outcomes` table | Did session start → did user actually work? Did nudge → did user respond positively? |
+| Sleep/wake patterns | Evening check-in | `sleep_time`, duration, consistency → UIL energy forecast improvement |
+| Morning energy self-report | Morning check-in | Replaces inference with ground truth for that day's energy composite |
+| Intention completion | Compare `tomorrow_intention` vs session history | `intention_completion_rate` → UIL knows when your plans are reliable |
 
-Session ends
-  reflection written, focus score logged
-  agent self-eval: was today's intention completed? partial?
-  → semantic profile updated: auth module = friction topic on low-energy days
+### What UIL synthesis gains
 
-Next evening check-in
-  agent proactively surfaces: "auth was rough yesterday — break it into smaller pieces tomorrow?"
-  → intention for tomorrow is better scoped
-
-Every cycle → model gets sharper → agent gets better
-```
+With these signals, the UIL profile gains:
+- `sleepPattern`: avg duration, consistency, sleep time variance, sleep-focus correlation
+- `intentionCompletionRate`: how often planned = done (calibrates how seriously to take stated intentions)
+- `agentErrorPatterns`: which types of inferences are most often wrong for this user
+- `morningEnergyBaseline`: ground truth from check-ins vs predicted (calibrates energy composite)
+- `correctionFrequency`: how often user corrects agent (measures agent quality over time)
 
 ---
 
-## Migration Path (Existing → Agentic)
+## Architecture: What Actually Changes
 
-LifeOS doesn't need a rewrite. The existing architecture is the foundation.
-
-| Existing | Role in Agent Architecture |
-|----------|---------------------------|
-| `intelligence.ts` (UIL) | **The agent brain.** `getIntelligenceContext()` called before every LLM invocation. `touchIntelligence()` called after every check-in. |
-| `behavior.ts` | Feeds UIL synthesis — focus depth, entropy, archetype, behavioral memory |
-| `energy-composite.ts` | Energy prior for session planning — extended with morning check-in as new input signal |
-| `guardian-calibration.ts` | Self-improving loop — post-session feedback adjusts weights automatically |
-| `mem_facts / mem_episodes / mem_procedures` | Already the 4-tier memory. Agent reads and writes these directly. |
-| `guardian-runtime.ts` | Session-scoped tool the agent invokes |
-| `longitudinal-engine.ts` | Day briefing tool, still used for session start context |
-| Telegram bot handlers | Become thin adapters → agent gateway |
-| Guardian SSE stream | Still exists, agent can read/push via `invoke_guardian` tool |
-| `guardian-optimizer.ts` | Procedural layer optimizer (still runs off hot path) |
-
-**Nothing is deleted. Everything is promoted. The UIL was always the brain — the agent just gives it a face.**
-
----
-
-## What This Is NOT
-
-- Not a full replacement of the guardian — guardian stays as session expert
-- Not always-listening or passive surveillance outside sessions (until Phase 3 screen tracking, which is opt-in and local)
-- Not multi-user — single user, single agent instance
-- Not a chatbot wrapper — the agent reasons, acts, and self-evaluates. It doesn't just respond.
-
----
-
-## Phase Boundary
-
-**New files this phase:**
+### New files
 
 | File | Role |
 |------|------|
-| `src/lib/lifeos-agent.ts` | Central agent loop — context assembly via UIL, tool routing, LLM call, self-eval |
-| `src/lib/agent-tools.ts` | Tool definitions — read/write goals, tasks, sessions, intentions, Telegram, guardian invoke |
-| `src/lib/agent-scheduler.ts` | Heartbeat daemon — daily ritual triggers, proactive nudges, drift checks |
-| `src/app/api/agent/route.ts` | Gateway — all surfaces (Telegram, web, voice) route here |
+| `src/lib/lifeos-agent.ts` | Unified agent loop — UIL context + history + tool routing + self-eval. All surfaces (Telegram, web chat, voice) call this instead of their own LLM stacks. |
+| `src/lib/agent-scheduler.ts` | Extends existing `scheduler.ts` with sleep-time-aware check-in triggers and daily intention handling. |
+| `src/app/api/agent/route.ts` | Unified gateway. Telegram webhook, chat, and voice route here. |
 
-**Extended (not replaced):**
-- `intelligence.ts` — `runUILSynthesis()` reads new `agent_daily_intentions` + `agent_checkin_logs` tables
-- `energy-composite.ts` — morning check-in becomes a new energy prior
+### Modified files
 
-**This spec covers:**
-- LifeOSAgent core loop
-- Agent tools (goals, tasks, sessions, UIL read, Telegram, guardian invoke)
-- New input signal tables (daily intentions + check-in logs) feeding existing UIL
-- Agent gateway (unified inbound)
-- Autonomous scheduler (daily ritual loop)
-- Telegram as primary async surface
+| File | Change |
+|------|--------|
+| `telegram-agent.ts` | Fix UIL staleness, add history, add confirmation, rewrite system prompt, add `parseTelegramIntent()` |
+| `memory-extractor.ts` | Add `extractMemoryFromTelegramConversation()` |
+| `checkin.ts` | Add sleep_time, wake_estimate, tomorrow_intention fields to evening check-in flow |
+| `scheduler.ts` | Use stored wake_estimate to trigger morning check-in instead of fixed time |
+| `intelligence.ts` | Extend `runUILSynthesis()` to read sleep patterns, intention completion rate, action outcomes |
+| DB migrations | `telegram_turns`, `agent_daily_intentions`, `agent_action_outcomes` tables |
 
-**Out of scope (future phases):**
-- Screen/app tracking (Mac helper daemon)
-- Google Calendar read/write
-- Voice as primary agent surface (currently PTT → guardian only)
-- Web app redesign around agent-first UX
+### NOT changed
+
+Guardian runtime, voice pipeline, guardian optimizer, extension, web app components. The agent wraps these — it does not replace them.
+
+---
+
+## The Unified Loop (Corrected)
+
+```
+Evening (Telegram):
+  "Sleeping now, 3am, want to finish PBA-x module 3 tomorrow"
+  → agent stores: sleep_time=3am, wake_estimate=11am, intention="finish PBA-x module 3"
+  → LLM infers: maps to Goal "PBA-x certification"
+  → touchIntelligence('evening_checkin') → UIL re-synthesizes overnight
+
+Morning (~11am, wake_estimate-triggered):
+  scheduler fires (not at fixed time — at stored wake_estimate)
+  Telegram: "Morning. Energy check — how are you feeling? (1-10)"
+  User: "7/10, rested"
+  → agent stores morning energy → feeds energy composite as ground truth
+  → Telegram: "You planned: finish PBA-x module 3. Still on? Want to start a session?"
+  User: "Yeah, later today, maybe 2pm"
+  → agent stores: session_planned_at=2pm
+  → extractMemoryFromTelegramConversation() → mem_facts updated
+
+2pm (scheduler nudge):
+  Telegram: "Ready for PBA-x? Session timer starts when you say go."
+  User: "Go"
+  → guardian session starts with correct topic, correct duration split across sessions
+  → UIL context is fresh (touchIntelligence called at morning check-in)
+
+Session ends:
+  reflection written, focus score logged
+  extractMemoryFromSession() runs
+  agent_action_outcomes logged: agent suggested PBA-x module 3, user completed it → positive signal
+  touchIntelligence('session_complete') → UIL re-synthesizes
+
+Next evening:
+  UIL knows: PBA-x works best in afternoon, 90-min blocks, after 7+ energy mornings
+  Agent uses this in tomorrow's planning — no guessing
+```
+
+---
+
+## Migration Path
+
+| Existing | Role going forward |
+|----------|-------------------|
+| `intelligence.ts` (UIL) | The brain. All agent LLM calls use `getIntelligenceContext()`. |
+| `telegram-agent.ts` | Fixed and promoted to route through `lifeos-agent.ts` |
+| `checkin.ts` | Extended with sleep/wake/intention fields |
+| `scheduler.ts` | Extended with sleep-time-aware triggers |
+| `memory-extractor.ts` | Extended with Telegram conversation extraction |
+| `guardian-runtime.ts` | Session expert — invoked as a tool by the agent |
+| `mem_facts` | Primary learning store — corrections, preferences, outcomes all land here |
+
+**Nothing deleted. Everything connected.**
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] Telegram message → agent gateway → LifeOSAgent → tool execution → Telegram response, end to end
-- [ ] Evening check-in stored: sleep time, intention, inferred goal link
-- [ ] Morning check-in fires at estimated wake time even if user hasn't opened app
-- [ ] Missing evening check-in triggers reminder by 23:30
-- [ ] Session coaching reflects today's energy and intention (not just historical profile)
-- [ ] After 5 sessions, semantic profile noticeably reflects real patterns (energy, friction topics, sleep correlation)
-- [ ] Agent self-eval runs after every action and writes outcome signal to DB
-- [ ] Guardian runtime continues to work as before — agent wraps, does not break it
-- [ ] Zero passive monitoring when no session active and no scheduler trigger pending
+- [ ] Telegram message → correct UIL context (topic matches what user actually said, not stale cache)
+- [ ] "I want to study X later" does NOT start a session — it creates a planned intention
+- [ ] User correction ("no I meant...") → negative mem_fact created, UIL re-synthesizes
+- [ ] Morning check-in fires at stored wake_estimate, not fixed time
+- [ ] Evening check-in captures sleep_time + tomorrow_intention + inferred_goal_id
+- [ ] Every Telegram conversation run through `extractMemoryFromTelegramConversation()`
+- [ ] After 10 interactions, `mem_facts` contains user-specific preferences extracted from conversation
+- [ ] Guardian runtime unaffected — sessions still work exactly as before
+- [ ] Voice pipeline unaffected
