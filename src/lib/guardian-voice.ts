@@ -1005,8 +1005,10 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
 
     if (pending.action === 'archive_all_goals') {
-      const archived = db.prepare(`UPDATE goals SET archived = 1, active = 0 WHERE archived = 0`).run();
-      const response = `Done. Archived ${archived.changes} goals. You're starting fresh.`;
+      const archived = db.prepare(`UPDATE goals SET archived = 1, active = 0 WHERE archived = 0 OR active = 1`).run();
+      const response = archived.changes > 0
+        ? `Done. Archived ${archived.changes} goal${archived.changes > 1 ? 's' : ''}. They're gone from the dashboard — refresh the page if they're still showing. You're starting fresh.`
+        : `Nothing to archive — no active goals found. Ready for new ones whenever you are.`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
       return { type: 'goals_archived', transcript, intent, responseText: response };

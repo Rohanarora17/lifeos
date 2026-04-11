@@ -3,9 +3,17 @@ import { getDb } from '@/lib/db';
 import { sanitizeText } from '@/lib/sanitize';
 
 // GET — List goals with linked tasks, habits, computed progress, TMT motivation, and self-efficacy
-export async function GET() {
+export async function GET(request: Request) {
+    const { searchParams } = new URL(request.url);
+    const showAll = searchParams.get('all') === 'true';
     const db = getDb();
-    const goals = db.prepare('SELECT * FROM goals ORDER BY active DESC, created_at DESC').all() as any[];
+    // By default only return active (non-archived) goals — mirrors what the dashboard shows.
+    // Pass ?all=true to include archived goals (e.g. for admin/history views).
+    const goals = db.prepare(
+        showAll
+            ? 'SELECT * FROM goals ORDER BY active DESC, created_at DESC'
+            : 'SELECT * FROM goals WHERE active = 1 AND (archived = 0 OR archived IS NULL) ORDER BY created_at DESC'
+    ).all() as any[];
 
     // Compute rolling self-efficacy (task success rate over last 14 days)
     const efficacyRow = db.prepare(`
