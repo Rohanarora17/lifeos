@@ -462,10 +462,26 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     const contextBlock = `--- CURRENT STATE ---\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
 
+    // Load recent conversation turns for multi-turn context
+    let turnHistoryBlock = '';
+    try {
+        const db = getDb();
+        const recentTurns = db.prepare(
+            `SELECT role, text FROM voice_turns WHERE session_key = 'telegram'
+             ORDER BY created_at DESC LIMIT 8`
+        ).all() as { role: string; text: string }[];
+        if (recentTurns.length > 0) {
+            const chronological = recentTurns.reverse();
+            turnHistoryBlock = '\n\nRECENT CONVERSATION:\n' + chronological
+                .map(t => `${t.role === 'user' ? 'User' : 'LifeOS'}: ${t.text}`)
+                .join('\n');
+        }
+    } catch { /* non-fatal */ }
+
     try {
         const response = await generateWithFallback(ai, {
             model: MODEL_FLASH,
-            contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}\n\nUSER: "${text}"`,
+            contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}${turnHistoryBlock}\n\nUSER: "${text}"`,
             config: { responseMimeType: 'application/json' },
         });
 
