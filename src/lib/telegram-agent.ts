@@ -982,7 +982,7 @@ export async function executeAction(
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the goal be called?', ''); break; }
             const db = getDb();
-            db.prepare(`INSERT INTO goals (title, category, deadline) VALUES (?, ?, ?)`).run(
+            db.prepare(`INSERT INTO goals (title, category, deadline, type) VALUES (?, ?, ?, 'general')`).run(
                 title,
                 (payload.category as string | undefined) || 'productivity',
                 (payload.deadline as string | undefined) || null
