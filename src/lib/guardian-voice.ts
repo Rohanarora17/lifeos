@@ -898,17 +898,35 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'show_tasks') {
     try {
       const db = getDb();
+      const scope = (intent as any).taskFilterScope || 'today';
+      let whereClause = `status IN ('todo','doing')`;
+      if (scope === 'high_priority') whereClause += ` AND priority IN ('high','critical')`;
+      else if (scope === 'this_week') whereClause += ` AND (due_date IS NULL OR due_date <= date('now', '+7 days'))`;
+      else if (scope === 'blocked') whereClause += ` AND blocked_since IS NOT NULL`;
+
       const tasks = db.prepare(
-        `SELECT title, priority, status FROM tasks WHERE status IN ('todo','doing') ORDER BY priority DESC LIMIT 5`
-      ).all() as { title: string; priority: string; status: string }[];
-      const response = tasks.length
-        ? `You have ${tasks.length} active tasks: ${tasks.map((t, i) => `${i + 1}. ${t.title}`).join('; ')}.`
-        : 'No active tasks right now.';
+        `SELECT title, priority, status, due_date FROM tasks WHERE ${whereClause} ORDER BY
+         CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+         CASE WHEN due_date IS NOT NULL THEN due_date ELSE '9999' END ASC
+         LIMIT 7`
+      ).all() as { title: string; priority: string; status: string; due_date: string | null }[];
+
+      let response: string;
+      if (tasks.length === 0) {
+        response = scope === 'today' ? 'No active tasks right now.' : `No ${scope.replace('_', ' ')} tasks.`;
+      } else {
+        const taskLines = tasks.map((t, i) => {
+          const dueStr = t.due_date ? `, due ${t.due_date}` : '';
+          const prioStr = t.priority === 'critical' || t.priority === 'high' ? ` [${t.priority}]` : '';
+          return `${i + 1}. ${t.title}${prioStr}${dueStr}`;
+        });
+        response = `You have ${tasks.length} task${tasks.length > 1 ? 's' : ''}: ${taskLines.join('; ')}.`;
+      }
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     } catch {
-      const response = 'Could not load tasks.';
+      const response = 'Could not load tasks right now.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -919,17 +937,35 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'show_goals') {
     try {
       const db = getDb();
-      const goals = db.prepare(
-        `SELECT title, category FROM goals WHERE archived = 0 ORDER BY created_at DESC LIMIT 5`
-      ).all() as { title: string; category: string }[];
-      const response = goals.length
-        ? `You have ${goals.length} active goals: ${goals.map((g, i) => `${i + 1}. ${g.title}`).join('; ')}.`
-        : 'No active goals.';
+      const goals = db.prepare(`
+        SELECT g.title, g.category, g.deadline,
+               COUNT(t.id) as total_tasks,
+               SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done_tasks
+        FROM goals g
+        LEFT JOIN tasks t ON t.goal_id = g.id
+        WHERE g.active = 1 AND (g.archived = 0 OR g.archived IS NULL)
+        GROUP BY g.id
+        ORDER BY g.created_at DESC
+        LIMIT 5
+      `).all() as { title: string; category: string; deadline: string | null; total_tasks: number; done_tasks: number }[];
+
+      let response: string;
+      if (goals.length === 0) {
+        response = 'You have no active goals right now.';
+      } else {
+        const goalLines = goals.map((g, i) => {
+          const pct = g.total_tasks > 0 ? Math.round((g.done_tasks / g.total_tasks) * 100) : 0;
+          const progressStr = g.total_tasks > 0 ? `, ${pct}% done` : '';
+          const deadlineStr = g.deadline ? `, due ${g.deadline}` : '';
+          return `${i + 1}. ${g.title}${progressStr}${deadlineStr}`;
+        });
+        response = `You have ${goals.length} active goal${goals.length > 1 ? 's' : ''}: ${goalLines.join('; ')}.`;
+      }
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     } catch {
-      const response = 'Could not load goals.';
+      const response = 'Could not load goals right now.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
