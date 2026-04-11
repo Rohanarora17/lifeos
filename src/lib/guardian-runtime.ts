@@ -854,6 +854,14 @@ export function adjustGuardianSessionDuration(sessionId: string, newDurationMinu
     getDb().prepare(
       `UPDATE guardian_sessions SET duration_minutes = ? WHERE session_id = ?`
     ).run(newDurationMinutes, sessionId);
+
+    // Sync to Google Calendar if this session was launched from a soft watch commitment
+    const linkedCommitment = Array.from(softWatchMap.values()).find(c => c.lockedInSessionId === sessionId);
+    if (linkedCommitment && linkedCommitment.calendarEventId) {
+      const { updateCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
+      const newEndTime = new Date(session.startedAt + newDurationMinutes * 60_000);
+      updateCalendarEvent(linkedCommitment.calendarEventId, { endTime: newEndTime }).catch(() => {});
+    }
   } catch { /* non-fatal */ }
 
   return cloneSession(session);
@@ -1646,16 +1654,17 @@ function persistSoftWatch(c: SoftWatchCommitment) {
     db.prepare(`
       INSERT INTO soft_watch_commitments (
         id, target_title, goal_id, task_id, intended_start_at, planned_minutes,
-        source, reminder_sent_at, check_in_sent_at, status, locked_in_session_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source, reminder_sent_at, check_in_sent_at, status, locked_in_session_id, calendar_event_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         reminder_sent_at = excluded.reminder_sent_at,
         check_in_sent_at = excluded.check_in_sent_at,
-        locked_in_session_id = excluded.locked_in_session_id
+        locked_in_session_id = excluded.locked_in_session_id,
+        calendar_event_id = excluded.calendar_event_id
     `).run(
       c.id, c.targetTitle, c.goalId, c.taskId, c.intendedStartAt, c.plannedMinutes,
-      c.source, c.reminderSentAt, c.checkInSentAt, c.status, c.lockedInSessionId, c.createdAt
+      c.source, c.reminderSentAt, c.checkInSentAt, c.status, c.lockedInSessionId, c.calendarEventId, c.createdAt
     );
   } catch (error) {
     console.error('[GuardianRuntime] Failed to persist soft watch', error);
@@ -1739,7 +1748,7 @@ export function startSoftWatchChecker() {
       SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
         intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
         source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
-        status, locked_in_session_id as lockedInSessionId, created_at as createdAt
+        status, locked_in_session_id as lockedInSessionId, calendar_event_id as calendarEventId, created_at as createdAt
       FROM soft_watch_commitments
       WHERE status = 'pending'
     `).all() as SoftWatchCommitment[];
@@ -1774,6 +1783,7 @@ export function createSoftWatchCommitment(input: {
     checkInSentAt: null,
     status: 'pending',
     lockedInSessionId: null,
+    calendarEventId: null,
     createdAt: Date.now(),
   };
   softWatchMap.set(commitment.id, commitment);
@@ -1823,4 +1833,13 @@ function linkSoftWatchToSession(sessionId: string, targetTitle: string) {
       break;
     }
   }
+}
+
+export function attachCalendarEventId(commitmentId: string, eventId: string): boolean {
+  const commitment = softWatchMap.get(commitmentId);
+  if (!commitment) return false;
+  commitment.calendarEventId = eventId;
+  softWatchMap.set(commitmentId, commitment);
+  persistSoftWatch(commitment);
+  return true;
 }

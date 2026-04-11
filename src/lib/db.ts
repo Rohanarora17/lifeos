@@ -447,6 +447,8 @@ function initSchema(db: Database.Database) {
       received_at TEXT DEFAULT (datetime('now','localtime'))
     )
   `);
+  // Migrations for existing tables
+  try { db.exec("ALTER TABLE soft_watch_commitments ADD COLUMN calendar_event_id TEXT DEFAULT NULL"); } catch { /* ignore */ }
 
   // Insert default settings if not present
   const insertSetting = db.prepare(

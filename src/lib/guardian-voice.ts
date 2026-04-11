@@ -759,13 +759,17 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
     void (async () => {
       if (isCalendarConfigured()) {
-        await createCalendarEvent({
+        const eventId = await createCalendarEvent({
           summary: `📚 ${commitment.targetTitle}`,
           description: `LifeOS Guardian session — ${plannedMinutes} min\nScheduled via voice.`,
           startTime,
           endTime,
           colorId: '9',
         });
+        if (eventId) {
+          const { attachCalendarEventId } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+          attachCalendarEventId(commitment.id, eventId);
+        }
       }
       await sendTelegram(
         `📅 <b>Session Scheduled</b>\n\n` +

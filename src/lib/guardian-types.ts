@@ -142,6 +142,7 @@ export interface SoftWatchCommitment {
   checkInSentAt: number | null;
   status: 'pending' | 'locked_in' | 'expired' | 'dismissed';
   lockedInSessionId: string | null;
+  calendarEventId: string | null;
   createdAt: number;
 }
 

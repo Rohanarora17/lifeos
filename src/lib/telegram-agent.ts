@@ -1,5 +1,5 @@
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 import {
     sendTelegram,
     SESSION_START_KEYBOARD,
@@ -520,15 +520,15 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     touchIntelligence('telegram_message');
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true, includeThresholds: false });
     const sessionBlock = activeSession
-      ? [
-          'ACTIVE SESSION:',
-          `  topic:     "${activeSession.targetTitle}"`,
-          `  elapsed:   ${Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000))} min`,
-          `  remaining: ${Math.max(0, activeSession.durationMinutes - Math.round((Date.now() - activeSession.startedAt) / 60_000))} min (of ${activeSession.durationMinutes} planned)`,
-          `  focus:     ${activeSession.focusScoreHistory?.at(-1) ?? 100}/100`,
-          `  state:     ${activeSession.state}`,
+        ? [
+            'ACTIVE SESSION:',
+            `  topic:     "${activeSession.targetTitle}"`,
+            `  elapsed:   ${Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000))} min`,
+            `  remaining: ${Math.max(0, activeSession.durationMinutes - Math.round((Date.now() - activeSession.startedAt) / 60_000))} min (of ${activeSession.durationMinutes} planned)`,
+            `  focus:     ${activeSession.focusScoreHistory?.at(-1) ?? 100}/100`,
+            `  state:     ${activeSession.state}`,
         ].join('\n')
-      : 'ACTIVE SESSION: none';
+        : 'ACTIVE SESSION: none';
 
     const nowMs = Date.now();
     const localTimeStr = new Date(nowMs).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
@@ -552,7 +552,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     try {
         const response = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}${turnHistoryBlock}\n\nUSER: "${text}"`,
             config: { responseMimeType: 'application/json' },
         });
@@ -583,7 +583,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
                      ORDER BY created_at DESC LIMIT 20`
                 ).all() as { role: string; text: string }[];
                 const turns = rows.reverse();
-                extractMemoryFromVoice(turns, 'telegram').catch(() => {});
+                extractMemoryFromVoice(turns, 'telegram').catch(() => { });
             } catch { /* non-fatal */ }
         }
 
@@ -619,7 +619,7 @@ export async function executeAction(
     switch (action) {
 
         case 'MULTI_ACTION': {
-            const actions = payload.actions as Array<{action: string; replyText: string; payload: Record<string, unknown>}>;
+            const actions = payload.actions as Array<{ action: string; replyText: string; payload: Record<string, unknown> }>;
             if (Array.isArray(actions)) {
                 for (const sub of actions) {
                     await executeAction(sub.action, '', sub.payload, activeSession);
@@ -654,7 +654,7 @@ export async function executeAction(
             if (!title) { await sendTelegram('What topic should I schedule?', ''); break; }
             const intendedStartAt = Number(payload.intendedStartAt) || Date.now() + 60 * 60_000;
             const plannedMinutes = Number(payload.durationMinutes) || 60;
-            
+
             const { createSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const commitment = createSoftWatchCommitment({
                 targetTitle: title,
@@ -676,13 +676,17 @@ export async function executeAction(
                     if (conflicts.length > 0) {
                         conflictMsg = `\n⚠️ <b>Conflict:</b> You have ${conflicts.length} overlapping event(s). It was not added to calendar.`;
                     } else {
-                        await createCalendarEvent({
+                        const eventId = await createCalendarEvent({
                             summary: `📚 ${commitment.targetTitle}`,
                             description: `LifeOS Guardian session\\nScheduled via Telegram.`,
                             startTime,
                             endTime,
                             colorId: '9',
                         });
+                        if (eventId) {
+                            const { attachCalendarEventId } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+                            attachCalendarEventId(commitment.id, eventId);
+                        }
                         conflictMsg = `\n🗓️ Added to Calendar!`;
                     }
                 }
@@ -701,12 +705,12 @@ export async function executeAction(
             const search = (payload.searchTitle as string | undefined)?.trim();
             if (!search) { await sendTelegram('Which goal to update?', ''); break; }
             const db = getDb();
-            const goal = db.prepare(`SELECT id, title, deadline, active FROM goals WHERE LOWER(title) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string; deadline: string|null; active: number } | undefined;
+            const goal = db.prepare(`SELECT id, title, deadline, active FROM goals WHERE LOWER(title) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string; deadline: string | null; active: number } | undefined;
             if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
-            
+
             const sets: string[] = [];
             const vals: (string | number)[] = [];
-            
+
             if (payload.deadline !== undefined) {
                 sets.push('deadline = ?');
                 vals.push(payload.deadline as string | null ?? '');
@@ -715,7 +719,7 @@ export async function executeAction(
                 sets.push('active = ?');
                 vals.push(Number(payload.active) ? 1 : 0);
             }
-            
+
             if (sets.length > 0) {
                 vals.push(goal.id);
                 db.prepare(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -724,7 +728,7 @@ export async function executeAction(
                 if (replyText) await sendTelegram(`No changes provided for goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             }
             break;
-        }        case 'START_SESSION': {
+        } case 'START_SESSION': {
             if (session) {
                 // Active session exists — offer to adjust instead of hard-blocking
                 const elapsed = Math.max(0, Math.floor((Date.now() - session.startedAt) / 60000));
@@ -984,9 +988,9 @@ export async function executeAction(
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the goal be called?', ''); break; }
             const type = (payload.type as string | undefined)?.trim();
-            if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) { 
-                await sendTelegram(`What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`, ''); 
-                break; 
+            if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) {
+                await sendTelegram(`What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`, '');
+                break;
             }
             const db = getDb();
             db.prepare(`INSERT INTO goals (title, type, category, deadline) VALUES (?, ?, ?, ?)`).run(
