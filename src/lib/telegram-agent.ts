@@ -16,7 +16,7 @@ import {
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adjustGuardianSessionDuration } from './guardian-runtime';
 import { getMemoryContext } from './memory';
 import { getDb, getSetting, setSetting } from './db';
-import { getIntelligenceContext } from './intelligence';
+import { getIntelligenceContext, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
 
 // Track LLM-parsed message count for memory extraction cadence
@@ -446,6 +446,8 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     const activeSession = getActiveGuardianSession();
 
     // Build the same rich context block the voice parser uses
+    // Signal new data so UIL profile is fresh for this message (prevents stale context)
+    touchIntelligence('telegram_message');
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true, includeThresholds: false });
     const sessionBlock = activeSession
       ? [
