@@ -16,19 +16,65 @@ import {
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adjustGuardianSessionDuration } from './guardian-runtime';
 import { getMemoryContext } from './memory';
 import { getDb, getSetting, setSetting } from './db';
-import { getIntelligenceContext } from './intelligence';
+import { getIntelligenceContext, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
 
-const TELEGRAM_SYSTEM_PROMPT = `You are Jarvis, the LifeOS AI guardian assistant on Telegram.
-You must be concise, parse user intents into structured actions.
+// Pending confirmation: START_SESSION requires explicit user "yes/go/start" before executing
+const pendingConfirmations = new Map<string, { action: string; payload: Record<string, unknown>; replyText: string; expiresAt: number }>();
+
+function setPendingConfirmation(chatId: string, action: string, payload: Record<string, unknown>, replyText: string): void {
+    pendingConfirmations.set(chatId, { action, payload, replyText, expiresAt: Date.now() + 90_000 });
+}
+
+function consumePendingConfirmation(chatId: string): { action: string; payload: Record<string, unknown>; replyText: string } | null {
+    const pending = pendingConfirmations.get(chatId);
+    if (!pending || Date.now() > pending.expiresAt) {
+        pendingConfirmations.delete(chatId);
+        return null;
+    }
+    pendingConfirmations.delete(chatId);
+    return pending;
+}
+
+function isConfirmation(text: string): boolean {
+    return /^(yes|yeah|go|yep|ok|okay|confirm|do it|start|let'?s go|sure|yup)\b/i.test(text.trim());
+}
+
+function isDenial(text: string): boolean {
+    return /^(no|nope|cancel|stop|not now|wait|hold on|nevermind|never mind|nah)\b/i.test(text.trim());
+}
+
+// Single-user system — one confirmation slot
+const SINGLE_USER_KEY = 'default';
+
+const TELEGRAM_SYSTEM_PROMPT = `You are LifeOS, an intelligent personal agent on Telegram. Your only job is to help this person do focused work and become better.
+
+## CRITICAL INTENT RULES
+
+1. **NEVER use START_SESSION unless the user uses an explicit immediate trigger word: "start", "begin", "go", "let's do it", "now", or a direct command like "start a session on X".**
+   - "I want to study X" → STORE_INTENTION (ask when)
+   - "I plan to do X tomorrow" → STORE_INTENTION
+   - "I want to do 4 hours of X today" → ASK_CLARIFICATION ("When do you want to start? All at once or in blocks?")
+   - "Start a session on X" / "Begin 90 min on X" → START_SESSION (explicit)
+
+2. **Use the UIL context above.** It tells you this person's energy, focus patterns, coaching style, and recurring distractions. Tailor every response to it.
+
+3. **When the user corrects you** ("no I meant...", "wrong topic", "not that", "I said X not Y") → use CORRECTION_NOTED. Acknowledge the error, state what you now understand.
+
+4. **Require confirmation before starting sessions.** When START_SESSION is appropriate, respond with a confirmation prompt and set action=START_SESSION. The system will ask "Go?" before executing.
+
+5. **One question at a time.** Never ask multiple clarifying questions in one message.
 
 AVAILABLE ACTIONS:
-- "START_SESSION": Start a focus session. Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
-- "ADJUST_SESSION": Change duration or topic of the CURRENT active session. Payload: durationMinutes (new total), topic (new subject if changing).
+- "START_SESSION": Start a focus session (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
+- "ADJUST_SESSION": Change duration of the CURRENT active session. Payload: durationMinutes (new total).
 - "END_SESSION": End the current session.
+- "STORE_INTENTION": Store a planned intention without starting anything. Payload: intention (string), when ("today"|"tomorrow"|"this_week").
+- "LOG_EVENING": Log evening check-in — sleep time, wake estimate, tomorrow's intention. Payload: sleepTime ("HH:MM" 24h or null), wakeEstimate ("HH:MM" 24h or null, derive as sleepTime+8h if not stated), tomorrowIntention (string or null), recap (string).
+- "CORRECTION_NOTED": User corrected a prior bot inference. Payload: wasWrong (what was incorrectly inferred), actualMeaning (what user actually meant).
 - "LOG_HABIT": Log a habit. Payload: habitTitle.
 - "LOG_STANDUP": Set today's goal + mood. Payload: goal (string), mood (high/medium/low).
 - "SUBMIT_FEEDBACK": Post-session reflection/feedback. Payload: feedback (string), sessionId (if inferable).
@@ -41,10 +87,10 @@ AVAILABLE ACTIONS:
 - "STANDUP": Show standup brief (energy + suggestions).
 - "STATUS": Current session status.
 - "MENU": Show the full action menu.
-- "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam — infer from keywords: 'submit/assignment/homework'→assignment, 'exam/midterm/final/test'→exam), status (todo/doing, default todo), priority (low/medium/high/critical, default medium), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (e.g. 'CS 101', 'Personal', or null).
-- "UPDATE_TASK": Update an existing task. Payload: searchTitle (text to find it), title (new title), status (todo/doing/done), priority, due_date, due_time, course, task_type.
+- "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam), status (todo/doing, default todo), priority (low/medium/high/critical, default medium), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (string or null).
+- "UPDATE_TASK": Update an existing task. Payload: searchTitle, title, status, priority, due_date, due_time, course, task_type.
 - "DELETE_TASK": Delete a task by title. Payload: searchTitle.
-- "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other, default productivity), deadline (YYYY-MM-DD or null).
+- "CREATE_GOAL": Create a new goal. Payload: title (required), category (productivity/health/learning/finance/relationships/other), deadline (YYYY-MM-DD or null).
 - "DELETE_GOAL": Delete a goal. Payload: searchTitle.
 - "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, default ✅), goal_metric (boolean/time, default boolean), goal_target (minutes if time, default 60).
 - "UPDATE_HABIT": Rename a habit. Payload: searchName, newName.
@@ -259,6 +305,21 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         return;
     }
 
+    // Check for pending confirmation (START_SESSION requires "yes/go" before executing)
+    if (!text.startsWith('/')) {
+        const pending = consumePendingConfirmation(SINGLE_USER_KEY);
+        if (pending) {
+            if (isConfirmation(text)) {
+                await executeAction(pending.action, pending.replyText, pending.payload);
+                return;
+            } else if (isDenial(text)) {
+                await sendTelegram('Got it — cancelled.', 'HTML', FULL_MENU_KEYBOARD);
+                return;
+            }
+            // Not a clear yes/no — fall through to normal LLM processing
+        }
+    }
+
     // Slash command dispatch
     const cmd = text.trim();
     const cmdLower = cmd.toLowerCase();
@@ -446,6 +507,8 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     const activeSession = getActiveGuardianSession();
 
     // Build the same rich context block the voice parser uses
+    // Signal new data so UIL profile is fresh for this message (prevents stale context)
+    touchIntelligence('telegram_message');
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true, includeThresholds: false });
     const sessionBlock = activeSession
       ? [
@@ -460,10 +523,26 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     const contextBlock = `--- CURRENT STATE ---\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
 
+    // Load recent conversation turns for multi-turn context
+    let turnHistoryBlock = '';
+    try {
+        const db = getDb();
+        const recentTurns = db.prepare(
+            `SELECT role, text FROM voice_turns WHERE session_key = 'telegram'
+             ORDER BY created_at DESC LIMIT 8`
+        ).all() as { role: string; text: string }[];
+        if (recentTurns.length > 0) {
+            const chronological = recentTurns.reverse();
+            turnHistoryBlock = '\n\nRECENT CONVERSATION:\n' + chronological
+                .map(t => `${t.role === 'user' ? 'User' : 'LifeOS'}: ${t.text}`)
+                .join('\n');
+        }
+    } catch { /* non-fatal */ }
+
     try {
         const response = await generateWithFallback(ai, {
             model: MODEL_FLASH,
-            contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}\n\nUSER: "${text}"`,
+            contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}${turnHistoryBlock}\n\nUSER: "${text}"`,
             config: { responseMimeType: 'application/json' },
         });
 
@@ -497,7 +576,18 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             } catch { /* non-fatal */ }
         }
 
-        await executeAction(parsed.action, parsed.replyText, parsed.payload ?? {}, activeSession);
+        // Gate START_SESSION through confirmation unless already confirmed
+        if (parsed.action === 'START_SESSION' && !getActiveGuardianSession()) {
+            const title = (parsed.payload?.targetTitle as string | undefined) || 'General Focus';
+            const duration = Number(parsed.payload?.durationMinutes) || 60;
+            setPendingConfirmation(SINGLE_USER_KEY, 'START_SESSION', parsed.payload ?? {}, parsed.replyText);
+            await sendTelegram(
+                `Starting a <b>${duration}-min session</b> on "<b>${title}</b>". Go? (yes / no)`,
+                'HTML', FULL_MENU_KEYBOARD
+            );
+        } else {
+            await executeAction(parsed.action, parsed.replyText, parsed.payload ?? {}, activeSession);
+        }
 
     } catch (err) {
         console.error('[TelegramAgent] Error:', err);
@@ -831,6 +921,77 @@ export async function executeAction(
             if (!habit) { await sendTelegram(`Habit matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`UPDATE habits SET archived = 1 WHERE id = ?`).run(habit.id);
             await sendTelegram(`🗑️ Archived habit: <b>${habit.name}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'STORE_INTENTION': {
+            const intention = payload.intention as string | undefined;
+            const when = (payload.when as string | undefined) || 'today';
+            if (intention) {
+                const db = getDb();
+                const today = new Date().toISOString().slice(0, 10);
+                try {
+                    db.prepare(`
+                        INSERT INTO daily_checkins (checkin_date, checkin_type, tomorrow_intention, raw_transcript)
+                        VALUES (?, 'evening', ?, ?)
+                    `).run(today, `${intention} (${when})`, `[telegram intent] ${intention}`);
+                    touchIntelligence('intention_stored');
+                } catch { /* non-fatal if column missing until migration runs */ }
+            }
+            await sendTelegram(replyText || `Stored: ${payload.intention || 'intention'}`, 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'LOG_EVENING': {
+            const db = getDb();
+            const today = new Date().toISOString().slice(0, 10);
+            const sleepTime = payload.sleepTime as string | null ?? null;
+            const wakeEstimate = payload.wakeEstimate as string | null ?? null;
+            const tomorrowIntention = payload.tomorrowIntention as string | null ?? null;
+            const recap = payload.recap as string | undefined;
+            try {
+                // Upsert evening check-in with sleep/wake fields
+                const existing = db.prepare(
+                    `SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'evening' ORDER BY received_at DESC LIMIT 1`
+                ).get(today) as { id: number } | undefined;
+                if (existing) {
+                    db.prepare(`
+                        UPDATE daily_checkins SET sleep_time = ?, wake_estimate = ?, tomorrow_intention = ?, raw_transcript = ?
+                        WHERE id = ?
+                    `).run(sleepTime, wakeEstimate, tomorrowIntention, recap ?? null, existing.id);
+                } else {
+                    db.prepare(`
+                        INSERT INTO daily_checkins (checkin_date, checkin_type, sleep_time, wake_estimate, tomorrow_intention, raw_transcript)
+                        VALUES (?, 'evening', ?, ?, ?, ?)
+                    `).run(today, sleepTime, wakeEstimate, tomorrowIntention, recap ?? null);
+                }
+                touchIntelligence('evening_checkin');
+            } catch { /* non-fatal */ }
+            await sendTelegram(replyText || `Evening logged. Wake estimate: ${wakeEstimate ?? 'not set'}`, 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'CORRECTION_NOTED': {
+            const wasWrong = payload.wasWrong as string | undefined;
+            const actualMeaning = payload.actualMeaning as string | undefined;
+            if (wasWrong && actualMeaning) {
+                const db = getDb();
+                try {
+                    db.prepare(`
+                        INSERT INTO mem_facts (category, topic, content, confidence, importance, source, status)
+                        VALUES ('pattern', ?, ?, 0.15, 0.8, 'telegram_correction', 'active')
+                    `).run(
+                        `agent_inference:${wasWrong.slice(0, 80)}`,
+                        `CORRECTION: agent incorrectly inferred "${wasWrong}" — user actually meant "${actualMeaning}"`
+                    );
+                    db.prepare(`
+                        INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, was_corrected, correction_text, helpful)
+                        VALUES ('telegram_inference', ?, ?, 1, ?, 0)
+                    `).run(wasWrong.slice(0, 200), actualMeaning.slice(0, 200), `User corrected: ${actualMeaning}`.slice(0, 200));
+                    touchIntelligence('correction_recorded');
+                } catch { /* non-fatal */ }
+            }
+            await sendTelegram(replyText || `Understood — noted the correction.`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 

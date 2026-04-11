@@ -525,6 +525,95 @@ function aggregateSignals(): string {
     if (memCtx) sections.push(`\n${memCtx}`);
   } catch { /* */ }
 
+  // ── Task 9: New signals ────────────────────────────────────────────────────
+
+  // Sleep pattern from recent evening check-ins
+  try {
+    const sleepRows = db.prepare(`
+      SELECT sleep_time, wake_estimate, tomorrow_intention
+      FROM daily_checkins
+      WHERE checkin_type = 'evening' AND sleep_time IS NOT NULL
+      ORDER BY checkin_date DESC LIMIT 14
+    `).all() as Array<{ sleep_time: string; wake_estimate: string; tomorrow_intention: string | null }>;
+
+    if (sleepRows.length > 0) {
+      const avgSleepHour = Math.round(
+        sleepRows.reduce((sum, r) => sum + parseInt(r.sleep_time.split(':')[0], 10), 0) / sleepRows.length
+      );
+      const avgWakeHour = sleepRows.filter(r => r.wake_estimate).length > 0
+        ? Math.round(sleepRows.filter(r => r.wake_estimate).reduce((sum, r) => sum + parseInt(r.wake_estimate.split(':')[0], 10), 0) / sleepRows.filter(r => r.wake_estimate).length)
+        : null;
+      sections.push(`\n=== SLEEP PATTERN (last ${sleepRows.length} evenings) ===`);
+      sections.push(`Avg sleep hour: ${avgSleepHour}:00${avgWakeHour !== null ? `, avg wake: ${avgWakeHour}:00` : ''}`);
+      const recentIntentions = sleepRows.filter(r => r.tomorrow_intention).slice(0, 5);
+      if (recentIntentions.length > 0) {
+        sections.push('Recent stated intentions: ' + recentIntentions.map(r => `"${r.tomorrow_intention}"`).join(', '));
+      }
+    }
+  } catch { /* daily_checkins may not have sleep columns yet */ }
+
+  // Intention follow-through: did the user do a session matching yesterday's stated intention?
+  try {
+    const intentionRows = db.prepare(`
+      SELECT dc.checkin_date, dc.tomorrow_intention
+      FROM daily_checkins dc
+      WHERE dc.checkin_type = 'evening'
+        AND dc.tomorrow_intention IS NOT NULL
+      ORDER BY dc.checkin_date DESC LIMIT 14
+    `).all() as Array<{ checkin_date: string; tomorrow_intention: string }>;
+
+    let fulfilled = 0;
+    for (const row of intentionRows) {
+      // Check if a session was started the day after with a matching title
+      const nextDay = new Date(new Date(row.checkin_date).getTime() + 86400000).toISOString().slice(0, 10);
+      const keyword = row.tomorrow_intention.split(' ').slice(0, 3).join('%');
+      const hit = db.prepare(`
+        SELECT 1 FROM guardian_session_summaries
+        WHERE date(started_at, 'localtime') = ? AND target_title LIKE ?
+        LIMIT 1
+      `).get(nextDay, `%${keyword}%`);
+      if (hit) fulfilled++;
+    }
+    if (intentionRows.length > 0) {
+      const rate = Math.round((fulfilled / intentionRows.length) * 100);
+      sections.push(`\n=== INTENTION FOLLOW-THROUGH ===`);
+      sections.push(`${fulfilled}/${intentionRows.length} stated intentions followed through (${rate}%) over last 14 evenings`);
+    }
+  } catch { /* */ }
+
+  // Agent correction frequency — how often does the bot make wrong inferences?
+  try {
+    const correctionCount = (db.prepare(`
+      SELECT COUNT(*) as count FROM mem_facts
+      WHERE source = 'telegram_correction'
+        AND created_at > datetime('now', '-30 days')
+    `).get() as { count: number }).count;
+
+    if (correctionCount > 0) {
+      sections.push(`\n=== AGENT CORRECTION SIGNAL ===`);
+      sections.push(`${correctionCount} agent misclassifications corrected in last 30 days — review mem_facts source=telegram_correction for patterns`);
+    }
+  } catch { /* mem_facts may not exist */ }
+
+  // Action outcome quality — were agent actions helpful?
+  try {
+    const outcomeRows = db.prepare(`
+      SELECT action_type, helpful, was_corrected
+      FROM agent_action_outcomes
+      WHERE created_at > datetime('now', '-30 days')
+    `).all() as Array<{ action_type: string; helpful: number | null; was_corrected: number }>;
+
+    if (outcomeRows.length > 0) {
+      const resolved = outcomeRows.filter(r => r.helpful !== null);
+      const corrected = outcomeRows.filter(r => r.was_corrected === 1);
+      if (resolved.length > 0) {
+        const quality = Math.round(resolved.reduce((s, r) => s + (r.helpful ?? 0), 0) / resolved.length * 100);
+        sections.push(`\n=== AGENT ACTION QUALITY ===`);
+        sections.push(`${quality}% of ${resolved.length} evaluated actions were helpful. ${corrected.length} actions were corrected.`);
+      }
+    }
+  } catch { /* agent_action_outcomes may not exist yet */ }
+
   return sections.join('\n');
 }
 
