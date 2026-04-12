@@ -420,10 +420,9 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
         ).get() as { c: number }).c;
 
         if (openTasks >= thresholds.cognitiveLoadThreshold) {
-            const suggestion = openTasks <= 5 ? "Consider knocking out a quick one to build momentum." : "Consider completing a few quick ones or deferring some to next week.";
             const sent = await sendAlert(
                 'cognitive_load',
-                `You have ${openTasks} active tasks creating mental load. ${suggestion}`,
+                `You have ${openTasks} active tasks creating mental load. ${thresholds.cognitiveLoadAdvice || 'Consider completing a few quick ones to build momentum.'}`,
                 'warning'
             );
             if (sent) triggered.push('cognitive_load');

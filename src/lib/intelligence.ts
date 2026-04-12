@@ -277,6 +277,7 @@ export interface AdaptiveThresholds {
   distractionAlertMinutes: number;    // Minutes on distraction before nudge
   sessionDurationSweetSpot: number;   // Recommended sprint length
   habitRiskDays: number;              // Days without check-in = at risk
+  cognitiveLoadAdvice?: string;       // Custom AI advice when threshold is breached
 }
 
 export interface GoalMomentumMap {
@@ -353,6 +354,7 @@ const UIL_DEFAULT: UserIntelligenceProfile = {
   adaptiveThresholds: {
     focusDropAlertScore: 65, cognitiveLoadThreshold: 8,
     distractionAlertMinutes: 15, sessionDurationSweetSpot: 60, habitRiskDays: 2,
+    cognitiveLoadAdvice: "Consider completing a few quick tasks to build momentum.",
   },
   currentNarrative: '', coachingInsights: [], nextBestFocusWindow: '', weeklyProgressSummary: '',
 };
@@ -639,6 +641,9 @@ TRIGGER: ${trigger}
 
 ${signals}
 
+CRITICAL RULE FOR "adaptiveThresholds.cognitiveLoadThreshold":
+Set this to the actual number of active tasks where you believe the user will genuinely start feeling overwhelmed. DO NOT arbitrarily drop this just because their current task count is low. If they only have 2 tasks right now and are doing fine, keep the threshold reasonably high (e.g., 5, 8, 10). Only drop it if their task completion rate, momentum, or focus scores indicate they are actively struggling with a small workload.
+
 Return ONLY valid JSON (no markdown, no explanation):
 {
   "peakFocusHours": [9, 15],
@@ -672,7 +677,8 @@ Return ONLY valid JSON (no markdown, no explanation):
     "cognitiveLoadThreshold": 9,
     "distractionAlertMinutes": 18,
     "sessionDurationSweetSpot": 75,
-    "habitRiskDays": 2
+    "habitRiskDays": 2,
+    "cognitiveLoadAdvice": "When you hit this limit, pause and quickly knock out the smallest technical bug to regain momentum."
   },
   "currentNarrative": "You are in a focused phase on ZK proofs with improving scores. DSA has stalled for 5 days. Strongest window is 9-11am.",
   "coachingInsights": [
@@ -722,10 +728,11 @@ Return ONLY valid JSON (no markdown, no explanation):
       preferredCoachingStyle: raw.preferredCoachingStyle ?? prev.preferredCoachingStyle,
       adaptiveThresholds: {
         focusDropAlertScore: raw.adaptiveThresholds?.focusDropAlertScore ?? prev.adaptiveThresholds.focusDropAlertScore,
-        cognitiveLoadThreshold: Math.max(5, raw.adaptiveThresholds?.cognitiveLoadThreshold ?? prev.adaptiveThresholds.cognitiveLoadThreshold),
+        cognitiveLoadThreshold: raw.adaptiveThresholds?.cognitiveLoadThreshold ?? prev.adaptiveThresholds.cognitiveLoadThreshold,
         distractionAlertMinutes: raw.adaptiveThresholds?.distractionAlertMinutes ?? prev.adaptiveThresholds.distractionAlertMinutes,
         sessionDurationSweetSpot: raw.adaptiveThresholds?.sessionDurationSweetSpot ?? prev.adaptiveThresholds.sessionDurationSweetSpot,
         habitRiskDays: raw.adaptiveThresholds?.habitRiskDays ?? prev.adaptiveThresholds.habitRiskDays,
+        cognitiveLoadAdvice: raw.adaptiveThresholds?.cognitiveLoadAdvice ?? prev.adaptiveThresholds.cognitiveLoadAdvice,
       },
       currentNarrative: raw.currentNarrative ?? prev.currentNarrative,
       coachingInsights: raw.coachingInsights ?? prev.coachingInsights,
