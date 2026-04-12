@@ -722,7 +722,7 @@ Return ONLY valid JSON (no markdown, no explanation):
       preferredCoachingStyle: raw.preferredCoachingStyle ?? prev.preferredCoachingStyle,
       adaptiveThresholds: {
         focusDropAlertScore: raw.adaptiveThresholds?.focusDropAlertScore ?? prev.adaptiveThresholds.focusDropAlertScore,
-        cognitiveLoadThreshold: raw.adaptiveThresholds?.cognitiveLoadThreshold ?? prev.adaptiveThresholds.cognitiveLoadThreshold,
+        cognitiveLoadThreshold: Math.max(5, raw.adaptiveThresholds?.cognitiveLoadThreshold ?? prev.adaptiveThresholds.cognitiveLoadThreshold),
         distractionAlertMinutes: raw.adaptiveThresholds?.distractionAlertMinutes ?? prev.adaptiveThresholds.distractionAlertMinutes,
         sessionDurationSweetSpot: raw.adaptiveThresholds?.sessionDurationSweetSpot ?? prev.adaptiveThresholds.sessionDurationSweetSpot,
         habitRiskDays: raw.adaptiveThresholds?.habitRiskDays ?? prev.adaptiveThresholds.habitRiskDays,
