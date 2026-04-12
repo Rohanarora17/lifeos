@@ -446,7 +446,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
                 if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
                     const sent = await sendAlert(
                         'focus_drop',
-                        `Your focus is dropping — distractions (${Math.round(todayStats.dist / 60)}min) exceed productive time (${Math.round(todayStats.prod / 60)}min) in the last 2 hours.`,
+                        `Your focus is dropping. ${thresholds.focusDropAdvice || 'Take a 5-minute breather to reset.'}`,
                         'warning'
                     );
                     if (sent) triggered.push('focus_drop');
@@ -471,7 +471,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
                 const names = uncheckedHabits.slice(0, 3).map(h => `${h.icon} ${h.name}`).join(', ');
                 const sent = await sendAlert(
                     'habit_streak',
-                    `${uncheckedHabits.length} habit(s) unchecked today: ${names}${uncheckedHabits.length > 3 ? '...' : ''}. Your streak is at risk!`,
+                    `${uncheckedHabits.length} habit(s) unchecked today: ${names}${uncheckedHabits.length > 3 ? '...' : ''}. ${thresholds.habitRiskAdvice || 'Your streak is at risk, take 2 minutes now.'}`,
                     'warning'
                 );
                 if (sent) triggered.push('habit_streak');
@@ -480,9 +480,10 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
         // 3.5 Mid-day check-in pulse
         if (hour === 13) {
+            const context = uil.currentNarrative || 'How is your focus so far today?';
             const sent = await sendAlert(
                 'midday_checkin',
-                `Mid-day pulse check! How is your focus so far today? Take 5 minutes to review your active tasks.`,
+                `Mid-day pulse! ${context}`,
                 'info'
             );
             if (sent) triggered.push('midday_checkin');
@@ -543,7 +544,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (rate < 30) {
                 const sent = await sendAlert(
                     'efficacy_drop',
-                    `Your task completion rate is ${rate}% over the last 14 days. Try completing a few quick tasks to rebuild momentum.`,
+                    `Your task completion rate is ${rate}% over the last 14 days. ${thresholds.efficacyAdvice || 'Focus on completing small tasks to rebuild confidence.'}`,
                     'warning'
                 );
                 if (sent) triggered.push('efficacy_drop');

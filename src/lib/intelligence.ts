@@ -278,6 +278,9 @@ export interface AdaptiveThresholds {
   sessionDurationSweetSpot: number;   // Recommended sprint length
   habitRiskDays: number;              // Days without check-in = at risk
   cognitiveLoadAdvice?: string;       // Custom AI advice when threshold is breached
+  focusDropAdvice?: string;           // Custom AI advice if focus plummets
+  habitRiskAdvice?: string;           // Custom motivation to save a streak
+  efficacyAdvice?: string;            // Custom advice if task completion rate stays low
 }
 
 export interface GoalMomentumMap {
@@ -354,7 +357,10 @@ const UIL_DEFAULT: UserIntelligenceProfile = {
   adaptiveThresholds: {
     focusDropAlertScore: 65, cognitiveLoadThreshold: 8,
     distractionAlertMinutes: 15, sessionDurationSweetSpot: 60, habitRiskDays: 2,
-    cognitiveLoadAdvice: "Consider completing a few quick tasks to build momentum.",
+    cognitiveLoadAdvice: "Consider knocking out a quick task to build momentum.",
+    focusDropAdvice: "Your focus is slipping. Take a 5-minute breather away from screens.",
+    habitRiskAdvice: "Don't let your streak break—even 2 minutes counts today.",
+    efficacyAdvice: "Focus purely on small, low-friction tasks to rebuild confidence.",
   },
   currentNarrative: '', coachingInsights: [], nextBestFocusWindow: '', weeklyProgressSummary: '',
 };
@@ -641,8 +647,9 @@ TRIGGER: ${trigger}
 
 ${signals}
 
-CRITICAL RULE FOR "adaptiveThresholds.cognitiveLoadThreshold":
-Set this to the actual number of active tasks where you believe the user will genuinely start feeling overwhelmed. DO NOT arbitrarily drop this just because their current task count is low. If they only have 2 tasks right now and are doing fine, keep the threshold reasonably high (e.g., 5, 8, 10). Only drop it if their task completion rate, momentum, or focus scores indicate they are actively struggling with a small workload.
+CRITICAL RULES FOR "adaptiveThresholds":
+- cognitiveLoadThreshold: Set this to the actual number of active tasks where you believe the user will genuinely start feeling overwhelmed. DO NOT arbitrarily drop this just because their current task count is low. Only lower it if you have evidence they are actively struggling.
+- Advice Fields (*Advice): You MUST personalize these deeply based on the specific topics, goals, and habits they are dealing with today. Do not use generic placeholders. Tell them exactly what to do (e.g. "Close Youtube and go back to ZK Proofs", or "Knock out the DSA array problem to regain momentum").
 
 Return ONLY valid JSON (no markdown, no explanation):
 {
@@ -678,7 +685,10 @@ Return ONLY valid JSON (no markdown, no explanation):
     "distractionAlertMinutes": 18,
     "sessionDurationSweetSpot": 75,
     "habitRiskDays": 2,
-    "cognitiveLoadAdvice": "When you hit this limit, pause and quickly knock out the smallest technical bug to regain momentum."
+    "cognitiveLoadAdvice": "When you hit this limit, pause and quickly knock out the smallest technical bug to regain momentum.",
+    "focusDropAdvice": "Close the Twitter tab and re-center—your ZK Proofs momentum is too good to lose right now.",
+    "habitRiskAdvice": "Commit 5 minutes to Leetcode right now so you don't lose that 12-day streak.",
+    "efficacyAdvice": "You've been struggling to clear tasks. Grab an easy task from the Groth16 backlog just to get a win."
   },
   "currentNarrative": "You are in a focused phase on ZK proofs with improving scores. DSA has stalled for 5 days. Strongest window is 9-11am.",
   "coachingInsights": [
@@ -733,6 +743,9 @@ Return ONLY valid JSON (no markdown, no explanation):
         sessionDurationSweetSpot: raw.adaptiveThresholds?.sessionDurationSweetSpot ?? prev.adaptiveThresholds.sessionDurationSweetSpot,
         habitRiskDays: raw.adaptiveThresholds?.habitRiskDays ?? prev.adaptiveThresholds.habitRiskDays,
         cognitiveLoadAdvice: raw.adaptiveThresholds?.cognitiveLoadAdvice ?? prev.adaptiveThresholds.cognitiveLoadAdvice,
+        focusDropAdvice: raw.adaptiveThresholds?.focusDropAdvice ?? prev.adaptiveThresholds.focusDropAdvice,
+        habitRiskAdvice: raw.adaptiveThresholds?.habitRiskAdvice ?? prev.adaptiveThresholds.habitRiskAdvice,
+        efficacyAdvice: raw.adaptiveThresholds?.efficacyAdvice ?? prev.adaptiveThresholds.efficacyAdvice,
       },
       currentNarrative: raw.currentNarrative ?? prev.currentNarrative,
       coachingInsights: raw.coachingInsights ?? prev.coachingInsights,
