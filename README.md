@@ -11,7 +11,11 @@ A self-hosted productivity tracker that runs 24/7 on your Mac Mini. Tracks brows
 ### Prerequisites
 - **Node.js 18+** (`node --version`)
 - **Mac Mini** (or any Mac running 24/7)
-- **Gemini API Key** — get one free at [aistudio.google.com](https://aistudio.google.com/apikey)
+- **Vertex AI service-account auth** for paid Gemini quota:
+  - `GOOGLE_GENAI_USE_VERTEXAI=true`
+  - `GOOGLE_CLOUD_PROJECT=<project-id>`
+  - `GOOGLE_CLOUD_LOCATION=us-central1` (or your region)
+  - `GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json`
 
 ### Step 1: Install & Run
 
@@ -34,7 +38,8 @@ Go to **Settings** (⚙️ in sidebar) and fill in:
 
 | Setting | Where to get it |
 |---------|-----------------|
-| **Gemini API Key** | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| **Vertex Project ID** | Google Cloud Console → Project info (`GOOGLE_CLOUD_PROJECT`) |
+| **Vertex Location** | Region where Gemini is enabled (usually `us-central1`) |
 | **GitHub PAT** | GitHub → Settings → Developer settings → Personal access tokens → Generate (scopes: `read:user`, `repo`) |
 | **GitHub Username** | Your GitHub handle (e.g. `rohan`) |
 | **Calendar ICS URL** | Google Calendar → ⚙️ → Settings → Your calendar → "Secret address in iCal format" |
@@ -251,7 +256,7 @@ lifeos/
 
 - **Frontend:** Next.js 16, React 19, Tailwind CSS 4
 - **Backend:** Next.js API routes, better-sqlite3
-- **AI:** Google Gemini API
+- **AI:** Google Gemini on Vertex AI (service-account auth)
 - **Extension:** Manifest V3, Chrome/Brave
 - **Scheduler:** Native setInterval via Next.js instrumentation
 - **Database:** SQLite (zero-config, file-based)

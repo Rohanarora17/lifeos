@@ -1815,6 +1815,33 @@ export function dismissSoftWatchCommitment(id: string): boolean {
   commitment.status = 'dismissed';
   softWatchMap.set(id, commitment);
   persistSoftWatch(commitment);
+  
+  if (commitment.calendarEventId) {
+    const { deleteCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
+    deleteCalendarEvent(commitment.calendarEventId).catch(() => {});
+  }
+  return true;
+}
+
+export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, newMinutes?: number): boolean {
+  const commitment = softWatchMap.get(id);
+  if (!commitment) return false;
+  commitment.intendedStartAt = newStartAt;
+  if (newMinutes) commitment.plannedMinutes = newMinutes;
+  
+  // Wipe triggers so they fire again at the new time
+  commitment.reminderSentAt = null;
+  commitment.checkInSentAt = null;
+  
+  softWatchMap.set(id, commitment);
+  persistSoftWatch(commitment);
+  
+  if (commitment.calendarEventId) {
+    const { updateCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
+    const startTime = new Date(newStartAt);
+    const endTime = new Date(newStartAt + commitment.plannedMinutes * 60_000);
+    updateCalendarEvent(commitment.calendarEventId, { startTime, endTime }).catch(() => {});
+  }
   return true;
 }
 

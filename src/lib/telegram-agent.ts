@@ -73,6 +73,8 @@ AVAILABLE ACTIONS:
 - "START_SESSION": Start a focus session RIGHT NOW (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
 - "CREATE_SESSION_TASK": Create a task indicating a planned session. Used when user says "I want to do a 50 min session on X". Payload: title (topic), durationMinutes, due_date (YYYY-MM-DD).
 - "SCHEDULE_SESSION": Schedule a session for a FUTURE time (adds to calendar). Payload: targetTitle, durationMinutes, intendedStartAt (unix ms).
+- "RESCHEDULE_SESSION": Move an existing pending session to a new time. Payload: searchTitle, durationMinutes (optional), intendedStartAt (unix ms).
+- "CANCEL_SCHEDULED_SESSION": Cancel/dismiss a pending scheduled session. Payload: searchTitle.
 - "ADJUST_SESSION": Change duration of the CURRENT active session. Payload: durationMinutes (new total).
 - "END_SESSION": End the current session.
 - "STORE_INTENTION": Store a planned intention without starting anything. Payload: intention (string), when ("today"|"tomorrow"|"this_week").
@@ -697,6 +699,44 @@ export async function executeAction(
                     `📅 <b>Scheduled: ${title}</b>\n🕐 ${startStr} – ${endStr} (${plannedMinutes}m)${conflictMsg}`,
                     'HTML', FULL_MENU_KEYBOARD
                 );
+            }
+            break;
+        }
+
+        case 'RESCHEDULE_SESSION': {
+            const search = (payload.searchTitle as string | undefined)?.trim()?.toLowerCase();
+            const startAt = payload.intendedStartAt as number | undefined;
+            if (!search || !startAt) { await sendTelegram('Missing title or new start time.', ''); break; }
+            
+            const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+            const comms = listSoftWatchCommitments();
+            const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
+            if (!match) {
+                await sendTelegram(`Scheduled session matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
+            rescheduleSoftWatchCommitment(match.id, startAt, payload.durationMinutes as number | undefined);
+            if (replyText) {
+                const dates = new Date(startAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+                await sendTelegram(`✅ Rescheduled <b>${match.targetTitle}</b> to ${dates}.`, 'HTML', FULL_MENU_KEYBOARD);
+            }
+            break;
+        }
+
+        case 'CANCEL_SCHEDULED_SESSION': {
+            const search = (payload.searchTitle as string | undefined)?.trim()?.toLowerCase();
+            if (!search) { await sendTelegram('Which session to cancel?', ''); break; }
+            
+            const { listSoftWatchCommitments, dismissSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+            const comms = listSoftWatchCommitments();
+            const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
+            if (!match) {
+                await sendTelegram(`Scheduled session matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
+            dismissSoftWatchCommitment(match.id);
+            if (replyText) {
+                await sendTelegram(`🗑️ Cancelled scheduled session: <b>${match.targetTitle}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             }
             break;
         }

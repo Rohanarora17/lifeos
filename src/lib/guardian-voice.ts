@@ -42,6 +42,8 @@ type VoiceAction =
   | 'pause_session'
   | 'resume_session'
   | 'schedule_session'
+  | 'reschedule_session'
+  | 'cancel_scheduled_session'
   // ── Task management ──
   | 'create_task'          // "add task X"
   | 'create_session_task'  // "schedule 25min session on X for today" → task with task_type='session'
@@ -454,6 +456,8 @@ SESSION:
 - end_session: Stop current session.
 - pause_session / resume_session: Temporary break/return.
 - schedule_session: Schedule a session for a FUTURE time. topic, durationMinutes, intendedStartAt (unix ms).
+- reschedule_session: Reschedule an existing upcoming scheduled session. topic, durationMinutes (optional), intendedStartAt (unix ms, new time).
+- cancel_scheduled_session: Cancel an existing upcoming scheduled session. topic.
 
 TASK MANAGEMENT (full CRUD):
 - create_task: Plain task (not session-linked). taskTitle, taskPriority (low/medium/high), taskDueDate (YYYY-MM-DD).
@@ -782,6 +786,57 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr}. Calendar event created with reminders.`;
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_scheduled', transcript, intent, session: commitment, responseText: response };
+  }
+
+  // ── reschedule_session ───────────────────────────────────────────────────
+
+  if (intent.action === 'reschedule_session') {
+    if (!intent.topic || !intent.intendedStartAt) {
+      const resp = 'I need the name of the session and the new time to reschedule it.';
+      addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: resp };
+    }
+    const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+    const comms = listSoftWatchCommitments();
+    const search = intent.topic.toLowerCase();
+    const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
+    
+    if (!match) {
+      const resp = `I couldn't find a scheduled session matching ${intent.topic}.`;
+      addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: resp };
+    }
+    
+    rescheduleSoftWatchCommitment(match.id, intent.intendedStartAt, intent.durationMinutes);
+    const dateStr = new Date(intent.intendedStartAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    const resp = `Done. I've rescheduled ${match.targetTitle} to ${dateStr}. Calendar updated.`;
+    addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_scheduled', transcript, intent, session: match, responseText: resp };
+  }
+
+  // ── cancel_scheduled_session ─────────────────────────────────────────────
+
+  if (intent.action === 'cancel_scheduled_session') {
+    if (!intent.topic) {
+      const resp = 'Which upcoming session do you want to cancel?';
+      addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: resp };
+    }
+    const { listSoftWatchCommitments, dismissSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+    const comms = listSoftWatchCommitments();
+    const search = intent.topic.toLowerCase();
+    const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
+    
+    if (!match) {
+      const resp = `I couldn't find a scheduled session matching ${intent.topic}.`;
+      addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: resp };
+    }
+    
+    dismissSoftWatchCommitment(match.id);
+    const resp = `Got it. I've cancelled ${match.targetTitle} and removed it from your calendar.`;
+    addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+    return { type: 'session_scheduled', transcript, intent, session: match, responseText: resp };
   }
 
   // ── adjust_session ────────────────────────────────────────────────────────
