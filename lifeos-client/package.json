@@ -1,0 +1,19 @@
+{
+  "name": "lifeos-client",
+  "version": "0.1.0",
+  "description": "LifeOS MacBook Vision Client — captures screen during sessions and sends to Mac Mini server",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "form-data": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.0"
+  }
+}
