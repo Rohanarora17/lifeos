@@ -55,6 +55,7 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     currentTabStartedAt: null,
     intentProfile: null,
     sessionPolicy: null,
+    screenContext: null,
   };
 }
 
