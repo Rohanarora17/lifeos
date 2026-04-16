@@ -12,6 +12,7 @@
  */
 
 import { getDb } from '@/lib/db';
+import { classifyEnergy, getAdaptiveBands } from './adaptive-bands';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,7 +49,6 @@ export interface WeeklyPlan {
 // ---------------------------------------------------------------------------
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const DAILY_CAPACITY_MINUTES = 90;
 
 /** Monday of the week containing `date` (or current week if omitted). IST offset. */
 function weekStart(fromDate?: Date): string {
@@ -77,9 +77,7 @@ function dayOfWeek(dateStr: string): number {
 }
 
 function energyBand(score: number): 'high' | 'medium' | 'low' {
-  if (score >= 0.65) return 'high';
-  if (score >= 0.35) return 'medium';
-  return 'low';
+  return classifyEnergy(score * 100);
 }
 
 /**
@@ -196,7 +194,8 @@ function assignTasksToDay(
   assignedIds: Set<number>
 ): void {
   const band = day.energy_forecast;
-  let remaining = DAILY_CAPACITY_MINUTES - day.total_minutes;
+  const capacity = getAdaptiveBands().dailyCapacityMinutes;
+  let remaining = capacity - day.total_minutes;
 
   for (const task of candidates) {
     if (remaining <= 0) break;

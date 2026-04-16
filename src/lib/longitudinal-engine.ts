@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { classifyEnergy, classifyFocus, classifyCognitiveLoad, classifyGoalHealth, getAdaptiveBands } from './adaptive-bands';
 import type { DayBriefing, GuardianSemanticProfile, GuardianSessionReflection, GuardianSessionSummary, SoftWatchCommitment } from './guardian-types';
 
 function parseJsonArray(value: string | null | undefined): string[] {
@@ -12,9 +13,7 @@ function parseJsonArray(value: string | null | undefined): string[] {
 }
 
 function toEnergyBand(score: number): 'low' | 'medium' | 'high' {
-  if (score >= 85) return 'high';
-  if (score >= 65) return 'medium';
-  return 'low';
+  return classifyEnergy(score);
 }
 
 function average(values: number[]) {
@@ -60,8 +59,11 @@ function distractionFrequency(rows: Array<{ dominantDistractionDomain: string | 
 }
 
 function deriveCoachingStyle(avgFocusScore: number, avgOverrides: number): 'gentle' | 'balanced' | 'direct' {
-  if (avgFocusScore < 60 || avgOverrides < 0.5) return 'direct';
-  if (avgFocusScore >= 85 && avgOverrides >= 1.5) return 'gentle';
+  const bands = getAdaptiveBands();
+  const isLowFocus = avgFocusScore < bands.focusNeutral;
+  const isHighFocus = avgFocusScore >= bands.focusExcellent;
+  if (isLowFocus || avgOverrides < 0.5) return 'direct';
+  if (isHighFocus && avgOverrides >= 1.5) return 'gentle';
   return 'balanced';
 }
 
@@ -161,7 +163,8 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
   const bestStartHour = recent
     .filter((row) => row.startHour !== null && row.averageFocusScore >= avgFocusScore)
     .sort((a, b) => b.averageFocusScore - a.averageFocusScore)[0]?.startHour ?? null;
-  const { strongTopics, frictionTopics } = titleFrequency(recent, 82, 62);
+  const bands = getAdaptiveBands();
+  const { strongTopics, frictionTopics } = titleFrequency(recent, bands.focusExcellent, bands.focusNeutral);
   const recurringDistractionDomains = distractionFrequency(recent);
 
   const profile: GuardianSemanticProfile = {
@@ -299,9 +302,10 @@ export function getEnergyForecast(userId: string = 'default', hour: number) {
     return profile.typicalEnergyBand;
   }
 
+  const adaptiveBands = getAdaptiveBands();
   const distance = Math.abs(profile.bestStartHour - hour);
   if (distance <= 1) return 'high';
-  if (distance <= 3) return 'medium';
+  if (distance <= Math.max(2, Math.round(adaptiveBands.energyHigh / 25))) return 'medium';
   return 'low';
 }
 

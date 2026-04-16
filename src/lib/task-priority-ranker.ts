@@ -9,6 +9,7 @@ import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { computeEnergyComposite } from './energy-composite';
+import { classifyEnergy } from './adaptive-bands';
 
 interface TaskRow {
     id: number;
@@ -88,7 +89,7 @@ export async function prioritizeAllTasks(): Promise<number> {
     try {
         const ec = computeEnergyComposite();
         energy = ec.composite_score;
-        energyBand = energy >= 65 ? 'high' : energy >= 35 ? 'medium' : 'low';
+        energyBand = classifyEnergy(energy);
     } catch { /* non-fatal */ }
 
     const goalLines = goals.map(g => {

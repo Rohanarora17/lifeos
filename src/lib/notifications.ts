@@ -2,6 +2,7 @@ import { getDb, getSetting } from './db';
 import { sendTelegram, formatAlert, ALERT_KEYBOARD } from './telegram';
 import { getGuardianContext } from './guardian-runtime';
 import { getIntelligenceProfile, touchIntelligence } from './intelligence';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ============================================================
 //  NOTIFICATION ENGINE — Real-time alerts + email via Resend
@@ -434,7 +435,8 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
         const { activeSession } = getGuardianContext();
         if (activeSession) {
             const latestScore = activeSession.focusScoreHistory?.slice(-1)[0] ?? 0;
-            if (latestScore <= 60) {
+            const bands = getAdaptiveBands();
+            if (latestScore <= bands.focusPoor) {
                 const todayStats = db.prepare(`
           SELECT
             COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
@@ -443,7 +445,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
           FROM activities WHERE started_at >= datetime('now', '-2 hours')
         `).get() as { prod: number; dist: number; total: number };
 
-                if (todayStats.total > 600 && todayStats.dist > todayStats.prod) {
+                if (todayStats.total > bands.dailyCapacityMinutes * 10 && todayStats.dist > todayStats.prod) {
                     const sent = await sendAlert(
                         'focus_drop',
                         `Your focus is dropping. ${thresholds.focusDropAdvice || 'Take a 5-minute breather to reset.'}`,
@@ -501,7 +503,8 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (g.total >= 3 && g.done > 0) {
                 const progress = Math.round((g.done / g.total) * 100);
                 const remaining = g.total - g.done;
-                if (progress >= 75 && remaining > 0 && remaining <= 3) {
+                const localBands = getAdaptiveBands();
+                if (progress >= localBands.goalOnTrackVelocity * 100 && remaining > 0 && remaining <= 3) {
                     const sent = await sendAlert(
                         'goal_gradient',
                         `🏁 You're ${remaining} task${remaining > 1 ? 's' : ''} away from completing "${g.title}"! Push through!`,
@@ -541,7 +544,8 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
         if (efficacy.total >= 5) {
             const rate = Math.round((efficacy.completed / efficacy.total) * 100);
-            if (rate < 30) {
+            const localBands = getAdaptiveBands();
+            if (rate < localBands.focusPoor) {
                 const sent = await sendAlert(
                     'efficacy_drop',
                     `Your task completion rate is ${rate}% over the last 14 days. ${thresholds.efficacyAdvice || 'Focus on completing small tasks to rebuild confidence.'}`,

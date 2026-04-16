@@ -13,6 +13,7 @@
  */
 
 import { getDb } from '@/lib/db';
+import { classifyGoalHealth, getAdaptiveBands } from './adaptive-bands';
 
 interface GoalRow {
   id: number;
@@ -56,9 +57,7 @@ function computeActualVelocity(goalId: number): number {
 function healthStatus(actual: number, needed: number | null): 'on_track' | 'at_risk' | 'off_track' {
   if (!needed || needed <= 0) return 'on_track';
   const ratio = actual / needed;
-  if (ratio >= 0.9) return 'on_track';
-  if (ratio >= 0.6) return 'at_risk';
-  return 'off_track';
+  return classifyGoalHealth(ratio);
 }
 
 /**

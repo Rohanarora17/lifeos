@@ -15,6 +15,7 @@ import {
 } from './telegram';
 import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adjustGuardianSessionDuration } from './guardian-runtime';
 import { getMemoryContext } from './memory';
+import { classifyEnergy } from './adaptive-bands';
 import { getDb, getSetting, setSetting } from './db';
 import { getIntelligenceContext, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
@@ -226,7 +227,7 @@ function fetchStandupData() {
             mood: isToday ? mood : null,
             energy: {
                 composite: energy.composite_score,
-                band: energy.composite_score >= 65 ? 'high' : energy.composite_score >= 35 ? 'medium' : 'low',
+                band: classifyEnergy(energy.composite_score),
             },
             suggestedTasks,
             weakConcepts,

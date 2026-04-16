@@ -4,6 +4,7 @@ import { getUnblockedNextConcepts } from './graph';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import { getMemoryContext } from './memory';
+import { getAdaptiveBands, classifyCognitiveLoad, classifyGoalHealth, classifyFocus } from './adaptive-bands';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -47,8 +48,10 @@ export function getCognitiveLoadAudit(): CognitiveLoadAudit {
   ).all() as any[];
 
   const count = openTasks.length;
-  const bandwidth = Math.max(0, Math.min(100, 100 - (count - 3) * 12)); // 3 tasks = 100%, 11+ = 0%
-  const status = bandwidth >= 70 ? 'clear' : bandwidth >= 40 ? 'moderate' : 'overloaded';
+  const bands = getAdaptiveBands();
+  const baseline = Math.max(3, bands.cognitiveLoadModerate / 12);
+  const bandwidth = Math.max(0, Math.min(100, 100 - (count - baseline) * 12));
+  const status = classifyCognitiveLoad(bandwidth);
 
   // Quick wins: oldest tasks with low/medium priority (likely small)
   const quickWins = openTasks
@@ -81,6 +84,11 @@ export function getSmartPrioritization(): RecommendedTask[] {
 
   const now = Date.now();
   const priorityWeight: Record<string, number> = { critical: 40, high: 30, medium: 20, low: 10 };
+  const bands = getAdaptiveBands();
+  const deadlineUrgencyMax = 30;
+  const deadlineDecay = Math.max(1, Math.round(deadlineUrgencyMax / bands.habitAtRiskDays));
+  const goalUrgencyMax = 20;
+  const goalDecay = Math.max(1, Math.round(goalUrgencyMax / bands.habitAtRiskDays));
 
   // Graph-aware: Boost tasks linked to unblocked, undermastered concepts
   let graphBoostTaskIds: Set<number> = new Set();
@@ -114,7 +122,7 @@ export function getSmartPrioritization(): RecommendedTask[] {
     // Deadline urgency (TMT-inspired: closer deadline = higher score)
     if (t.due_date) {
       const daysLeft = Math.max(0, Math.ceil((new Date(t.due_date).getTime() - now) / 86400000));
-      const urgency = Math.max(0, 30 - daysLeft * 3);
+      const urgency = Math.max(0, deadlineUrgencyMax - daysLeft * deadlineDecay);
       score += urgency;
       if (daysLeft <= 2) reasons.push(`due ${daysLeft === 0 ? 'today' : daysLeft === 1 ? 'tomorrow' : 'in 2 days'}`);
     }
@@ -122,7 +130,7 @@ export function getSmartPrioritization(): RecommendedTask[] {
     // Goal deadline urgency
     if (t.goal_deadline) {
       const goalDaysLeft = Math.max(0, Math.ceil((new Date(t.goal_deadline).getTime() - now) / 86400000));
-      const goalUrgency = Math.max(0, 20 - goalDaysLeft * 2);
+      const goalUrgency = Math.max(0, goalUrgencyMax - goalDaysLeft * goalDecay);
       score += goalUrgency;
       if (goalDaysLeft <= 7) reasons.push(`goal deadline in ${goalDaysLeft}d`);
     }
@@ -134,7 +142,7 @@ export function getSmartPrioritization(): RecommendedTask[] {
       ).get(t.goal_id) as { total: number; done: number };
       if (goalTasks.total > 0) {
         const progress = goalTasks.done / goalTasks.total;
-        if (progress < 0.3) {
+        if (progress < bands.goalAtRiskVelocity) {
           score += 15;
           reasons.push(`goal "${t.goal_title}" behind at ${Math.round(progress * 100)}%`);
         }
