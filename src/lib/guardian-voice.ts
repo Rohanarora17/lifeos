@@ -73,6 +73,7 @@ type VoiceAction =
   // ── Other ──
   | 'request_override'
   | 'tutor'
+  | 'guidance'           // on-demand screen-aware Q&A ("explain this", "help me with this")
   | 'unknown';
 
 interface ParsedVoiceIntent {
@@ -139,6 +140,7 @@ interface VoiceActionResult {
   | 'day_briefing'
   | 'deep_analysis'
   | 'tutor_response'
+  | 'guidance_response'
   | 'intent_only';
   transcript: string;
   intent: ParsedVoiceIntent;
@@ -305,6 +307,11 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
       requestedMinutes: durationMinutes,
       overrideReason: transcript,
     };
+  }
+
+  // guidance — screen-aware on-demand Q&A ("explain this", "what is this", "help me with")
+  if (/(explain this|what is this|help me with this|what am i looking at|what does this (mean|do|say)|show me how|help me debug|what('s| is) going on here)/.test(lower)) {
+    return { action: 'guidance' };
   }
 
   if (/(tutor|teach me|explain|help me understand|how do i solve)/.test(lower)) {
@@ -489,7 +496,8 @@ CONFIRMATION:
 - reject_pending: User says no/cancel/stop/don't/never mind.
 
 KNOWLEDGE:
-- tutor: User asks an academic/technical question related to their topic.
+- guidance: User asks about what is on their screen RIGHT NOW — "explain this", "what is this", "what am I looking at", "help me with this", "what does this mean", "help me debug this". This uses the live screen capture.
+- tutor: User asks a general academic/technical question NOT specifically about what is on screen.
 - request_override: Unblock a blocked site. overrideTarget, overrideReason, requestedMinutes.
 - unknown: Nothing fits. Use responseText for a short helpful reply.
 
@@ -564,6 +572,25 @@ KNOWLEDGE:
   } catch {
     return heuristicParseVoiceIntent(transcript);
   }
+}
+
+// ─── Guidance — screen-aware on-demand Q&A ────────────────────────────────────
+
+async function runGuidanceMode(
+  transcript: string,
+  activeSessionId: string | null,
+): Promise<string> {
+  const { assembleGuidanceResponse } = await import('./screen-guidance');
+
+  // For voice-triggered guidance: no screenshot available (PTT doesn't capture),
+  // but we still have the session screenContext (rolling observations, narrative)
+  const guidance = await assembleGuidanceResponse({
+    sessionId: activeSessionId,
+    question: transcript,
+    source: 'voice',
+  });
+
+  return guidance.spokenAnswer || guidance.answer || 'I could not find enough context to answer that.';
 }
 
 // ─── Tutor — multi-turn conversation with full history ────────────────────────
@@ -1451,6 +1478,15 @@ RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specif
     await maybeSpeakVoiceResponse(activeSessionId, responseText);
     addVoiceTurn(hKey, { role: 'model', text: responseText, timestamp: Date.now(), action: intent.action });
     return { type: 'day_briefing', transcript, intent, briefing, responseText };
+  }
+
+  // ── guidance (screen-aware, triggered by "explain this" / "what is this") ──
+
+  if (intent.action === 'guidance') {
+    const responseText = await runGuidanceMode(transcript, activeSessionId);
+    await maybeSpeakVoiceResponse(activeSessionId, responseText);
+    addVoiceTurn(hKey, { role: 'model', text: responseText, timestamp: Date.now(), action: intent.action });
+    return { type: 'guidance_response', transcript, intent, responseText };
   }
 
   // ── tutor (multi-turn, context-aware) ────────────────────────────────────

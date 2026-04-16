@@ -9,6 +9,8 @@ import {
   updateScreenContext,
   persistVisionSignal,
   generateContextNarrative,
+  updateMacbookClientHeartbeat,
+  isMacbookClientConnected,
 } from '@/lib/screen-vision';
 import type { GuardianEvent } from '@/lib/guardian-types';
 
@@ -24,12 +26,8 @@ interface VisionSessionState {
 
 const sessionVisionState = new Map<string, VisionSessionState>();
 
-// Track last heartbeat from the MacBook client so Mac Mini knows when to fall back
-let macbookClientLastSeen = 0;
-
-export function isMacbookClientConnected(): boolean {
-  return Date.now() - macbookClientLastSeen < 30_000; // 30s timeout
-}
+// Re-export for consumers that import from the route
+export { isMacbookClientConnected };
 
 // ---------------------------------------------------------------------------
 // POST /api/guardian/vision
@@ -42,11 +40,11 @@ export async function POST(req: Request) {
 
     // Heartbeat from client (no screenshot, just connectivity check)
     if (body.type === 'heartbeat') {
-      macbookClientLastSeen = Date.now();
+      updateMacbookClientHeartbeat();
       return NextResponse.json({ connected: true });
     }
 
-    macbookClientLastSeen = Date.now();
+    updateMacbookClientHeartbeat();
 
     const { sessionId, base64Jpeg, appInFocus, windowTitle } = body as {
       sessionId: string;

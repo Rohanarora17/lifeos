@@ -11,6 +11,8 @@ import { forceSynthesis, getIntelligenceContext } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
 import { sendMorningCheckin, sendEveningReflection, getWakeEstimate } from './checkin';
 import { captureAndAnalyze } from './screenshot-pipeline';
+import { isMacbookClientConnected } from './screen-vision';
+import { getActiveGuardianSession } from './guardian-runtime';
 import { runContinuityCheck } from './continuity-guardian';
 import { sendWeeklyReckoning } from './weekly-reckoning';
 import { sendOpenLoopsAudit, sendMonthlyPatternLetter } from './open-loops';
@@ -217,8 +219,14 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await forceSynthesis('scheduled_2h');
     });
 
-    // Screenshot pipeline — every 60 seconds, waking hours only (7am-11pm enforced inside captureAndAnalyze)
+    // Screenshot pipeline — Mac Mini fallback only.
+    // Fires every 60 seconds but only runs if:
+    //   1. A guardian session is ACTIVE (no capture when idle)
+    //   2. The MacBook client is NOT connected (if connected, it handles capture)
     registerIntervalJob('screenshot_pipeline', 60 * 1000, async () => {
+        const session = getActiveGuardianSession();
+        if (!session) return; // no active session — stay silent
+        if (isMacbookClientConnected()) return; // MacBook client is handling capture
         await captureAndAnalyze();
     });
 

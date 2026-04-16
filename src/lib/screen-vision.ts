@@ -16,6 +16,21 @@ import { MODEL_FLASH } from './models';
 import { getDb } from './db';
 
 // ---------------------------------------------------------------------------
+// MacBook client connection tracking
+// ---------------------------------------------------------------------------
+
+let macbookClientLastSeen = 0;
+
+export function updateMacbookClientHeartbeat(): void {
+  macbookClientLastSeen = Date.now();
+}
+
+/** True when the MacBook vision client sent a heartbeat within the last 30 seconds. */
+export function isMacbookClientConnected(): boolean {
+  return Date.now() - macbookClientLastSeen < 30_000;
+}
+
+// ---------------------------------------------------------------------------
 // Sensitive app skip list — check frontmost app BEFORE capturing
 // ---------------------------------------------------------------------------
 

@@ -651,7 +651,57 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const attentionCategory = getAttentionCategory(session, session.currentUrl);
   // Low-energy mode: soften direct interventions, lower break threshold
   const lowEnergy = session.energyComposite !== null && session.energyComposite < policy.thresholds.lowEnergyThreshold;
-  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}`;
+  // Vision context — available after first screen_vision event
+  const screenCtx = session.screenContext;
+  const visionDepth = screenCtx?.engagementDepth ?? 'unknown';
+  const visionAlignment = screenCtx?.taskAlignmentAvg ?? null;
+  const visionTrend = screenCtx?.visionTrend ?? 'unknown';
+  const visionObsCount = screenCtx?.recentObservations.length ?? 0;
+  const hasReliableVision = visionObsCount >= 3; // enough observations to trust
+
+  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}, visionDepth=${visionDepth}, visionAlignment=${visionAlignment ?? 'none'}`;
+
+  // ── Vision-aware flow silence ────────────────────────────────────────────────
+  // If vision confirms active_creation with high alignment, the user is in a genuine
+  // flow state. Never interrupt — even for milestone messages.
+  if (
+    hasReliableVision &&
+    visionDepth === 'active_creation' &&
+    (visionAlignment ?? 0) >= 70 &&
+    focusScore >= (policy.thresholds.flowSilenceThreshold ?? 80)
+  ) {
+    const recentAllCreation = screenCtx!.recentObservations
+      .slice(-4)
+      .every((o) => o.engagementDepth === 'active_creation');
+    if (recentAllCreation) {
+      return {
+        type: 'silence',
+        reason: 'Vision confirms deep flow state — active creation at high alignment',
+        explainability: `${explainabilityBase}; vision shows sustained active_creation, interruption cost exceeds value`,
+      };
+    }
+  }
+
+  // ── Vision-confirmed distraction override ────────────────────────────────────
+  // If vision sees clearly off-topic content with high confidence, escalate decision
+  // even if URL classification hasn't resolved yet.
+  if (
+    hasReliableVision &&
+    visionDepth === 'distraction' &&
+    (visionAlignment ?? 100) <= 20 &&
+    cooldownPassed
+  ) {
+    const lastDistraction = screenCtx!.recentObservations.at(-1);
+    if (lastDistraction && lastDistraction.confidence >= 0.75) {
+      return {
+        type: 'speak',
+        tone: 'grounding_nudge',
+        text: buildSpeechText(session, 'nudge'),
+        reason: 'Vision confirms off-topic content',
+        explainability: `${explainabilityBase}; vision detected distraction (${lastDistraction.specificContent}) with high confidence`,
+      };
+    }
+  }
 
   if (attentionCategory === 'temporary_override') {
     return {
@@ -727,13 +777,22 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   }
 
   if (tabSwitchesLast5Min >= policy.thresholds.highScatterSpeakThreshold && cooldownPassed && !inFlow && attentionCategory !== 'ambiguous_context') {
-    return {
-      type: 'speak',
-      tone: 'grounding_nudge',
-      text: buildSpeechText(session, 'nudge'),
-      reason: 'High scatter detected',
-      explainability: `${explainabilityBase}; scatter threshold crossed`,
-    };
+    // Vision exemption: if vision confirms active_learning (research mode), high tab switching
+    // is productive comparison behaviour — suppress the scatter warning.
+    const productiveScatter =
+      hasReliableVision &&
+      visionDepth === 'active_learning' &&
+      (visionAlignment ?? 0) >= 55;
+
+    if (!productiveScatter) {
+      return {
+        type: 'speak',
+        tone: 'grounding_nudge',
+        text: buildSpeechText(session, 'nudge'),
+        reason: 'High scatter detected',
+        explainability: `${explainabilityBase}; scatter threshold crossed`,
+      };
+    }
   }
 
   if (idleSeconds >= policy.thresholds.idleConcernSeconds && cooldownPassed && !inFlow) {

@@ -3,7 +3,7 @@ import { GuardianPolicyBundle, GuardianState } from './guardian-types';
 export type Trend = 'rising' | 'stable' | 'falling';
 
 export function computeFocusScore(
-    session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory'>,
+    session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory' | 'screenContext'>,
     policy?: GuardianPolicyBundle,
     energyComposite?: number | null,
 ) {
@@ -49,11 +49,32 @@ export function computeFocusScore(
         }
     });
 
-    const continuityScore = Math.min(100, (onTopicSeconds / Math.max(1, elapsedMs / 1000)) * 100);
+    const tabContinuityScore = Math.min(100, (onTopicSeconds / Math.max(1, elapsedMs / 1000)) * 100);
+
+    // Vision blending: when screen observations are available, blend vision task alignment
+    // with tab-based continuity. Vision is evidence-based (sees actual content); tabs are
+    // inference-based (URL classification). More observations → trust vision more.
+    const screenCtx = session.screenContext;
+    const visionObsCount = screenCtx?.recentObservations.length ?? 0;
+    let continuityScore = tabContinuityScore;
+    if (screenCtx && visionObsCount >= 1) {
+        const visionAlignment = screenCtx.taskAlignmentAvg; // 0-100
+        // Weight: ramp from 30% vision at 1 obs → 60% vision at 5+ obs
+        const visionWeight = Math.min(0.6, 0.3 + (visionObsCount - 1) * 0.075);
+        continuityScore = Math.min(100,
+            visionAlignment * visionWeight + tabContinuityScore * (1 - visionWeight)
+        );
+    }
 
     const scatterThreshold = thresholds?.highScatterSpeakThreshold ?? 6;
     const switchesPerMin = switches / Math.max(1, elapsedMinutes);
-    const switchScore = Math.max(0, 100 - (switchesPerMin / scatterThreshold) * 100);
+    let switchScore = Math.max(0, 100 - (switchesPerMin / scatterThreshold) * 100);
+
+    // Vision-aware switch adjustment: if vision shows active_learning engagement,
+    // the user may be productively comparing tabs (research mode) — reduce penalty.
+    if (screenCtx?.engagementDepth === 'active_learning' && switchesPerMin > 2) {
+        switchScore = Math.min(100, switchScore * 1.25);
+    }
 
     const dwellTarget = thresholds?.dwellDepthTargetSeconds ?? 180;
     const tabsWithDwell = session.tabEventLog.filter(
@@ -61,7 +82,13 @@ export function computeFocusScore(
     );
     const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
     const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
-    const dwellScore = Math.min(100, (avgDwell / dwellTarget) * 100);
+    let dwellScore = Math.min(100, (avgDwell / dwellTarget) * 100);
+
+    // Vision-aware dwell boost: active_creation (coding, writing) often shows sustained
+    // engagement without many tab switches — give it a modest dwell credit.
+    if (screenCtx?.engagementDepth === 'active_creation') {
+        dwellScore = Math.min(100, dwellScore * 1.15);
+    }
 
     const distractPenalty = distractionRevisits * 8;
 
@@ -102,7 +129,7 @@ export function computeFocusScore(
 
     return {
         score,
-        components: { continuityScore, switchScore, dwellScore },
+        components: { continuityScore, switchScore, dwellScore, visionAlignment: screenCtx?.taskAlignmentAvg ?? null },
         trend,
         onTopicSeconds,
         distractionCount: distractionRevisits,
