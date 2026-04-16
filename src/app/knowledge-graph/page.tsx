@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { masteryColor, masteryTier } from '@/lib/score-classify';
 
 interface KnowledgeNode {
     id: number;
@@ -27,10 +28,11 @@ interface Goal {
 }
 
 const MASTERY_COLOR = (m: number) => {
-    if (m >= 0.8) return { bg: 'rgba(16, 185, 129, 0.15)', border: '#10b981', text: '#10b981' };
-    if (m >= 0.5) return { bg: 'rgba(245, 158, 11, 0.15)', border: '#f59e0b', text: '#f59e0b' };
-    if (m >= 0.2) return { bg: 'rgba(239, 68, 68, 0.12)', border: '#ef4444', text: '#ef4444' };
-    return { bg: 'rgba(100, 116, 139, 0.1)', border: '#475569', text: '#94a3b8' };
+    const color = masteryColor(m);
+    if (m >= 0.8) return { bg: `rgba(16, 185, 129, 0.15)`, border: color, text: color };
+    if (m >= 0.5) return { bg: `rgba(245, 158, 11, 0.15)`, border: color, text: color };
+    if (m >= 0.2) return { bg: `rgba(239, 68, 68, 0.12)`, border: color, text: color };
+    return { bg: 'rgba(100, 116, 139, 0.1)', border: color, text: '#94a3b8' };
 };
 
 export default function KnowledgeGraphPage() {
@@ -214,8 +216,8 @@ export default function KnowledgeGraphPage() {
                             {/* Legend */}
                             {nodes.length > 0 && (
                                 <div className="flex gap-4 mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
-                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Mastered (80%+)</span>
-                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> Progressing (50%+)</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> {masteryTier(0.8).label}</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> {masteryTier(0.5).label}</span>
                                     <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Needs work</span>
                                     <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-500 inline-block" /> Not started</span>
                                 </div>
@@ -238,7 +240,7 @@ export default function KnowledgeGraphPage() {
                                     <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>Average concept mastery</p>
                                     <div className="space-y-2">
                                         <div className="flex justify-between text-xs">
-                                            <span style={{ color: '#10b981' }}>✅ Mastered</span>
+                                            <span style={{ color: '#10b981' }}>✅ {masteryTier(0.8).label}</span>
                                             <span>{nodes.filter(n => n.mastery >= 0.8).length}</span>
                                         </div>
                                         <div className="flex justify-between text-xs">

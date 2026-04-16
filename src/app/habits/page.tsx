@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import exifr from 'exifr';
+import { progressColor } from '@/lib/score-classify';
 
 interface DayHabitHistory {
     date: string;
@@ -262,10 +263,7 @@ export default function HabitsPage() {
                                         style={{
                                             height: `${Math.max(day.habit_score ?? 0, 4)} % `,
                                             background: day.habit_score !== null
-                                                ? day.habit_score >= 80 ? 'var(--accent-green)'
-                                                    : day.habit_score >= 50 ? 'var(--accent-yellow)'
-                                                        : day.habit_score >= 25 ? 'var(--accent-orange)'
-                                                            : 'var(--accent-red)'
+                                                ? progressColor(day.habit_score)
                                                 : 'var(--border)',
                                             minHeight: day.total_habits > 0 ? '4px' : '0',
                                         }}
@@ -316,7 +314,7 @@ export default function HabitsPage() {
                                         <tr style={{ background: 'var(--bg-secondary)' }}>
                                             <td style={{ padding: '0.5rem 1rem', fontSize: '0.75rem', fontWeight: 700, position: 'sticky', left: 0, background: 'var(--bg-secondary)' }}>Score</td>
                                             {habitHistory.map(day => (
-                                                <td key={day.date} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', fontSize: '0.7rem', fontWeight: 700, color: day.habit_score !== null ? (day.habit_score >= 80 ? 'var(--accent-green)' : day.habit_score >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)') : 'var(--text-muted)' }}>
+                                                <td key={day.date} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', fontSize: '0.7rem', fontWeight: 700, color: day.habit_score !== null ? progressColor(day.habit_score) : 'var(--text-muted)' }}>
                                                     {day.habit_score !== null ? `${day.habit_score} % ` : '—'}
                                                 </td>
                                             ))}

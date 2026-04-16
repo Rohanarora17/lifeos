@@ -1,16 +1,11 @@
 'use client';
 
+import { scoreColor } from '@/lib/score-classify';
+
 export default function ScoreRing({ score, size = 120 }: { score: number; size?: number }) {
     const radius = (size - 16) / 2;
     const circumference = 2 * Math.PI * radius;
     const offset = circumference - (score / 100) * circumference;
-
-    const getColor = (s: number) => {
-        if (s >= 80) return 'var(--accent-green)';
-        if (s >= 60) return 'var(--accent-blue)';
-        if (s >= 40) return 'var(--accent-yellow)';
-        return 'var(--accent-red)';
-    };
 
     return (
         <div className="score-ring" style={{ width: size, height: size }}>
@@ -19,7 +14,7 @@ export default function ScoreRing({ score, size = 120 }: { score: number; size?:
                 <circle
                     className="score-ring-fill"
                     cx={size / 2} cy={size / 2} r={radius}
-                    stroke={getColor(score)}
+                    stroke={scoreColor(score)}
                     strokeDasharray={circumference}
                     strokeDashoffset={offset}
                 />

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import GuardianDashboard from '@/components/GuardianDashboard';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+import { scoreColor } from '@/lib/score-classify';
 
 interface DayBriefing {
   recentSessions: number;
@@ -795,7 +796,7 @@ export default function GuardianPage() {
                   {c.average_focus_score != null && (
                     <div style={{
                       fontSize: '18px', fontWeight: 800,
-                      color: c.average_focus_score >= 75 ? '#22c55e' : c.average_focus_score >= 50 ? '#f59e0b' : '#ef4444',
+                      color: scoreColor(c.average_focus_score),
                     }}>
                       {Math.round(c.average_focus_score)}
                     </div>
@@ -883,7 +884,7 @@ export default function GuardianPage() {
                 <div style={{ textAlign: 'right' }}>
                   <div style={{
                     fontSize: '14px', fontWeight: 800,
-                    color: s.average_focus_score >= 75 ? '#22c55e' : s.average_focus_score >= 50 ? '#f59e0b' : '#ef4444',
+                    color: scoreColor(s.average_focus_score),
                   }}>
                     {Math.round(s.average_focus_score)}
                   </div>

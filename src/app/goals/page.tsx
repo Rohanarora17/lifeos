@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { progressColor, efficacyEmoji } from '@/lib/score-classify';
 
 interface LinkedTask {
     id: number;
@@ -171,10 +172,7 @@ export default function GoalsPage() {
     };
 
     const getProgressColor = (p: number) => {
-        if (p >= 80) return 'var(--accent-green)';
-        if (p >= 50) return 'var(--accent-yellow)';
-        if (p >= 25) return 'var(--accent-orange)';
-        return 'var(--accent-red)';
+        return progressColor(p);
     };
 
     const daysUntil = (dateStr: string) => {
@@ -196,7 +194,7 @@ export default function GoalsPage() {
                     </p>
                 </div>
                 <div className="text-center">
-                    <div className="text-2xl">{selfEfficacy >= 70 ? '💪' : selfEfficacy >= 40 ? '📊' : '🔄'}</div>
+                    <div className="text-2xl">{efficacyEmoji(selfEfficacy)}</div>
                     <p className="text-xs font-semibold" style={{ color: getProgressColor(selfEfficacy) }}>
                         {selfEfficacy}% Efficacy
                     </p>

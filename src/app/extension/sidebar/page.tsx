@@ -6,6 +6,7 @@ import '@/lib/polyfill-crypto-uuid';
 import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+import { scoreBadgeBg, scoreBadgeBorder, scoreBadgeText } from '@/lib/score-classify';
 
 // Lazy-load livekit-client only after polyfill is in place and component mounts
 const GuardianVoiceRoom = dynamic(() => import('@/components/GuardianVoiceRoom'), {
@@ -374,14 +375,10 @@ export default function ExtensionSidebar() {
                             {/* Habit completion badge */}
                             {insights.habits.completionRate !== null && (
                                 <div style={{
-                                    background: insights.habits.completionRate >= 80
-                                        ? 'rgba(34,197,94,0.1)' : insights.habits.completionRate >= 50
-                                        ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
-                                    border: `1px solid ${insights.habits.completionRate >= 80
-                                        ? 'rgba(34,197,94,0.3)' : insights.habits.completionRate >= 50
-                                        ? 'rgba(245,158,11,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                                    background: scoreBadgeBg(insights.habits.completionRate),
+                                    border: `1px solid ${scoreBadgeBorder(insights.habits.completionRate)}`,
                                     borderRadius: '6px', padding: '3px 7px', fontSize: '10px',
-                                    color: insights.habits.completionRate >= 80 ? '#22c55e' : insights.habits.completionRate >= 50 ? '#f59e0b' : '#ef4444',
+                                    color: scoreBadgeText(insights.habits.completionRate),
                                 }}>
                                     Habits {insights.habits.completionRate}%
                                 </div>

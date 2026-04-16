@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { scoreColor, productivityRatioColor } from '@/lib/score-classify';
 
 // ── Types ──
 interface FocusScoreData {
@@ -254,7 +255,7 @@ export default function InsightsPage() {
                         <ScoreCard label="Consistency" value={consistency?.overallScore ?? 0} max={100} color="#a855f7" icon="📊"
                             sub={`${consistency?.streakDays || 0}-day streak · ${consistency?.trend || 'stable'}`} />
                         <ScoreCard label="Goal Alignment" value={goalAlignment?.alignmentScore ?? 50} max={100}
-                            color={goalAlignment?.alignmentScore && goalAlignment.alignmentScore >= 80 ? '#22c55e' : '#eab308'} icon="🎯"
+                            color={goalAlignment?.alignmentScore ? scoreColor(goalAlignment.alignmentScore) : '#eab308'} icon="🎯"
                             sub={`${goalAlignment?.goals?.length || 0} active goals`} />
                     </div>
 
@@ -270,7 +271,7 @@ export default function InsightsPage() {
                                     <div key={h} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
                                         <div style={{
                                             width: '80%', height: `${height}%`, minHeight: d.total > 0 ? 3 : 1,
-                                            background: d.total === 0 ? '#1a1a2e' : ratio > 0.6 ? '#22c55e' : ratio > 0.3 ? '#eab308' : '#ef4444',
+                                            background: d.total === 0 ? '#1a1a2e' : productivityRatioColor(ratio),
                                             borderRadius: '3px 3px 0 0', transition: 'height 0.3s ease', opacity: 0.85
                                         }}
                                             title={`${h}:00 — ${d.productive}m prod · ${d.distraction}m dist`} />
@@ -404,7 +405,7 @@ export default function InsightsPage() {
                     {/* Overall + Streak */}
                     <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 24, marginBottom: 24 }}>
                         <div className="card" style={{ padding: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                            <div style={{ fontSize: 48, fontWeight: 800, color: consistency.overallScore >= 70 ? '#22c55e' : consistency.overallScore >= 40 ? '#eab308' : '#ef4444' }}>
+                            <div style={{ fontSize: 48, fontWeight: 800, color: scoreColor(consistency.overallScore) }}>
                                 {consistency.overallScore}
                             </div>
                             <div style={{ fontSize: 12, color: '#8888a0', marginTop: 2 }}>Consistency Index /100</div>
@@ -425,14 +426,14 @@ export default function InsightsPage() {
                                         <span style={{ fontSize: 12, textTransform: 'capitalize' }}>
                                             {key === 'work' ? '💼 Work' : key === 'habits' ? '🔥 Habits' : key === 'tasks' ? '📋 Tasks' : key === 'focus' ? '🎯 Focus' : '⏰ Timing'}
                                         </span>
-                                        <span style={{ fontSize: 12, fontWeight: 700, color: dim.score >= 70 ? '#22c55e' : dim.score >= 40 ? '#eab308' : '#ef4444' }}>
+                                        <span style={{ fontSize: 12, fontWeight: 700, color: scoreColor(dim.score) }}>
                                             {dim.score}/100
                                         </span>
                                     </div>
                                     <div style={{ height: 6, background: '#12121a', borderRadius: 3, overflow: 'hidden' }}>
                                         <div style={{
                                             width: `${dim.score}%`, height: '100%', borderRadius: 3, transition: 'width 0.5s ease',
-                                            background: dim.score >= 70 ? '#22c55e' : dim.score >= 40 ? '#eab308' : '#ef4444'
+                                            background: scoreColor(dim.score)
                                         }} />
                                     </div>
                                     <div style={{ fontSize: 10, color: '#8888a0', marginTop: 2 }}>

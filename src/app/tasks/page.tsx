@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
+import { scoreColor } from '@/lib/score-classify';
 
 interface Task {
     id: number;
@@ -212,9 +213,7 @@ export default function TasksPage() {
 
     const getScoreColor = (score: number | null) => {
         if (score === null) return 'var(--text-muted)';
-        if (score >= 80) return 'var(--accent-green)';
-        if (score >= 50) return 'var(--accent-yellow)';
-        return 'var(--accent-red)';
+        return scoreColor(score);
     };
 
     const formatDate = (dateStr: string) => {

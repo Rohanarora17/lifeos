@@ -5,6 +5,7 @@ import ScoreRing from '@/components/ScoreRing';
 import DonutChart from '@/components/DonutChart';
 import AICoach from '@/components/AICoach';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+import { scoreColor, scoreBadgeBg, scoreBadgeBorder, scoreBadgeText, classifyScore, efficacyEmoji, cognitiveLoadColor, progressColor } from '@/lib/score-classify';
 
 interface DashboardData {
   today: {
@@ -344,7 +345,7 @@ export default function DashboardPage() {
             <p className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Accountability</p>
             <p className="text-2xl font-bold">{today.score}/100</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              {today.score >= 80 ? 'Outstanding!' : today.score >= 60 ? 'Good going' : 'Room to improve'}
+              {(() => { const t = classifyScore(today.score); return t === 'excellent' ? 'Outstanding!' : t === 'good' ? 'Good going' : t === 'neutral' ? 'Room to improve' : 'Needs attention'; })()}
             </p>
           </div>
         </div>
@@ -501,14 +502,9 @@ export default function DashboardPage() {
                 {insights.habits.completionRate !== null && (
                   <span style={{
                     fontSize: '10px', padding: '2px 8px', borderRadius: '12px',
-                    background: insights.habits.completionRate >= 80
-                      ? 'rgba(34,197,94,0.1)' : insights.habits.completionRate >= 50
-                      ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
-                    color: insights.habits.completionRate >= 80 ? '#22c55e'
-                      : insights.habits.completionRate >= 50 ? '#f59e0b' : '#ef4444',
-                    border: `1px solid ${insights.habits.completionRate >= 80
-                      ? 'rgba(34,197,94,0.25)' : insights.habits.completionRate >= 50
-                      ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                    background: scoreBadgeBg(insights.habits.completionRate),
+                    color: scoreBadgeText(insights.habits.completionRate),
+                    border: `1px solid ${scoreBadgeBorder(insights.habits.completionRate)}`,
                   }}>Habits {insights.habits.completionRate}%</span>
                 )}
               </div>
@@ -610,13 +606,13 @@ export default function DashboardPage() {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-sm truncate mr-2">{g.title}</span>
                     <span className="text-xs font-bold tabular-nums" style={{
-                      color: g.progress >= 80 ? 'var(--accent-green)' : g.progress >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)'
+                      color: progressColor(g.progress)
                     }}>{g.progress}%</span>
                   </div>
                   <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
                     <div className="h-full rounded-full transition-all" style={{
                       width: `${g.progress}%`,
-                      background: g.progress >= 80 ? 'var(--accent-green)' : g.progress >= 50 ? 'var(--accent-yellow)' : 'var(--accent-orange)'
+                      background: progressColor(g.progress)
                     }} />
                   </div>
                   <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
@@ -638,9 +634,7 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between">
                 <span className="text-sm">Mental Bandwidth</span>
                 <span className="text-sm font-bold" style={{
-                  color: data.intelligence.cognitiveLoad.status === 'clear' ? 'var(--accent-green)'
-                    : data.intelligence.cognitiveLoad.status === 'moderate' ? 'var(--accent-yellow)'
-                      : 'var(--accent-red)'
+                  color: cognitiveLoadColor(data.intelligence.cognitiveLoad.status as 'clear' | 'moderate' | 'overloaded')
                 }}>
                   {data.intelligence.cognitiveLoad.mentalBandwidth}%
                 </span>
@@ -648,9 +642,7 @@ export default function DashboardPage() {
               <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-secondary)' }}>
                 <div className="h-full rounded-full" style={{
                   width: `${data.intelligence.cognitiveLoad.mentalBandwidth}%`,
-                  background: data.intelligence.cognitiveLoad.status === 'clear' ? 'var(--accent-green)'
-                    : data.intelligence.cognitiveLoad.status === 'moderate' ? 'var(--accent-yellow)'
-                      : 'var(--accent-red)'
+                  background: cognitiveLoadColor(data.intelligence.cognitiveLoad.status as 'clear' | 'moderate' | 'overloaded')
                 }} />
               </div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -659,9 +651,7 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between pt-2 border-t" style={{ borderColor: 'var(--border)' }}>
                 <span className="text-sm">Self-Efficacy</span>
                 <span className="text-sm font-bold" style={{
-                  color: data.intelligence.efficacyMode.rate >= 70 ? 'var(--accent-green)'
-                    : data.intelligence.efficacyMode.rate >= 40 ? 'var(--accent-yellow)'
-                      : 'var(--accent-red)'
+                  color: scoreColor(data.intelligence.efficacyMode.rate)
                 }}>{data.intelligence.efficacyMode.rate}%</span>
               </div>
               <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{data.intelligence.efficacyMode.message}</p>
@@ -717,8 +707,7 @@ export default function DashboardPage() {
                     <div className="text-right flex-shrink-0 ml-3">
                       {score ? (
                         <span className="badge text-xs" style={{
-                          background: score >= 70 ? 'rgba(34,197,94,0.15)' : score >= 40 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
-                          color: score >= 70 ? 'var(--accent-green)' : score >= 40 ? 'var(--accent-yellow)' : 'var(--accent-red)',
+                          background: scoreBadgeBg(score), color: scoreColor(score),
                         }}>{score}/100</span>
                       ) : (
                         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
