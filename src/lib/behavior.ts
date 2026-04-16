@@ -9,6 +9,7 @@
 import { getDb, getSetting } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ============================================================
 //  1. FOCUS DEPTH SCORING
@@ -28,17 +29,30 @@ interface FocusSession {
   flowStateDetected: boolean;
 }
 
-// Thresholds (based on Cal Newport's Deep Work + Gloria Mark's research)
-const FOCUS_THRESHOLDS = {
-  DEEP_MIN_MINUTES: 25,        // Pomodoro baseline
-  DEEP_MAX_SWITCHES_PER_HOUR: 3,
-  MODERATE_MIN_MINUTES: 15,
-  MODERATE_MAX_SWITCHES_PER_HOUR: 8,
-  SHALLOW_MAX_MINUTES: 15,
-  FLOW_MIN_MINUTES: 45,        // Flow state requires 45+ min uninterrupted
-  FLOW_MAX_SWITCHES: 2,        // Almost zero switching
-  CONTEXT_SWITCH_COST_MINUTES: 23, // Gloria Mark's research: each switch costs ~23 min of refocus
-};
+// Thresholds (defaults from research, overridden by adaptive bands from user data)
+function getFocusThresholds() {
+  const bands = getAdaptiveBands();
+  return {
+    DEEP_MIN_MINUTES: bands.deepWorkMinMinutes,
+    DEEP_MAX_SWITCHES_PER_HOUR: Math.round(bands.stableFlowMaxTabSwitches * 1.5),
+    MODERATE_MIN_MINUTES: Math.round(bands.deepWorkMinMinutes * 0.6),
+    MODERATE_MAX_SWITCHES_PER_HOUR: bands.stableFlowMaxTabSwitches * 4,
+    SHALLOW_MAX_MINUTES: Math.round(bands.deepWorkMinMinutes * 0.6),
+    FLOW_MIN_MINUTES: bands.flowMinMinutes,
+    FLOW_MAX_SWITCHES: bands.stableFlowMaxTabSwitches,
+    CONTEXT_SWITCH_COST_MINUTES: bands.contextSwitchCostMinutes,
+    fragmentedSwitchesPerHour: bands.fragmentedSwitchesPerHour,
+    deepWeight: bands.focusDeepWeight,
+    flowWeight: bands.focusFlowWeight,
+    fragWeight: bands.focusFragWeight,
+    switchWeight: bands.focusSwitchWeight,
+    focusscoreNormalizer: bands.deepWorkMinMinutes * 0.6,
+    flowNormalizer: bands.flowMinMinutes * 2,
+  };
+}
+
+const SESSION_GAP_MINUTES = 5;
+const SESSION_MIN_DURATION_MINUTES = 2;
 
 /**
  * Compute focus sessions from raw activity data.
@@ -77,10 +91,10 @@ export function computeFocusSessions(date: string): FocusSession[] {
     // Gap detection: if more than 5 min gap, end session
     const gap = (new Date(curr.started_at).getTime() - new Date(prev.ended_at || prev.started_at).getTime()) / 60000;
 
-    if (gap > 5) {
+    if (gap > SESSION_GAP_MINUTES) {
       // Finalize current session
       const session = finalizeSession(sessionStart, prev.ended_at || prev.started_at, sessionActivities, tabSwitches, contextSwitches);
-      if (session.durationMinutes >= 2) sessions.push(session);
+      if (session.durationMinutes >= SESSION_MIN_DURATION_MINUTES) sessions.push(session);
 
       // Start new session
       sessionStart = curr.started_at;
@@ -98,7 +112,7 @@ export function computeFocusSessions(date: string): FocusSession[] {
   // Finalize last session
   const lastAct = activities[activities.length - 1];
   const session = finalizeSession(sessionStart, lastAct.ended_at || lastAct.started_at, sessionActivities, tabSwitches, contextSwitches);
-  if (session.durationMinutes >= 2) sessions.push(session);
+  if (session.durationMinutes >= SESSION_MIN_DURATION_MINUTES) sessions.push(session);
 
   return sessions;
 }
@@ -108,11 +122,11 @@ function finalizeSession(
   activities: { domain: string; category: string; duration_seconds: number }[],
   tabSwitches: number, contextSwitches: number
 ): FocusSession {
+  const T = getFocusThresholds();
   const durationMinutes = Math.round(
     (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000
   );
 
-  // Find primary domain (most time spent)
   const domainTime: Record<string, number> = {};
   const categoryTime: Record<string, number> = {};
   for (const a of activities) {
@@ -122,33 +136,31 @@ function finalizeSession(
   const primaryDomain = Object.entries(domainTime).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
   const primaryCategory = Object.entries(categoryTime).sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
 
-  // Switches per hour
   const hoursInSession = Math.max(durationMinutes / 60, 0.1);
   const switchesPerHour = tabSwitches / hoursInSession;
 
-  // Classify focus depth
   let focusType: FocusSession['focusType'] = 'shallow';
   let flowStateDetected = false;
 
   if (
-    durationMinutes >= FOCUS_THRESHOLDS.FLOW_MIN_MINUTES &&
-    tabSwitches <= FOCUS_THRESHOLDS.FLOW_MAX_SWITCHES &&
+    durationMinutes >= T.FLOW_MIN_MINUTES &&
+    tabSwitches <= T.FLOW_MAX_SWITCHES &&
     primaryCategory === 'productive'
   ) {
     focusType = 'deep';
     flowStateDetected = true;
   } else if (
-    durationMinutes >= FOCUS_THRESHOLDS.DEEP_MIN_MINUTES &&
-    switchesPerHour <= FOCUS_THRESHOLDS.DEEP_MAX_SWITCHES_PER_HOUR &&
+    durationMinutes >= T.DEEP_MIN_MINUTES &&
+    switchesPerHour <= T.DEEP_MAX_SWITCHES_PER_HOUR &&
     primaryCategory === 'productive'
   ) {
     focusType = 'deep';
   } else if (
-    durationMinutes >= FOCUS_THRESHOLDS.MODERATE_MIN_MINUTES &&
-    switchesPerHour <= FOCUS_THRESHOLDS.MODERATE_MAX_SWITCHES_PER_HOUR
+    durationMinutes >= T.MODERATE_MIN_MINUTES &&
+    switchesPerHour <= T.MODERATE_MAX_SWITCHES_PER_HOUR
   ) {
     focusType = 'moderate';
-  } else if (switchesPerHour > 20 || contextSwitches > tabSwitches * 0.5) {
+  } else if (switchesPerHour > T.fragmentedSwitchesPerHour || contextSwitches > tabSwitches * 0.5) {
     focusType = 'fragmented';
   }
 
@@ -192,17 +204,16 @@ export function computeFocusScore(sessions: FocusSession[]): {
   }
 
   // Context switch cost (Gloria Mark: each cross-category switch ≈ 23 min lost)
-  const contextSwitchCost = totalContextSwitches * FOCUS_THRESHOLDS.CONTEXT_SWITCH_COST_MINUTES;
+  const T = getFocusThresholds();
+  const contextSwitchCost = totalContextSwitches * T.CONTEXT_SWITCH_COST_MINUTES;
 
   // Focus ratio: deep+moderate vs total
   const focusRatio = totalMinutes > 0 ? (deepMinutes + moderateMinutes) / totalMinutes : 0;
 
-  // Score calculation:
-  // 40% deep work ratio, 20% flow bonuses, 20% low fragmentation, 20% low switch cost
-  const deepScore = Math.min(1, (deepMinutes + moderateMinutes * 0.5) / Math.max(totalMinutes * 0.6, 1)) * 40;
-  const flowScore = (flowMinutes > 0 ? Math.min(1, flowMinutes / 90) : 0) * 20;
-  const fragScore = totalMinutes > 0 ? (1 - fragmentedMinutes / totalMinutes) * 20 : 20;
-  const switchScore = Math.max(0, 1 - (contextSwitchCost / Math.max(totalMinutes, 60))) * 20;
+  const deepScore = Math.min(1, (deepMinutes + moderateMinutes * 0.5) / Math.max(totalMinutes * 0.6, 1)) * T.deepWeight;
+  const flowScore = (flowMinutes > 0 ? Math.min(1, flowMinutes / T.flowNormalizer) : 0) * T.flowWeight;
+  const fragScore = totalMinutes > 0 ? (1 - fragmentedMinutes / totalMinutes) * T.fragWeight : T.fragWeight;
+  const switchScore = Math.max(0, 1 - (contextSwitchCost / Math.max(totalMinutes, 60))) * T.switchWeight;
 
   const score = Math.round(deepScore + flowScore + fragScore + switchScore);
 

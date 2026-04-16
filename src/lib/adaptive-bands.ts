@@ -18,6 +18,14 @@ export interface AdaptiveBands {
   deepWorkMinMinutes: number;
   flowMinMinutes: number;
   contextSwitchCostMinutes: number;
+  stableFlowMaxTabSwitches: number;
+  sessionGapMinutes: number;
+  sessionMinDurationMinutes: number;
+  fragmentedSwitchesPerHour: number;
+  focusDeepWeight: number;
+  focusFlowWeight: number;
+  focusFragWeight: number;
+  focusSwitchWeight: number;
 }
 
 const DEFAULT_BANDS: AdaptiveBands = {
@@ -37,6 +45,14 @@ const DEFAULT_BANDS: AdaptiveBands = {
   deepWorkMinMinutes: 25,
   flowMinMinutes: 45,
   contextSwitchCostMinutes: 23,
+  stableFlowMaxTabSwitches: 2,
+  sessionGapMinutes: 5,
+  sessionMinDurationMinutes: 2,
+  fragmentedSwitchesPerHour: 20,
+  focusDeepWeight: 40,
+  focusFlowWeight: 20,
+  focusFragWeight: 20,
+  focusSwitchWeight: 20,
 };
 
 let cachedBands: AdaptiveBands | null = null;

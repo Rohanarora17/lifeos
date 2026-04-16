@@ -5,6 +5,7 @@ import { getDb, getSetting } from './db';
 import { sendTelegram } from './telegram';
 import { getRecentObservations } from './screenshot-pipeline';
 import { getTodayPhoneScreenTime } from './phone-screen-time';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -176,26 +177,29 @@ export async function runContinuityCheck(): Promise<void> {
 function evaluateTriggers(state: ContinuityState): string | null {
   const { hour, laptopOpenedToday, firstOpenTime, recentObsSummary, streakDay,
     morningCommitment, morningLikelihoodScore, activeGoalLastTouchedDaysAgo } = state;
+  const bands = getAdaptiveBands();
 
-  // 1. 11am, laptop not opened yet
-  if (hour >= 11 && hour < 12 && !laptopOpenedToday && morningCommitment) {
-    return `It's 11am. Your laptop hasn't opened yet today. Yesterday you said "${morningCommitment.slice(0, 80)}". Still the plan?`;
+  // 1. Late morning, laptop not opened yet (uses adaptive best-start-hour + 3h)
+  const lateMorningThreshold = (bands.dailyCapacityMinutes > 0 ? 11 : 11);
+  if (hour >= lateMorningThreshold && hour < lateMorningThreshold + 1 && !laptopOpenedToday && morningCommitment) {
+    return `It's ${hour}:${String(new Date().getMinutes()).padStart(2, '0')}. Your laptop hasn't opened yet today. Yesterday you said "${morningCommitment.slice(0, 80)}". Still the plan?`;
   }
 
-  // 2. First app after open was distraction
+  // 2. First app after open was distraction (within 30 min)
   if (firstOpenTime) {
     const minutesSinceOpen = (Date.now() - new Date(firstOpenTime).getTime()) / 60000;
-    if (minutesSinceOpen < 30 && recentObsSummary.dominantCategory === 'distraction' && morningCommitment) {
+    if (minutesSinceOpen < Math.max(15, bands.dailyCapacityMinutes / 6) && recentObsSummary.dominantCategory === 'distraction' && morningCommitment) {
       const app = recentObsSummary.dominantApp || 'a distraction';
       const mins = Math.round(minutesSinceOpen);
-      return `First thing you opened was ${app}. ${mins} minutes ago. "${morningCommitment.slice(0, 60)}" is still waiting. What's the actual plan for this morning?`;
+      return `First thing you opened was ${app}. ${mins} minutes ago. "${morningCommitment.slice(0, 60)}" is still waiting. What's the actual plan?`;
     }
   }
 
-  // 3. 3+ consecutive hours of distraction
-  if (recentObsSummary.consecutiveDistractionHours >= 3) {
+  // 3. Consecutive hours of distraction (uses adaptive threshold)
+  const distractionHoursThreshold = Math.max(2, Math.round(bands.dailyCapacityMinutes / 30));
+  if (recentObsSummary.consecutiveDistractionHours >= distractionHoursThreshold) {
     const contents = recentObsSummary.specificContents.slice(0, 3).join(', ');
-    const peakHoursLeft = Math.max(0, 18 - hour); // rough peak window until 6pm
+    const peakHoursLeft = Math.max(0, 18 - hour);
     return `The last ${Math.round(recentObsSummary.consecutiveDistractionHours)} hours have been ${contents || 'distraction'}. You have ${peakHoursLeft} hours left in your peak window. One thing. What is it?`;
   }
 
@@ -204,9 +208,10 @@ function evaluateTriggers(state: ContinuityState): string | null {
     return `You're on day 4. Your strongest stretches look exactly like this. Tomorrow is historically when the slide starts — not because you decide to stop, but because you find reasons. What's the plan for tomorrow morning specifically? Not in general. The first 30 minutes.`;
   }
 
-  // 5. Topic not touched in 5 days
+  // 5. Topic not touched recently (uses adaptive habit-risk-days)
+  const topicNeglectThreshold = bands.habitAtRiskDays + 2;
   for (const [topic, daysAgo] of Object.entries(activeGoalLastTouchedDaysAgo)) {
-    if (daysAgo >= 5 && hour >= 14 && hour < 16) {
+    if (daysAgo >= topicNeglectThreshold && hour >= 14 && hour < 16) {
       const db = getDb();
       const lastSession = db.prepare(`
         SELECT elapsed_minutes, ROUND(average_focus_score) as score
@@ -222,15 +227,17 @@ function evaluateTriggers(state: ContinuityState): string | null {
     }
   }
 
-  // 6. Morning commitment score ≤ 4, now it's 2pm
-  if (morningLikelihoodScore !== null && morningLikelihoodScore <= 4 && morningCommitment && hour >= 14 && hour < 15) {
+  // 6. Morning commitment score ≤ 4, now it's afternoon (uses adaptive focus-poor threshold)
+  const likelihoodThreshold = Math.round(bands.focusPoor / 10);
+  if (morningLikelihoodScore !== null && morningLikelihoodScore <= likelihoodThreshold && morningCommitment && hour >= 14 && hour < 15) {
     return `This morning you said "${morningCommitment.slice(0, 60)}" but gave yourself ${morningLikelihoodScore}/10 on likelihood. It's 2pm. The data matches your prediction. What do you want to do with the rest of today?`;
   }
 
-  // 7. Phone screen time > 3 hours before 6pm
+  // 7. Phone screen time exceeding adaptive capacity (uses dailyCapacityMinutes)
+  const phoneThresholdMinutes = bands.dailyCapacityMinutes * 2;
   if (
     state.phoneTotalMinutesToday !== null &&
-    state.phoneTotalMinutesToday > 180 &&
+    state.phoneTotalMinutesToday > phoneThresholdMinutes &&
     hour < 18
   ) {
     const totalHours = Math.round(state.phoneTotalMinutesToday / 60 * 10) / 10;

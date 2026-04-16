@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb, setSetting } from '@/lib/db';
+import { classifyEnergy } from '@/lib/adaptive-bands';
 
 /**
  * POST /api/guardian/standup
@@ -63,7 +64,7 @@ export async function GET() {
     const components = computeEnergyComposite();
     energy = {
       composite: components.composite_score,
-      band: components.composite_score >= 65 ? 'high' : components.composite_score >= 35 ? 'medium' : 'low',
+      band: classifyEnergy(components.composite_score),
       standup_mood: components.standup_mood,
       circadian_prior: components.circadian_prior,
     };
