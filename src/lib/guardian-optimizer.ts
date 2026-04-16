@@ -29,6 +29,7 @@ const THRESHOLD_BOUNDS: Record<string, [number, number]> = {
   idleConcernSeconds:           [120,    900],
   focusDropSpeakThreshold:      [5,      30],
   lowFocusThreshold:            [40,     80],
+  dwellDepthTargetSeconds:      [60,     600],
 };
 
 const WEIGHT_KEYS = ['continuity', 'switches', 'dwell', 'distractionPenalty', 'idlePenalty'] as const;
@@ -388,11 +389,24 @@ function scoreBundleAgainstSuite(policy: GuardianPolicyBundle, suiteName: string
   const caseResults = cases.map((r) =>
     evaluateGuardianPolicyScenario(r.id, r.caseName, policy, JSON.parse(r.inputPayload) as GuardianEvalScenario)
   );
-  const scenarioScore = round2(caseResults.reduce((s, r) => s + r.score, 0) / Math.max(1, caseResults.length));
 
-  // Blend in calibration accuracy (0–100) as a secondary signal.
-  // Weight: 85% scenario performance + 15% calibration accuracy.
-  // If no calibration data yet, full weight goes to scenario score.
+  // Load real-user-derived eval cases (1.5x weight)
+  let realCaseResults: import('./guardian-types').GuardianEvalCaseResult[] = [];
+  try {
+    const { loadUserDerivedEvalCases } = require('./eval-case-extractor') as typeof import('./eval-case-extractor');
+    const realCases = loadUserDerivedEvalCases(5);
+    realCaseResults = realCases.map((r) =>
+      evaluateGuardianPolicyScenario(r.id, r.caseName, policy, JSON.parse(r.inputPayload) as GuardianEvalScenario)
+    );
+  } catch { /* non-fatal — extractor may not exist yet */ }
+
+  const syntheticTotal = caseResults.reduce((s, r) => s + r.score, 0);
+  const realTotal = realCaseResults.reduce((s, r) => s + r.score * 1.5, 0);
+  const totalCount = caseResults.length + realCaseResults.length * 1.5;
+  const scenarioScore = round2((syntheticTotal + realTotal) / Math.max(1, totalCount));
+
+  const allCaseResults = [...caseResults, ...realCaseResults];
+
   let blendedScore = scenarioScore;
   try {
     const { getCalibrationStatus } = require('./guardian-calibration') as typeof import('./guardian-calibration');
@@ -406,8 +420,8 @@ function scoreBundleAgainstSuite(policy: GuardianPolicyBundle, suiteName: string
   return {
     suiteName,
     guardianEvalScore: blendedScore,
-    hardFailures: caseResults.filter((r) => r.hardFailure).length,
-    caseResults,
+    hardFailures: allCaseResults.filter((r) => r.hardFailure).length,
+    caseResults: allCaseResults,
   };
 }
 
@@ -509,7 +523,7 @@ function buildMutationContext(): { recentSessions: RecentSessionSummary[]; lastE
 
 // ─── Policy Bundle Validator ──────────────────────────────────────────────────
 
-function validatePolicyBundle(obj: unknown): GuardianPolicyBundle {
+export function validatePolicyBundle(obj: unknown): GuardianPolicyBundle {
   if (typeof obj !== 'object' || obj === null) throw new Error('Policy must be an object');
   const p = obj as Record<string, unknown>;
 
@@ -630,7 +644,7 @@ Each bundle must contain ALL fields. Include a "_rationale" field (not part of t
     "voicePolicyPrompt": "...",
     "redTeamRules": "${policy.prompts.redTeamRules}"
   },
-  "thresholds": { "speechCooldownMs": 90000, "flowSilenceThreshold": 85, "distractionRevisitBlockCount": 3, "distractionTabSwitchBlockCount": 4, "highScatterSpeakThreshold": 6, "idleConcernSeconds": 480, "focusDropSpeakThreshold": 15, "lowFocusThreshold": 60 },
+  "thresholds": { "speechCooldownMs": 90000, "flowSilenceThreshold": 85, "distractionRevisitBlockCount": 3, "distractionTabSwitchBlockCount": 4, "highScatterSpeakThreshold": 6, "idleConcernSeconds": 480, "focusDropSpeakThreshold": 15, "lowFocusThreshold": 60, "dwellDepthTargetSeconds": 180 },
   "weights": { "continuity": 0.35, "switches": 0.25, "dwell": 0.20, "distractionPenalty": 0.15, "idlePenalty": 0.05 }
 }]`;
 

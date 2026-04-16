@@ -25,6 +25,7 @@ export const DEFAULT_GUARDIAN_POLICY_BUNDLE: GuardianPolicyBundle = {
     idleConcernSeconds: 480,
     focusDropSpeakThreshold: 15,
     lowFocusThreshold: 60,
+    dwellDepthTargetSeconds: 180,
   },
   weights: {
     continuity: 0.35,

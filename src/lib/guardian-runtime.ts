@@ -8,6 +8,8 @@ import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } fr
 import { getGenAI, classifyActivity, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
+import { resolveSessionIntent } from './session-intent-resolver';
+import { generateDynamicPolicy } from './dynamic-policy-generator';
 import { emitGuardianRuntimeEvent, consumePendingSpeech } from './guardian-bus';
 import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { extractMemoryFromSession } from './memory-extractor';
@@ -181,6 +183,8 @@ function createSessionState(input: {
     sessionClassificationCache: {},
     immediateBlockDomains: [],
     currentTabStartedAt: null,
+    intentProfile: null,
+    sessionPolicy: null,
   };
 }
 
@@ -904,6 +908,27 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
 
   guardianSessions.set(sessionId, session);
 
+  // Fire-and-forget: resolve intent and generate dynamic policy for this session
+  void (async () => {
+    try {
+      const intent = await resolveSessionIntent(input);
+      session.intentProfile = intent;
+      const dynamicPolicy = await generateDynamicPolicy(intent);
+      session.sessionPolicy = dynamicPolicy;
+      emitSessionEvent(sessionId, {
+        type: 'session_state',
+        state: session.state,
+        targetTitle,
+        workMode: intent.workMode,
+        policyVersion: dynamicPolicy.version,
+        sessionId,
+      });
+      console.log(`[guardian] Dynamic policy applied: mode=${intent.workMode}, policy=${dynamicPolicy.version}`);
+    } catch (err) {
+      console.warn('[guardian] Dynamic policy generation failed, using default:', err);
+    }
+  })();
+
   // Restore any previously persisted session classifications (handles server restart mid-session)
   try {
     const cached = getDb().prepare(
@@ -1386,7 +1411,7 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
                 }
               }
               // Re-emit an updated focus score so the dashboard reflects the correction.
-              const policy = getActiveGuardianPolicyBundle();
+              const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
               const updated = computeFocusScore(live, policy);
               if (live.focusScoreHistory.length > 0) {
                 live.focusScoreHistory[live.focusScoreHistory.length - 1] = updated.score;
@@ -1452,8 +1477,8 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
   emitExpiredOverrideCommands(session);
 
   session.tick += 1;
-  const policy = getActiveGuardianPolicyBundle();
-  const focus = computeFocusScore(session, policy);
+  const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
+  const focus = computeFocusScore(session, policy, session.energyComposite);
   session.focusScoreHistory.push(focus.score);
 
   emitSessionEvent(sessionId, {

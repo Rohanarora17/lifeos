@@ -4,14 +4,17 @@ export type Trend = 'rising' | 'stable' | 'falling';
 
 export function computeFocusScore(
     session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory'>,
-    policy?: GuardianPolicyBundle
+    policy?: GuardianPolicyBundle,
+    energyComposite?: number | null,
 ) {
     if (!session || session.tick === 0) return { score: 100, trend: 'stable' as Trend };
 
     const elapsedMs = Date.now() - session.startedAt;
     const elapsedMinutes = elapsedMs / 60000;
 
-    // 1. On-topic continuity (35%)
+    const thresholds = policy?.thresholds;
+    const weights = policy?.weights;
+
     let onTopicSeconds = 0;
     let distractionRevisits = 0;
     const distractionDomains = new Set<string>();
@@ -48,41 +51,47 @@ export function computeFocusScore(
 
     const continuityScore = Math.min(100, (onTopicSeconds / Math.max(1, elapsedMs / 1000)) * 100);
 
-    // 2. Tab switch rate (25%) -> Inverse of switches/min
+    const scatterThreshold = thresholds?.highScatterSpeakThreshold ?? 6;
     const switchesPerMin = switches / Math.max(1, elapsedMinutes);
-    let switchScore = 100;
-    if (switchesPerMin >= 3) switchScore = 0;
-    else switchScore = 100 - (switchesPerMin * 33);
+    const switchScore = Math.max(0, 100 - (switchesPerMin / scatterThreshold) * 100);
 
-    // 3. Dwell depth (20%) — use actual reported dwellSeconds from events
+    const dwellTarget = thresholds?.dwellDepthTargetSeconds ?? 180;
     const tabsWithDwell = session.tabEventLog.filter(
         (e) => e.type === 'tab' && typeof e.dwellSeconds === 'number'
     );
     const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
     const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
-    const dwellScore = Math.min(100, (avgDwell / 180) * 100);
+    const dwellScore = Math.min(100, (avgDwell / dwellTarget) * 100);
 
-    // 4. Distraction revisit penalty (15%)
     const distractPenalty = distractionRevisits * 8;
 
-    // 5. Idle penalty (5%)
-    let idlePenalty = 0;
+    const idleConcernSec = thresholds?.idleConcernSeconds ?? 480;
+    const idleConcernMinutes = idleConcernSec / 60;
     const idleMinutes = idleSeconds / 60;
-    if (idleMinutes > 10) idlePenalty = 30;
-    else if (idleMinutes > 5) idlePenalty = 15;
+    const idlePenaltyRaw = (idleMinutes / idleConcernMinutes) * 30;
+    const idlePenalty = Math.min(30, idlePenaltyRaw);
 
-    const weights = policy?.weights;
+    // Fatigue curve (Yerkes-Dodson): on low-energy days, be more forgiving
+    let idleMultiplier = 1.0;
+    let distractionMultiplier = 1.0;
+    if (energyComposite != null) {
+        if (energyComposite < 35) {
+            idleMultiplier = 0.5;
+            distractionMultiplier = 0.7;
+        } else if (energyComposite >= 85) {
+            idleMultiplier = 1.3;
+        }
+    }
+
     const rawScore =
         (continuityScore * (weights?.continuity ?? 0.35)) +
         (switchScore * (weights?.switches ?? 0.25)) +
         (dwellScore * (weights?.dwell ?? 0.20)) -
-        (distractPenalty * (weights?.distractionPenalty ?? 0.15)) -
-        (idlePenalty * (weights?.idlePenalty ?? 0.05));
+        (distractPenalty * distractionMultiplier * (weights?.distractionPenalty ?? 0.15)) -
+        (idlePenalty * idleMultiplier * (weights?.idlePenalty ?? 0.05));
 
-    // Cap between 0 and 100
     const score = Math.max(0, Math.min(100, Math.round(rawScore)));
 
-    // Compute trend
     let trend: Trend = 'stable';
     const history = session.focusScoreHistory;
     if (history.length >= 3) {
