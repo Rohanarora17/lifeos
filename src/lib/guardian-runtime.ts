@@ -8,7 +8,7 @@ import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } fr
 import { getGenAI, classifyActivity, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
-import { emitGuardianRuntimeEvent } from './guardian-bus';
+import { emitGuardianRuntimeEvent, consumePendingSpeech } from './guardian-bus';
 import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { extractMemoryFromSession } from './memory-extractor';
 import { activateTasksForSession, evaluateSessionTaskCompletion } from './session-task-sync';
@@ -1370,6 +1370,34 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
                 VALUES (?, ?, ?, ?)
               `).run(sessionId, domain, mapped, Date.now());
             } catch { /* non-fatal — table created by migration 020 */ }
+            // Retroactively credit already-elapsed dwell time. Tab events were appended with
+            // 'unknown' classification before this async result arrived — fix them now so the
+            // focus score reflects actual continuity for time already spent on this domain.
+            if (mapped !== 'unknown') {
+              const attentionCategory = mapped === 'on_topic' ? 'productive_support' : 'blocked_distractor';
+              for (const evt of live.tabEventLog) {
+                if (evt.type === 'tab' && evt.payload?.classification === 'unknown') {
+                  let evtDomain = '';
+                  try { evtDomain = new URL(evt.url || '').hostname.replace(/^www\./, ''); } catch { /* */ }
+                  if (evtDomain === domain) {
+                    evt.payload.classification = mapped;
+                    evt.payload.attentionCategory = attentionCategory;
+                  }
+                }
+              }
+              // Re-emit an updated focus score so the dashboard reflects the correction.
+              const policy = getActiveGuardianPolicyBundle();
+              const updated = computeFocusScore(live, policy);
+              if (live.focusScoreHistory.length > 0) {
+                live.focusScoreHistory[live.focusScoreHistory.length - 1] = updated.score;
+              }
+              emitSessionEvent(live.sessionId, {
+                type: 'focus_score',
+                score: updated.score,
+                delta: 0,
+                trend: updated.trend,
+              });
+            }
           }
         } catch { /* non-fatal */ }
       })();
@@ -1623,7 +1651,9 @@ export function getGuardianContext() {
     WHERE status IN ('doing', 'todo')
   `).all();
   const activeSession = listGuardianSessions().find((session) => session.state === 'ACTIVE') || null;
-  return { activeGoals, activeTasks, activeSession };
+  // Consume pending speech (read-once) so the dashboard can speak it via Web Speech API.
+  const pendingSpeech = activeSession ? consumePendingSpeech(activeSession.sessionId) : null;
+  return { activeGoals, activeTasks, activeSession, pendingSpeech };
 }
 
 export function recordGuardianCanary(score: number, notes: string) {

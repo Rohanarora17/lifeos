@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parseLockInIntent } from '@/lib/intent-engine';
-import { startGuardianSession, setImmediateBlockDomains } from '@/lib/guardian-runtime';
+import { startGuardianSession, setImmediateBlockDomains, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
 import { getConflictingEvents, isCalendarConfigured } from '@/lib/google-calendar';
 import { getDb } from '@/lib/db';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
@@ -12,7 +12,7 @@ import { MODEL_FLASH } from '@/lib/models';
  * then asks AI to filter out any domain that serves the session goal.
  * Lives here (not in a separate module) because it's a session-start concern.
  */
-async function resolveImmediateBlockDomains(targetTitle: string, goalTitle: string | null): Promise<string[]> {
+async function resolveImmediateBlockDomains(targetTitle: string, goalTitle: string | null): Promise<{ blockDomains: string[]; onTopicDomains: string[] }> {
   const ai = getGenAI();
 
   try {
@@ -49,31 +49,40 @@ async function resolveImmediateBlockDomains(targetTitle: string, goalTitle: stri
 
     const domainList = Array.from(candidates);
 
+    // Context-sensitive domains that need session-aware classification (never blanket-block).
+    const contextSensitive = 'youtube.com, youtu.be, vimeo.com, reddit.com, twitter.com, x.com, discord.com, slack.com, twitch.tv, linkedin.com, notion.so, figma.com';
+
     const prompt = domainList.length === 0
-      ? `List up to 12 distraction website domains to block during this focus session.
+      ? `You are configuring a focus session blocker.
 SESSION GOAL: "${targetTitle}"${goalTitle ? `\nGOAL: "${goalTitle}"` : ''}
 ${rulesContext}
-Exclude any domain the student might legitimately need for this goal.
-Respond ONLY with a JSON array (no markdown): ["domain1.com", ...]`
-      : `Filter these distraction domains for a specific focus session.
+Task 1: List up to 12 distraction website domains to block. Exclude any the user might legitimately need for this goal.
+Task 2: From this list of context-sensitive domains, identify which are ON-TOPIC for this session goal: ${contextSensitive}
+Respond ONLY with a JSON object (no markdown): {"blockDomains": ["domain1.com", ...], "onTopicDomains": ["youtube.com", ...]}`
+      : `You are configuring a focus session blocker.
 SESSION GOAL: "${targetTitle}"${goalTitle ? `\nGOAL: "${goalTitle}"` : ''}
 ${rulesContext}
-CANDIDATE DOMAINS:\n${domainList.map(d => `- ${d}`).join('\n')}
-Remove any domain that could legitimately support this goal (e.g. youtube.com when goal is "Watch lecture").
-Respond ONLY with a JSON array from the list above (no markdown): ["domain1.com", ...]`;
+Task 1: Filter these distraction domains — remove any that could legitimately support this goal (e.g. youtube.com when goal is "Watch lecture"):
+CANDIDATE DOMAINS:
+${domainList.map(d => `- ${d}`).join('\n')}
+Task 2: From this list of context-sensitive domains, identify which are ON-TOPIC for this session goal: ${contextSensitive}
+Respond ONLY with a JSON object (no markdown): {"blockDomains": [...filtered from candidates above...], "onTopicDomains": ["youtube.com", ...]}`;
 
     const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: prompt });
     const text = (result.text ?? '').trim().replace(/```json\n?|\n?```/g, '');
-    const domains = JSON.parse(text) as string[];
-    if (Array.isArray(domains) && domains.every(d => typeof d === 'string')) {
-      // When the AI generated fresh domains (no history), trust all of them.
-      // When filtering an existing list, only keep domains from the original list.
-      const trusted = domainList.length === 0 ? domains : domains.filter(d => candidates.has(d));
-      return trusted.slice(0, 30);
-    }
+    const parsed = JSON.parse(text) as { blockDomains?: unknown; onTopicDomains?: unknown };
+    const blockArr = Array.isArray(parsed.blockDomains)
+      ? (parsed.blockDomains as unknown[]).filter((d): d is string => typeof d === 'string')
+      : [];
+    const onTopicArr = Array.isArray(parsed.onTopicDomains)
+      ? (parsed.onTopicDomains as unknown[]).filter((d): d is string => typeof d === 'string')
+      : [];
+    // When filtering an existing list, only keep domains from the original candidates.
+    const trusted = domainList.length === 0 ? blockArr : blockArr.filter(d => candidates.has(d));
+    return { blockDomains: trusted.slice(0, 30), onTopicDomains: onTopicArr };
   } catch { /* non-fatal */ }
 
-  return [];
+  return { blockDomains: [], onTopicDomains: [] };
 }
 
 export async function POST(req: Request) {
@@ -130,11 +139,20 @@ export async function POST(req: Request) {
     // Extension uses this for instant local blocking before the first server round-trip.
     let immediateBlockDomains: string[] = [];
     try {
-      immediateBlockDomains = await Promise.race([
+      const resolved = await Promise.race([
         resolveImmediateBlockDomains(session.targetTitle, session.goalTitle ?? null),
-        new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2500)),
+        new Promise<{ blockDomains: string[]; onTopicDomains: string[] }>((resolve) =>
+          setTimeout(() => resolve({ blockDomains: [], onTopicDomains: [] }), 2500)
+        ),
       ]);
+      immediateBlockDomains = resolved.blockDomains;
       setImmediateBlockDomains(session.sessionId, immediateBlockDomains);
+      // Pre-seed session classification cache so the first tab event to a context-sensitive
+      // domain (e.g. YouTube during a lecture session) scores correctly without waiting for
+      // the per-event async AI classification.
+      for (const domain of resolved.onTopicDomains) {
+        applyUserClassificationFeedback(domain, 'on_topic');
+      }
     } catch { /* non-fatal */ }
 
     return NextResponse.json({ success: true, session: { ...session, immediateBlockDomains }, parsedIntent, calendarWarning, calendarConflicts });

@@ -91,10 +91,15 @@ export function useGuardianSession() {
       try {
         const res = await fetch('/api/guardian/state');
         if (!res.ok || !mounted) return;
-        const data = await res.json() as { activeSession?: RawSession };
+        const data = await res.json() as { activeSession?: RawSession; pendingSpeech?: string | null };
         const next = data.activeSession?.state === 'ACTIVE' ? data.activeSession : null;
         setRaw(next);
         rawRef.current = next;
+        if (data.pendingSpeech && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+          const utter = new SpeechSynthesisUtterance(data.pendingSpeech);
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utter);
+        }
       } catch { /* network offline — keep last known state */ }
     };
     poll();

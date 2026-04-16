@@ -1,5 +1,5 @@
 import { ChildProcess, spawn } from 'child_process';
-import { emitGuardianRuntimeEvent } from './guardian-bus';
+import { emitGuardianRuntimeEvent, setPendingSpeech } from './guardian-bus';
 
 interface SpeechRequest {
     text: string;
@@ -76,6 +76,8 @@ function getElevenLabsAdapter(): TtsAdapter {
                     provider: 'elevenlabs',
                 });
             });
+            // Also queue for dashboard Web Speech API (dashboard sessions poll state, not SSE).
+            setPendingSpeech(request.sessionId, request.text);
             // ElevenLabs is async/SSE-driven — no child process to track
             return null;
         },
