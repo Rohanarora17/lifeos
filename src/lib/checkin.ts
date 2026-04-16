@@ -6,6 +6,7 @@ import { sendTelegram } from './telegram';
 import { extractMemoryFromCheckin } from './memory-extractor';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
+import { getIntelligenceContext } from './intelligence';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
 
@@ -17,7 +18,6 @@ export const PENDING_CHECKIN_DATE_KEY = 'pending_checkin_date'; // ISO date stri
 export async function sendMorningCheckin(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
 
-  // Don't send if already sent today
   const db = getDb();
   const existing = db.prepare(
     "SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'morning'"
@@ -27,7 +27,27 @@ export async function sendMorningCheckin(): Promise<void> {
     return;
   }
 
-  const message = `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
+  let message = `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
+
+  try {
+    const intelligenceContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
+    const ai = getGenAI();
+    if (ai) {
+      const result = await generateWithFallback(ai, {
+        model: MODEL_FLASH,
+        contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 40 words. End with asking their one commitment and likelihood 1-10.
+
+User context:
+${intelligenceContext}
+
+Return ONLY the message text. No quotes.`,
+        config: { temperature: 0.7, maxOutputTokens: 80 },
+      });
+      const generated = result.text?.trim();
+      if (generated && generated.length > 20) message = generated;
+    }
+  } catch { /* non-fatal — use default */ }
+
   const sent = await sendTelegram(message, 'HTML');
   if (sent) {
     setSetting(PENDING_CHECKIN_KEY, 'morning');
@@ -68,6 +88,15 @@ export async function sendEveningReflection(): Promise<void> {
 
 // ─── Response Handlers ───────────────────────────────────────────────────────
 
+function buildFallbackCheckinResponse(likelihoodScore: number | null): string {
+  if (likelihoodScore !== null && likelihoodScore <= 4) {
+    return `You said ${likelihoodScore}/10. Let's make it stupidly small. One tab open, 20 minutes, that's it. What time are you starting?`;
+  } else if (likelihoodScore !== null && likelihoodScore >= 8) {
+    return `${likelihoodScore}/10. Good. I'll hold you to it.`;
+  }
+  return `Noted. I'll be watching.`;
+}
+
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
   const today = getSetting(PENDING_CHECKIN_DATE_KEY) || new Date().toISOString().slice(0, 10);
 
@@ -88,14 +117,28 @@ export async function handleMorningCheckinResponse(text: string): Promise<void> 
   setSetting(PENDING_CHECKIN_KEY, '');
   setSetting(PENDING_CHECKIN_DATE_KEY, '');
 
-  // Respond based on likelihood score
   let response: string;
-  if (likelihoodScore !== null && likelihoodScore <= 4) {
-    response = `You said ${likelihoodScore}/10. Let's make it stupidly small. One tab open, 20 minutes, that's it. What time are you starting?`;
-  } else if (likelihoodScore !== null && likelihoodScore >= 8) {
-    response = `${likelihoodScore}/10. Good. I'll hold you to it.`;
-  } else {
-    response = `Noted. I'll be watching.`;
+  try {
+    const ai = getGenAI();
+    const intelligenceContext = getIntelligenceContext({ maxInsights: 1, includeToday: true });
+    if (ai) {
+      const result = await generateWithFallback(ai, {
+        model: MODEL_FLASH,
+        contents: `The user just answered their morning check-in. They said: "${text}" (likelihood: ${likelihoodScore ?? 'unknown'}/10). Respond in 1-2 short sentences as a focus coach. Be specific to their commitment. If likelihood is low (<=4), suggest making it smaller. If high (>=8), hold them accountable. If medium, acknowledge and set a time. Reference their goals if possible.
+
+${intelligenceContext}
+
+Return ONLY the response. No quotes.`,
+        config: { temperature: 0.7, maxOutputTokens: 60 },
+      });
+      const generated = result.text?.trim();
+      if (generated && generated.length > 5) response = generated;
+      else response = buildFallbackCheckinResponse(likelihoodScore);
+    } else {
+      response = buildFallbackCheckinResponse(likelihoodScore);
+    }
+  } catch {
+    response = buildFallbackCheckinResponse(likelihoodScore);
   }
 
   await sendTelegram(response, 'HTML');
@@ -123,8 +166,26 @@ export async function handleEveningReflectionResponse(text: string): Promise<voi
   setSetting(PENDING_CHECKIN_KEY, '');
   setSetting(PENDING_CHECKIN_DATE_KEY, '');
 
-  // Simple acknowledgment
-  await sendTelegram(`Got it. I'll think about what you said tonight.`, 'HTML');
+  // Acknowledge with context-aware response
+  let ackMessage = `Got it. I'll think about what you said tonight.`;
+  try {
+    const ai = getGenAI();
+    if (ai) {
+      const result = await generateWithFallback(ai, {
+        model: MODEL_FLASH,
+        contents: `The user just shared their evening reflection. Respond in one short sentence acknowledging what they shared. Be warm but direct. Maximum 20 words. No generic phrases.
+
+Their reflection: "${text.slice(0, 200)}"
+
+Return ONLY the response. No quotes.`,
+        config: { temperature: 0.7, maxOutputTokens: 40 },
+      });
+      const generated = result.text?.trim();
+      if (generated && generated.length > 5) ackMessage = generated;
+    }
+  } catch { /* non-fatal */ }
+
+  await sendTelegram(ackMessage, 'HTML');
 
   // Extract sleep/wake/intention non-blocking
   void (async () => {
