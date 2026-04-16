@@ -53,6 +53,8 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     sessionClassificationCache: {},
     immediateBlockDomains: [],
     currentTabStartedAt: null,
+    intentProfile: null,
+    sessionPolicy: null,
   };
 }
 
