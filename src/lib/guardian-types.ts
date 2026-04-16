@@ -217,6 +217,11 @@ export interface GuardianPolicyBundle {
     focusDropSpeakThreshold: number;
     lowFocusThreshold: number;
     dwellDepthTargetSeconds: number;
+    stableFlowMinDwellSeconds: number;
+    stableFlowMaxTabSwitches: number;
+    flowConfirmationScore: number;
+    flowConfirmationMinElapsedMinutes: number;
+    lowEnergyThreshold: number;
   };
   weights: {
     continuity: number;

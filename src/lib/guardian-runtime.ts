@@ -491,12 +491,32 @@ ${uilContext}`;
   }
 }
 
-function buildSpeechText(session: GuardianState, kind: GuardianDecision['type']) {
+function buildSpeechText(session: GuardianState, kind: GuardianDecision['type']): string {
   const score = session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? 100;
   const elapsed = Math.max(1, Math.floor((Date.now() - session.startedAt) / 60000));
   const remaining = Math.max(0, session.durationMinutes - elapsed);
   const site = getDomain(session.currentUrl) || 'that site';
 
+  const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
+  const useLLM = policy.prompts.interventionPrompt && getGenAI();
+  if (useLLM) {
+    const context = buildSpeechContext(session, kind, score, elapsed, remaining, site);
+    void generateLLMSpeech(session, context, kind);
+    return fallbackSpeechText(session, kind, score, elapsed, remaining, site);
+  }
+
+  return fallbackSpeechText(session, kind, score, elapsed, remaining, site);
+}
+
+function fallbackSpeechText(
+  session: GuardianState,
+  kind: GuardianDecision['type'],
+  score: number,
+  elapsed: number,
+  remaining: number,
+  site: string,
+): string {
+  const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
   switch (kind) {
     case 'block':
       return `You are drifting to ${site}. Back to ${session.targetTitle}.`;
@@ -504,10 +524,64 @@ function buildSpeechText(session: GuardianState, kind: GuardianDecision['type'])
       return `You are scattered. One thing. ${remaining} minutes left.`;
     case 'speak':
     default:
-      if (score > 88) return `Locked in. ${elapsed} clean minutes. Keep this pace.`;
+      if (score > policy.thresholds.flowConfirmationScore) return `Locked in. ${elapsed} clean minutes. Keep this pace.`;
       if (elapsed >= Math.floor(session.durationMinutes * 0.8)) return `${remaining} minutes left. Finish what you started.`;
       return `Halfway check. Score ${score}. Stay with ${session.targetTitle}.`;
   }
+}
+
+function buildSpeechContext(
+  session: GuardianState,
+  kind: GuardianDecision['type'],
+  score: number,
+  elapsed: number,
+  remaining: number,
+  site: string,
+): string {
+  const intent = session.intentProfile;
+  const style = intent?.coachingStyle ?? 'balanced';
+  const energy = intent?.energyAtStart ?? 'medium';
+  const topic = session.targetTitle;
+
+  const lines = [
+    `Session: "${topic}", ${elapsed}/${session.durationMinutes} min, focus=${score}/100`,
+    `Energy: ${energy}, coaching style: ${style}`,
+  ];
+  if (kind === 'block') lines.push(`Situation: User drifted to ${site}. Block + redirect.`);
+  else if (kind === 'nudge') lines.push(`Situation: User is scattered. ${remaining} min left. Ground them.`);
+  else if (score > 88) lines.push(`Situation: Sustained flow. Confirm and encourage.`);
+  else if (elapsed >= session.durationMinutes * 0.8) lines.push(`Situation: Final sprint. ${remaining} min left. Push to finish.`);
+  else lines.push(`Situation: Midpoint check-in. Score ${score}.`);
+
+  if (intent?.workMode === 'urgent_sprint') lines.push('This is an urgent sprint — be direct and brief.');
+  if (intent?.workMode === 'recovery') lines.push('This is a recovery session — be gentle and encouraging.');
+  if (energy === 'low') lines.push('User has low energy — be supportive, not demanding.');
+
+  return lines.join('\n');
+}
+
+async function generateLLMSpeech(
+  session: GuardianState,
+  context: string,
+  kind: GuardianDecision['type'],
+): Promise<void> {
+  const ai = getGenAI();
+  if (!ai) return;
+  try {
+    const result = await generateWithFallback(ai, {
+      model: MODEL_FLASH,
+      contents: `You are a focus coach. Generate ONE short spoken sentence for the user right now. Be specific, not generic. No filler phrases. Maximum 20 words.
+
+${context}
+
+Return ONLY the sentence. No quotes, no explanation.`,
+      config: { temperature: 0.7, maxOutputTokens: 50 },
+    });
+    const text = result.text?.trim().replace(/^["']|["']$/g, '');
+    if (text && text.length > 3) {
+      void speak(session.sessionId, text, kind === 'block' ? 'urgent' : 'normal', kind === 'block' ? 'direct_push' : 'grounding_nudge');
+    }
+  } catch { /* non-fatal — fallback speech already scheduled */ }
 }
 
 function decisionCooldownPassed(session: GuardianState, policy: GuardianPolicyBundle) {
@@ -575,7 +649,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const inFlow = focusScore >= policy.thresholds.flowSilenceThreshold;
   const attentionCategory = getAttentionCategory(session, session.currentUrl);
   // Low-energy mode: soften direct interventions, lower break threshold
-  const lowEnergy = session.energyComposite !== null && session.energyComposite < 35;
+  const lowEnergy = session.energyComposite !== null && session.energyComposite < policy.thresholds.lowEnergyThreshold;
   const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}`;
 
   if (attentionCategory === 'temporary_override') {
@@ -588,8 +662,8 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
 
   if (
     attentionCategory === 'productive_support' &&
-    avgRecentDwell >= 120 &&
-    tabSwitchesLast5Min <= 2 &&
+    avgRecentDwell >= policy.thresholds.stableFlowMinDwellSeconds &&
+    tabSwitchesLast5Min <= policy.thresholds.stableFlowMaxTabSwitches &&
     focusScore >= policy.thresholds.lowFocusThreshold
   ) {
     return {
@@ -601,7 +675,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
 
   if (
     attentionCategory === 'ambiguous_context' &&
-    tabSwitchesLast5Min <= 2 &&
+    tabSwitchesLast5Min <= policy.thresholds.stableFlowMaxTabSwitches &&
     focusScore >= policy.thresholds.lowFocusThreshold
   ) {
     return {
@@ -725,8 +799,8 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   if (
     attentionCategory === 'productive_support' &&
     cooldownPassed &&
-    focusScore > 88 &&
-    elapsed >= 10 &&
+    focusScore > policy.thresholds.flowConfirmationScore &&
+    elapsed >= policy.thresholds.flowConfirmationMinElapsedMinutes &&
     !session.emittedMilestones.includes('flow_confirmed')
   ) {
     session.emittedMilestones.push('flow_confirmed');

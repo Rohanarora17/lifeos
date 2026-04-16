@@ -81,7 +81,7 @@ function simulateDecision(session: GuardianState, policy: GuardianPolicyBundle, 
   if (idleSeconds >= policy.thresholds.idleConcernSeconds && shouldSpeak(session, policy, focusScore)) {
     return 'speak';
   }
-  if (session.currentClassification === 'on_topic' && focusScore > 88 && shouldSpeak(session, policy, focusScore)) {
+  if (session.currentClassification === 'on_topic' &&     focusScore > (policy.thresholds.flowConfirmationScore ?? 88) && shouldSpeak(session, policy, focusScore)) {
     return 'speak';
   }
   return 'silence';

@@ -26,6 +26,11 @@ export const DEFAULT_GUARDIAN_POLICY_BUNDLE: GuardianPolicyBundle = {
     focusDropSpeakThreshold: 15,
     lowFocusThreshold: 60,
     dwellDepthTargetSeconds: 180,
+    stableFlowMinDwellSeconds: 120,
+    stableFlowMaxTabSwitches: 2,
+    flowConfirmationScore: 88,
+    flowConfirmationMinElapsedMinutes: 10,
+    lowEnergyThreshold: 35,
   },
   weights: {
     continuity: 0.35,

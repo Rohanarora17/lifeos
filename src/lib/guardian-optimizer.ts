@@ -30,6 +30,11 @@ const THRESHOLD_BOUNDS: Record<string, [number, number]> = {
   focusDropSpeakThreshold:      [5,      30],
   lowFocusThreshold:            [40,     80],
   dwellDepthTargetSeconds:      [60,     600],
+  stableFlowMinDwellSeconds:    [30,     300],
+  stableFlowMaxTabSwitches:     [1,      8],
+  flowConfirmationScore:        [75,     98],
+  flowConfirmationMinElapsedMinutes: [5, 30],
+  lowEnergyThreshold:           [20,     50],
 };
 
 const WEIGHT_KEYS = ['continuity', 'switches', 'dwell', 'distractionPenalty', 'idlePenalty'] as const;
@@ -644,7 +649,7 @@ Each bundle must contain ALL fields. Include a "_rationale" field (not part of t
     "voicePolicyPrompt": "...",
     "redTeamRules": "${policy.prompts.redTeamRules}"
   },
-  "thresholds": { "speechCooldownMs": 90000, "flowSilenceThreshold": 85, "distractionRevisitBlockCount": 3, "distractionTabSwitchBlockCount": 4, "highScatterSpeakThreshold": 6, "idleConcernSeconds": 480, "focusDropSpeakThreshold": 15, "lowFocusThreshold": 60, "dwellDepthTargetSeconds": 180 },
+  "thresholds": { "speechCooldownMs": 90000, "flowSilenceThreshold": 85, "distractionRevisitBlockCount": 3, "distractionTabSwitchBlockCount": 4, "highScatterSpeakThreshold": 6, "idleConcernSeconds": 480, "focusDropSpeakThreshold": 15, "lowFocusThreshold": 60, "dwellDepthTargetSeconds": 180, "stableFlowMinDwellSeconds": 120, "stableFlowMaxTabSwitches": 2, "flowConfirmationScore": 88, "flowConfirmationMinElapsedMinutes": 10, "lowEnergyThreshold": 35 },
   "weights": { "continuity": 0.35, "switches": 0.25, "dwell": 0.20, "distractionPenalty": 0.15, "idlePenalty": 0.05 }
 }]`;
 
