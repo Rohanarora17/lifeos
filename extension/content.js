@@ -194,3 +194,36 @@ function injectBlockOverlay(data) {
         document.body.style.overflow = 'auto';
     });
 }
+
+// ─── Guidance: text selection + Option+D hotkey ───────────────────────────────
+// Stores the last selected text so the hotkey can pick it up without
+// a second selection event. Clears on mousedown (new click starts fresh).
+
+let _lastSelectedText = '';
+
+document.addEventListener('mouseup', () => {
+    const sel = window.getSelection();
+    if (sel && sel.toString().trim().length > 0) {
+        _lastSelectedText = sel.toString().trim();
+    }
+});
+
+document.addEventListener('mousedown', () => {
+    _lastSelectedText = '';
+});
+
+// Option+D (Mac: Alt+D) — send guidance request with selected text + page title
+document.addEventListener('keydown', (e) => {
+    if (e.altKey && e.code === 'KeyD' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const selectedText = _lastSelectedText || window.getSelection()?.toString().trim() || '';
+        chrome.runtime.sendMessage({
+            type: 'GUIDANCE_REQUEST',
+            selectedText,
+            question: selectedText
+                ? `Explain the following and how it relates to my session goal: "${selectedText.slice(0, 300)}"`
+                : 'Explain what I am looking at in the context of my session goal.',
+            windowTitle: document.title,
+        });
+    }
+});

@@ -632,6 +632,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
     }
 
+    if (msg.type === 'GUIDANCE_REQUEST') {
+        if (!guardianActive || !sessionContext?.sessionId) {
+            sendResponse({ ok: false, error: 'No active guardian session' });
+            return true;
+        }
+        (async () => {
+            try {
+                const headers = await getAuthHeaders();
+                await fetch(`${API_BASE}/guardian/guidance`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        sessionId: sessionContext.sessionId,
+                        selectedText: msg.selectedText || '',
+                        question: msg.question || 'Explain what I am looking at in the context of my session goal.',
+                        appInFocus: 'Chrome',
+                        windowTitle: msg.windowTitle || '',
+                        source: 'extension_hotkey',
+                    }),
+                });
+                sendResponse({ ok: true });
+            } catch (e) {
+                sendResponse({ ok: false, error: String(e) });
+            }
+        })();
+    }
+
     if (msg.type === 'REQUEST_OVERRIDE') {
         (async () => {
             try {
