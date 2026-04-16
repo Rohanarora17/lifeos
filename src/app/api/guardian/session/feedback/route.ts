@@ -52,7 +52,7 @@ export async function POST(req: Request) {
       planned_minutes: session?.duration_minutes ?? null,
     };
 
-    const result = processSessionFeedback(sessionId, feedback, metrics);
+    const result = await processSessionFeedback(sessionId, feedback, metrics);
 
     // If weights changed, regenerate weekly plan with updated priorities
     if (result.adjustments.length > 0) {

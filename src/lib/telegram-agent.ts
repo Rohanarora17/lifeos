@@ -296,7 +296,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
             const energyRow = db.prepare(`SELECT composite_score FROM energy_readings WHERE session_id = ? ORDER BY recorded_at DESC LIMIT 1`).get(awaitingFeedbackSession) as { composite_score: number } | undefined;
 
-            const result = processSessionFeedback(awaitingFeedbackSession, text, {
+            const result = await processSessionFeedback(awaitingFeedbackSession, text, {
                 system_energy_composite: energyRow?.composite_score ?? null,
                 system_focus_score: session?.average_focus_score ?? null,
                 system_distraction_events: session?.blocked_count ?? null,
@@ -875,7 +875,7 @@ export async function executeAction(
             if (!sessionId) { await sendTelegram('No session ID to attach feedback to.', ''); break; }
             try {
                 const { processSessionFeedback } = require('./guardian-calibration') as typeof import('./guardian-calibration');
-                const result = processSessionFeedback(sessionId, feedbackText, {
+                const result = await processSessionFeedback(sessionId, feedbackText, {
                     system_energy_composite: null, system_focus_score: null, system_distraction_events: null,
                     system_tab_switch_count: null, system_idle_minutes: null,
                     system_intervention_count: null, system_override_count: null,
