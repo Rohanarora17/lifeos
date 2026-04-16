@@ -64,46 +64,103 @@ function parseParticipantMetadata(metadata) {
   }
 }
 
-function buildGuardianInstructions({ sessionId, targetTitle }) {
-  return [
-    'You are LifeOS Guardian, a strict but fair 1:1 study guardian.',
-    'Your job is to help the user lock in, stay focused, and improve without becoming noisy or overbearing.',
-    'Keep spoken replies short, direct, and calm.',
-    'Do not invent session state, focus scores, override decisions, or day plans.',
-    'Whenever the user asks for anything LifeOS-specific, including starting a session, checking status, override requests, day planning, tutoring, or personalized productivity context, call the guardian_action tool first.',
-    'After the tool returns, ground your reply in that result. If the tool denies a request, explain the denial briefly and clearly.',
-    'If the user is simply chatting or clarifying intent, you may respond briefly without a tool call.',
-    'Do not lecture unless the user explicitly asks for tutoring or explanation.',
-    `Current session id: ${sessionId || 'unknown'}.`,
-    `Current target: ${targetTitle || 'not set'}.`,
-  ].join(' ');
+async function apiGet(path) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(`${getAppBaseUrl()}${path}`, { signal: controller.signal });
+    return await response.json().catch(() => ({}));
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-async function postGuardianCommand({ request, sessionId }) {
+async function apiPost(path, body) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
-
   try {
-    const response = await fetch(`${getAppBaseUrl()}/api/voice/push-to-talk`, {
+    const response = await fetch(`${getAppBaseUrl()}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        transcript: request,
-        sessionId: sessionId || undefined,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
-
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = typeof payload?.error === 'string' ? payload.error : 'Guardian command failed';
+      const message = typeof payload?.error === 'string' ? payload.error : 'API call failed';
       throw new Error(message);
     }
-
     return payload;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchSessionContext(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const state = await apiGet(`/api/guardian/state?sessionId=${sessionId}`);
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function buildGuardianInstructions({ sessionId, targetTitle, sessionContext }) {
+  const intent = sessionContext?.intentProfile;
+  const policy = sessionContext?.sessionPolicy;
+  const focusScore = sessionContext?.focusScore;
+  const workMode = intent?.workMode || 'deep_work';
+  const energy = intent?.energyAtStart || 'medium';
+  const coachingStyle = intent?.coachingStyle || 'balanced';
+  const deadlineUrgency = intent?.deadlineUrgency || 'none';
+
+  const modeGuidance = {
+    deep_work: 'The user is doing deep creative work. Protect their flow. Intervene only when they break focus. Keep remarks brief.',
+    research: 'The user is researching. Tab switching is normal — do NOT treat it as distraction. Only flag if they revisit known distraction sites.',
+    urgent_sprint: 'This is an urgent sprint. Be aggressive about protecting their time. Block distractions fast. Remind them of the deadline.',
+    learning: 'The user is studying. Pauses are natural. Be encouraging, not demanding. Help them stay on the learning path.',
+    recovery: 'The user has low energy. Be gentle and supportive. Do not push hard. Help them accomplish something small.',
+  };
+
+  const energyGuidance = {
+    high: 'User has high energy — they can handle direct, structured coaching.',
+    medium: 'User has moderate energy — balanced approach.',
+    low: 'User has LOW energy — be supportive, not demanding. Suggest smaller tasks.',
+  };
+
+  const lines = [
+    'You are LifeOS Guardian, a strict but fair 1:1 focus companion.',
+    'Your job is to help the user lock in, stay focused, and improve without becoming noisy or overbearing.',
+    'Keep spoken replies short, direct, and calm. Maximum 1-2 sentences.',
+    'Do not invent session state, focus scores, or override decisions.',
+    '',
+    `CURRENT SESSION: ${sessionId || 'none'}`,
+    `TARGET: ${targetTitle || 'not set'}`,
+    `WORK MODE: ${workMode} — ${modeGuidance[workMode] || modeGuidance.deep_work}`,
+    `ENERGY: ${energy} — ${energyGuidance[energy] || energyGuidance.medium}`,
+    `COACHING STYLE: ${coachingStyle}`,
+  ];
+
+  if (deadlineUrgency === 'today' || deadlineUrgency === 'overdue') {
+    lines.push('DEADLINE: URGENT — this session has a deadline today or it is overdue. Protect every minute.');
+  } else if (deadlineUrgency === 'this_week') {
+    lines.push('DEADLINE: This week — keep momentum, suggest shorter sprints.');
+  }
+
+  if (focusScore != null) {
+    lines.push(`CURRENT FOCUS SCORE: ${focusScore}/100`);
+  }
+
+  if (policy) {
+    lines.push(`SESSION POLICY: tab switch tolerance=${policy.thresholds?.highScatterSpeakThreshold}, idle concern=${policy.thresholds?.idleConcernSeconds}s, block after ${policy.thresholds?.distractionRevisitBlockCount} distraction revisits`);
+  }
+
+  lines.push('');
+  lines.push('Use your tools to take action. Do not just describe what should happen — execute it.');
+  lines.push('If the user asks for something outside your tools, call guardian_action with their exact request.');
+
+  return lines.join('\n');
 }
 
 const agentDefinition = defineAgent({
@@ -129,6 +186,8 @@ const agentDefinition = defineAgent({
         ? metadata.targetTitle.trim()
         : 'current study target';
 
+    const sessionContext = await fetchSessionContext(sessionId);
+
     const realtimeModel = new google.beta.realtime.RealtimeModel({
       vertexai: true,
       project,
@@ -136,18 +195,124 @@ const agentDefinition = defineAgent({
       model: DEFAULT_MODEL,
       voice: DEFAULT_VOICE,
       modalities: [Modality.AUDIO],
-      instructions: buildGuardianInstructions({ sessionId, targetTitle }),
+      instructions: buildGuardianInstructions({ sessionId, targetTitle, sessionContext }),
       temperature: 0.2,
     });
 
-    const guardianActionTool = llm.tool({
-      description:
-        'Use for all LifeOS-specific actions or questions: starting or adjusting sessions, checking guardian status, override requests, day briefing, tutoring, or personalized productivity context.',
+    // ─── Discrete Tools ─────────────────────────────────────────────────────
+
+    const getGuardianStateTool = llm.tool({
+      description: 'Get the current guardian session state including focus score, work mode, energy, active overrides, and elapsed time. Use before making decisions about interventions or overrides.',
       parameters: z.object({
-        request: z.string().describe('The exact user request or the shortest faithful paraphrase.'),
+        sessionId: z.string().optional().describe('Session ID. If omitted, uses the current session.'),
+      }),
+      execute: async ({ sessionId: sid }) => {
+        const id = sid || sessionId;
+        if (!id) return { error: 'No active session' };
+        const state = await apiGet(`/api/guardian/state?sessionId=${id}`);
+        return {
+          focusScore: state.focusScore,
+          workMode: state.intentProfile?.workMode,
+          energy: state.intentProfile?.energyAtStart,
+          elapsed: state.elapsed,
+          blockedCount: state.blockedCount,
+          overrideCount: state.overrideCount,
+          activeOverrides: state.activeOverrides?.map(o => o.urlPattern),
+        };
+      },
+    });
+
+    const startSessionTool = llm.tool({
+      description: 'Start a new guardian focus session. Use when the user wants to lock in or begin focusing on a task.',
+      parameters: z.object({
+        topic: z.string().describe('What the user will focus on'),
+        durationMinutes: z.number().min(15).max(180).optional().describe('Session duration in minutes. Default 60.'),
+        mood: z.enum(['high', 'medium', 'low']).optional().describe('User energy level. Default: auto-detect.'),
+      }),
+      execute: async ({ topic, durationMinutes, mood }) => {
+        const result = await apiPost('/api/guardian/session/start', {
+          topic,
+          durationMinutes: durationMinutes || 60,
+          mood: mood || undefined,
+          source: 'voice',
+        });
+        return {
+          sessionId: result.sessionId,
+          workMode: result.intentProfile?.workMode,
+          policyVersion: result.sessionPolicy?.version,
+          duration: result.durationMinutes,
+          message: result.intentProfile
+            ? `Session started. Mode: ${result.intentProfile.workMode}, energy: ${result.intentProfile.energyAtStart}, duration: ${result.durationMinutes}min.`
+            : `Session started for "${topic}", ${result.durationMinutes} minutes.`,
+        };
+      },
+    });
+
+    const endSessionTool = llm.tool({
+      description: 'End the current guardian session. Use when the user wants to stop or wrap up.',
+      parameters: z.object({}),
+      execute: async () => {
+        if (!sessionId) return { error: 'No active session to end' };
+        const result = await apiPost('/api/guardian/session/end', { sessionId });
+        return {
+          message: 'Session ended.',
+          averageFocusScore: result.summary?.averageFocusScore,
+          elapsedMinutes: result.summary?.elapsedMinutes,
+        };
+      },
+    });
+
+    const requestOverrideTool = llm.tool({
+      description: 'Request an override to unblock a specific URL. Use when the user argues they need access to a blocked site for their work. The system will adjudicate based on the override rubric.',
+      parameters: z.object({
+        url: z.string().describe('The URL to unblock'),
+        reason: z.string().describe('Why the user needs access to this URL'),
+        requestedMinutes: z.number().min(5).max(30).optional().describe('How long they need. Default 15.'),
+      }),
+      execute: async ({ url, reason, requestedMinutes }) => {
+        if (!sessionId) return { error: 'No active session for override' };
+        const result = await apiPost('/api/guardian/override', {
+          sessionId,
+          url,
+          reason,
+          requestedMinutes: requestedMinutes || 15,
+        });
+        return {
+          approved: result.approved,
+          reason: result.reason,
+          ttlMinutes: result.ttlMinutes,
+          explainability: result.explainability,
+        };
+      },
+    });
+
+    const getDayBriefingTool = llm.tool({
+      description: 'Get the daily briefing with energy forecast, active goals, recurring distractions, and coaching style. Use when the user asks about their day or productivity outlook.',
+      parameters: z.object({}),
+      execute: async () => {
+        const result = await apiGet('/api/guardian/day-briefing');
+        return {
+          energyForecast: result.energyForecast,
+          activeGoals: result.activeGoals?.slice(0, 5),
+          activeTasks: result.activeTasks?.slice(0, 5),
+          recurringDistractions: result.recurringDistractions,
+          coachingStyle: result.coachingStyle,
+          bestStartHour: result.bestStartHour,
+          openingMessage: result.openingMessage,
+        };
+      },
+    });
+
+    const guardianActionTool = llm.tool({
+      description: 'Fallback for any LifeOS action not covered by the specific tools: tutoring, personalized context, task management, habit logging, general questions. Pass the exact user request.',
+      parameters: z.object({
+        request: z.string().describe('The exact user request or shortest faithful paraphrase.'),
       }),
       execute: async ({ request }) => {
-        const result = await postGuardianCommand({ request, sessionId });
+        const result = await apiPost('/api/voice/push-to-talk', {
+          transcript: request,
+          sessionId: sessionId || undefined,
+        });
         return {
           type: result.type || 'intent_only',
           responseText: result.responseText || '',
@@ -158,10 +323,17 @@ const agentDefinition = defineAgent({
       },
     });
 
+    // ─── Agent Setup ──────────────────────────────────────────────────────────
+
     const agent = new voice.Agent({
-      instructions: buildGuardianInstructions({ sessionId, targetTitle }),
+      instructions: buildGuardianInstructions({ sessionId, targetTitle, sessionContext }),
       llm: realtimeModel,
       tools: {
+        get_guardian_state: getGuardianStateTool,
+        start_session: startSessionTool,
+        end_session: endSessionTool,
+        request_override: requestOverrideTool,
+        get_day_briefing: getDayBriefingTool,
         guardian_action: guardianActionTool,
       },
     });
@@ -183,7 +355,9 @@ const agentDefinition = defineAgent({
       },
     });
 
-    session.say(`Guardian online. We are focused on ${targetTitle}. Tell me what you need to finish.`, {
+    const modeLabel = sessionContext?.intentProfile?.workMode || 'focus';
+    const energyLabel = sessionContext?.intentProfile?.energyAtStart || '';
+    session.say(`Guardian online. ${modeLabel} mode${energyLabel ? `, ${energyLabel} energy` : ''}. We are focused on ${targetTitle}. Tell me what you need.`, {
       allowInterruptions: true,
     });
 
