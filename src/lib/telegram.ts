@@ -1,4 +1,5 @@
 import { getSetting, setSetting } from './db';
+import { classifyAccuracy } from './adaptive-bands';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -481,7 +482,7 @@ export function formatCalibrationStatus(data: {
   recent_adjustments: Array<{ component: string; new_value: number; previous_value: number; reason: string }>;
 }): string {
   const acc = data.accuracy !== null ? `${Math.round(data.accuracy * 100)}%` : 'Not yet calibrated';
-  const accEmoji = data.accuracy === null ? '⬜' : data.accuracy >= 0.7 ? '🟢' : data.accuracy >= 0.5 ? '🟡' : '🔴';
+  const accEmoji = data.accuracy === null ? '⬜' : ({ high: '🟢', medium: '🟡', low: '🔴' }[classifyAccuracy(data.accuracy)]);
   const lines = [
     `🔬 <b>Model Calibration</b>`,
     ``,

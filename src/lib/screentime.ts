@@ -17,38 +17,54 @@ interface ScreenTimeEntry {
     date: string;
 }
 
-// Common app → category mapping
+// Bootstrap mapping for common apps. The domain_categories DB table
+// (populated by guardian classification and user corrections) takes precedence.
 const APP_CATEGORIES: Record<string, string> = {
-    // Productive
     'com.apple.dt.Xcode': 'productive',
     'com.microsoft.VSCode': 'productive',
     'com.googlecode.iterm2': 'productive',
     'com.apple.Terminal': 'productive',
-    'com.github.Electron': 'productive', // Generic Electron (VS Code, etc.)
+    'com.github.Electron': 'productive',
     'com.figma.Desktop': 'productive',
     'com.linear': 'productive',
-    'com.tinyspeck.slackmacgap': 'neutral', // Slack
+    'com.tinyspeck.slackmacgap': 'neutral',
     'com.hnc.Discord': 'neutral',
     'us.zoom.xos': 'neutral',
-
-    // Browsers (can be either)
     'com.apple.Safari': 'neutral',
     'com.google.Chrome': 'neutral',
     'org.mozilla.firefox': 'neutral',
     'com.brave.Browser': 'neutral',
-    'company.thebrowser.Browser': 'neutral', // Arc
-
-    // Distraction
+    'company.thebrowser.Browser': 'neutral',
     'com.apple.MobileSMS': 'distraction',
     'com.apple.iChat': 'distraction',
-    'com.tweetbot.whale': 'distraction',
-
-    // System (ignore)
     'com.apple.finder': 'system',
     'com.apple.SystemPreferences': 'system',
     'com.apple.loginwindow': 'system',
     'com.apple.Spotlight': 'system',
 };
+
+function classifyApp(bundle_id: string, app_name: string): string {
+  // 1. Check domain_categories DB (learned from guardian classification)
+  try {
+    const db = getDb();
+    // Extract domain from bundle_id for lookup (e.g. com.google.Chrome -> google.com)
+    const parts = bundle_id.split('.');
+    const possibleDomain = parts.length >= 2 ? `${parts[1]}.${parts.slice(2).join('.')}` : '';
+    const domainRow = db.prepare(
+      'SELECT category FROM domain_categories WHERE domain = ? AND confidence >= 0.6'
+    ).get(possibleDomain) as { category: string } | undefined;
+    if (domainRow) {
+      if (domainRow.category === 'productive' || domainRow.category === 'on_topic') return 'productive';
+      if (domainRow.category === 'distraction' || domainRow.category === 'blocked_distractor') return 'distraction';
+    }
+  } catch { /* DB not ready */ }
+
+  // 2. Check static mapping
+  if (APP_CATEGORIES[bundle_id]) return APP_CATEGORIES[bundle_id];
+
+  // 3. Heuristic fallback
+  return categorizeByName(app_name);
+}
 
 /**
  * Collect screen time data from macOS KnowledgeC database.
@@ -125,7 +141,7 @@ function readKnowledgeC(dbPath: string, date: string): ScreenTimeEntry[] {
             const [bundle_id, seconds] = line.split('|');
             const usage_seconds = Math.round(parseFloat(seconds) || 0);
             const app_name = bundle_id.split('.').pop() || bundle_id;
-            const category = APP_CATEGORIES[bundle_id] || categorizeByName(app_name);
+            const category = classifyApp(bundle_id, app_name);
 
             return { app_name, bundle_id, usage_seconds, category, date };
         }).filter(e => e.category !== 'system' && e.usage_seconds > 60);
@@ -154,7 +170,7 @@ function getRunningAppsUsage(date: string): ScreenTimeEntry[] {
         // We can only see what's running right now, not historical usage
         return [...new Set(bundleIds)].map(bundle_id => {
             const app_name = bundle_id.split('.').pop() || bundle_id;
-            const category = APP_CATEGORIES[bundle_id] || categorizeByName(app_name);
+            const category = classifyApp(bundle_id, app_name);
             return {
                 app_name,
                 bundle_id,

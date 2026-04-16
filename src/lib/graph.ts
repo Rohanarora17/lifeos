@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ============================================================
 //  KNOWLEDGE GRAPH ENGINE
@@ -85,6 +86,9 @@ export function buildKnowledgeGraph(goalId: number): { nodes: GraphNode[]; edges
         tasksByNode[link.node_id].push({ id: link.id, title: link.title, status: link.status });
     }
 
+    const bands = getAdaptiveBands();
+    const prereqBlockThreshold = (bands.focusPoor || 35) / 100;
+
     const nodes: GraphNode[] = rawNodes.map(n => {
         const prereqs = (edgesInto[n.id] || []).filter(e => e.edge_type === 'prerequisite');
         const prereqMastery = prereqs.length === 0
@@ -95,7 +99,7 @@ export function buildKnowledgeGraph(goalId: number): { nodes: GraphNode[]; edges
             ...n,
             edges_out: edgesByFrom[n.id] || [],
             linked_tasks: tasksByNode[n.id] || [],
-            isBlocked: prereqs.length > 0 && prereqMastery < 0.5,
+            isBlocked: prereqs.length > 0 && prereqMastery < prereqBlockThreshold,
             prereqMastery,
         };
     });
@@ -133,28 +137,28 @@ export function propagateMastery(taskId: number | null, studySessionId: number |
  * then propagate forward (to dependents) with discounted weight.
  */
 function updateNodeMastery(nodeId: number, contribution: number, depth: number = 0, studyMinutes: number = 30, qualityMultiplier: number = 1.0): void {
-    if (depth > 4) return; // max propagation depth
+    if (depth > 4) return;
 
     const db = getDb();
     const node = db.prepare(`SELECT id, mastery FROM knowledge_nodes WHERE id = ?`).get(nodeId) as { id: number; mastery: number } | undefined;
     if (!node) return;
 
-    // Quality-weighted mastery formula
-    const BASE_INCREMENT = 0.10; // Assume note_taking equivalent for now
+    const bands = getAdaptiveBands();
+    const BASE_INCREMENT = (bands.focusGood || 70) / 1000;
     const increment = BASE_INCREMENT * qualityMultiplier * Math.min(studyMinutes / 30, 2.0);
 
     const newMastery = Math.min(1.0, node.mastery + increment);
 
     db.prepare(`UPDATE knowledge_nodes SET mastery = ? WHERE id = ?`).run(newMastery, nodeId);
 
-    // Forward propagation to dependent nodes via prerequisite edges
+    const propagationThreshold = bands.focusGood / 100;
     const edges = db.prepare(
         `SELECT * FROM knowledge_edges WHERE from_node_id = ? AND edge_type = 'prerequisite'`
     ).all(nodeId) as KnowledgeEdge[];
 
-    if (newMastery > 0.6) {
+    if (newMastery > propagationThreshold) {
         for (const edge of edges) {
-            const priorBoost = (newMastery - 0.6) * edge.weight * 0.2;
+            const priorBoost = (newMastery - propagationThreshold) * edge.weight * 0.2;
             if (priorBoost > 0.01) {
                 updateNodeMastery(edge.to_node_id, priorBoost * 0.3, depth + 1, studyMinutes, qualityMultiplier);
             }
@@ -182,10 +186,12 @@ export function getGoalMasteryScore(goalId: number): number {
  * and haven't been fully mastered yet (mastery < 0.9).
  */
 export function getUnblockedNextConcepts(goalId: number): GraphNode[] {
+    const bands = getAdaptiveBands();
+    const masteryCeiling = (bands.focusExcellent || 85) / 100;
     const { nodes } = buildKnowledgeGraph(goalId);
     return nodes
-        .filter(n => !n.isBlocked && n.mastery < 0.9)
-        .sort((a, b) => a.mastery - b.mastery) // prioritize least mastered
+        .filter(n => !n.isBlocked && n.mastery < masteryCeiling)
+        .sort((a, b) => a.mastery - b.mastery)
         .slice(0, 3);
 }
 
@@ -207,7 +213,10 @@ export function getKnowledgeGapSummary(): string {
         const masteryScore = Math.round(nodes.reduce((s, n) => s + n.mastery, 0) / nodes.length * 100);
         lines.push(`\nGoal: "${goal.title}" — ${masteryScore}% overall mastery`);
 
-        const gaps = nodes.filter(n => !n.isBlocked && n.mastery < 0.5);
+        const bands = getAdaptiveBands();
+        const gapThreshold = (bands.focusNeutral || 50) / 100;
+
+        const gaps = nodes.filter(n => !n.isBlocked && n.mastery < gapThreshold);
         const blocked = nodes.filter(n => n.isBlocked);
 
         if (gaps.length > 0) {
@@ -242,9 +251,12 @@ export function getKnowledgeMasteryBonus(): number {
         }
     }
 
+    const bands = getAdaptiveBands();
+    const maxBonus = bands.dailyCapacityMinutes ? Math.min(15, Math.round(bands.dailyCapacityMinutes / 6)) : 15;
+
     if (scores.length === 0) return 0;
     const globalAvg = scores.reduce((s, v) => s + v, 0) / scores.length;
-    return Math.round(globalAvg * 15); // max 15 bonus points
+    return Math.round(globalAvg * maxBonus);
 }
 
 /**

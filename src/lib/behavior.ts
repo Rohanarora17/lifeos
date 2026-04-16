@@ -9,7 +9,7 @@
 import { getDb, getSetting } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
-import { getAdaptiveBands } from './adaptive-bands';
+import { getAdaptiveBands, classifyEntropy, classifyConsistency, classifyProductivityRatio } from './adaptive-bands';
 
 // ============================================================
 //  1. FOCUS DEPTH SCORING
@@ -332,11 +332,7 @@ export function computeAttentionEntropy(date: string, days: number = 1): Entropy
     });
 
   // Classification
-  let classification: EntropyResult['classification'] = 'normal';
-  if (normalizedEntropy < 0.2 && switchesPerHour < 5) classification = 'laser-focused';
-  else if (normalizedEntropy < 0.4 && switchesPerHour < 10) classification = 'focused';
-  else if (normalizedEntropy > 0.8 || switchesPerHour > 30) classification = 'chaotic';
-  else if (normalizedEntropy > 0.6 || switchesPerHour > 20) classification = 'scattered';
+  let classification: EntropyResult['classification'] = classifyEntropy(normalizedEntropy, switchesPerHour);
 
   return {
     entropy: Math.round(entropy * 100) / 100,
@@ -482,11 +478,15 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   const avgStartHour = startHours.length > 0 ? startHours.reduce((a, b) => a + b, 0) / startHours.length : 9;
   const timingScore = cvToScore(timingCV);
 
-  // ── Overall composite ──
-  // Weights: work 30%, habits 25%, tasks 15%, focus 20%, timing 10%
+  const b = getAdaptiveBands();
+  const wWork = b.focusDeepWeight / 100;
+  const wHabit = b.focusFlowWeight / 100;
+  const wTask = b.focusFragWeight / 100;
+  const wFocus = b.focusSwitchWeight / 100;
+  const wTiming = Math.max(0, 1 - wWork - wHabit - wTask - wFocus);
   const overallScore = Math.round(
-    workScore * 0.30 + habitScore * 0.25 + taskScore * 0.15 +
-    focusScore * 0.20 + timingScore * 0.10
+    workScore * wWork + habitScore * wHabit + taskScore * wTask +
+    focusScore * wFocus + timingScore * wTiming
   );
 
   // Daily streak (days with productive activity)
@@ -561,7 +561,7 @@ export function computeGoalAlignment(): {
   for (const goal of goals) {
     const currentValue = measureGoalMetric(goal.metric, goal.type);
     const progress = Math.min(currentValue / Math.max(goal.target_value, 0.01), 1);
-    const onTrack = progress >= 0.8;
+    const onTrack = progress >= getAdaptiveBands().goalOnTrackVelocity;
 
     // Trend: compare current period vs previous period
     const prevValue = measureGoalMetric(goal.metric, goal.type, true);
@@ -674,7 +674,7 @@ export interface Archetype {
   description: string;
   chronotype: string;         // 'early-bird' | 'night-owl' | 'midday-peak'
   workStyle: string;          // 'deep-diver' | 'multitasker' | 'sprinter' | 'marathoner'
-  consistencyType: string;    // 'clockwork' | 'burst-worker' | 'irregular'
+  consistencyType: string;    // 'clockwork' | 'burst-worker' | 'erratic'
   focusProfile: string;       // 'flow-chaser' | 'structured' | 'scattered'
   strengths: string[];
   challenges: string[];
@@ -709,13 +709,14 @@ export function classifyArchetype(days: number = 30): Archetype {
     ? sessionDurations.reduce((s, d) => s + d.duration_minutes, 0) / sessionDurations.length
     : 15;
 
-  const deepSessions = sessionDurations.filter(s => s.average_focus_score >= 70).length;
-  const fragmentedSessions = sessionDurations.filter(s => s.average_focus_score < 40).length;
+  const bands = getAdaptiveBands();
+  const deepSessions = sessionDurations.filter(s => s.average_focus_score >= bands.focusGood).length;
+  const fragmentedSessions = sessionDurations.filter(s => s.average_focus_score < bands.focusPoor).length;
 
   let workStyle = 'sprinter';
-  if (avgSessionDuration > 45 && deepSessions > sessionDurations.length * 0.3) workStyle = 'deep-diver';
-  else if (avgSessionDuration > 25) workStyle = 'marathoner';
-  else if (fragmentedSessions > sessionDurations.length * 0.4) workStyle = 'multitasker';
+  if (avgSessionDuration > bands.flowMinMinutes && deepSessions > sessionDurations.length * bands.deepWorkSessionRatio) workStyle = 'deep-diver';
+  else if (avgSessionDuration > bands.deepWorkMinMinutes) workStyle = 'marathoner';
+  else if (fragmentedSessions > sessionDurations.length * bands.deepWorkSessionRatio) workStyle = 'multitasker';
 
   // Consistency type
   const dailyProd = db.prepare(`
@@ -726,9 +727,7 @@ export function classifyArchetype(days: number = 30): Archetype {
   `).all() as { d: string; mins: number }[];
 
   const cv = coefficientOfVariation(dailyProd.map(d => d.mins));
-  let consistencyType = 'irregular';
-  if (cv < 0.3) consistencyType = 'clockwork';
-  else if (cv < 0.6) consistencyType = 'burst-worker';
+  let consistencyType = classifyConsistency(cv);
 
   // Focus profile
   let focusProfile = 'structured';
@@ -744,7 +743,7 @@ export function classifyArchetype(days: number = 30): Archetype {
   if (workStyle === 'deep-diver') strengths.push('Can sustain long, focused work sessions');
   if (workStyle === 'sprinter') { strengths.push('Quick bursts of intense focus'); challenges.push('May struggle with sustained deep work'); }
   if (consistencyType === 'clockwork') strengths.push('Very consistent daily routine');
-  if (consistencyType === 'irregular') challenges.push('Work pattern is unpredictable — hard to build momentum');
+  if (consistencyType === 'erratic') challenges.push('Work pattern is unpredictable — hard to build momentum');
   if (chronotype === 'early-bird') strengths.push('Peak productivity in the morning — leverage this window');
   if (chronotype === 'night-owl') { strengths.push('Strong late-night focus'); challenges.push('May miss morning productive windows'); }
   if (focusProfile === 'scattered') challenges.push('High tab-switching frequency breaks concentration');
@@ -1004,8 +1003,9 @@ export function getSmartNudgeContext(): string {
 
   const nudgeEff = profile.nudge_effectiveness as number | undefined;
   if (nudgeEff !== undefined) {
-    if (nudgeEff < 0.3) parts.push('User rarely responds to nudges — be more impactful and direct.');
-    else if (nudgeEff > 0.7) parts.push('User responds well to nudges — a gentle reminder works.');
+const bands = getAdaptiveBands();
+   if (nudgeEff < bands.nudgeResponseLow) parts.push('User rarely responds to nudges — be more impactful and direct.');
+   else if (nudgeEff > bands.nudgeResponseHigh) parts.push('User responds well to nudges — a gentle reminder works.');
   }
 
   if (profile.ai_tone === 'strict') parts.push('Use a direct, no-nonsense tone.');

@@ -62,8 +62,8 @@ function deriveCoachingStyle(avgFocusScore: number, avgOverrides: number): 'gent
   const bands = getAdaptiveBands();
   const isLowFocus = avgFocusScore < bands.focusNeutral;
   const isHighFocus = avgFocusScore >= bands.focusExcellent;
-  if (isLowFocus || avgOverrides < 0.5) return 'direct';
-  if (isHighFocus && avgOverrides >= 1.5) return 'gentle';
+  if (isLowFocus || avgOverrides < bands.overrideThreshold) return 'direct';
+  if (isHighFocus && avgOverrides >= bands.overrideThreshold * 3) return 'gentle';
   return 'balanced';
 }
 

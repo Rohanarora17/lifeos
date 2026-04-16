@@ -1,6 +1,7 @@
 // Scoring & gamification utilities
 
 import { Database } from 'better-sqlite3';
+import { getAdaptiveBands } from './adaptive-bands';
 
 export interface ScoreConfig {
     xpPerTask: number;
@@ -19,11 +20,20 @@ export const PRIORITY_XP: Record<string, number> = {
 };
 
 export function getPriorityXp(priority: string): number {
-    return PRIORITY_XP[priority] || PRIORITY_XP.medium;
+    const bands = getAdaptiveBands();
+    const baseXp = Math.round(bands.dailyCapacityMinutes / 3.6);
+    const scale: Record<string, number> = {
+        low: baseXp * 0.5,
+        medium: baseXp,
+        high: baseXp * 1.5,
+        critical: baseXp * 2,
+    };
+    return Math.round(PRIORITY_XP[priority] || scale[priority] || scale.medium);
 }
 
-export function getLevel(totalXp: number, base: number = 500): { level: number; currentXp: number; nextLevelXp: number; progress: number } {
-    // Each level requires progressively more XP: base * level
+export function getLevel(totalXp: number): { level: number; currentXp: number; nextLevelXp: number; progress: number } {
+    const bands = getAdaptiveBands();
+    const base = Math.round(bands.dailyCapacityMinutes * 1.5) || 500;
     let level = 1;
     let xpRemaining = totalXp;
 
@@ -112,15 +122,20 @@ export function getAccountabilityScore(stats: {
     totalTasks: number;
     habitsCompleted: number;
     totalHabits: number;
-    knowledgeMasteryBonus?: number; // 0-15 pts from knowledge graph
+    knowledgeMasteryBonus?: number;
 }): number {
     const { productiveMinutes, distractionMinutes, tasksCompleted, totalTasks, habitsCompleted, totalHabits, knowledgeMasteryBonus = 0 } = stats;
+    const bands = getAdaptiveBands();
+    const focusWeight = bands.focusDeepWeight / 100;
+    const taskWeight = bands.focusFlowWeight / 100;
+    const habitWeight = bands.focusFragWeight / 100;
+    const masteryMaxPct = bands.focusSwitchWeight / 100;
 
     const totalActive = productiveMinutes + distractionMinutes;
-    const focusScore = totalActive > 0 ? (productiveMinutes / totalActive) * 40 : 20;
-    const taskScore = totalTasks > 0 ? (tasksCompleted / totalTasks) * 30 : 15;
-    const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * 15 : 7.5;
-    const masteryBonus = Math.min(15, knowledgeMasteryBonus);
+    const focusScore = totalActive > 0 ? (productiveMinutes / totalActive) * focusWeight * 100 : focusWeight * 50;
+    const taskScore = totalTasks > 0 ? (tasksCompleted / totalTasks) * taskWeight * 100 : taskWeight * 50;
+    const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * habitWeight * 100 : habitWeight * 50;
+    const masteryBonus = Math.min(masteryMaxPct * 100, knowledgeMasteryBonus);
 
     return Math.min(100, Math.round(focusScore + taskScore + habitScore + masteryBonus));
 }

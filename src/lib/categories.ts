@@ -3,6 +3,7 @@
 // unified domain_categories cache (seeded in db.ts, updated by AI + user overrides).
 
 import { getDb } from './db';
+import { getAdaptiveBands } from './adaptive-bands';
 
 export type Category = 'productive' | 'neutral' | 'distraction';
 export type Subcategory =
@@ -83,6 +84,14 @@ export function learnDomainClassifications() {
 
         const nudgeMap = new Map(nudgeStats.map(n => [n.domain, n.nudge_count]));
 
+        const bands = getAdaptiveBands();
+        const strongProductiveRatio = bands.focusExcellent / 100;
+        const strongDistractionRatio = bands.focusExcellent / 100;
+        const moderateProductiveRatio = bands.focusGood / 100;
+        const dwellThresholdSeconds = bands.deepWorkMinMinutes * 60;
+        const lowNudgeRatio = (100 - bands.focusExcellent) / 100;
+        const highNudgeRatio = bands.focusPoor / 100;
+
         for (const stat of domainStats) {
             const total = stat.productive_count + stat.distraction_count + stat.neutral_count;
             const productiveRatio = stat.productive_count / total;
@@ -94,19 +103,16 @@ export function learnDomainClassifications() {
             let learnedSubcategory: Subcategory = 'other';
             let reason = '';
 
-            // Strong productive signal: 70%+ productive visits, low nudges
-            if (productiveRatio >= 0.7 && nudgeRatio < 0.1) {
+            if (productiveRatio >= strongProductiveRatio && nudgeRatio < lowNudgeRatio) {
                 learnedCategory = 'productive';
                 reason = `${Math.round(productiveRatio * 100)}% productive visits, ${nudgeCount} nudges`;
             }
-            // Strong distraction signal: 70%+ distraction visits or high nudge rate
-            else if (distractionRatio >= 0.7 || nudgeRatio >= 0.5) {
+            else if (distractionRatio >= strongDistractionRatio || nudgeRatio >= highNudgeRatio) {
                 learnedCategory = 'distraction';
-                learnedSubcategory = nudgeRatio >= 0.5 ? 'entertainment' : 'social-media';
+                learnedSubcategory = nudgeRatio >= highNudgeRatio ? 'entertainment' : 'social-media';
                 reason = `${Math.round(distractionRatio * 100)}% distraction visits, ${nudgeCount} nudges`;
             }
-            // Moderate productive: 50%+ productive, long sessions, few nudges
-            else if (productiveRatio >= 0.5 && stat.avg_duration > 300 && nudgeRatio < 0.2) {
+            else if (productiveRatio >= moderateProductiveRatio && stat.avg_duration > dwellThresholdSeconds && nudgeRatio < lowNudgeRatio) {
                 learnedCategory = 'productive';
                 reason = `${Math.round(stat.avg_duration / 60)}m avg sessions, low nudge rate`;
             }

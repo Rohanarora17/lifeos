@@ -26,6 +26,25 @@ export interface AdaptiveBands {
   focusFlowWeight: number;
   focusFragWeight: number;
   focusSwitchWeight: number;
+  entropyLaserMax: number;
+  entropyFocusedMax: number;
+  entropyScatteredMin: number;
+  entropyChaoticMin: number;
+  switchesPerHourLaser: number;
+  switchesPerHourFocused: number;
+  switchesPerHourScattered: number;
+  switchesPerHourChaotic: number;
+  nudgeResponseLow: number;
+  nudgeResponseHigh: number;
+  consistencyClockwork: number;
+  consistencyBurst: number;
+  goalProgressOnTrack: number;
+  deepWorkSessionRatio: number;
+  productivityRatioHigh: number;
+  productivityRatioMedium: number;
+  accuracyHigh: number;
+  accuracyMedium: number;
+  overrideThreshold: number;
 }
 
 const DEFAULT_BANDS: AdaptiveBands = {
@@ -53,6 +72,25 @@ const DEFAULT_BANDS: AdaptiveBands = {
   focusFlowWeight: 20,
   focusFragWeight: 20,
   focusSwitchWeight: 20,
+  entropyLaserMax: 0.2,
+  entropyFocusedMax: 0.4,
+  entropyScatteredMin: 0.6,
+  entropyChaoticMin: 0.8,
+  switchesPerHourLaser: 5,
+  switchesPerHourFocused: 10,
+  switchesPerHourScattered: 20,
+  switchesPerHourChaotic: 30,
+  nudgeResponseLow: 0.3,
+  nudgeResponseHigh: 0.7,
+  consistencyClockwork: 0.3,
+  consistencyBurst: 0.6,
+  goalProgressOnTrack: 0.8,
+  deepWorkSessionRatio: 0.3,
+  productivityRatioHigh: 0.6,
+  productivityRatioMedium: 0.3,
+  accuracyHigh: 0.7,
+  accuracyMedium: 0.5,
+  overrideThreshold: 0.5,
 };
 
 let cachedBands: AdaptiveBands | null = null;
@@ -159,6 +197,36 @@ export function classifyGoalHealth(velocity: number): 'on_track' | 'at_risk' | '
   if (velocity >= bands.goalOnTrackVelocity) return 'on_track';
   if (velocity >= bands.goalAtRiskVelocity) return 'at_risk';
   return 'off_track';
+}
+
+export function classifyEntropy(normalizedEntropy: number, switchesPerHour: number): 'laser-focused' | 'focused' | 'scattered' | 'chaotic' {
+  const bands = getAdaptiveBands();
+  if (normalizedEntropy < bands.entropyLaserMax && switchesPerHour < bands.switchesPerHourLaser) return 'laser-focused';
+  if (normalizedEntropy < bands.entropyFocusedMax && switchesPerHour < bands.switchesPerHourFocused) return 'focused';
+  if (normalizedEntropy > bands.entropyChaoticMin || switchesPerHour > bands.switchesPerHourChaotic) return 'chaotic';
+  if (normalizedEntropy > bands.entropyScatteredMin || switchesPerHour > bands.switchesPerHourScattered) return 'scattered';
+  return 'focused';
+}
+
+export function classifyConsistency(cv: number): 'clockwork' | 'burst-worker' | 'erratic' {
+  const bands = getAdaptiveBands();
+  if (cv < bands.consistencyClockwork) return 'clockwork';
+  if (cv < bands.consistencyBurst) return 'burst-worker';
+  return 'erratic';
+}
+
+export function classifyProductivityRatio(ratio: number): 'high' | 'medium' | 'low' {
+  const bands = getAdaptiveBands();
+  if (ratio > bands.productivityRatioHigh) return 'high';
+  if (ratio > bands.productivityRatioMedium) return 'medium';
+  return 'low';
+}
+
+export function classifyAccuracy(accuracy: number): 'high' | 'medium' | 'low' {
+  const bands = getAdaptiveBands();
+  if (accuracy >= bands.accuracyHigh) return 'high';
+  if (accuracy >= bands.accuracyMedium) return 'medium';
+  return 'low';
 }
 
 export function invalidateBandsCache(): void {

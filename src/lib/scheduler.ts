@@ -14,6 +14,7 @@ import { captureAndAnalyze } from './screenshot-pipeline';
 import { runContinuityCheck } from './continuity-guardian';
 import { sendWeeklyReckoning } from './weekly-reckoning';
 import { sendOpenLoopsAudit, sendMonthlyPatternLetter } from './open-loops';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -35,6 +36,43 @@ const jobs: Map<string, ScheduledJob> = new Map();
 const timers: Map<string, ReturnType<typeof setInterval>> = new Map();
 let initialized = false;
 
+function inferMorningTime(): string {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT AVG(strftime('%H', started_at)) as avg_hour,
+             AVG(CAST(strftime('%M', started_at) AS REAL)) as avg_min
+      FROM guardian_sessions
+      WHERE started_at >= datetime('now', '-14 days')
+      LIMIT 50
+    `).get() as { avg_hour: number | null; avg_min: number | null } | undefined;
+    if (row?.avg_hour != null) {
+      const h = Math.max(6, Math.min(11, Math.round(row.avg_hour)));
+      const m = Math.round(row.avg_min ?? 0);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+  } catch { /* non-fatal */ }
+  return '08:00';
+}
+
+function inferEveningTime(): string {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT AVG(CAST(strftime('%H', completed_at) AS REAL)) as avg_hour
+      FROM guardian_session_summaries
+      WHERE completed_at >= datetime('now', '-14 days')
+        AND CAST(strftime('%H', completed_at) AS REAL) >= 18
+      LIMIT 30
+    `).get() as { avg_hour: number | null } | undefined;
+    if (row?.avg_hour != null) {
+      const h = Math.max(20, Math.min(23, Math.round(row.avg_hour) - 1));
+      return `${String(h).padStart(2, '0')}:30`;
+    }
+  } catch { /* non-fatal */ }
+  return '21:30';
+}
+
 /**
  * Initialize the scheduler with all configured jobs.
  * Safe to call multiple times — will only initialize once.
@@ -45,8 +83,9 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     console.log('[Scheduler] Initializing LifeOS cron jobs...');
 
-    // Morning brief — runs every day at configured time
-    const morningTime = getSetting('morning_brief_time') || '08:00';
+    // Morning brief — runs every day at configured time (or learned from user's patterns)
+    const morningTimeSetting = getSetting('morning_brief_time');
+    const morningTime = morningTimeSetting || inferMorningTime();
     registerDailyJob('morning_brief', morningTime, async () => {
         await fetch(`${baseUrl}/api/summary?type=morning`);
         // Also send morning brief to Telegram
@@ -92,7 +131,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     });
 
     // Daily summary — runs every day at configured time
-    const summaryTime = getSetting('daily_summary_time') || '23:00';
+    const summaryTimeSetting = getSetting('daily_summary_time');
+    const summaryTime = summaryTimeSetting || inferEveningTime();
     registerDailyJob('daily_summary', summaryTime, async () => {
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
@@ -282,7 +322,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             const [wh, wm] = wakeEstimate.split(':').map(Number);
             windowStart = wh * 60 + wm;
         } else {
-            windowStart = 8 * 60; // 08:00 fallback
+            const [bh, bm] = inferMorningTime().split(':').map(Number);
+            windowStart = bh * 60 + bm;
         }
         const windowEnd = windowStart + 15;
 

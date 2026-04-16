@@ -365,6 +365,17 @@ export async function extractMemoryFromCheckin(checkin: {
         WHERE checkin_date = ? AND checkin_type = 'morning' LIMIT 1
       `).get(checkin.date) as { commitment: string; likelihood_score: number } | undefined;
 
+      const patternFacts = db.prepare(`
+            SELECT content FROM mem_facts
+            WHERE category IN ('pattern', 'constraint', 'identity')
+              AND status = 'active'
+            ORDER BY importance DESC, confidence DESC
+            LIMIT 8
+          `).all() as { content: string }[];
+          const knownPatterns = patternFacts.length > 0
+            ? patternFacts.map(f => f.content).join('; ')
+            : 'no patterns learned yet';
+
       contextLines = [
         `DATE: ${checkin.date}`,
         `TYPE: evening reflection`,
@@ -381,7 +392,7 @@ export async function extractMemoryFromCheckin(checkin: {
         checkin.tomorrowScore !== null && checkin.tomorrowScore !== undefined
           ? `TOMORROW SCORE: ${checkin.tomorrowScore}/10`
           : '',
-        `KNOWN PATTERNS: 4-5 day streaks then sudden disengagement; avoids complex topics when hard; deadline-driven; starts many things and doesn't finish`,
+        `KNOWN PATTERNS: ${knownPatterns}`,
       ].filter(Boolean).join('\n');
     }
 
