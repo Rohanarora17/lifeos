@@ -24,7 +24,8 @@ export type GuardianEventType =
   | 'voice'
   | 'override_request'
   | 'override_decision'
-  | 'session_state';
+  | 'session_state'
+  | 'screen_vision';
 
 export interface GuardianEvent {
   sessionId: string;
@@ -43,6 +44,38 @@ export interface GuardianEvent {
   tabGroupTitle?: string;
   tabGroupColor?: string;
   payload?: Record<string, unknown>;
+}
+
+export interface ScreenVisionSignal {
+  taskAlignment: number; // 0-100: how aligned screen content is with session goal
+  engagementDepth:
+    | 'active_creation'      // coding, writing, designing
+    | 'active_learning'      // note-taking, tutorial-following, reading with notes
+    | 'passive_consumption'  // watching/reading without interaction
+    | 'idle'                 // screen unchanged, no user interaction
+    | 'distraction';         // clearly off-topic content
+  appInFocus: string;        // e.g. "Visual Studio Code", "Google Chrome"
+  windowTitle: string;       // e.g. "attention.py — ML-Project"
+  contentSummary: string;    // 2-3 sentence description of what's on screen
+  specificContent: string;   // exact: video title, filename, paper section, etc.
+  distractionIndicators: string[]; // e.g. ["Slack notification visible", "Twitter tab open"]
+  progressIndicator: string; // e.g. "new code since last capture", "scrolled further in paper"
+  confidence: number;        // 0.0-1.0
+  changeFromPrevious: 'none' | 'minor' | 'moderate' | 'major';
+  capturedAt: number;        // epoch ms
+}
+
+export interface ScreenContext {
+  latestObservation: ScreenVisionSignal | null;
+  recentObservations: ScreenVisionSignal[]; // ring buffer, last 15
+  visionTrend: 'improving' | 'stable' | 'declining' | 'unknown';
+  taskAlignmentAvg: number;   // rolling ~3-min average of taskAlignment
+  engagementDepth: ScreenVisionSignal['engagementDepth'] | 'unknown';
+  dominantActivity: string;   // short description of what user has been mostly doing
+  lastSignificantChange: number; // epoch ms of last major screen change
+  contextNarrative: string;   // LLM-generated narrative updated every 5 min
+  captureState: 'deep_focus' | 'normal' | 'heightened' | 'guidance_burst';
+  narrativeUpdatedAt: number; // epoch ms when contextNarrative was last generated
 }
 
 export interface GuardianCommand {
@@ -130,6 +163,7 @@ export interface GuardianState {
   currentTabStartedAt: number | null; // tracks when user navigated to currentUrl for final-dwell flush
   intentProfile: SessionIntentProfile | null;
   sessionPolicy: GuardianPolicyBundle | null;
+  screenContext: ScreenContext | null; // populated by screen_vision events, null until first capture
 }
 
 export interface SoftWatchCommitment {

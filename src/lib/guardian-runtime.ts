@@ -185,6 +185,7 @@ function createSessionState(input: {
     currentTabStartedAt: null,
     intentProfile: null,
     sessionPolicy: null,
+    screenContext: null,
   };
 }
 
@@ -1505,6 +1506,53 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
 
   if (normalized.type === 'idle') {
     session.currentClassification = 'unknown';
+  }
+
+  if (normalized.type === 'screen_vision') {
+    const { signal, screenContext } = (normalized.payload ?? {}) as {
+      signal?: import('./guardian-types').ScreenVisionSignal;
+      screenContext?: import('./guardian-types').ScreenContext;
+      visionSkipped?: boolean;
+    };
+
+    // Update screenContext from the fully-computed context sent by the vision route
+    if (screenContext) {
+      session.screenContext = screenContext;
+    }
+
+    // Vision acts as classification authority — if confidence is high enough,
+    // directly seed the session classification cache for the active domain.
+    // This resolves the async timing gap for context-sensitive domains (e.g. youtube.com).
+    if (signal && signal.confidence >= 0.65 && session.currentUrl) {
+      let activeDomain = '';
+      try { activeDomain = new URL(session.currentUrl).hostname.replace(/^www\./, ''); } catch { /* */ }
+
+      if (activeDomain) {
+        const mapped: 'on_topic' | 'distraction' | 'unknown' =
+          signal.taskAlignment >= 65 ? 'on_topic' :
+          signal.taskAlignment <= 25 ? 'distraction' : 'unknown';
+
+        if (mapped !== 'unknown') {
+          session.sessionClassificationCache[activeDomain] = mapped;
+          session.currentClassification = mapped;
+
+          // Retroactively patch prior tab events logged as 'unknown' for this domain
+          for (const evt of session.tabEventLog) {
+            if (evt.type === 'tab' && evt.payload?.classification === 'unknown') {
+              let evtDomain = '';
+              try { evtDomain = new URL(evt.url || '').hostname.replace(/^www\./, ''); } catch { /* */ }
+              if (evtDomain === activeDomain) {
+                evt.payload.classification = mapped;
+                evt.payload.attentionCategory = mapped === 'on_topic' ? 'productive_support' : 'blocked_distractor';
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Don't push screen_vision events to tabEventLog — they live in screenContext
+    return cloneSession(session);
   }
 
   session.tabEventLog.push(normalized);
