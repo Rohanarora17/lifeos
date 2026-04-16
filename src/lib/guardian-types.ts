@@ -128,6 +128,8 @@ export interface GuardianState {
   sessionClassificationCache: Record<string, 'on_topic' | 'distraction' | 'unknown'>;
   immediateBlockDomains: string[]; // AI-derived per-session block list sent to extension at start
   currentTabStartedAt: number | null; // tracks when user navigated to currentUrl for final-dwell flush
+  intentProfile: SessionIntentProfile | null;
+  sessionPolicy: GuardianPolicyBundle | null;
 }
 
 export interface SoftWatchCommitment {
@@ -158,6 +160,43 @@ export interface GuardianStartRequest {
   source?: 'voice' | 'dashboard' | 'extension' | 'api';
 }
 
+export type WorkMode = 'deep_work' | 'research' | 'urgent_sprint' | 'learning' | 'recovery';
+
+export interface SessionIntentProfile {
+  workMode: WorkMode;
+  topic: string;
+  goalId: string | null;
+  goalTitle: string | null;
+  deadlineUrgency: 'none' | 'this_week' | 'today' | 'overdue';
+  energyAtStart: 'high' | 'medium' | 'low';
+  coachingStyle: 'direct' | 'balanced' | 'gentle';
+  recentDistractionTriggers: string[];
+  recentAvoidancePatterns: string[];
+  optimalSprintMinutes: number;
+}
+
+export interface LLMCalibrationSignal {
+  focusOverEstimated: boolean;
+  focusUnderEstimated: boolean;
+  energyOverEstimated: boolean;
+  energyUnderEstimated: boolean;
+  workModeMismatch: boolean;
+  suggestedWorkMode: WorkMode | null;
+  specificComplaints: string[];
+  weightAdjustments: Array<{
+    component: string;
+    delta: number;
+    reason: string;
+  }>;
+  thresholdAdjustments: Array<{
+    threshold: string;
+    suggestedValue: number;
+    reason: string;
+  }>;
+  overallSessionQuality: 'excellent' | 'good' | 'mediocre' | 'poor';
+  selfAwarenessScore: number;
+}
+
 export interface GuardianPolicyBundle {
   version: string;
   prompts: {
@@ -177,6 +216,7 @@ export interface GuardianPolicyBundle {
     idleConcernSeconds: number;
     focusDropSpeakThreshold: number;
     lowFocusThreshold: number;
+    dwellDepthTargetSeconds: number;
   };
   weights: {
     continuity: number;
