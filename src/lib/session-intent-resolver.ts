@@ -19,7 +19,7 @@ export async function resolveSessionIntent(
   const optimalSprintMinutes = uil.optimalSessionMinutes || durationMinutes;
 
   const deadlineUrgency = resolveDeadlineUrgency(request.goalId, topic);
-  const workMode = await resolveWorkMode(topic, energyAtStart, deadlineUrgency, request);
+  const workMode = await resolveWorkMode(topic, energyAtStart, deadlineUrgency, request, request.sessionContext);
 
   return {
     workMode,
@@ -74,6 +74,7 @@ async function resolveWorkMode(
   energy: 'high' | 'medium' | 'low',
   deadlineUrgency: SessionIntentProfile['deadlineUrgency'],
   request: GuardianStartRequest,
+  sessionContext?: string,
 ): Promise<WorkMode> {
   if (deadlineUrgency === 'overdue' || deadlineUrgency === 'today') return 'urgent_sprint';
   if (energy === 'low') return 'recovery';
@@ -81,22 +82,29 @@ async function resolveWorkMode(
   const ai = getGenAI();
   if (!ai) return fallbackWorkMode(topic);
 
+  const contextLine = sessionContext?.trim()
+    ? `USER CONTEXT: "${sessionContext.trim()}"`
+    : '';
+
   try {
     const result = await generateWithFallback(ai, {
       model: MODEL_FLASH,
-      contents: `Classify the work mode for this focus session. Consider the topic, energy, and context.
+      contents: `Classify the work mode for this focus session. Consider the topic, energy, and any user-provided context.
 
 TOPIC: "${topic}"
 ENERGY: ${energy}
 GOAL: ${request.goalTitle || 'not specified'}
 SOURCE: ${request.source || 'manual'}
+${contextLine}
 
 Work modes:
 - deep_work: Writing, designing, creating original content. Requires sustained single-page attention.
-- research: Reading papers, exploring docs, searching for solutions. Tab switching is productive.
+- research: Reading papers, exploring docs, searching for solutions. Tab switching is EXPECTED and productive.
 - urgent_sprint: Bug fixes, deadline-driven tasks. Needs aggressive distraction protection.
 - learning: Studying, watching educational content, taking notes. Pauses are natural.
 - recovery: Low energy review, light reading, easy tasks. Maximum leniency needed.
+
+If the user context mentions switching between tabs, referencing materials, or looking things up — prefer research or learning over deep_work.
 
 Return ONLY valid JSON:
 {"workMode": "deep_work" | "research" | "urgent_sprint" | "learning" | "recovery", "confidence": "high" | "medium" | "low", "reason": "<one sentence>"}`,

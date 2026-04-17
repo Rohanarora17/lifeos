@@ -1318,6 +1318,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       durationMinutes: intent.durationMinutes || 60,
       mood: intent.mood || null,
       source: 'voice',
+      sessionContext: transcript, // full voice utterance carries nuance: "I'll be switching tabs", tools, etc.
     });
 
     // Proactive coaching: speak top UIL insight with the session start confirmation

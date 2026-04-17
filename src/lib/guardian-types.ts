@@ -192,6 +192,7 @@ export interface GuardianStartRequest {
   durationMinutes?: number;
   mood?: 'high' | 'medium' | 'low' | null;
   source?: 'voice' | 'dashboard' | 'extension' | 'api';
+  sessionContext?: string;  // free-form context: what they'll be doing, tools, tab-switching intent, etc.
 }
 
 export type WorkMode = 'deep_work' | 'research' | 'urgent_sprint' | 'learning' | 'recovery';

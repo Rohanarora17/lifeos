@@ -55,6 +55,8 @@ export default function GuardianPage() {
   const [topic, setTopic] = useState('');
   const [duration, setDuration] = useState(60);
   const [mood, setMood] = useState<'high' | 'medium' | 'low' | ''>('');
+  const [sessionContext, setSessionContext] = useState('');
+  const [showContext, setShowContext] = useState(false);
   const [scheduleMode, setScheduleMode] = useState(false);
   const [scheduleTime, setScheduleTime] = useState('');
   const [optimizing, setOptimizing] = useState(false);
@@ -240,8 +242,9 @@ export default function GuardianPage() {
       durationMinutes: duration,
       mood: mood || null,
       source: 'dashboard',
+      sessionContext: sessionContext.trim() || undefined,
     });
-    if (id) setTopic('');
+    if (id) { setTopic(''); setSessionContext(''); setShowContext(false); }
     setStarting(false);
   };
 
@@ -445,12 +448,35 @@ export default function GuardianPage() {
             placeholder="What are you working on?"
             value={topic}
             onChange={e => setTopic(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && !scheduleMode && void startSession()}
+            onKeyDown={e => e.key === 'Enter' && !scheduleMode && !showContext && void startSession()}
             style={{
               width: '100%', padding: '10px 12px', background: '#0a0a12', border: '1px solid #2a2a40',
-              borderRadius: '8px', color: '#f0f0f5', fontSize: '14px', marginBottom: '10px', boxSizing: 'border-box',
+              borderRadius: '8px', color: '#f0f0f5', fontSize: '14px', marginBottom: '6px', boxSizing: 'border-box',
             }}
           />
+          <button
+            onClick={() => setShowContext(v => !v)}
+            style={{
+              background: 'none', border: 'none', color: showContext ? '#6366f1' : '#555570',
+              fontSize: '12px', cursor: 'pointer', padding: '0 2px', marginBottom: '8px',
+              textAlign: 'left', display: 'block',
+            }}
+          >
+            {showContext ? '▾ Hide context' : '▸ Add context (optional)'}
+          </button>
+          {showContext && (
+            <textarea
+              placeholder="e.g. Working on distributed systems assignment — will switch between code editor, course slides, and Stack Overflow. Tabs switching is intentional."
+              value={sessionContext}
+              onChange={e => setSessionContext(e.target.value)}
+              rows={3}
+              style={{
+                width: '100%', padding: '10px 12px', background: '#0a0a12', border: '1px solid #2a2a40',
+                borderRadius: '8px', color: '#f0f0f5', fontSize: '13px', marginBottom: '10px',
+                boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit', lineHeight: '1.5',
+              }}
+            />
+          )}
           <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
             <select
               value={duration}

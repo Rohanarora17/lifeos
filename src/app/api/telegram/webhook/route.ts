@@ -66,6 +66,13 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
 
+            // Pending session context — user replied with context after being prompted
+            const pendingSessionRaw = getSetting('pending_session_context');
+            if (pendingSessionRaw) {
+                await handlePendingSessionContext(text, pendingSessionRaw);
+                return NextResponse.json({ ok: true });
+            }
+
             // Weekly reckoning response
             if (getSetting('pending_weekly_reckoning') === 'true') {
                 await handleWeeklyReckoningResponse(text);
@@ -397,6 +404,27 @@ async function handleReviewCallback(rest: string) {
 
 // ─── task: callbacks ──────────────────────────────────────────────────────────
 
+async function handlePendingSessionContext(reply: string, pendingRaw: string) {
+    setSetting('pending_session_context', ''); // clear pending state
+    try {
+        const pending = JSON.parse(pendingRaw) as { topic: string; duration: number; source: string };
+        const sessionContext = reply.trim().toLowerCase() === 'skip' ? undefined : reply.trim();
+        const session = startGuardianSession({
+            topic: pending.topic,
+            durationMinutes: pending.duration,
+            source: pending.source as 'api',
+            sessionContext,
+        });
+        const contextNote = sessionContext ? `\n📝 Context noted — work mode tuned.` : '';
+        await sendTelegram(
+            `🛡️ <b>Session started!</b>\n📚 ${session.targetTitle}\n⏱️ ${session.durationMinutes} min${contextNote}`,
+            'HTML', SESSION_START_KEYBOARD
+        );
+    } catch {
+        await sendTelegram('Could not start session. Try again.', '', FULL_MENU_KEYBOARD);
+    }
+}
+
 async function handleTaskCallback(rest: string) {
     // rest = "start:42"
     const colonIdx = rest.indexOf(':');
@@ -413,10 +441,11 @@ async function handleTaskCallback(rest: string) {
         const task = db.prepare(`SELECT title, estimated_minutes FROM tasks WHERE id = ?`).get(id) as { title: string; estimated_minutes: number | null } | undefined;
         if (!task) { await sendTelegram('Task not found.', '', FULL_MENU_KEYBOARD); return; }
         const duration = task.estimated_minutes ?? 60;
-        startGuardianSession({ topic: task.title, durationMinutes: duration, source: 'api' });
+        // Store pending state and ask for context before starting
+        setSetting('pending_session_context', JSON.stringify({ topic: task.title, duration, source: 'api' }));
         await sendTelegram(
-            `🛡️ <b>Session started!</b>\n📚 ${task.title}\n⏱️ ${duration} min`,
-            'HTML', SESSION_START_KEYBOARD
+            `📚 <b>${task.title}</b> — ${duration} min\n\nAny context for this session? e.g. what you'll specifically be doing, tools you'll use, or just reply <b>skip</b> to start now.`,
+            'HTML'
         );
     }
 }

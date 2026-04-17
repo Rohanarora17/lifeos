@@ -99,6 +99,7 @@ export async function POST(req: Request) {
       durationMinutes: body.durationMinutes as number | undefined,
       mood: body.mood as 'high' | 'medium' | 'low' | null | undefined,
       source: (body.source as 'voice' | 'dashboard' | 'extension' | 'api' | undefined) || 'api',
+      sessionContext: body.sessionContext as string | undefined,
     };
 
     let parsedIntent: any = null;
@@ -114,6 +115,7 @@ export async function POST(req: Request) {
         durationMinutes: startInput.durationMinutes || parsedIntent?.parameters?.durationMinutes || 60,
         mood: startInput.mood || parsedIntent?.parameters?.mood || null,
         source: 'voice',
+        sessionContext: startInput.sessionContext || transcript, // full utterance carries nuance
       };
     }
 

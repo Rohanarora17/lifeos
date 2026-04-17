@@ -36,6 +36,7 @@ export interface StartOptions {
   durationMinutes?: number;
   mood?: 'high' | 'medium' | 'low' | null;
   source?: 'dashboard' | 'extension' | 'voice' | 'api';
+  sessionContext?: string;
 }
 
 // ─── Derived view ─────────────────────────────────────────────────────────────
