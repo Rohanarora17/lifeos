@@ -188,7 +188,7 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
   const contents = [{ role: 'user', parts }];
 
   // ── Call Gemini ────────────────────────────────────────────────────────────
-  const modelToUse = hadScreenshot ? MODEL_FLASH : MODEL_PRO; // Flash for vision (multimodal), Pro for text
+  const modelToUse = hadScreenshot ? MODEL_PRO : MODEL_FLASH; // Pro for multimodal (screenshot), Flash for voice-only text
   const result = await generateWithFallback(ai, {
     model: modelToUse,
     contents,
