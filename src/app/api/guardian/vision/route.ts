@@ -41,10 +41,12 @@ export async function POST(req: Request) {
     // Heartbeat from client (no screenshot, just connectivity check)
     if (body.type === 'heartbeat') {
       updateMacbookClientHeartbeat();
+      console.log('[Vision] MacBook client heartbeat received');
       return NextResponse.json({ connected: true });
     }
 
     updateMacbookClientHeartbeat();
+    console.log(`[Vision] Screenshot received — app="${(body as Record<string,string>).appInFocus}" window="${(body as Record<string,string>).windowTitle}" session=${(body as Record<string,string>).sessionId}`);
 
     const { sessionId, base64Jpeg, appInFocus, windowTitle } = body as {
       sessionId: string;
@@ -59,12 +61,14 @@ export async function POST(req: Request) {
 
     // Privacy: skip sensitive apps entirely
     if (isSensitiveApp(appInFocus, windowTitle ?? '')) {
+      console.log(`[Vision] Skipping sensitive app: ${appInFocus}`);
       return NextResponse.json({ skipped: true, reason: 'sensitive_app' });
     }
 
     // Verify session is active
     const session = getActiveGuardianSession();
     if (!session || session.sessionId !== sessionId) {
+      console.warn(`[Vision] Screenshot rejected — no active session matching ${sessionId}`);
       return NextResponse.json({ skipped: true, reason: 'no_active_session' });
     }
 
@@ -79,6 +83,8 @@ export async function POST(req: Request) {
       narrativeUpdatedAt: 0,
     };
     const changeFromPrevious = getChangeMagnitude(currentHash, vState.lastHash);
+
+    console.log(`[Vision] Change detection: ${changeFromPrevious} (prev hash: ${vState.lastHash ? 'exists' : 'none'})`);
 
     // Skip Gemini analysis if screen hasn't changed meaningfully
     if (changeFromPrevious === 'none' && vState.lastAnalyzedAt > 0) {
@@ -131,6 +137,8 @@ export async function POST(req: Request) {
       updatedContext.narrativeUpdatedAt = Date.now();
     }
 
+    console.log(`[Vision] ✓ Analyzed — alignment=${signal.taskAlignment} depth=${signal.engagementDepth} confidence=${signal.confidence.toFixed(2)} change=${signal.changeFromPrevious}`);
+
     // Persist to screen_observations
     persistVisionSignal(signal, sessionId);
 
@@ -171,11 +179,20 @@ export async function POST(req: Request) {
 
 export async function GET() {
   const session = getActiveGuardianSession();
+  const clientConnected = isMacbookClientConnected();
+
   if (!session) {
-    return NextResponse.json({ active: false, captureState: 'normal', nextIntervalMs: 15_000 });
+    return NextResponse.json({
+      active: false,
+      captureState: 'normal',
+      nextIntervalMs: 15_000,
+      macbookClient: { connected: clientConnected },
+    });
   }
 
   const captureStateResult = computeCaptureState(session, session.screenContext?.captureState ?? 'normal');
+  const vState = sessionVisionState.get(session.sessionId);
+  const screenCtx = session.screenContext;
 
   return NextResponse.json({
     active: true,
@@ -185,5 +202,19 @@ export async function GET() {
     captureState: captureStateResult.state,
     nextIntervalMs: captureStateResult.intervalMs,
     focusScore: session.focusScoreHistory.at(-1) ?? 50,
+    macbookClient: {
+      connected: clientConnected,
+      lastScreenshot: vState?.lastAnalyzedAt ? new Date(vState.lastAnalyzedAt).toISOString() : null,
+      totalCaptures: screenCtx?.recentObservations?.length ?? 0,
+    },
+    screenContext: screenCtx ? {
+      captureState: screenCtx.captureState,
+      visionTrend: screenCtx.visionTrend,
+      taskAlignmentAvg: screenCtx.taskAlignmentAvg,
+      engagementDepth: screenCtx.engagementDepth,
+      dominantActivity: screenCtx.dominantActivity,
+      latestAlignment: screenCtx.latestObservation?.taskAlignment ?? null,
+      latestDepth: screenCtx.latestObservation?.engagementDepth ?? null,
+    } : null,
   });
 }

@@ -108,7 +108,10 @@ export async function generateDynamicPolicy(
   const memoryFacts = loadMemoryFacts(intent.topic);
 
   const ai = getGenAI();
-  if (!ai) return applyDataDrivenFallback(base, intent, uil);
+  if (!ai) {
+    console.warn('[DynamicPolicy] No AI client (check GEMINI_API_KEY) — using data-driven fallback');
+    return applyDataDrivenFallback(base, intent, uil);
+  }
 
   try {
     const result = await generateWithFallback(ai, {
@@ -117,13 +120,29 @@ export async function generateDynamicPolicy(
       config: { responseMimeType: 'application/json', temperature: 0 },
     });
 
-    const raw = JSON.parse((result.text || '').trim());
+    const rawText = (result.text || '').trim();
+    if (!rawText) throw new Error('Empty response from Gemini');
+
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(rawText);
+    } catch (parseErr) {
+      throw new Error(`JSON parse failed: ${(parseErr as Error).message} | Raw: ${rawText.slice(0, 200)}`);
+    }
+
     delete raw._rationale;
-    const validated = validatePolicyBundle(raw) as GuardianPolicyBundle;
-    console.log(`[DynamicPolicy] v${validated.version} mode=${intent.workMode} energy=${intent.energyAtStart}`);
+
+    let validated: GuardianPolicyBundle;
+    try {
+      validated = validatePolicyBundle(raw) as GuardianPolicyBundle;
+    } catch (validErr) {
+      throw new Error(`Policy validation failed: ${(validErr as Error).message}`);
+    }
+
+    console.log(`[DynamicPolicy] ✓ v${validated.version} mode=${intent.workMode} energy=${intent.energyAtStart}`);
     return validated;
   } catch (err) {
-    console.warn('[DynamicPolicy] LLM failed, using fallback:', (err as Error).message);
+    console.error('[DynamicPolicy] LLM generation failed — using data-driven fallback:', (err as Error).message);
     return applyDataDrivenFallback(base, intent, uil);
   }
 }
