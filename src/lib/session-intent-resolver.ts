@@ -4,6 +4,50 @@ import { MODEL_FLASH } from './models';
 import { getIntelligenceProfile } from './intelligence';
 import type { GuardianStartRequest, SessionIntentProfile, WorkMode } from './guardian-types';
 
+// ─── Session history for similar topics ──────────────────────────────────────
+
+function loadSimilarSessionHistory(topic: string): string {
+  try {
+    const db = getDb();
+    // Match on first 3 meaningful words of the topic
+    const keywords = topic.split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+    const likeClause = keywords.map(() => 'target_title LIKE ?').join(' OR ');
+    const likeParams = keywords.map(w => `%${w}%`);
+
+    const sessions = (likeClause
+      ? db.prepare(`
+          SELECT target_title, mood, elapsed_minutes, average_focus_score,
+                 override_count, blocked_count, distraction_events, productive_events
+          FROM guardian_session_summaries
+          WHERE ${likeClause}
+          ORDER BY completed_at DESC
+          LIMIT 6
+        `).all(...likeParams)
+      : []) as Array<{
+        target_title: string;
+        mood: string | null;
+        elapsed_minutes: number;
+        average_focus_score: number;
+        override_count: number;
+        blocked_count: number;
+        distraction_events: number;
+        productive_events: number;
+      }>;
+
+    if (sessions.length === 0) return 'No prior sessions on similar topics.';
+
+    return sessions.map(s =>
+      `- "${s.target_title}" (${s.mood || '?'} energy): ${s.elapsed_minutes}min, ` +
+      `focus=${Math.round(s.average_focus_score)}, overrides=${s.override_count}, ` +
+      `blocked=${s.blocked_count}, distractions=${s.distraction_events}, productive=${s.productive_events}`
+    ).join('\n');
+  } catch {
+    return 'No prior sessions found.';
+  }
+}
+
+// ─── Main resolver ────────────────────────────────────────────────────────────
+
 export async function resolveSessionIntent(
   request: GuardianStartRequest,
 ): Promise<SessionIntentProfile> {
@@ -12,14 +56,23 @@ export async function resolveSessionIntent(
   const durationMinutes = request.durationMinutes || 60;
 
   const uil = getIntelligenceProfile();
-  const energyAtStart = mood ?? uil.currentEnergyEstimate ?? 'medium';
+  const energyAtStart = (mood ?? uil.currentEnergyEstimate ?? 'medium') as 'high' | 'medium' | 'low';
   const coachingStyle = uil.preferredCoachingStyle ?? 'balanced';
   const recentDistractionTriggers = uil.distractionTriggers?.slice(0, 5) ?? [];
   const recentAvoidancePatterns = uil.avoidancePatterns?.slice(0, 5) ?? [];
   const optimalSprintMinutes = uil.optimalSessionMinutes || durationMinutes;
-
   const deadlineUrgency = resolveDeadlineUrgency(request.goalId, topic);
-  const workMode = await resolveWorkMode(topic, energyAtStart, deadlineUrgency, request, request.sessionContext);
+  const sessionHistory = loadSimilarSessionHistory(topic);
+
+  const workMode = await resolveWorkMode({
+    topic,
+    energyAtStart,
+    deadlineUrgency,
+    sessionContext: request.sessionContext,
+    goalTitle: request.goalTitle,
+    sessionHistory,
+    uil,
+  });
 
   return {
     workMode,
@@ -34,6 +87,8 @@ export async function resolveSessionIntent(
     optimalSprintMinutes,
   };
 }
+
+// ─── Deadline urgency ─────────────────────────────────────────────────────────
 
 function resolveDeadlineUrgency(
   goalId: string | null | undefined,
@@ -69,45 +124,70 @@ function resolveDeadlineUrgency(
   return 'none';
 }
 
-async function resolveWorkMode(
-  topic: string,
-  energy: 'high' | 'medium' | 'low',
-  deadlineUrgency: SessionIntentProfile['deadlineUrgency'],
-  request: GuardianStartRequest,
-  sessionContext?: string,
-): Promise<WorkMode> {
-  if (deadlineUrgency === 'overdue' || deadlineUrgency === 'today') return 'urgent_sprint';
-  if (energy === 'low') return 'recovery';
+// ─── Work mode — fully AI-driven, no hard-coded gates ─────────────────────────
 
+interface ResolveWorkModeInput {
+  topic: string;
+  energyAtStart: 'high' | 'medium' | 'low';
+  deadlineUrgency: SessionIntentProfile['deadlineUrgency'];
+  sessionContext?: string;
+  goalTitle?: string | null;
+  sessionHistory: string;
+  uil: ReturnType<typeof getIntelligenceProfile>;
+}
+
+async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
   const ai = getGenAI();
-  if (!ai) return fallbackWorkMode(topic);
+  if (!ai) return fallbackWorkMode(input.topic, input.deadlineUrgency, input.energyAtStart);
+
+  const {
+    topic, energyAtStart, deadlineUrgency, sessionContext, goalTitle, sessionHistory, uil,
+  } = input;
 
   const contextLine = sessionContext?.trim()
-    ? `USER CONTEXT: "${sessionContext.trim()}"`
+    ? `USER CONTEXT (what they said about this session): "${sessionContext.trim()}"`
     : '';
+
+  const uilLine = [
+    uil.distractionTriggers?.length ? `Known distraction triggers: ${uil.distractionTriggers.slice(0, 3).join(', ')}` : '',
+    uil.avoidancePatterns?.length ? `Avoidance patterns: ${uil.avoidancePatterns.slice(0, 3).join(', ')}` : '',
+    uil.optimalSessionMinutes ? `Optimal session length: ${uil.optimalSessionMinutes}min` : '',
+    uil.preferredCoachingStyle ? `Coaching style: ${uil.preferredCoachingStyle}` : '',
+  ].filter(Boolean).join('\n');
 
   try {
     const result = await generateWithFallback(ai, {
       model: MODEL_FLASH,
-      contents: `Classify the work mode for this focus session. Consider the topic, energy, and any user-provided context.
+      contents: `You are classifying the work mode for a focus session for a specific person.
+Do NOT apply generic rules. Reason from the actual data about this person and this topic.
 
 TOPIC: "${topic}"
-ENERGY: ${energy}
-GOAL: ${request.goalTitle || 'not specified'}
-SOURCE: ${request.source || 'manual'}
+GOAL: ${goalTitle || 'not specified'}
+ENERGY: ${energyAtStart}
+DEADLINE URGENCY: ${deadlineUrgency}
 ${contextLine}
 
-Work modes:
-- deep_work: Writing, designing, creating original content. Requires sustained single-page attention.
-- research: Reading papers, exploring docs, searching for solutions. Tab switching is EXPECTED and productive.
-- urgent_sprint: Bug fixes, deadline-driven tasks. Needs aggressive distraction protection.
-- learning: Studying, watching educational content, taking notes. Pauses are natural.
-- recovery: Low energy review, light reading, easy tasks. Maximum leniency needed.
+USER PROFILE:
+${uilLine || 'No profile data yet.'}
 
-If the user context mentions switching between tabs, referencing materials, or looking things up — prefer research or learning over deep_work.
+PAST SESSIONS ON SIMILAR TOPICS:
+${sessionHistory}
+
+AVAILABLE MODES:
+- deep_work: Single-focused creation — writing, coding, designing with minimal switching.
+- research: Exploring, referencing, reading across multiple sources. Tab switching is part of the work.
+- urgent_sprint: Deadline-driven. Needs tight protection from distraction.
+- learning: Studying, consuming educational content, note-taking. Natural pauses expected.
+- recovery: Low energy, light tasks. Maximum leniency.
+
+REASON FROM THE DATA:
+- If past sessions on this topic had many overrides/blocks, the mode was probably too tight — consider more lenient.
+- If past sessions had low focus scores with many distractions, tighter mode may help.
+- If user context mentions switching tabs or referencing materials, lean toward research or learning.
+- Energy and deadline urgency are inputs to consider, not hard gates — a low-energy user might still need deep_work if the deadline is today.
 
 Return ONLY valid JSON:
-{"workMode": "deep_work" | "research" | "urgent_sprint" | "learning" | "recovery", "confidence": "high" | "medium" | "low", "reason": "<one sentence>"}`,
+{"workMode": "deep_work"|"research"|"urgent_sprint"|"learning"|"recovery", "confidence": "high"|"medium"|"low", "reason": "<one sentence based on the actual data>"}`,
       config: { responseMimeType: 'application/json' },
     });
 
@@ -117,18 +197,23 @@ Return ONLY valid JSON:
       reason: string;
     };
 
+    console.log(`[session-intent] workMode=${parsed.workMode} (${parsed.confidence}): ${parsed.reason}`);
+
     const validModes: WorkMode[] = ['deep_work', 'research', 'urgent_sprint', 'learning', 'recovery'];
     if (validModes.includes(parsed.workMode)) return parsed.workMode;
   } catch { /* fall through */ }
 
-  return fallbackWorkMode(topic);
+  return fallbackWorkMode(topic, deadlineUrgency, energyAtStart);
 }
 
-function fallbackWorkMode(topic: string): WorkMode {
+function fallbackWorkMode(topic: string, deadlineUrgency: string, energy: string): WorkMode {
+  // Only use these as a last resort when AI is unavailable
+  if (deadlineUrgency === 'overdue' || deadlineUrgency === 'today') return 'urgent_sprint';
+  if (energy === 'low') return 'recovery';
   const t = topic.toLowerCase();
-  if (/fix|bug|urgent|due|submit|deadline|asap/i.test(t)) return 'urgent_sprint';
+  if (/fix|bug|urgent|submit|deadline|asap/i.test(t)) return 'urgent_sprint';
   if (/read|research|explore|paper|survey|investigate|docs/i.test(t)) return 'research';
   if (/write|draft|design|create|compose|build|implement|code/i.test(t)) return 'deep_work';
-  if (/study|learn|review|practice|watch|course|lecture/i.test(t)) return 'learning';
+  if (/study|learn|review|practice|watch|course|lecture|assignment/i.test(t)) return 'learning';
   return 'deep_work';
 }
