@@ -18,7 +18,7 @@ mkdir -p "$HOME/.lifeos-client"
 
 # Create config if it doesn't exist
 if [ ! -f "$HOME/.lifeos-client/config.json" ]; then
-  echo '{"serverUrl":"http://YOUR_MAC_MINI_IP:3000"}' > "$HOME/.lifeos-client/config.json"
+  echo '{"serverUrl":"http://100.99.194.80:3000"}' > "$HOME/.lifeos-client/config.json"
   echo "Created config at ~/.lifeos-client/config.json"
   echo "⚠️  Edit it with your Mac Mini's IP address before the client will work."
 fi
