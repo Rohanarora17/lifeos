@@ -12,6 +12,7 @@ import { getIntelligenceContext } from './intelligence';
 
 export const PENDING_CHECKIN_KEY = 'pending_checkin_type'; // 'morning' | 'evening' | ''
 export const PENDING_CHECKIN_DATE_KEY = 'pending_checkin_date'; // ISO date string
+export const PENDING_CHECKIN_SENT_AT_KEY = 'pending_checkin_sent_at'; // epoch ms string
 
 // ─── Send Functions ──────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ Return ONLY the message text. No quotes.`,
   if (sent) {
     setSetting(PENDING_CHECKIN_KEY, 'morning');
     setSetting(PENDING_CHECKIN_DATE_KEY, today);
+    setSetting(PENDING_CHECKIN_SENT_AT_KEY, Date.now().toString());
     console.log('[Checkin] Morning check-in sent.');
   }
 }
@@ -82,6 +84,7 @@ export async function sendEveningReflection(): Promise<void> {
   if (sent) {
     setSetting(PENDING_CHECKIN_KEY, 'evening');
     setSetting(PENDING_CHECKIN_DATE_KEY, today);
+    setSetting(PENDING_CHECKIN_SENT_AT_KEY, Date.now().toString());
     console.log('[Checkin] Evening reflection sent.');
   }
 }
@@ -116,6 +119,7 @@ export async function handleMorningCheckinResponse(text: string): Promise<void> 
   // Clear pending state
   setSetting(PENDING_CHECKIN_KEY, '');
   setSetting(PENDING_CHECKIN_DATE_KEY, '');
+  setSetting(PENDING_CHECKIN_SENT_AT_KEY, '');
 
   let response: string;
   try {
@@ -165,6 +169,7 @@ export async function handleEveningReflectionResponse(text: string): Promise<voi
   // Clear pending state
   setSetting(PENDING_CHECKIN_KEY, '');
   setSetting(PENDING_CHECKIN_DATE_KEY, '');
+  setSetting(PENDING_CHECKIN_SENT_AT_KEY, '');
 
   // Acknowledge with context-aware response
   let ackMessage = `Got it. I'll think about what you said tonight.`;
@@ -263,9 +268,21 @@ export function getWakeEstimate(): string | null {
 
 export function getPendingCheckinType(): 'morning' | 'evening' | null {
   const val = getSetting(PENDING_CHECKIN_KEY);
-  if (val === 'morning') return 'morning';
-  if (val === 'evening') return 'evening';
-  return null;
+  if (val !== 'morning' && val !== 'evening') return null;
+
+  // Auto-expire after 3 hours — prevents stale state intercepting later messages
+  const sentAt = getSetting(PENDING_CHECKIN_SENT_AT_KEY);
+  if (sentAt) {
+    const ageMs = Date.now() - parseInt(sentAt, 10);
+    if (ageMs > 3 * 60 * 60 * 1000) {
+      setSetting(PENDING_CHECKIN_KEY, '');
+      setSetting(PENDING_CHECKIN_DATE_KEY, '');
+      setSetting(PENDING_CHECKIN_SENT_AT_KEY, '');
+      return null;
+    }
+  }
+
+  return val;
 }
 
 // ─── Override Follow-Up ───────────────────────────────────────────────────────

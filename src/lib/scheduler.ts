@@ -41,14 +41,16 @@ let initialized = false;
 function inferMorningTime(): string {
   try {
     const db = getDb();
+    // started_at is Unix milliseconds — divide by 1000 for unixepoch conversion
     const row = db.prepare(`
-      SELECT AVG(strftime('%H', started_at)) as avg_hour,
-             AVG(CAST(strftime('%M', started_at) AS REAL)) as avg_min
+      SELECT AVG(CAST(strftime('%H', datetime(started_at / 1000, 'unixepoch', 'localtime')) AS REAL)) as avg_hour,
+             AVG(CAST(strftime('%M', datetime(started_at / 1000, 'unixepoch', 'localtime')) AS REAL)) as avg_min
       FROM guardian_sessions
-      WHERE started_at >= datetime('now', '-14 days')
+      WHERE started_at >= (strftime('%s', 'now', '-14 days') * 1000)
       LIMIT 50
     `).get() as { avg_hour: number | null; avg_min: number | null } | undefined;
     if (row?.avg_hour != null) {
+      // Clamp to reasonable morning window: 6 AM – 11 AM only
       const h = Math.max(6, Math.min(11, Math.round(row.avg_hour)));
       const m = Math.round(row.avg_min ?? 0);
       return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -334,6 +336,9 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             windowStart = bh * 60 + bm;
         }
         const windowEnd = windowStart + 15;
+
+        // Hard guard: morning check-in must never fire after noon, regardless of wake estimate
+        if (nowMinutes >= 12 * 60) return;
 
         // Only fire inside the window
         if (nowMinutes < windowStart || nowMinutes >= windowEnd) return;

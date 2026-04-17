@@ -467,8 +467,12 @@ async function generateSessionReflection(session: GuardianState) {
     if (!ai) return;
 
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
+    const nowLocal = new Date(Date.now() + 19800000); // IST offset
+    const currentTimeStr = nowLocal.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+
     const prompt = `You are the LifeOS guardian reflecting on a just-completed study session. Write 2–3 concise sentences (max 60 words total) as a personal coach speaking directly to the user. Be honest, specific, and reference their patterns. No filler phrases.
 
+Current time: ${currentTimeStr}
 Session: ${session.targetTitle}
 Planned: ${session.durationMinutes} min | Elapsed: ${elapsedMinutes} min
 Average focus: ${averageFocusScore}/100 | Final focus: ${finalFocusScore}/100
@@ -1266,7 +1270,20 @@ export function endGuardianSession(sessionId: string) {
       reflection = row?.reflection_text;
     } catch { /* non-fatal */ }
 
-    await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection), 'HTML', SESSION_END_KEYBOARD);
+    // Build a brief score breakdown from session event log
+    const allTabEvents = session.tabEventLog.filter(e => e.type === 'tab');
+    const distractionEvents = allTabEvents.filter(e => classifyUrlForGuardian(e.url, session.sessionClassificationCache, true) === 'distraction');
+    const totalSwitches = allTabEvents.length;
+    const totalDistracted = distractionEvents.length;
+    const breakdownParts: string[] = [];
+    if (totalSwitches > 0) breakdownParts.push(`${totalSwitches} tab switch${totalSwitches === 1 ? '' : 'es'}`);
+    if (totalDistracted > 0) breakdownParts.push(`${totalDistracted} distraction visit${totalDistracted === 1 ? '' : 's'}`);
+    if (session.overrideCount > 0) breakdownParts.push(`${session.overrideCount} override${session.overrideCount === 1 ? '' : 's'}`);
+    const totalIdleSeconds = session.tabEventLog.filter(e => e.type === 'idle').reduce((s, e) => s + (e.idleSeconds || 0), 0);
+    if (totalIdleSeconds > 120) breakdownParts.push(`${Math.round(totalIdleSeconds / 60)}min idle`);
+    const breakdown = breakdownParts.length > 0 ? breakdownParts.join(' · ') : undefined;
+
+    await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection, breakdown), 'HTML', SESSION_END_KEYBOARD);
 
     // Post-session insight delivery — top insights from UIL profile
     void (async () => {

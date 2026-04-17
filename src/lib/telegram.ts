@@ -244,7 +244,8 @@ export function formatSessionEnd(
   elapsedMinutes: number,
   avgFocusScore: number,
   blockedCount: number,
-  reflection?: string
+  reflection?: string,
+  breakdown?: string,
 ): string {
   const scoreEmoji = avgFocusScore >= 85 ? '🔥' : avgFocusScore >= 70 ? '✅' : avgFocusScore >= 55 ? '🟡' : '🔴';
   const lines = [
@@ -253,8 +254,9 @@ export function formatSessionEnd(
     `📚 <b>${targetTitle}</b>`,
     `⏱️ <b>Elapsed:</b> ${elapsedMinutes} min`,
     `${scoreEmoji} <b>Focus score:</b> ${avgFocusScore}/100`,
+    breakdown ? `<i>${breakdown}</i>` : null,
     `🚫 <b>Blocks fired:</b> ${blockedCount}`,
-  ];
+  ].filter(Boolean);
   if (reflection) {
     lines.push(``, `💬 <i>${reflection}</i>`);
   }

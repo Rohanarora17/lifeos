@@ -514,7 +514,7 @@ async function handleClassifyCallback(payload: string) {
         classification_confidence: string;
     } | undefined;
 
-    if (!act) { await sendTelegram('Activity not found.', '', FULL_MENU_KEYBOARD); return; }
+    if (!act) { await sendTelegram('⏰ This review has expired — the session data is no longer available. Run a new focus session to get fresh calibration prompts.', '', FULL_MENU_KEYBOARD); return; }
 
     // Parse sessionTarget from the stored ai_classification JSON
     let sessionTarget: string | null = null;
