@@ -121,8 +121,8 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
   const session = sessionId ? getGuardianSession(sessionId) : getActiveGuardianSession();
 
   const sessionTarget = session?.targetTitle ?? null;
-  const sessionTopic = session?.topic ?? null;
-  const focusScore = session?.focusScore ?? null;
+  const focusHistory = session?.focusScoreHistory ?? [];
+  const focusScore = focusHistory.length > 0 ? focusHistory[focusHistory.length - 1] : null;
   const elapsedMin = session
     ? Math.round((Date.now() - session.startedAt) / 1000 / 60)
     : null;
@@ -142,9 +142,8 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
   const sessionBlock = session
     ? [
         `Active session: "${sessionTarget || 'unknown'}"`,
-        sessionTopic ? `Topic: ${sessionTopic}` : '',
         elapsedMin !== null ? `Elapsed: ${elapsedMin} min` : '',
-        focusScore !== null ? `Current focus score: ${focusScore}/100` : '',
+        focusScore !== null ? `Current focus score: ${Math.round(focusScore)}/100` : '',
       ].filter(Boolean).join('\n')
     : 'No active session.';
 
