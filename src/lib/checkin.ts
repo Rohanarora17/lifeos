@@ -19,14 +19,25 @@ export const PENDING_CHECKIN_SENT_AT_KEY = 'pending_checkin_sent_at'; // epoch m
 export async function sendMorningCheckin(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
 
+  // Check 1: already sent today (pending state) — user hasn't replied yet
+  const pendingDate = getSetting(PENDING_CHECKIN_DATE_KEY);
+  if (pendingDate === today) {
+    console.log('[Checkin] Morning check-in already sent today (pending), skipping.');
+    return;
+  }
+
+  // Check 2: already answered today (DB record)
   const db = getDb();
   const existing = db.prepare(
     "SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'morning'"
   ).get(today) as { id: number } | undefined;
   if (existing) {
-    console.log('[Checkin] Morning check-in already sent today, skipping.');
+    console.log('[Checkin] Morning check-in already completed today, skipping.');
     return;
   }
+
+  // Claim the slot BEFORE the async LLM call — prevents concurrent restarts from both firing
+  setSetting(PENDING_CHECKIN_DATE_KEY, today);
 
   let message = `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
 
@@ -52,9 +63,11 @@ Return ONLY the message text. No quotes.`,
   const sent = await sendTelegram(message, 'HTML');
   if (sent) {
     setSetting(PENDING_CHECKIN_KEY, 'morning');
-    setSetting(PENDING_CHECKIN_DATE_KEY, today);
     setSetting(PENDING_CHECKIN_SENT_AT_KEY, Date.now().toString());
     console.log('[Checkin] Morning check-in sent.');
+  } else {
+    // Send failed — clear the claim so it can retry
+    setSetting(PENDING_CHECKIN_DATE_KEY, '');
   }
 }
 

@@ -148,7 +148,33 @@ export async function POST(request: Request) {
 // ─── Callback Query Router ────────────────────────────────────────────────────
 
 async function handleCallbackQuery(callbackId: string, actionData: string) {
+    // Always acknowledge the callback first so Telegram removes the loading spinner.
+    // Do this BEFORE processing to avoid Telegram's 10s timeout showing an error.
+    const tok = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
+    if (tok) {
+        try {
+            await fetch(`https://api.telegram.org/bot${tok}/answerCallbackQuery`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callback_query_id: callbackId }),
+            });
+        } catch (ackErr) {
+            console.error('[Callback] answerCallbackQuery failed:', ackErr);
+        }
+    }
+
+    if (!actionData) {
+        console.warn('[Callback] Received callback with no data, callbackId:', callbackId);
+        return;
+    }
+
     const colonIdx = actionData.indexOf(':');
+    if (colonIdx === -1) {
+        console.warn('[Callback] Malformed callback data (no colon):', actionData);
+        await sendTelegram(`Unrecognised button: ${actionData}`, '', FULL_MENU_KEYBOARD);
+        return;
+    }
+
     const type = actionData.slice(0, colonIdx);
     const rest = actionData.slice(colonIdx + 1);
 
@@ -166,18 +192,11 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
         } else if (type === 'classify') {
             await handleClassifyCallback(rest);
         } else {
-            await sendTelegram(`Unknown callback: ${actionData}`, '');
+            await sendTelegram(`Unknown callback type: ${type}`, '', FULL_MENU_KEYBOARD);
         }
-    } finally {
-        // Acknowledge the callback so Telegram removes the loading spinner
-        const tok = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
-        if (tok) {
-            fetch(`https://api.telegram.org/bot${tok}/answerCallbackQuery`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ callback_query_id: callbackId }),
-            }).catch(console.error);
-        }
+    } catch (err) {
+        console.error(`[Callback] Handler threw for "${actionData}":`, err);
+        await sendTelegram(`⚠️ Something went wrong processing that button.\n<code>${String(err).slice(0, 100)}</code>`, 'HTML', FULL_MENU_KEYBOARD).catch(() => {});
     }
 }
 

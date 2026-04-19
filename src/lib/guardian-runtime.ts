@@ -1,4 +1,4 @@
-import { getDb, getSetting } from './db';
+import { getDb, getSetting, setSetting } from './db';
 import { computeFocusScore } from './focus-score';
 import { computeEnergyComposite, recordEnergyReading } from './energy-composite';
 import { logGoalTime } from './goal-health';
@@ -1285,9 +1285,13 @@ export function endGuardianSession(sessionId: string) {
 
     await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection, breakdown), 'HTML', SESSION_END_KEYBOARD);
 
-    // Post-session insight delivery — top insights from UIL profile
+    // Post-session insight delivery — top insights from UIL profile (max once per 6h)
     void (async () => {
       try {
+        const lastInsightSentAt = getSetting('last_uil_insight_sent_at');
+        const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+        if (lastInsightSentAt && parseInt(lastInsightSentAt, 10) > sixHoursAgo) return;
+
         const { getIntelligenceProfile } = await import('./intelligence');
         const profile = getIntelligenceProfile();
 
@@ -1314,6 +1318,7 @@ export function endGuardianSession(sessionId: string) {
           const msg = insights.slice(0, 3).join('\n');
           await new Promise(resolve => setTimeout(resolve, 3000));
           await sendTelegram(msg, 'HTML');
+          setSetting('last_uil_insight_sent_at', Date.now().toString());
         }
       } catch (err) {
         console.error('[Guardian] Post-session insight delivery failed:', err);
@@ -1423,7 +1428,17 @@ export function endGuardianSession(sessionId: string) {
  */
 async function sendSessionClassifyReview(sessionId: string) {
   try {
+    // Deduplicate: only send ONE classify review per session
+    const lastReviewedSession = getSetting('last_classify_review_session_id');
+    if (lastReviewedSession === sessionId) return;
+
     const db = getDb();
+    // Get the session start time to scope the activity query to THIS session only
+    const sessionRow = db.prepare(`SELECT started_at FROM guardian_sessions WHERE session_id = ?`).get(sessionId) as { started_at: number } | undefined;
+    const sessionStartIso = sessionRow?.started_at
+      ? new Date(sessionRow.started_at).toISOString()
+      : new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
     // Low/medium confidence, meaningful dwell, not yet reviewed, deduplicated by domain.
     // Limit 5 so the review queue doesn't feel overwhelming.
     const rows = db.prepare(`
@@ -1433,11 +1448,11 @@ async function sendSessionClassifyReview(sessionId: string) {
         AND classification_confidence IN ('low', 'medium')
         AND classification_reviewed = 0
         AND duration_seconds >= 30
-        AND started_at >= datetime('now', '-4 hours')
+        AND started_at >= ?
       GROUP BY domain
       ORDER BY classification_confidence ASC, duration_seconds DESC
       LIMIT 5
-    `).all() as Array<{
+    `).all(sessionStartIso) as Array<{
       id: number;
       domain: string;
       title: string;
@@ -1461,6 +1476,8 @@ async function sendSessionClassifyReview(sessionId: string) {
       'HTML',
       buildClassifyKeyboard(first.id)
     );
+    // Mark this session as having received a classify review — prevents repeating
+    setSetting('last_classify_review_session_id', sessionId);
   } catch (err) {
     console.error('[guardian] sendSessionClassifyReview failed:', err);
   }

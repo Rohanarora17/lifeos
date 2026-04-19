@@ -435,6 +435,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerIntervalJob('override_followup_poll', 5 * 60 * 1000, async () => {
         const db = getDb();
         const now = new Date().toISOString();
+        // Only send follow-ups scheduled within the last 2 hours — anything older is stale
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
         const pending = db.prepare(`
             SELECT * FROM override_follow_ups
             WHERE sent = 0 AND follow_up_at <= ?
@@ -449,6 +451,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }>;
 
         for (const f of pending) {
+            // Skip stale follow-ups silently — just mark sent so they don't reappear
+            if (f.follow_up_at < twoHoursAgo) {
+                db.prepare(`UPDATE override_follow_ups SET sent = 1, sent_at = ? WHERE id = ?`)
+                  .run(new Date().toISOString(), f.id);
+                console.log(`[Scheduler] Discarding stale override follow-up id=${f.id} (scheduled ${f.follow_up_at})`);
+                continue;
+            }
             try {
                 const domain = new URL(f.override_url).hostname.replace('www.', '');
                 await sendTelegram(
