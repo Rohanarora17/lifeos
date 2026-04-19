@@ -32,20 +32,33 @@ console.log(`[lifeos-client] Starting. Server: ${config.serverUrl}`);
 
 let captureTimer: ReturnType<typeof setTimeout> | null = null;
 
+let lastNoSessionLogAt = 0;
+let totalCapturesSent = 0;
+let totalCapturesSkipped = 0;
+
 async function runCaptureCycle(): Promise<void> {
   const session = getSessionState();
 
   if (!session.active || !session.sessionId) {
+    // Log once per minute so you can see it's alive but waiting
+    if (Date.now() - lastNoSessionLogAt > 60_000) {
+      console.log(`[capture] No active session — waiting. (${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST)`);
+      lastNoSessionLogAt = Date.now();
+    }
     scheduleNextCapture(config.sessionPollIntervalMs);
     return;
   }
 
+  console.log(`[capture] Session active: "${session.goalTitle ?? session.sessionId}" — capturing screen...`);
   const result = await captureScreen(config.jpegQuality, config.sensitiveApps);
   if (!result) {
+    totalCapturesSkipped++;
+    console.log(`[capture] Skipped (sensitive app or screencapture error). Total skipped: ${totalCapturesSkipped}`);
     scheduleNextCapture(session.nextIntervalMs);
     return;
   }
 
+  console.log(`[capture] Captured: app="${result.appInFocus}" window="${result.windowTitle}" — sending to server...`);
   const response = await sendScreenshot(
     config.serverUrl,
     session.sessionId,
@@ -53,6 +66,17 @@ async function runCaptureCycle(): Promise<void> {
     result.appInFocus,
     result.windowTitle,
   );
+
+  if (response) {
+    totalCapturesSent++;
+    if (response.analyzed) {
+      console.log(`[capture] ✓ Analyzed — captureState=${response.captureState} nextInterval=${Math.round((response.nextIntervalMs ?? session.nextIntervalMs) / 1000)}s total=${totalCapturesSent}`);
+    } else {
+      console.log(`[capture] → No change detected by server. nextInterval=${Math.round((response.nextIntervalMs ?? session.nextIntervalMs) / 1000)}s`);
+    }
+  } else {
+    console.error(`[capture] ✗ Server rejected screenshot (returned null/error). Check server logs.`);
+  }
 
   // Use server-specified interval (adaptive capture rate)
   const nextMs = response?.nextIntervalMs ?? session.nextIntervalMs;
