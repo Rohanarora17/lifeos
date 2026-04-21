@@ -221,16 +221,15 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await forceSynthesis('scheduled_2h');
     });
 
-    // Screenshot pipeline — Mac Mini fallback only.
-    // Fires every 60 seconds but only runs if:
-    //   1. A guardian session is ACTIVE (no capture when idle)
-    //   2. The MacBook client is NOT connected (if connected, it handles capture)
-    registerIntervalJob('screenshot_pipeline', 60 * 1000, async () => {
-        const session = getActiveGuardianSession();
-        if (!session) return; // no active session — stay silent
-        if (isMacbookClientConnected()) return; // MacBook client is handling capture
-        await captureAndAnalyze();
-    });
+    // Screenshot pipeline — DISABLED.
+    // Mac Mini is a headless server — its screen is always an idle terminal.
+    // All screen capture is handled by the MacBook vision client via /api/guardian/vision.
+    // registerIntervalJob('screenshot_pipeline', 60 * 1000, async () => {
+    //     const session = getActiveGuardianSession();
+    //     if (!session) return;
+    //     if (isMacbookClientConnected()) return;
+    //     await captureAndAnalyze();
+    // });
 
     // Continuity guardian — every 30 minutes
     registerIntervalJob('continuity_guardian', 30 * 60 * 1000, async () => {
