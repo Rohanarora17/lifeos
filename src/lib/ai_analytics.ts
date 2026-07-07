@@ -1,6 +1,50 @@
 import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import { buildAdaptiveInsightsPolicy } from './adaptive-insights-policy';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
+
+interface ActivityAggregateRow {
+    day: string;
+    category: string;
+    active_seconds: number;
+    idle_seconds: number;
+}
+
+interface HabitCheckinRow {
+    habit_name: string;
+    checkin_date: string;
+}
+
+interface TaskCompletionRow {
+    day: string;
+    tasks_done: number;
+}
+
+interface FocusAggregateRow {
+    day: string;
+    focus_minutes: number;
+}
+
+interface DayMatrix {
+    productive_mins: number;
+    distraction_mins: number;
+    idle_mins: number;
+    tasks_done: number;
+    focus_mins: number;
+    habits: string[];
+}
+
+interface AiInsightRow {
+    type: string;
+    insight: string;
+}
+
+function isAiInsightRow(value: unknown): value is AiInsightRow {
+    if (!value || typeof value !== 'object') return false;
+    const row = value as Record<string, unknown>;
+    return typeof row.type === 'string' && typeof row.insight === 'string';
+}
 
 /**
  * The Hidden Patterns Engine
@@ -40,7 +84,7 @@ export async function generateDeepCorrelations(): Promise<void> {
             )
             GROUP BY day, category
             ORDER BY day ASC
-        `).all() as any[];
+        `).all() as ActivityAggregateRow[];
 
         // 2. Gather 30-day habit checkins
         const habitCheckins = db.prepare(`
@@ -50,7 +94,7 @@ export async function generateDeepCorrelations(): Promise<void> {
             FROM habit_checkins c
             JOIN habits h ON c.habit_id = h.id
             WHERE c.completed = 1 AND c.date >= date('now', '-30 days', 'localtime')
-        `).all() as any[];
+        `).all() as HabitCheckinRow[];
 
         // 3. Gather 30-day task completions
         const tasks = db.prepare(`
@@ -60,7 +104,7 @@ export async function generateDeepCorrelations(): Promise<void> {
             FROM tasks 
             WHERE status = 'done' AND completed_at >= datetime('now', '-30 days', 'localtime')
             GROUP BY day
-        `).all() as any[];
+        `).all() as TaskCompletionRow[];
 
         // 4. Gather 30-day focus sessions
         const focus = db.prepare(`
@@ -70,11 +114,19 @@ export async function generateDeepCorrelations(): Promise<void> {
             FROM guardian_session_summaries
             WHERE COALESCE(started_at, completed_at) >= datetime('now', '-30 days', 'localtime')
             GROUP BY day
-        `).all() as any[];
+        `).all() as FocusAggregateRow[];
+
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'analytics',
+            maxInsights: 4,
+            includeThresholds: true,
+            includeMemoryFacts: 6,
+        });
+        const adaptivePolicy = buildAdaptiveInsightsPolicy(personalization);
 
         // Format data into a concise text matrix for the LLM
         // We'll create a map of day -> stats
-        const matrixMap: Record<string, any> = {};
+        const matrixMap: Record<string, DayMatrix> = {};
 
         // Pre-fill last 30 days
         for (let i = 0; i < 30; i++) {
@@ -111,8 +163,19 @@ export async function generateDeepCorrelations(): Promise<void> {
             matrixString += `${day} | ${stats.productive_mins} | ${stats.distraction_mins} | ${stats.idle_mins} | ${stats.tasks_done} | ${stats.focus_mins} | [${stats.habits.join(', ')}]\n`;
         }
 
-        const prompt = `You are a behavioral data scientist analyzing a human's life tracking data over the last 30 days.
-Your goal is to find HIDDEN PATTERNS and CORRELATIONS to help them optimize their life.
+        const prompt = `You are LifeOS analyzing one specific person, not a generic productivity user.
+Your goal is to find HIDDEN PATTERNS and CORRELATIONS that fit their current day, feedback, goals, and learned behavior.
+
+${formatPersonalizationContext(personalization)}
+
+=== ANALYTICS LENS ===
+Mode: ${adaptivePolicy.mode}
+Tone: ${adaptivePolicy.insightTone}
+Lens: ${adaptivePolicy.lensTitle}
+Summary: ${adaptivePolicy.lensSummary}
+Recommended analysis: ${adaptivePolicy.recommendedAnalysis}
+Interpretation rules:
+${adaptivePolicy.interpretationRules.map(rule => `- ${rule}`).join('\n')}
 
 Data Matrix:
 ${matrixString}
@@ -121,12 +184,18 @@ NOTE: "Active" means they were physically moving the mouse or typing on the app.
 
 Analyze the data and return EXACTLY 3 powerful insights in JSON array format:
 [
-  { "type": "correlation", "insight": "On days you complete your 'Morning Run' habit, your active deep work output increases by 45%." },
-  { "type": "warning", "insight": "You have high IdleMins while a distraction app is open on Thursdays, suggesting you fall asleep or walk away while a video plays." },
-  { "type": "praise", "insight": "You completed 30% more tasks this week compared to your 30-day baseline." }
+  { "type": "correlation", "insight": "..." },
+  { "type": "warning", "insight": "..." },
+  { "type": "praise", "insight": "..." }
 ]
 
-Keep insights specific, data-driven, and actionable. Only return the JSON array.`;
+Rules:
+- Use only patterns supported by the matrix or personalization context.
+- Reference actual habits, task pressure, focus windows, energy, goals, or feedback signals when present.
+- Adapt the wording to the analytics lens and tone above.
+- Avoid universal productivity advice and format-only examples.
+- Keep insights specific, data-driven, and actionable.
+- Only return the JSON array.`;
 
         const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
@@ -140,18 +209,23 @@ Keep insights specific, data-driven, and actionable. Only return the JSON array.
 
         if (jsonMatch) {
             try {
-                const parsed = JSON.parse(jsonMatch[0]) as { type: string, insight: string }[];
+                const parsed = JSON.parse(jsonMatch[0]) as unknown;
+                const rows = Array.isArray(parsed) ? parsed.filter(isAiInsightRow).slice(0, 3) : [];
+                if (rows.length === 0) {
+                    console.error('[AI Analytics] Gemini JSON did not contain valid insight rows:', text);
+                    return;
+                }
 
                 // Clear old insights and insert new
                 db.prepare('DELETE FROM ai_insights').run();
 
                 const insert = db.prepare('INSERT INTO ai_insights (insight, type) VALUES (?, ?)');
-                const insertMany = db.transaction((rows: any[]) => {
-                    for (const row of rows) insert.run(row.insight, row.type);
+                const insertMany = db.transaction((items: AiInsightRow[]) => {
+                    for (const row of items) insert.run(row.insight, row.type);
                 });
-                insertMany(parsed);
+                insertMany(rows);
             } catch (parseError) {
-                console.error('[AI Analytics] Failed to parse Gemini JSON output:', text);
+                console.error('[AI Analytics] Failed to parse Gemini JSON output:', parseError, text);
             }
         } else {
             console.error('[AI Analytics] Gemini output did not contain valid JSON array:', text);

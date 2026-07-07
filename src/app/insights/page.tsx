@@ -83,6 +83,28 @@ interface FocusSession {
     flowStateDetected: boolean;
 }
 
+interface AdaptiveInsightsContext {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    focusTrend: 'improving' | 'declining' | 'stable';
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    nextBestFocusWindow: string;
+    lensTitle: string;
+    lensSummary: string;
+    recommendedAnalysis: string;
+    insightTone: 'gentle' | 'direct' | 'urgent' | 'reflective';
+    interpretationRules: string[];
+    currentSignals: {
+        openTasks: number;
+        overdueTasks: number;
+        recentDistractionMinutes: number;
+        uncheckedHabits: number;
+        activeSession: boolean;
+    };
+}
+
 interface FullAnalysis {
     profile: Record<string, unknown>;
     focusScore: FocusScoreData;
@@ -96,6 +118,7 @@ interface FullAnalysis {
     topDistraction: { domain: string; mins: number }[];
     insights: InsightData[];
     sessions: FocusSession[];
+    adaptiveContext?: AdaptiveInsightsContext;
 }
 
 // ── Goal Metrics ──
@@ -125,7 +148,10 @@ export default function InsightsPage() {
         setIsLoading(false);
     }, []);
 
-    useEffect(() => { loadData(); }, [loadData]);
+    useEffect(() => {
+        const id = window.setTimeout(() => { void loadData(); }, 0);
+        return () => window.clearTimeout(id);
+    }, [loadData]);
 
     const runAnalysis = async () => {
         setIsAnalyzing(true);
@@ -171,7 +197,7 @@ export default function InsightsPage() {
         </div>
     );
 
-    const { focusScore, entropy, consistency, archetype, goalAlignment, insights, sessions } = data || {} as Partial<FullAnalysis>;
+    const { focusScore, entropy, consistency, archetype, goalAlignment, insights, sessions, adaptiveContext } = data || {} as Partial<FullAnalysis>;
     const profile = data?.profile || {};
     const hourly = data?.hourly || [];
     const maxH = Math.max(...hourly.map(h => h.total || 0), 1);
@@ -179,6 +205,9 @@ export default function InsightsPage() {
     // ── Severity Helpers ──
     const sCol = (s: string) => s === 'positive' ? '#22c55e' : s === 'warning' ? '#eab308' : s === 'critical' ? '#ef4444' : '#3b82f6';
     const sIcon = (s: string) => s === 'positive' ? '✅' : s === 'warning' ? '⚠️' : s === 'critical' ? '🚨' : '💡';
+    const toneColor = (tone?: AdaptiveInsightsContext['insightTone']) =>
+        tone === 'urgent' ? '#ef4444' : tone === 'gentle' ? '#22c55e' : tone === 'reflective' ? '#a855f7' : '#3b82f6';
+    const modeLabel = adaptiveContext?.mode?.replace(/_/g, ' ') || 'learning';
 
     return (
         <div style={{ padding: 32, maxWidth: 1200, margin: '0 auto' }}>
@@ -186,13 +215,57 @@ export default function InsightsPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
                 <div>
                     <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>🧠 Behavioral Intelligence</h1>
-                    <p style={{ color: '#8888a0', marginTop: 4 }}>Advanced focus, consistency, and goal tracking with AI learning</p>
+                    <p style={{ color: '#8888a0', marginTop: 4 }}>
+                        {adaptiveContext?.lensSummary || 'Learning how your focus, consistency, goals, feedback, and day context fit together'}
+                    </p>
                 </div>
                 <button onClick={runAnalysis} disabled={isAnalyzing}
                     style={{ padding: '10px 20px', background: isAnalyzing ? '#333' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', border: 'none', borderRadius: 10, color: 'white', fontWeight: 600, cursor: isAnalyzing ? 'wait' : 'pointer', fontSize: 14 }}>
-                    {isAnalyzing ? '🔄 Analyzing...' : '⚡ Run Deep Analysis'}
+                    {isAnalyzing ? '🔄 Analyzing...' : '⚡ Run Personal Analysis'}
                 </button>
             </div>
+
+            {adaptiveContext && (
+                <div className="card" style={{
+                    padding: 18,
+                    marginBottom: 24,
+                    borderLeft: `4px solid ${toneColor(adaptiveContext.insightTone)}`,
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+                    gap: 18,
+                }}>
+                    <div>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                            <span style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                color: toneColor(adaptiveContext.insightTone),
+                                background: `${toneColor(adaptiveContext.insightTone)}18`,
+                                padding: '3px 8px',
+                                borderRadius: 4,
+                            }}>
+                                {modeLabel}
+                            </span>
+                            <span style={{ fontSize: 11, color: '#8888a0' }}>
+                                {adaptiveContext.energy} energy · {adaptiveContext.mood || 'unknown'} mood · {adaptiveContext.focusTrend} focus
+                            </span>
+                        </div>
+                        <h2 style={{ margin: '0 0 6px', fontWeight: 800, fontSize: 18 }}>{adaptiveContext.lensTitle}</h2>
+                        <p style={{ margin: '0 0 10px', color: '#c0c0d0', fontSize: 13, lineHeight: 1.6 }}>{adaptiveContext.guidance}</p>
+                        <p style={{ margin: 0, color: '#8888a0', fontSize: 12, lineHeight: 1.6 }}>{adaptiveContext.recommendedAnalysis}</p>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignContent: 'start' }}>
+                        <AdaptiveSignal label="Open" value={String(adaptiveContext.currentSignals.openTasks)} />
+                        <AdaptiveSignal label="Overdue" value={String(adaptiveContext.currentSignals.overdueTasks)} urgent={adaptiveContext.currentSignals.overdueTasks > 0} />
+                        <AdaptiveSignal label="Distraction" value={`${adaptiveContext.currentSignals.recentDistractionMinutes}m`} urgent={adaptiveContext.currentSignals.recentDistractionMinutes >= 30} />
+                        <AdaptiveSignal label="Alerts" value={adaptiveContext.alertFatigueLevel} urgent={adaptiveContext.alertFatigueLevel === 'high'} />
+                        <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#8888a0', paddingTop: 4 }}>
+                            Next focus window: {adaptiveContext.nextBestFocusWindow || 'still learning'}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Tab Navigation */}
             <div style={{ display: 'flex', gap: 4, marginBottom: 24, background: '#12121a', borderRadius: 12, padding: 4 }}>
@@ -615,6 +688,11 @@ export default function InsightsPage() {
                                         </span>
                                     </div>
                                     <p style={{ margin: '0 0 6px', color: '#e0e0f0', fontSize: 14 }}>{ins.insight}</p>
+                                    {adaptiveContext && (
+                                        <p style={{ margin: '0 0 8px', color: toneColor(adaptiveContext.insightTone), fontSize: 11 }}>
+                                            Read through the {modeLabel} lens: {adaptiveContext.interpretationRules[0]}
+                                        </p>
+                                    )}
                                     {ins.actionable_tip && <p style={{ margin: '0 0 8px', color: '#8888a0', fontSize: 12 }}>💡 {ins.actionable_tip}</p>}
                                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                                         {ins.feedback ? (
@@ -670,6 +748,15 @@ function MetricBox({ label, value, color, icon }: { label: string; value: string
                 <div style={{ fontSize: 16, fontWeight: 700, color }}>{value}</div>
                 <div style={{ fontSize: 10, color: '#8888a0' }}>{label}</div>
             </div>
+        </div>
+    );
+}
+
+function AdaptiveSignal({ label, value, urgent = false }: { label: string; value: string; urgent?: boolean }) {
+    return (
+        <div style={{ padding: 10, background: '#12121a', borderRadius: 8 }}>
+            <div style={{ fontSize: 10, color: '#8888a0', marginBottom: 2 }}>{label}</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: urgent ? '#ef4444' : '#e0e0f0', textTransform: 'capitalize' }}>{value}</div>
         </div>
     );
 }

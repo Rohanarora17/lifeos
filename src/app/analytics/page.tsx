@@ -2,10 +2,71 @@
 
 import { useEffect, useState } from 'react';
 
+interface WeekTrendDay {
+    date: string;
+    xp_earned: number | null;
+    productive_minutes: number | null;
+    distraction_minutes: number | null;
+}
+
+interface TopDomain {
+    domain: string;
+    minutes: number;
+    category: 'productive' | 'distraction' | 'neutral' | string;
+}
+
+interface Insight {
+    id: number;
+    insight: string;
+    type: string;
+    created_at: string;
+}
+
+interface AnalyticsPolicyDay {
+    date: string;
+    posture: 'stretch' | 'steady' | 'minimum' | 'recovery';
+    productiveTargetMinutes: number;
+    distractionBudgetMinutes: number;
+    productivityRatio: number;
+    capacityFit: 'above_capacity' | 'on_track' | 'under_capacity' | 'insufficient_signal';
+    reason: string;
+}
+
+interface AnalyticsPolicy {
+    mode: string;
+    lensTitle: string;
+    lensSummary: string;
+    primaryMetric: string;
+    productiveTargetMinutes: number;
+    distractionBudgetMinutes: number;
+    xpBaseline: number;
+    analysisWindowDays: number;
+    days: AnalyticsPolicyDay[];
+}
+
+const FIT_LABEL: Record<AnalyticsPolicyDay['capacityFit'], string> = {
+    above_capacity: 'above capacity',
+    on_track: 'on track',
+    under_capacity: 'under capacity',
+    insufficient_signal: 'learning',
+};
+
+const FIT_COLOR: Record<AnalyticsPolicyDay['capacityFit'], string> = {
+    above_capacity: 'var(--accent-green)',
+    on_track: 'var(--accent-blue)',
+    under_capacity: 'var(--accent-orange)',
+    insufficient_signal: 'var(--text-muted)',
+};
+
+function formatMinutes(minutes: number): string {
+    return minutes < 60 ? `${Math.round(minutes)}m` : `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`;
+}
+
 export default function AnalyticsPage() {
-    const [weekData, setWeekData] = useState<any[]>([]);
-    const [topDomains, setTopDomains] = useState<any[]>([]);
-    const [insights, setInsights] = useState<{ id: number, insight: string, type: string, created_at: string }[]>([]);
+    const [weekData, setWeekData] = useState<WeekTrendDay[]>([]);
+    const [topDomains, setTopDomains] = useState<TopDomain[]>([]);
+    const [insights, setInsights] = useState<Insight[]>([]);
+    const [analyticsPolicy, setAnalyticsPolicy] = useState<AnalyticsPolicy | null>(null);
     const [generating, setGenerating] = useState(false);
 
     useEffect(() => {
@@ -14,6 +75,7 @@ export default function AnalyticsPage() {
             .then(data => {
                 setWeekData(data.weekTrend || []);
                 setTopDomains(data.today?.topDomains || []);
+                setAnalyticsPolicy(data.intelligence?.analyticsPolicy || null);
             });
 
         fetch('/api/analytics/insights')
@@ -36,11 +98,43 @@ export default function AnalyticsPage() {
     };
 
     const maxMinutes = Math.max(...weekData.map(d => (d.productive_minutes || 0) + (d.distraction_minutes || 0)), 1);
+    const policyByDate = new Map((analyticsPolicy?.days || []).map(day => [day.date, day]));
 
     return (
         <div className="max-w-[1000px] mx-auto animate-fade-in">
             <h1 className="text-2xl font-bold mb-1">Analytics 📈</h1>
-            <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>Your productivity trends and insights</p>
+            <p className="text-sm mb-6" style={{ color: 'var(--text-secondary)' }}>
+                {analyticsPolicy ? analyticsPolicy.lensSummary : 'Your productivity trends and insights'}
+            </p>
+
+            {analyticsPolicy && (
+                <section className="card mb-6" style={{ padding: '1rem 1.25rem', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                        <div>
+                            <h2 className="text-sm font-bold uppercase tracking-wider" style={{ color: 'var(--accent-blue)' }}>
+                                {analyticsPolicy.lensTitle}
+                            </h2>
+                            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                {analyticsPolicy.mode.replace('_', ' ')} · {analyticsPolicy.primaryMetric.replace('_', ' ')}
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                            <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-secondary)' }}>
+                                <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>Target</div>
+                                <div className="text-sm font-bold">{formatMinutes(analyticsPolicy.productiveTargetMinutes)}</div>
+                            </div>
+                            <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-secondary)' }}>
+                                <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>Budget</div>
+                                <div className="text-sm font-bold">{formatMinutes(analyticsPolicy.distractionBudgetMinutes)}</div>
+                            </div>
+                            <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-secondary)' }}>
+                                <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>XP base</div>
+                                <div className="text-sm font-bold">{analyticsPolicy.xpBaseline || 'learning'}</div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            )}
 
             {/* AI Hidden Patterns */}
             <div className="card mb-6" style={{ padding: '1.5rem', border: '2px solid var(--accent-purple)' }}>
@@ -86,6 +180,7 @@ export default function AnalyticsPage() {
                             const height = ((pMin + dMin) / maxMinutes) * 180;
                             const pHeight = (pMin / total) * height;
                             const dHeight = (dMin / total) * height;
+                            const policyDay = policyByDate.get(day.date);
 
                             return (
                                 <div key={i} className="flex-1 flex flex-col items-center gap-1">
@@ -96,6 +191,15 @@ export default function AnalyticsPage() {
                                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                                         {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short' })}
                                     </p>
+                                    {policyDay && (
+                                        <span
+                                            className="text-[10px] font-bold whitespace-nowrap"
+                                            title={policyDay.reason}
+                                            style={{ color: FIT_COLOR[policyDay.capacityFit] }}
+                                        >
+                                            {FIT_LABEL[policyDay.capacityFit]}
+                                        </span>
+                                    )}
                                 </div>
                             );
                         })}
@@ -122,20 +226,29 @@ export default function AnalyticsPage() {
                     <div className="flex items-end gap-3 h-[120px]">
                         {weekData.map((day, i) => {
                             const maxXp = Math.max(...weekData.map(d => d.xp_earned || 0), 1);
-                            const height = ((day.xp_earned || 0) / maxXp) * 100;
+                            const policyDay = policyByDate.get(day.date);
+                            const baseline = analyticsPolicy?.xpBaseline || 0;
+                            const xpEarned = day.xp_earned || 0;
+                            const height = (xpEarned / maxXp) * 100;
+                            const aboveBaseline = baseline > 0 && xpEarned >= baseline;
                             return (
                                 <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{day.xp_earned || 0}</span>
+                                    <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{xpEarned}</span>
                                     <div className="w-full flex items-end" style={{ height: '80px' }}>
                                         <div className="w-full rounded-t-md" style={{
                                             height: `${height}%`,
-                                            background: 'var(--gradient-primary)',
-                                            minHeight: day.xp_earned > 0 ? '4px' : 0
+                                            background: aboveBaseline ? 'var(--accent-green)' : 'var(--gradient-primary)',
+                                            minHeight: xpEarned > 0 ? '4px' : 0
                                         }} />
                                     </div>
                                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                                         {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short' })}
                                     </p>
+                                    {policyDay && (
+                                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                            {policyDay.posture}
+                                        </span>
+                                    )}
                                 </div>
                             );
                         })}
@@ -150,8 +263,8 @@ export default function AnalyticsPage() {
                 <h3 className="text-sm font-semibold mb-4" style={{ color: 'var(--text-secondary)' }}>Top Sites Today</h3>
                 {topDomains.length > 0 ? (
                     <div className="space-y-2">
-                        {topDomains.map((d: any, i: number) => {
-                            const maxDomainMinutes = Math.max(...topDomains.map((x: any) => x.minutes), 1);
+                        {topDomains.map((d, i) => {
+                            const maxDomainMinutes = Math.max(...topDomains.map(x => x.minutes), 1);
                             return (
                                 <div key={i} className="relative">
                                     <div className="absolute inset-0 rounded-lg opacity-10" style={{
@@ -168,7 +281,7 @@ export default function AnalyticsPage() {
                                                 {d.category}
                                             </span>
                                             <span className="text-sm font-mono" style={{ color: 'var(--text-muted)' }}>
-                                                {d.minutes < 60 ? `${Math.round(d.minutes)}m` : `${Math.floor(d.minutes / 60)}h ${Math.round(d.minutes % 60)}m`}
+                                                {formatMinutes(d.minutes)}
                                             </span>
                                         </div>
                                     </div>

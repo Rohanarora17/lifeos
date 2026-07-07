@@ -12,6 +12,9 @@ import {
     feedbackOnInsight,
 } from '@/lib/behavior';
 import { getDb } from '@/lib/db';
+import { buildAdaptiveInsightsPolicy } from '@/lib/adaptive-insights-policy';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { recordExplicitFeedbackLearning, type ExplicitFeedback } from '@/lib/feedback-learning';
 
 // GET — Fetch behavioral analysis data
 export async function GET(request: Request) {
@@ -69,6 +72,13 @@ export async function GET(request: Request) {
     const archetype = classifyArchetype(30);
     const goalAlignment = computeGoalAlignment();
     const profile = getProfile();
+    const personalization = buildPersonalizationSnapshot({
+        surface: 'analytics',
+        maxInsights: 4,
+        includeThresholds: true,
+        includeMemoryFacts: 6,
+    });
+    const adaptiveContext = buildAdaptiveInsightsPolicy(personalization);
 
     // Hourly heatmap
     const db = getDb();
@@ -126,6 +136,8 @@ export async function GET(request: Request) {
         topDistraction,
         insights,
         memories,
+        personalization,
+        adaptiveContext,
         sessions: sessions.slice(0, 10),
     });
 }
@@ -146,6 +158,22 @@ export async function POST(request: Request) {
     // Record insight feedback (the learning loop)
     if (body.type === 'insight_feedback') {
         feedbackOnInsight(body.insight_id, body.feedback);
+        try {
+            const db = getDb();
+            const row = db.prepare('SELECT insight, category FROM behavior_insights WHERE id = ?').get(body.insight_id) as { insight: string; category: string } | undefined;
+            const mappedFeedback = body.feedback === 'already_known'
+                ? 'already_known'
+                : body.feedback === 'helpful'
+                    ? 'helpful'
+                    : 'not_helpful';
+            recordExplicitFeedbackLearning({
+                source: 'behavior_insight',
+                feedback: mappedFeedback as ExplicitFeedback,
+                surface: 'insights',
+                subject: row ? `${row.category}: ${row.insight}` : `insight ${body.insight_id}`,
+                metadata: { insightId: body.insight_id },
+            });
+        } catch { /* feedback learning should not block insight acknowledgement */ }
         return NextResponse.json({ ok: true, message: `Feedback '${body.feedback}' recorded for insight ${body.insight_id}` });
     }
 
