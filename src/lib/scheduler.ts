@@ -7,16 +7,16 @@ import {
   DAILY_REPORT_KEYBOARD,
 } from './telegram';
 import { listUpcomingEvents } from './google-calendar';
-import { forceSynthesis, getIntelligenceContext } from './intelligence';
+import { forceSynthesis } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
 import { sendMorningCheckin, sendEveningReflection, getWakeEstimate } from './checkin';
-import { captureAndAnalyze } from './screenshot-pipeline';
-import { isMacbookClientConnected } from './screen-vision';
 import { getActiveGuardianSession } from './guardian-runtime';
 import { runContinuityCheck } from './continuity-guardian';
 import { sendWeeklyReckoning } from './weekly-reckoning';
 import { sendOpenLoopsAudit, sendMonthlyPatternLetter } from './open-loops';
-import { getAdaptiveBands } from './adaptive-bands';
+import { decideAdaptiveJobRun } from './adaptive-scheduler';
+import { buildPersonalizationSnapshot } from './personalization-context';
+import { composeEveningPlanningReminder } from './notifications';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -37,6 +37,51 @@ interface ScheduledJob {
 const jobs: Map<string, ScheduledJob> = new Map();
 const timers: Map<string, ReturnType<typeof setInterval>> = new Map();
 let initialized = false;
+
+function buildSchedulerSnapshot() {
+  const activeSession = getActiveGuardianSession();
+  const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
+  return buildPersonalizationSnapshot({
+    surface: 'scheduler',
+    maxInsights: 1,
+    includeThresholds: true,
+    includeMemoryFacts: 3,
+    activeSession: activeSession ? {
+      sessionId: activeSession.sessionId,
+      targetTitle: activeSession.targetTitle,
+      focusScore: activeFocusScore,
+      elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60000)),
+    } : null,
+  });
+}
+
+function formatSchedulerMomentLine(snapshot: ReturnType<typeof buildSchedulerSnapshot>): string {
+  const modeLabel: Record<string, string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery mode',
+    planning: 'Planning/cleanup',
+    normal: 'Balanced day',
+  };
+  const goal = snapshot.userState.standupGoal
+    ? ` Goal: ${snapshot.userState.standupGoal.slice(0, 90)}.`
+    : '';
+  const pressure = snapshot.today.overdueTasks > 0
+    ? ` ${snapshot.today.overdueTasks} overdue task${snapshot.today.overdueTasks === 1 ? '' : 's'} need attention.`
+    : '';
+  return `🧭 <b>Today mode:</b> ${modeLabel[snapshot.moment.mode] || snapshot.moment.mode}.${goal}${pressure}`;
+}
+
+async function runAdaptiveSchedulerJob(name: string, fn: () => Promise<void>): Promise<void> {
+  const snapshot = buildSchedulerSnapshot();
+  const decision = decideAdaptiveJobRun(name, snapshot);
+  if (!decision.run) {
+    console.log(`[Scheduler] ${name} adaptive skip: ${decision.reason}`);
+    return;
+  }
+  console.log(`[Scheduler] ${name} adaptive run: ${decision.reason}`);
+  await fn();
+}
 
 function inferMorningTime(): string {
   try {
@@ -77,6 +122,72 @@ function inferEveningTime(): string {
   return '21:30';
 }
 
+function timeToMinutes(value: string, sleepTime = false): number {
+  const [h, m] = value.split(':').map(Number);
+  const minutes = (h * 60) + m;
+  return sleepTime && h < 12 ? minutes + 1440 : minutes;
+}
+
+function minutesToTime(minutes: number): string {
+  const normalized = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  const h = Math.floor(normalized / 60);
+  const m = normalized % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function inferEveningTimeFromSleep(): { time: string; reason: string } | null {
+  try {
+    const rows = getDb().prepare(`
+      SELECT sleep_time
+      FROM daily_checkins
+      WHERE checkin_type = 'evening'
+        AND sleep_time IS NOT NULL
+      ORDER BY received_at DESC, id DESC
+      LIMIT 7
+    `).all() as Array<{ sleep_time: string | null }>;
+    const sleepMinutes = rows
+      .map(row => row.sleep_time)
+      .filter((value): value is string => Boolean(value && /^\d{2}:\d{2}$/.test(value)))
+      .map(value => timeToMinutes(value, true));
+    if (sleepMinutes.length === 0) return null;
+
+    const avgSleep = sleepMinutes.reduce((sum, value) => sum + value, 0) / sleepMinutes.length;
+    const snapshot = buildSchedulerSnapshot();
+    const leadMinutes = snapshot.moment.mode === 'planning'
+      ? 75
+      : snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low'
+        ? 120
+        : 90;
+    const reflection = avgSleep - leadMinutes;
+    const earliest = 19 * 60;
+    const latest = 26 * 60 + 30; // allow 00:00-02:30 for genuinely late nights
+    const clamped = Math.max(earliest, Math.min(latest, reflection));
+    return {
+      time: minutesToTime(clamped),
+      reason: `derived ${leadMinutes}m before recent average sleep ${minutesToTime(avgSleep)}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function configuredOrInferredTime(settingKey: string, seededDefault: string, infer: () => string): string {
+  const configured = getSetting(settingKey).trim();
+  if (configured && configured !== seededDefault) return configured;
+  return infer();
+}
+
+function resolveEveningReflectionTime(): string {
+  const envTime = (process.env.EVENING_REFLECTION_TIME || '').trim();
+  if (envTime) return envTime;
+  const sleepBased = inferEveningTimeFromSleep();
+  if (sleepBased) {
+    console.log(`[Scheduler] Evening reflection time ${sleepBased.time}: ${sleepBased.reason}`);
+    return sleepBased.time;
+  }
+  return configuredOrInferredTime('evening_reflection_time', '21:30', inferEveningTime);
+}
+
 /**
  * Initialize the scheduler with all configured jobs.
  * Safe to call multiple times — will only initialize once.
@@ -87,9 +198,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     console.log('[Scheduler] Initializing LifeOS cron jobs...');
 
-    // Morning brief — runs every day at configured time (or learned from user's patterns)
-    const morningTimeSetting = getSetting('morning_brief_time');
-    const morningTime = morningTimeSetting || inferMorningTime();
+    // Morning brief — runs at a user override when present, otherwise learned from recent starts.
+    const morningTime = configuredOrInferredTime('morning_brief_time', '08:00', inferMorningTime);
     registerDailyJob('morning_brief', morningTime, async () => {
         await fetch(`${baseUrl}/api/summary?type=morning`);
         // Also send morning brief to Telegram
@@ -100,6 +210,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             const habits = (db.prepare("SELECT COUNT(*) as c FROM habits WHERE archived = 0").get() as { c: number }).c;
             const streak = (db.prepare("SELECT COALESCE(MAX(streak),0) as s FROM habits WHERE archived = 0").get() as { s: number }).s;
             const upcomingEvents = await listUpcomingEvents(12);
+            const schedulerSnapshot = buildSchedulerSnapshot();
 
             // Time-of-day intelligence: find peak focus hours from last 14 days of sessions
             const hourlyData = db.prepare(`
@@ -128,15 +239,15 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                 }),
                 streak,
                 peakHoursLine,
+                adaptiveLine: formatSchedulerMomentLine(schedulerSnapshot),
             }), 'HTML', MORNING_BRIEF_KEYBOARD);
         } catch (err) {
             console.error('[Scheduler] Telegram morning brief failed:', err);
         }
     });
 
-    // Daily summary — runs every day at configured time
-    const summaryTimeSetting = getSetting('daily_summary_time');
-    const summaryTime = summaryTimeSetting || inferEveningTime();
+    // Daily summary — runs at a user override when present, otherwise learned from evening session endings.
+    const summaryTime = configuredOrInferredTime('daily_summary_time', '23:00', inferEveningTime);
     registerDailyJob('daily_summary', summaryTime, async () => {
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
@@ -172,10 +283,12 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Deep analysis — runs daily at 23:30
     registerDailyJob('deep_analysis', '23:30', async () => {
-        await fetch(`${baseUrl}/api/behavior`, {
+        await runAdaptiveSchedulerJob('deep_analysis', async () => {
+          await fetch(`${baseUrl}/api/behavior`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: '{}',
+          });
         });
     });
 
@@ -212,13 +325,17 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Alert engine — runs every 5 minutes, checks for triggers
     registerIntervalJob('alert_engine', 5 * 60 * 1000, async () => {
-        await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+        await runAdaptiveSchedulerJob('alert_engine', async () => {
+            await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+        });
     });
 
     // UIL synthesis — runs every 2 hours during active day to keep profile fresh
     registerIntervalJob('uil_synthesis', 2 * 60 * 60 * 1000, async () => {
-        console.log('[Scheduler] Running UIL background synthesis...');
-        await forceSynthesis('scheduled_2h');
+        await runAdaptiveSchedulerJob('uil_synthesis', async () => {
+            console.log('[Scheduler] Running UIL background synthesis...');
+            await forceSynthesis('scheduled_2h');
+        });
     });
 
     // Screenshot pipeline — DISABLED.
@@ -233,7 +350,9 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Continuity guardian — every 30 minutes
     registerIntervalJob('continuity_guardian', 30 * 60 * 1000, async () => {
-        await runContinuityCheck();
+        await runAdaptiveSchedulerJob('continuity_guardian', async () => {
+            await runContinuityCheck();
+        });
     });
 
     // Achievement engine - runs every 10 minutes
@@ -318,7 +437,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     });
 
     // Daily morning check-in — fires within 15 minutes of the user's wake estimate
-    // Wake estimate comes from yesterday's evening check-in. Fallback: 08:00.
+    // Wake estimate comes from yesterday's evening check-in. Fallback uses learned morning timing.
     // Uses a polling approach: every minute we check if we're in the wake window.
     registerIntervalJob('morning_checkin', 60 * 1000, async () => {
         const now = new Date();
@@ -343,20 +462,28 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         if (nowMinutes < windowStart || nowMinutes >= windowEnd) return;
 
         // Deduplicate: sendMorningCheckin() already checks if already sent today
-        await sendMorningCheckin();
+        await runAdaptiveSchedulerJob('morning_checkin', async () => {
+            await sendMorningCheckin();
+        });
     });
 
-    // Evening reflection — configurable via EVENING_REFLECTION_TIME (default 21:30)
+    // Evening reflection — user override or learned evening time from recent session endings.
     // Also fires a 15-minute advance reminder to prompt the user to start thinking
-    const eveningTime = (process.env.EVENING_REFLECTION_TIME || '21:30').trim();
+    const eveningTime = resolveEveningReflectionTime();
     const [eveningHour, eveningMin] = eveningTime.split(':').map(Number);
     const reminderMin = eveningMin - 15 < 0 ? eveningMin + 45 : eveningMin - 15;
     const reminderHour = eveningMin - 15 < 0 ? eveningHour - 1 : eveningHour;
     const reminderTime = `${String(reminderHour).padStart(2, '0')}:${String(reminderMin).padStart(2, '0')}`;
 
     registerDailyJob('evening_reminder', reminderTime, async () => {
-        const { sendTelegram: tg } = await import('./telegram');
-        await tg(`📝 Evening reflection in 15 minutes.\n\nStart thinking: what did you avoid today, and why?`, 'HTML');
+        await runAdaptiveSchedulerJob('evening_reminder', async () => {
+            const reminder = composeEveningPlanningReminder();
+            if (!reminder.shouldSend) {
+                console.log(`[Scheduler] evening_reminder adaptive skip: ${reminder.reason}`);
+                return;
+            }
+            await sendTelegram(`${reminder.message}\n\n<i>${reminder.reason}</i>`, 'HTML');
+        });
     });
 
     registerDailyJob('evening_reflection', eveningTime, async () => {

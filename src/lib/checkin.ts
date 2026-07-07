@@ -6,7 +6,11 @@ import { sendTelegram } from './telegram';
 import { extractMemoryFromCheckin } from './memory-extractor';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
-import { getIntelligenceContext } from './intelligence';
+import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
+import { generateNextDayPlan } from './next-day-planner';
+import { getFeedbackLearningSummary } from './feedback-learning';
+import { buildPersonalizationSnapshot } from './personalization-context';
+import { buildSelfModel, selectSelfModelQuestion, type SelfModelGapQuestion } from './self-model';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
 
@@ -14,10 +18,58 @@ export const PENDING_CHECKIN_KEY = 'pending_checkin_type'; // 'morning' | 'eveni
 export const PENDING_CHECKIN_DATE_KEY = 'pending_checkin_date'; // ISO date string
 export const PENDING_CHECKIN_SENT_AT_KEY = 'pending_checkin_sent_at'; // epoch ms string
 
+const IST_OFFSET_MS = 19_800_000;
+
+function todayIst(): string {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function addDays(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function sleepHour(value: string | null | undefined): number | null {
+  if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
+  const hour = Number.parseInt(value.slice(0, 2), 10);
+  return Number.isFinite(hour) ? hour : null;
+}
+
+export function resolvePlanDateFromEveningCheckin(input: {
+  checkinDate?: string | null;
+  sleepTime?: string | null;
+  now?: Date;
+} = {}): string {
+  const localNow = new Date((input.now?.getTime() ?? Date.now()) + IST_OFFSET_MS);
+  const checkinDate = input.checkinDate || localNow.toISOString().slice(0, 10);
+  const hourNow = localNow.getUTCHours();
+  const sleep = sleepHour(input.sleepTime);
+  const isPostMidnightLateNight = hourNow < 4 && sleep !== null && sleep < 12;
+  return isPostMidnightLateNight ? checkinDate : addDays(checkinDate, 1);
+}
+
+function getAdaptiveCheckinQuestion(surface: 'morning_checkin' | 'evening_checkin'): SelfModelGapQuestion | null {
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'checkin',
+      maxInsights: 3,
+      includeThresholds: true,
+      includeMemoryFacts: 6,
+    });
+    const profile = getIntelligenceProfile();
+    const feedbackFacts = getFeedbackLearningSummary(12);
+    const selfModel = buildSelfModel({ snapshot, profile, feedbackFacts });
+    return selectSelfModelQuestion(selfModel, surface);
+  } catch (err) {
+    console.warn('[Checkin] adaptive question unavailable:', err);
+    return null;
+  }
+}
+
 // ─── Send Functions ──────────────────────────────────────────────────────────
 
 export async function sendMorningCheckin(): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIst();
 
   // Check 1: already sent today (pending state) — user hasn't replied yet
   const pendingDate = getSetting(PENDING_CHECKIN_DATE_KEY);
@@ -39,7 +91,10 @@ export async function sendMorningCheckin(): Promise<void> {
   // Claim the slot BEFORE the async LLM call — prevents concurrent restarts from both firing
   setSetting(PENDING_CHECKIN_DATE_KEY, today);
 
-  let message = `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
+  const adaptiveQuestion = getAdaptiveCheckinQuestion('morning_checkin');
+  let message = adaptiveQuestion
+    ? `Good morning. ${adaptiveQuestion.question}`
+    : `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
 
   try {
     const intelligenceContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
@@ -47,7 +102,10 @@ export async function sendMorningCheckin(): Promise<void> {
     if (ai) {
       const result = await generateWithFallback(ai, {
         model: MODEL_FLASH,
-        contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 40 words. End with asking their one commitment and likelihood 1-10.
+        contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 45 words. End with the adaptive question below, preserving its intent.
+
+Adaptive question to ask because ${adaptiveQuestion?.reason ?? 'the model needs a fresh daily anchor'}:
+${adaptiveQuestion?.question ?? 'What is your one commitment today, and how likely are you to do it from 1-10?'}
 
 User context:
 ${intelligenceContext}
@@ -72,7 +130,7 @@ Return ONLY the message text. No quotes.`,
 }
 
 export async function sendEveningReflection(): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIst();
 
   // Don't send if already sent today
   const db = getDb();
@@ -84,12 +142,15 @@ export async function sendEveningReflection(): Promise<void> {
     return;
   }
 
+  const adaptiveQuestion = getAdaptiveCheckinQuestion('evening_checkin');
   const message = [
     `End-of-day check-in. Answer honestly.\n`,
     `1. <b>What did you avoid today</b>, and what's the honest reason — not the reason you'd tell someone else, the actual reason?`,
-    `2. <b>What are you postponing</b> that you keep telling yourself is for tomorrow?`,
-    `3. <b>How do you feel about showing up tomorrow, 1–10?</b> Why that number?`,
-    `4. <b>What time are you sleeping tonight</b>, and what's the one thing you want to accomplish tomorrow?`,
+    `2. <b>What happened today</b> that affected your mood, energy, or focus?`,
+    `3. <b>What time are you sleeping tonight</b>, and what time should I assume you'll wake up?`,
+    `4. <b>What do you want to do tomorrow</b>, and how much time should it get?`,
+    `5. <b>${adaptiveQuestion?.question ?? 'How do you feel about showing up tomorrow, 1–10?'}</b>`,
+    `6. <b>How do you feel about showing up tomorrow, 1–10?</b> Why that number?`,
     `\nVoice note or text — doesn't matter.`,
   ].join('\n');
 
@@ -114,7 +175,7 @@ function buildFallbackCheckinResponse(likelihoodScore: number | null): string {
 }
 
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
-  const today = getSetting(PENDING_CHECKIN_DATE_KEY) || new Date().toISOString().slice(0, 10);
+  const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
 
   // Parse: look for a number 1-10 in the text for likelihood score
   const scoreMatch = text.match(/\b([1-9]|10)\b/);
@@ -167,7 +228,7 @@ Return ONLY the response. No quotes.`,
 }
 
 export async function handleEveningReflectionResponse(text: string): Promise<void> {
-  const today = getSetting(PENDING_CHECKIN_DATE_KEY) || new Date().toISOString().slice(0, 10);
+  const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
 
   // Look for tomorrow score (1-10) at the end of the response
   const scoreMatch = text.match(/\b([1-9]|10)\b[^\d]*$/);
@@ -248,6 +309,17 @@ If nothing relevant, return nulls.`;
           extracted.tomorrowIntention ?? null,
           today
         );
+        await generateNextDayPlan({
+          planDate: resolvePlanDateFromEveningCheckin({
+            checkinDate: today,
+            sleepTime: extracted.sleepTime,
+          }),
+          sleepTime: extracted.sleepTime,
+          wakeEstimate: extracted.wakeEstimate,
+          tomorrowIntention: extracted.tomorrowIntention,
+          eveningNotes: text,
+          syncCalendar: false,
+        });
         console.log(`[Checkin] Sleep/wake extracted — sleep: ${extracted.sleepTime}, wake: ${extracted.wakeEstimate}, intention: ${extracted.tomorrowIntention}`);
       }
     } catch (err) {
