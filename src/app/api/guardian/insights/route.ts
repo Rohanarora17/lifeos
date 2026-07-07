@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { getIntelligenceProfile } from '@/lib/intelligence';
 import { getActiveGuardianSession } from '@/lib/guardian-runtime';
 import { getDb } from '@/lib/db';
+import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +24,19 @@ export async function GET() {
   try {
     const profile = getIntelligenceProfile();
     const session = getActiveGuardianSession();
+    const focusScore = session?.focusScoreHistory?.at(-1) ?? null;
+    const personalization = buildPersonalizationSnapshot({
+      surface: 'guidance',
+      maxInsights: 2,
+      includeMemoryFacts: 3,
+      activeSession: session ? {
+        sessionId: session.sessionId,
+        targetTitle: session.targetTitle,
+        focusScore,
+        elapsedMinutes: Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)),
+      } : null,
+    });
+    const recommendedTasks = getAdaptiveTaskRecommendations(personalization, 3);
 
     // Today's habit completion
     let habitRate: number | null = null;
@@ -70,6 +86,18 @@ export async function GET() {
       habits: {
         completionRate: habitRate,
       },
+      personalization: {
+        mode: personalization.moment.mode,
+        guidance: personalization.moment.guidance,
+        recommendedSessionMinutes: getAdaptiveSessionMinutes(),
+        energy: personalization.userState.energy,
+        mood: personalization.userState.mood,
+        standupGoal: personalization.userState.standupGoal,
+        alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+        recentAlerts: personalization.feedback.recentAlerts,
+        nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+      },
+      recommendedTasks,
       generatedAt: Date.now(),
     });
   } catch (err) {

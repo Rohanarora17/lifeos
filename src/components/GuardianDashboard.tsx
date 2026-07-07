@@ -1,22 +1,22 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { scoreColor as adaptiveScoreColor } from '@/lib/score-classify';
+
+interface GuardianFeedMessage {
+    text: string;
+    tone: string;
+    time: number;
+}
 
 export default function GuardianDashboard({ sessionId, plannedMinutes, targetTitle, startedAt }: { sessionId: string, plannedMinutes: number, targetTitle: string, startedAt?: number }) {
     const [score, setScore] = useState<number>(100);
     const [trend, setTrend] = useState<number>(0);
-    const [messages, setMessages] = useState<any[]>([]);
-    const [elapsed, setElapsed] = useState<number>(0);
+    const [messages, setMessages] = useState<GuardianFeedMessage[]>([]);
+    const [elapsed, setElapsed] = useState<number>(() => startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0);
     const [history, setHistory] = useState<number[]>([100]);
     const [onTopicTime, setOnTopicTime] = useState<number>(0);
     const [distractions, setDistractions] = useState<number>(0);
-
-    // Sync elapsed with startedAt on mount to prevent starting from 0
-    useEffect(() => {
-        if (startedAt) {
-            setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-        }
-    }, [startedAt]);
 
     // SSE Subscription
     useEffect(() => {
@@ -30,7 +30,7 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
                 setTrend(data.delta);
                 setHistory(prev => [...prev.slice(-19), data.score]);
             } else if (data.type === 'jarvis_speech') {
-                setMessages(prev => [{ text: data.text, tone: data.tone, time: Date.now() }, ...prev].slice(0, 3));
+                setMessages(prev => [{ text: data.text, tone: String(data.tone ?? ''), time: Date.now() }, ...prev].slice(0, 3));
             } else if (data.type === 'session_stats') {
                 setOnTopicTime(data.onTopicTime || 0);
                 setDistractions(data.distractions || 0);
@@ -60,9 +60,7 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
-    let scoreColor = '#22c55e'; // green
-    if (score < 60) scoreColor = '#ef4444'; // red
-    else if (score < 80) scoreColor = '#f59e0b'; // amber
+    const scoreColor = adaptiveScoreColor(score);
 
     return (
         <div className="w-full max-w-4xl mx-auto p-8 bg-zinc-950 text-white rounded-2xl shadow-2xl relative overflow-hidden">

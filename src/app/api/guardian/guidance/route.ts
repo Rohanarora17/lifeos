@@ -39,7 +39,7 @@ export async function POST(req: Request) {
     };
 
     const resolvedQuestion = question?.trim() || 'Explain what I am looking at in the context of my session goal.';
-    const resolvedSource = (source as 'voice' | 'client_hotkey' | 'extension_hotkey' | 'extension_selection') || 'client_hotkey';
+    const resolvedSource = (source as 'voice' | 'client_hotkey' | 'extension_hotkey' | 'extension_selection' | 'native_hotkey' | 'native_ptt' | 'native_selection') || 'client_hotkey';
 
     // Resolve session: prefer explicit, fall back to active session
     const session = getActiveGuardianSession();

@@ -30,14 +30,32 @@ interface DayBriefing {
     plannedMinutes: number;
     status: string;
   }>;
+  personalization?: GuardianInsights['personalization'];
+  adaptiveTasks?: GuardianInsights['recommendedTasks'];
 }
 
-interface ActiveSession {
-  sessionId: string;
-  targetTitle: string;
-  durationMinutes: number;
-  state: string;
-  startedAt?: number;
+interface GuardianInsights {
+  personalization?: {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    recommendedSessionMinutes: number;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    standupGoal: string | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    recentAlerts: number;
+    nextBestFocusWindow: string;
+  };
+  recommendedTasks?: Array<{
+    id: number;
+    title: string;
+    priority: string;
+    score: number;
+    reason: string;
+    momentFit: 'high' | 'medium' | 'low';
+    estimatedMinutes: number | null;
+    energyRequired: 'low' | 'medium' | 'high' | null;
+  }>;
 }
 
 const QUALITY_COLOR: Record<string, string> = {
@@ -47,13 +65,31 @@ const QUALITY_COLOR: Record<string, string> = {
   poor: '#ef4444',
 };
 
+const MODE_LABEL: Record<NonNullable<GuardianInsights['personalization']>['mode'], string> = {
+  protect_focus: 'Protect focus',
+  deadline_pressure: 'Deadline pressure',
+  recovery: 'Recovery',
+  planning: 'Planning',
+  normal: 'Balanced',
+};
+
+function formatDuration(mins: number) {
+  const rounded = Math.max(0, Math.round(mins));
+  if (rounded < 60) return `${rounded}m`;
+  const hours = Math.floor(rounded / 60);
+  const minutes = rounded % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
 export default function GuardianPage() {
   const { session: activeSession, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
+  const [insights, setInsights] = useState<GuardianInsights | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [topic, setTopic] = useState('');
   const [duration, setDuration] = useState(60);
+  const [selectedRecommendationId, setSelectedRecommendationId] = useState<number | null>(null);
   const [mood, setMood] = useState<'high' | 'medium' | 'low' | ''>('');
   const [sessionContext, setSessionContext] = useState('');
   const [showContext, setShowContext] = useState(false);
@@ -138,6 +174,10 @@ export default function GuardianPage() {
     }>;
   } | null>(null);
   const topicRef = useRef<HTMLInputElement>(null);
+  const adaptivePersonalization = insights?.personalization ?? briefing?.personalization;
+  const adaptiveDuration = adaptivePersonalization?.recommendedSessionMinutes ?? 60;
+  const durationOptions = Array.from(new Set([adaptiveDuration, 25, 45, 60, 90, 120].map(m => Math.round(m)).filter(m => m > 0)));
+  const adaptiveTasks = insights?.recommendedTasks ?? briefing?.adaptiveTasks ?? [];
 
   const fetchBriefing = useCallback(async () => {
     try {
@@ -148,6 +188,19 @@ export default function GuardianPage() {
       }
     } catch { }
   }, []);
+
+  const fetchInsights = useCallback(async () => {
+    try {
+      const res = await fetch('/api/guardian/insights');
+      if (res.ok) {
+        const data = await res.json() as GuardianInsights;
+        setInsights(data);
+        if (!activeSession.active && data.personalization?.recommendedSessionMinutes) {
+          setDuration(Math.round(data.personalization.recommendedSessionMinutes));
+        }
+      }
+    } catch { }
+  }, [activeSession.active]);
 
   const fetchSuggestedTasks = useCallback(async () => {
     try {
@@ -222,10 +275,14 @@ export default function GuardianPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchBriefing(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
+    Promise.all([fetchBriefing(), fetchInsights(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
     const briefingInterval = setInterval(fetchBriefing, 60_000);
-    return () => { clearInterval(briefingInterval); };
-  }, [fetchBriefing, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
+    const insightsInterval = setInterval(fetchInsights, 60_000);
+    return () => {
+      clearInterval(briefingInterval);
+      clearInterval(insightsInterval);
+    };
+  }, [fetchBriefing, fetchInsights, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
 
   // Pre-fill topic from briefing
   useEffect(() => {
@@ -233,6 +290,34 @@ export default function GuardianPage() {
       setTopic(briefing.upcomingFocusTarget);
     }
   }, [briefing, topic]);
+
+  const sendRecommendationFeedback = async (
+    taskId: number,
+    feedback: 'helpful' | 'not_now' | 'wrong' | 'started' | 'completed' | 'dismissed',
+    reason?: string,
+  ) => {
+    await fetch('/api/dashboard/recommendation-feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId, feedback, reason, surface: 'guardian_page' }),
+    }).catch(() => { });
+  };
+
+  const acceptAdaptiveTask = (task: NonNullable<GuardianInsights['recommendedTasks']>[number]) => {
+    setTopic(task.title);
+    setSelectedRecommendationId(task.id);
+    setDuration(Math.round(task.estimatedMinutes || adaptiveDuration));
+    sendRecommendationFeedback(task.id, 'helpful', 'accepted on guardian page');
+  };
+
+  const dismissAdaptiveTask = (taskId: number) => {
+    sendRecommendationFeedback(taskId, 'not_now', 'dismissed on guardian page');
+    setInsights(prev => prev ? {
+      ...prev,
+      recommendedTasks: prev.recommendedTasks?.filter(task => task.id !== taskId),
+    } : prev);
+    if (selectedRecommendationId === taskId) setSelectedRecommendationId(null);
+  };
 
   const startSession = async () => {
     if (!topic.trim()) { topicRef.current?.focus(); return; }
@@ -244,6 +329,9 @@ export default function GuardianPage() {
       source: 'dashboard',
       sessionContext: sessionContext.trim() || undefined,
     });
+    if (id && selectedRecommendationId) {
+      sendRecommendationFeedback(selectedRecommendationId, 'started', 'started session from guardian page');
+    }
     if (id) { setTopic(''); setSessionContext(''); setShowContext(false); }
     setStarting(false);
   };
@@ -304,6 +392,9 @@ export default function GuardianPage() {
           source: 'dashboard',
         }),
       });
+      if (selectedRecommendationId) {
+        sendRecommendationFeedback(selectedRecommendationId, 'helpful', 'scheduled from guardian page');
+      }
       setScheduleMode(false);
       setScheduleTime('');
       await fetchBriefing();
@@ -389,16 +480,103 @@ export default function GuardianPage() {
           <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '14px' }}>
             Start a Session
           </div>
+          {adaptivePersonalization && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,197,94,0.04))',
+              border: '1px solid rgba(99,102,241,0.25)',
+              borderRadius: '10px',
+              padding: '12px',
+              marginBottom: '12px',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
+                <div style={{ fontSize: '11px', color: '#a5b4fc', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                  {MODE_LABEL[adaptivePersonalization.mode]}
+                </div>
+                <div style={{ fontSize: '11px', color: '#8888a0' }}>
+                  {adaptivePersonalization.energy} energy · {formatDuration(adaptiveDuration)}
+                </div>
+              </div>
+              <div style={{ fontSize: '12px', color: '#c8c8df', lineHeight: 1.45 }}>
+                {adaptivePersonalization.guidance}
+              </div>
+            </div>
+          )}
+          {adaptiveTasks.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', color: '#555570', marginBottom: '6px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Adaptive picks for this moment
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {adaptiveTasks.slice(0, 3).map(task => (
+                  <div key={task.id} style={{
+                    background: selectedRecommendationId === task.id ? '#6366f122' : '#1a1a2e',
+                    border: `1px solid ${selectedRecommendationId === task.id ? '#6366f155' : '#2a2a40'}`,
+                    borderRadius: '10px',
+                    padding: '8px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        onClick={() => acceptAdaptiveTask(task)}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          background: 'none',
+                          border: 'none',
+                          color: selectedRecommendationId === task.id ? '#a5b4fc' : '#f0f0f5',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          padding: 0,
+                        }}
+                      >
+                        {task.title}
+                      </button>
+                      <span style={{
+                        fontSize: '9px',
+                        color: task.momentFit === 'high' ? '#22c55e' : task.momentFit === 'low' ? '#f59e0b' : '#a5b4fc',
+                        flexShrink: 0,
+                      }}>
+                        {task.momentFit} fit
+                      </span>
+                      <button
+                        onClick={() => dismissAdaptiveTask(task.id)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          color: '#555570',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          padding: '0 2px',
+                        }}
+                        title="Not now"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#8888a0', marginTop: '4px', lineHeight: 1.35 }}>
+                      {task.reason}
+                      {task.estimatedMinutes ? ` · ${task.estimatedMinutes}m` : ''}
+                      {task.energyRequired ? ` · ${task.energyRequired} energy` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {suggestedTasks.length > 0 && (
             <div style={{ marginBottom: '10px' }}>
               <div style={{ fontSize: '10px', color: '#555570', marginBottom: '6px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-                Suggested — based on goals & energy
+                Other goal-linked options
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                 {suggestedTasks.slice(0, 4).map(t => (
                   <button
                     key={t.id}
-                    onClick={() => setTopic(t.title)}
+                    onClick={() => { setTopic(t.title); setSelectedRecommendationId(null); }}
                     style={{
                       padding: '4px 10px', borderRadius: '20px', border: 'none', cursor: 'pointer',
                       fontSize: '12px', fontWeight: 500,
@@ -425,7 +603,7 @@ export default function GuardianPage() {
                 {weakConcepts.slice(0, 3).map(c => (
                   <button
                     key={c.id}
-                    onClick={() => setTopic(c.title)}
+                    onClick={() => { setTopic(c.title); setSelectedRecommendationId(null); }}
                     style={{
                       padding: '4px 10px', borderRadius: '20px', border: 'none', cursor: 'pointer',
                       fontSize: '12px', fontWeight: 500,
@@ -447,7 +625,7 @@ export default function GuardianPage() {
             type="text"
             placeholder="What are you working on?"
             value={topic}
-            onChange={e => setTopic(e.target.value)}
+            onChange={e => { setTopic(e.target.value); setSelectedRecommendationId(null); }}
             onKeyDown={e => e.key === 'Enter' && !scheduleMode && !showContext && void startSession()}
             style={{
               width: '100%', padding: '10px 12px', background: '#0a0a12', border: '1px solid #2a2a40',
@@ -486,8 +664,10 @@ export default function GuardianPage() {
                 borderRadius: '8px', color: '#f0f0f5', fontSize: '13px', cursor: 'pointer',
               }}
             >
-              {[25, 45, 60, 90, 120].map(m => (
-                <option key={m} value={m}>{m < 60 ? `${m}m` : `${m / 60}h`}</option>
+              {durationOptions.map(m => (
+                <option key={m} value={m}>
+                  {m === Math.round(adaptiveDuration) ? `Adaptive (${formatDuration(m)})` : formatDuration(m)}
+                </option>
               ))}
             </select>
             <select
@@ -580,8 +760,9 @@ export default function GuardianPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {[
                 { label: 'Avg Focus', value: briefing.recentSessions > 0 ? `${Math.round(briefing.avgFocusScore)}` : '—', sub: briefing.recentSessions > 0 ? `${briefing.recentSessions} sessions` : 'no sessions yet' },
-                { label: 'Best Start', value: formatHour(briefing.bestStartHour), sub: 'based on history' },
-                { label: 'Energy', value: briefing.energyForecast, sub: briefing.coachingStyle + ' coaching' },
+                { label: 'Mode', value: adaptivePersonalization ? MODE_LABEL[adaptivePersonalization.mode] : '—', sub: adaptivePersonalization?.alertFatigueLevel ? `alerts ${adaptivePersonalization.alertFatigueLevel}` : 'learning' },
+                { label: 'Sprint', value: formatDuration(adaptiveDuration), sub: adaptivePersonalization?.energy ? `${adaptivePersonalization.energy} energy` : briefing.coachingStyle + ' coaching' },
+                { label: 'Best Start', value: formatHour(briefing.bestStartHour), sub: adaptivePersonalization?.nextBestFocusWindow || 'based on history' },
               ].map((row, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '12px', color: '#8888a0' }}>{row.label}</span>
@@ -608,7 +789,7 @@ export default function GuardianPage() {
           </div>
           {!briefing?.upcomingCommitments?.length ? (
             <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>
-              No upcoming sessions.<br />Use "Schedule" to plan ahead.
+              No upcoming sessions.<br />Use &quot;Schedule&quot; to plan ahead.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
