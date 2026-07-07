@@ -19,6 +19,22 @@ interface Task {
     completed_at: string | null;
     position: number;
     goal_id: number | null;
+    adaptive_score: number | null;
+    adaptive_rank: number | null;
+    adaptive_reason: string | null;
+    adaptive_moment_fit: 'high' | 'medium' | 'low' | null;
+    adaptive_estimated_minutes: number | null;
+    adaptive_energy_required: 'low' | 'medium' | 'high' | null;
+}
+
+interface TaskPersonalization {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    standupGoal: string | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    nextBestFocusWindow: string;
 }
 
 interface DayHistory {
@@ -40,6 +56,20 @@ const COLUMNS = [
     { id: 'doing', label: 'Doing', color: 'var(--accent-yellow)' },
     { id: 'done', label: 'Done', color: 'var(--accent-green)' },
 ];
+
+const MODE_LABEL: Record<TaskPersonalization['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+};
+
+const FIT_COLOR: Record<'high' | 'medium' | 'low', string> = {
+    high: 'var(--accent-green)',
+    medium: 'var(--accent-blue)',
+    low: 'var(--accent-orange)',
+};
 
 function daysUntil(due: string): number {
     const today = new Date();
@@ -115,6 +145,7 @@ function TypeBadge({ task_type }: { task_type: string }) {
 
 export default function TasksPage() {
     const [tasks, setTasks] = useState<Task[]>([]);
+    const [personalization, setPersonalization] = useState<TaskPersonalization | null>(null);
     const [newTaskCol, setNewTaskCol] = useState<string | null>(null);
     const [newTaskTitle, setNewTaskTitle] = useState('');
     const [newTaskPriority, setNewTaskPriority] = useState('medium');
@@ -129,25 +160,53 @@ export default function TasksPage() {
     const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
     const [editingTitle, setEditingTitle] = useState('');
     const [reprioritizing, setReprioritizing] = useState(false);
+    const [todayDate] = useState(() => new Date().toISOString().slice(0, 10));
+    const [yesterdayDate] = useState(() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return d.toISOString().slice(0, 10);
+    });
     const inputRef = useRef<HTMLInputElement>(null);
 
     const fetchTasks = useCallback(async () => {
         const res = await fetch('/api/tasks');
-        const data = await res.json();
+        const data = await res.json() as { tasks?: Task[]; personalization?: TaskPersonalization };
         setTasks(data.tasks || []);
+        setPersonalization(data.personalization ?? null);
     }, []);
 
-    useEffect(() => { fetchTasks(); }, [fetchTasks]);
+    useEffect(() => {
+        let cancelled = false;
+
+        fetch('/api/tasks')
+            .then(res => res.json() as Promise<{ tasks?: Task[]; personalization?: TaskPersonalization }>)
+            .then(data => {
+                if (cancelled) return;
+                setTasks(data.tasks || []);
+                setPersonalization(data.personalization ?? null);
+            })
+            .catch(error => console.error('Failed to load tasks', error));
+
+        return () => { cancelled = true; };
+    }, []);
     useEffect(() => { if (newTaskCol && inputRef.current) inputRef.current.focus(); }, [newTaskCol]);
 
-    const fetchHistory = useCallback(async () => {
-        const res = await fetch('/api/tasks?history=true&days=14');
-        const data = await res.json();
-        setHistory(data.history || []);
-        setCompletedTasks(data.completedTasks || []);
-    }, []);
+    useEffect(() => {
+        if (!showHistory) return;
 
-    useEffect(() => { if (showHistory) fetchHistory(); }, [showHistory, fetchHistory]);
+        let cancelled = false;
+
+        fetch('/api/tasks?history=true&days=14')
+            .then(res => res.json())
+            .then(data => {
+                if (cancelled) return;
+                setHistory(data.history || []);
+                setCompletedTasks(data.completedTasks || []);
+            })
+            .catch(error => console.error('Failed to load task history', error));
+
+        return () => { cancelled = true; };
+    }, [showHistory]);
 
     const addTask = async (status: string) => {
         if (!newTaskTitle.trim()) return;
@@ -218,10 +277,8 @@ export default function TasksPage() {
 
     const formatDate = (dateStr: string) => {
         const d = new Date(dateStr + 'T00:00:00');
-        const today = new Date().toISOString().slice(0, 10);
-        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-        if (dateStr === today) return 'Today';
-        if (dateStr === yesterday) return 'Yesterday';
+        if (dateStr === todayDate) return 'Today';
+        if (dateStr === yesterdayDate) return 'Yesterday';
         return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
     };
 
@@ -234,7 +291,7 @@ export default function TasksPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Tasks</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        {showHistory ? 'Day-by-day task performance' : 'Drag between columns to update status'}
+                        {showHistory ? 'Day-by-day task performance' : personalization ? `${MODE_LABEL[personalization.mode]} · ${personalization.energy} energy · ${personalization.guidance}` : 'Drag between columns to update status'}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -362,7 +419,7 @@ export default function TasksPage() {
                     }}
                 >
                     {COLUMNS.map(col => {
-                        // Tasks ordered by priority_rank then due_date (already pre-sorted by API)
+                        // Tasks ordered by adaptive score, then stored priority rank.
                         const colTasks = tasks.filter(t => t.status === col.id);
                         return (
                             <div
@@ -491,6 +548,26 @@ export default function TasksPage() {
                                                 }}>
                                                     {task.priority_reason}
                                                 </p>
+                                            )}
+
+                                            {task.adaptive_reason && (
+                                                <div
+                                                    className="text-xs mt-1.5 px-2 py-1 rounded"
+                                                    style={{
+                                                        background: 'rgba(99,102,241,0.08)',
+                                                        border: '1px solid rgba(99,102,241,0.16)',
+                                                        color: 'var(--text-secondary)',
+                                                        lineHeight: 1.35,
+                                                    }}
+                                                    title={`Adaptive score ${task.adaptive_score ?? 'n/a'}${task.adaptive_rank ? ` · rank ${task.adaptive_rank}` : ''}`}
+                                                >
+                                                    <span style={{ color: task.adaptive_moment_fit ? FIT_COLOR[task.adaptive_moment_fit] : 'var(--text-primary)', fontWeight: 700 }}>
+                                                        {task.adaptive_moment_fit ? `${task.adaptive_moment_fit} fit` : 'Now'}
+                                                    </span>
+                                                    {' '}· {task.adaptive_reason}
+                                                    {task.adaptive_estimated_minutes ? ` · ${task.adaptive_estimated_minutes}m` : ''}
+                                                    {task.adaptive_energy_required ? ` · ${task.adaptive_energy_required} energy` : ''}
+                                                </div>
                                             )}
 
                                             {/* Deadline badge */}

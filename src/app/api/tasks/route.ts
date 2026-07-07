@@ -4,6 +4,21 @@ import { sanitizeText } from '@/lib/sanitize';
 import { propagateMastery } from '@/lib/graph';
 import { autoLinkTaskToGoal } from '@/lib/task-auto-linker';
 import { triggerPrioritize } from '@/lib/task-priority-ranker';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
+import { getTaskTimeProgress } from '@/lib/task-time-sessions';
+import { getAdaptiveRewardDecision, getAdaptiveTaskRewardBase } from '@/lib/adaptive-rewards';
+import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
+import { buildAdaptiveTaskDefaults } from '@/lib/adaptive-task-defaults';
+
+type TaskRow = Record<string, unknown> & {
+    id: number;
+    status: string;
+    priority_rank: number | null;
+    position: number | null;
+    created_at: string;
+    estimated_minutes?: number | null;
+};
 
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
@@ -72,9 +87,54 @@ export async function GET(request: NextRequest) {
         }
 
         query += ' ORDER BY CASE WHEN priority_rank IS NULL THEN 1 ELSE 0 END, priority_rank ASC, position ASC, created_at DESC';
-        const tasks = db.prepare(query).all(...params);
+        const rows = db.prepare(query).all(...params) as TaskRow[];
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'tasks',
+            maxInsights: 2,
+            includeMemoryFacts: 4,
+        });
+        const recommendations = getAdaptiveTaskRecommendations(personalization, 50);
+        const recommendationById = new Map(recommendations.map((task, index) => [task.id, { ...task, adaptiveRank: index + 1 }]));
 
-        return NextResponse.json({ tasks });
+        const tasks = rows.map(task => {
+            const recommendation = recommendationById.get(task.id);
+            return {
+                ...task,
+                adaptive_score: recommendation?.score ?? null,
+                adaptive_rank: recommendation?.adaptiveRank ?? null,
+                adaptive_reason: recommendation?.reason ?? null,
+                adaptive_moment_fit: recommendation?.momentFit ?? null,
+                adaptive_estimated_minutes: recommendation?.estimatedMinutes ?? null,
+                adaptive_energy_required: recommendation?.energyRequired ?? null,
+                time_progress: getTaskTimeProgress(task.id),
+            };
+        }).sort((a, b) => {
+            const activeA = ['todo', 'doing'].includes(String(a.status));
+            const activeB = ['todo', 'doing'].includes(String(b.status));
+            if (activeA && activeB) {
+                const scoreA = Number(a.adaptive_score ?? -Infinity);
+                const scoreB = Number(b.adaptive_score ?? -Infinity);
+                if (scoreA !== scoreB) return scoreB - scoreA;
+            }
+            if (activeA !== activeB) return activeA ? -1 : 1;
+            const rankA = Number(a.priority_rank ?? Number.MAX_SAFE_INTEGER);
+            const rankB = Number(b.priority_rank ?? Number.MAX_SAFE_INTEGER);
+            if (rankA !== rankB) return rankA - rankB;
+            return Number(a.position ?? 0) - Number(b.position ?? 0);
+        });
+
+        return NextResponse.json({
+            tasks,
+            personalization: {
+                mode: personalization.moment.mode,
+                guidance: personalization.moment.guidance,
+                energy: personalization.userState.energy,
+                mood: personalization.userState.mood,
+                standupGoal: personalization.userState.standupGoal,
+                alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+                nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+            },
+        });
     } catch (error) {
         console.error('Tasks GET error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -96,6 +156,22 @@ export async function POST(request: NextRequest) {
         // Enforce simplified status model
         const safeStatus = ['todo', 'doing', 'done'].includes(status) ? status : 'todo';
         const safeType = ['task', 'assignment', 'exam'].includes(task_type) ? task_type : 'task';
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'tasks',
+            maxInsights: 2,
+            includeMemoryFacts: 4,
+        });
+        const rawEstimatedMinutes = Number.parseInt(String(body.estimated_minutes ?? body.target_minutes ?? body.durationMinutes ?? ''), 10);
+        const hasExplicitEstimate = Number.isFinite(rawEstimatedMinutes) && rawEstimatedMinutes > 0;
+        const defaults = buildAdaptiveTaskDefaults({
+            title: safeTitle,
+            taskType: safeType,
+            dueDate: due_date || null,
+            explicitPriority: priority,
+            explicitEstimateMinutes: hasExplicitEstimate ? rawEstimatedMinutes : undefined,
+            explicitEnergyRequired: body.energy_required,
+            snapshot: personalization,
+        });
 
         const db = getDb();
 
@@ -104,8 +180,8 @@ export async function POST(request: NextRequest) {
         ).get(safeStatus) as { next_pos: number };
 
         const stmt = db.prepare(`
-            INSERT INTO tasks (title, description, status, due_date, due_time, course, task_type, position, goal_id, priority)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (title, description, status, due_date, due_time, course, task_type, position, goal_id, priority, estimated_minutes, energy_required, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = stmt.run(
@@ -118,7 +194,10 @@ export async function POST(request: NextRequest) {
             safeType,
             maxPos.next_pos,
             goal_id || null,
-            priority || 'medium'
+            defaults.priority,
+            defaults.estimatedMinutes,
+            defaults.energyRequired,
+            safeStatus === 'done' ? new Date().toISOString() : null
         );
 
         const taskId = Number(result.lastInsertRowid);
@@ -129,7 +208,15 @@ export async function POST(request: NextRequest) {
         }
         triggerPrioritize();
 
-        return NextResponse.json({ id: taskId }, { status: 201 });
+        return NextResponse.json({
+            id: taskId,
+            estimated_minutes: defaults.estimatedMinutes,
+            priority: defaults.priority,
+            energy_required: defaults.energyRequired,
+            adaptive_reason: hasExplicitEstimate
+                ? defaults.reason
+                : `${defaults.reason}; selected as the initial time target`,
+        }, { status: 201 });
     } catch (error) {
         console.error('Tasks POST error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -173,15 +260,25 @@ export async function PATCH(request: NextRequest) {
             if (safeStatus === 'done') {
                 updates.push("completed_at = datetime('now')");
                 try {
-                    const task = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(id) as { priority: string };
-                    let coins = 20;
-                    if (task) {
-                        if (task.priority === 'low') coins = 10;
-                        if (task.priority === 'high') coins = 40;
-                        if (task.priority === 'critical') coins = 100;
+                    const task = db.prepare('SELECT title, status, priority, estimated_minutes FROM tasks WHERE id = ?').get(id) as { title: string; status: string; priority: string; estimated_minutes: number | null };
+                    if (task?.status !== 'done') {
+                        const snapshot = buildPersonalizationSnapshot({ surface: 'rewards', maxInsights: 2, includeMemoryFacts: 3 });
+                        const rewardBase = getAdaptiveTaskRewardBase({
+                            title: task?.title ?? `Task ${id}`,
+                            priority: task?.priority,
+                            targetMinutes: task?.estimated_minutes ?? getAdaptiveSessionMinutes(),
+                            snapshot,
+                        });
+                        const reward = getAdaptiveRewardDecision({
+                            action: 'task_auto_complete',
+                            baseCoins: rewardBase.baseCoins,
+                            priority: task?.priority,
+                            subject: task?.title ? `${task.title} (manual completion; ${rewardBase.reason})` : `Task ${id} (${rewardBase.reason})`,
+                            snapshot,
+                        });
+                        db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason);
+                        try { propagateMastery(id, null); } catch { /* non-critical */ }
                     }
-                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(coins, `Completed Task (ID: ${id})`);
-                    try { propagateMastery(id, null); } catch { /* non-critical */ }
                 } catch (e) { console.error('Error awarding task coins:', e); }
             } else {
                 updates.push('completed_at = NULL');
@@ -197,6 +294,15 @@ export async function PATCH(request: NextRequest) {
         if (goal_id !== undefined) { updates.push('goal_id = ?'); params.push(goal_id); }
         if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
         if (priority_rank !== undefined) { updates.push('priority_rank = ?'); params.push(priority_rank); }
+        if (body.estimated_minutes !== undefined || body.target_minutes !== undefined) {
+            const rawEstimatedMinutes = Number.parseInt(String(body.estimated_minutes ?? body.target_minutes), 10);
+            if (!Number.isFinite(rawEstimatedMinutes) || rawEstimatedMinutes <= 0) {
+                return NextResponse.json({ error: 'estimated_minutes must be a positive number' }, { status: 400 });
+            }
+            updates.push('estimated_minutes = ?');
+            params.push(Math.min(720, rawEstimatedMinutes));
+            needsRerank = true;
+        }
 
         if (updates.length === 0) {
             return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
