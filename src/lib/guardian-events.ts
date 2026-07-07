@@ -8,6 +8,10 @@ const GUARDIAN_EVENT_TYPES: GuardianEventType[] = [
   'override_request',
   'override_decision',
   'session_state',
+  'screen_vision',
+  'native_context',
+  'guidance_request',
+  'guidance_response',
 ];
 
 export function isGuardianEventType(value: unknown): value is GuardianEventType {

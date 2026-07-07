@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       goalId: goalId ?? null,
       taskId: taskId ?? null,
       intendedStartAt,
-      plannedMinutes: plannedMinutes ?? 60,
+      plannedMinutes,
       source: source ?? 'dashboard',
     });
 

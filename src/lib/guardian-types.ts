@@ -25,7 +25,10 @@ export type GuardianEventType =
   | 'override_request'
   | 'override_decision'
   | 'session_state'
-  | 'screen_vision';
+  | 'screen_vision'
+  | 'native_context'
+  | 'guidance_request'
+  | 'guidance_response';
 
 export interface GuardianEvent {
   sessionId: string;
@@ -88,8 +91,20 @@ export interface GuardianCommand {
   urlPattern?: string;
   targetDisplay?: string;
   ttlSeconds?: number;
+  interventionPolicy?: GuardianInterventionPolicy;
   sourceEventType?: GuardianDecisionSource;
   createdAt: number;
+}
+
+export interface GuardianInterventionPolicy {
+  mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+  headline: string;
+  tone: 'firm' | 'gentle' | 'urgent';
+  contextLine: string;
+  overridePrompt: string;
+  overrideOptions: Array<{ minutes: number; label: string; default?: boolean }>;
+  minReasonChars: number;
+  frictionSeconds: number;
 }
 
 export interface GuardianDecision {
@@ -393,4 +408,25 @@ export interface DayBriefing {
   openingMessage: string;
   recentReflections: GuardianSessionReflection[];
   upcomingCommitments: SoftWatchCommitment[];
+  personalization?: {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    recommendedSessionMinutes: number;
+    energy: 'low' | 'medium' | 'high';
+    mood: 'low' | 'medium' | 'high' | null;
+    standupGoal: string | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    recentAlerts: number;
+    nextBestFocusWindow: string;
+  };
+  adaptiveTasks?: Array<{
+    id: number;
+    title: string;
+    priority: string;
+    score: number;
+    reason: string;
+    momentFit: 'high' | 'medium' | 'low';
+    estimatedMinutes: number | null;
+    energyRequired: 'low' | 'medium' | 'high' | null;
+  }>;
 }

@@ -24,12 +24,13 @@ import {
   SOFT_WATCH_KEYBOARD,
   buildClassifyKeyboard,
 } from './telegram';
-import { createCalendarEvent, updateCalendarEvent, isCalendarConfigured } from './google-calendar';
+import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent, isCalendarConfigured } from './google-calendar';
 import {
   ActiveOverride,
   GuardianCommand,
   GuardianDecision,
   GuardianDecisionSource,
+  GuardianInterventionPolicy,
   GuardianEvent,
   GuardianPolicyBundle,
   GuardianStartRequest,
@@ -38,6 +39,11 @@ import {
   OverrideRequest,
   SoftWatchCommitment,
 } from './guardian-types';
+import { buildPersonalizationSnapshot } from './personalization-context';
+import { buildAdaptiveHabitPlans, type AdaptiveHabitInput } from './adaptive-habit-plan';
+import { getAutomaticityScore, getStreakCount } from './scoring';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // guardian-runtime is the single owner of live session state.
 // Routes ingest input and render output, but do not mutate session state directly.
@@ -49,6 +55,58 @@ const globalGuardian = global as unknown as {
   softWatchCheckerInterval?: ReturnType<typeof setInterval>;
   calendarEventIds?: Map<string, string>;
 };
+
+function adaptiveFocusQuality(score: number): {
+  quality: 'excellent' | 'good' | 'neutral' | 'poor';
+  label: 'Excellent' | 'Good' | 'Fair' | 'Poor';
+  calendarColorId: string;
+  reason: string;
+} {
+  const bands = getAdaptiveBands();
+  if (score >= bands.focusExcellent) {
+    return {
+      quality: 'excellent',
+      label: 'Excellent',
+      calendarColorId: '2',
+      reason: `${Math.round(score)} reached learned excellent band ${Math.round(bands.focusExcellent)}+`,
+    };
+  }
+  if (score >= bands.focusGood) {
+    return {
+      quality: 'good',
+      label: 'Good',
+      calendarColorId: '2',
+      reason: `${Math.round(score)} reached learned good band ${Math.round(bands.focusGood)}+`,
+    };
+  }
+  if (score >= bands.focusNeutral) {
+    return {
+      quality: 'neutral',
+      label: 'Fair',
+      calendarColorId: '5',
+      reason: `${Math.round(score)} reached learned neutral band ${Math.round(bands.focusNeutral)}+`,
+    };
+  }
+  return {
+    quality: 'poor',
+    label: 'Poor',
+    calendarColorId: '11',
+    reason: `${Math.round(score)} below learned neutral band ${Math.round(bands.focusNeutral)}`,
+  };
+}
+
+export function getAdaptiveVisionAlignmentThresholds(): {
+  deepFlowAlignmentThreshold: number;
+  offTopicAlignmentThreshold: number;
+  productiveScatterAlignmentThreshold: number;
+} {
+  const bands = getAdaptiveBands();
+  return {
+    deepFlowAlignmentThreshold: bands.focusGood,
+    offTopicAlignmentThreshold: bands.focusPoor,
+    productiveScatterAlignmentThreshold: bands.focusNeutral,
+  };
+}
 
 const guardianSessions = globalGuardian.guardianSessions || new Map<string, GuardianState>();
 const guardianIntervals = globalGuardian.guardianIntervals || new Map<string, ReturnType<typeof setInterval>>();
@@ -367,14 +425,15 @@ function persistSessionSummary(session: GuardianState) {
     let neutralEvents = 0;
 
     for (const event of session.tabEventLog) {
-      if (event.type !== 'tab') continue;
-      if (classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'distraction') {
+      if (!isContinuityEvent(event)) continue;
+      const classification = getEventClassification(session, event);
+      if (classification === 'distraction') {
         distractionEvents += 1;
-        const domain = getDomain(event.url);
+        const domain = getEventDomainKey(event);
         if (domain) {
           domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
         }
-      } else if (classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'on_topic') {
+      } else if (classification === 'on_topic') {
         productiveEvents += 1;
       } else {
         neutralEvents += 1;
@@ -455,13 +514,10 @@ async function generateSessionReflection(session: GuardianState) {
     const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
     const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
     const distractionCount = session.tabEventLog.filter(
-      (e) => e.type === 'tab' && classifyUrlForGuardian(e.url, session.sessionClassificationCache, true) === 'distraction'
+      (e) => isContinuityEvent(e) && getEventClassification(session, e) === 'distraction'
     ).length;
 
-    const focusQuality =
-      averageFocusScore >= 85 ? 'excellent' :
-        averageFocusScore >= 70 ? 'good' :
-          averageFocusScore >= 55 ? 'neutral' : 'poor';
+    const focusQuality = adaptiveFocusQuality(averageFocusScore);
 
     const ai = getGenAI();
     if (!ai) return;
@@ -490,7 +546,7 @@ ${uilContext}`;
         reflection_text = excluded.reflection_text,
         focus_quality = excluded.focus_quality,
         generated_at = datetime('now', 'localtime')
-    `).run(session.sessionId, reflectionText, focusQuality);
+    `).run(session.sessionId, reflectionText, focusQuality.quality);
   } catch (error) {
     console.error('[GuardianRuntime] Failed to generate session reflection', error);
   }
@@ -614,6 +670,39 @@ function getAttentionCategory(session: GuardianState, url: string | undefined) {
   return 'ambiguous_context' as const;
 }
 
+function isContinuityEvent(event: GuardianEvent) {
+  return event.type === 'tab' || event.type === 'native_context';
+}
+
+function classificationFromNativeCategory(category: unknown): 'on_topic' | 'distraction' | 'unknown' {
+  if (category === 'distraction') return 'distraction';
+  if (category === 'deep_work' || category === 'shallow_work' || category === 'communication') return 'on_topic';
+  return 'unknown';
+}
+
+function getEventClassification(session: GuardianState, event: GuardianEvent): 'on_topic' | 'distraction' | 'unknown' {
+  const payloadClassification = event.payload?.classification;
+  if (payloadClassification === 'on_topic' || payloadClassification === 'distraction' || payloadClassification === 'unknown') {
+    return payloadClassification;
+  }
+  if (event.type === 'native_context') {
+    return classificationFromNativeCategory(event.payload?.category);
+  }
+  return classifyUrlForGuardian(event.url, session.sessionClassificationCache, true);
+}
+
+function getEventDomainKey(event: GuardianEvent): string | null {
+  if (event.domain) return event.domain;
+  if (event.type === 'native_context' && typeof event.payload?.appInFocus === 'string' && event.payload.appInFocus.trim()) {
+    return `native:${event.payload.appInFocus.trim().toLowerCase()}`;
+  }
+  return getDomain(event.url) ?? null;
+}
+
+function nativeAppUrl(app: string) {
+  return `native://${encodeURIComponent(app.trim() || 'Unknown App')}`;
+}
+
 function emitExpiredOverrideCommands(session: GuardianState) {
   const expired = pruneExpiredOverrides(session);
   for (const override of expired) {
@@ -625,6 +714,7 @@ function emitExpiredOverrideCommands(session: GuardianState) {
       explainability: `The temporary exception for ${override.urlPattern} expired, so the guardian restored blocking automatically.`,
       urlPattern: override.urlPattern,
       targetDisplay: session.targetTitle,
+      interventionPolicy: buildInterventionPolicy(session, 'override_expired'),
       sourceEventType: 'override_decision',
       createdAt: Date.now(),
     });
@@ -637,17 +727,135 @@ function emitExpiredOverrideCommands(session: GuardianState) {
   }
 }
 
+function buildInterventionPolicy(session: GuardianState, source: 'block' | 'override_expired'): GuardianInterventionPolicy {
+  const focusScore = session.focusScoreHistory.at(-1) ?? null;
+  const elapsedMinutes = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'intervention',
+    maxInsights: 2,
+    includeMemoryFacts: 3,
+    activeSession: {
+      sessionId: session.sessionId,
+      targetTitle: session.targetTitle,
+      focusScore,
+      elapsedMinutes,
+    },
+  });
+
+  const mode = snapshot.moment.mode;
+  const alertFatigue = snapshot.feedback.alertFatigueLevel;
+  const baseOptions = [
+    { minutes: 3, label: '3 min check' },
+    { minutes: 5, label: '5 min source check', default: true },
+    { minutes: 10, label: '10 min bounded detour' },
+  ];
+
+  if (source === 'override_expired') {
+    return {
+      mode,
+      headline: 'Override window ended',
+      tone: 'firm',
+      contextLine: `Back to ${session.targetTitle}. ${snapshot.moment.guidance}`,
+      overridePrompt: 'If this still matters, explain the exact next step before asking again.',
+      overrideOptions: baseOptions,
+      minReasonChars: alertFatigue === 'high' ? 18 : 14,
+      frictionSeconds: mode === 'recovery' ? 2 : 5,
+    };
+  }
+
+  if (mode === 'recovery' || snapshot.userState.energy === 'low') {
+    return {
+      mode,
+      headline: 'Choose the smallest useful move',
+      tone: 'gentle',
+      contextLine: `Low energy today. Keep the session protected without turning this into a fight.`,
+      overridePrompt: 'If this helps the task, name the one concrete thing you need from it.',
+      overrideOptions: baseOptions,
+      minReasonChars: 8,
+      frictionSeconds: 2,
+    };
+  }
+
+  if (mode === 'deadline_pressure') {
+    return {
+      mode,
+      headline: 'Deadline capacity is protected',
+      tone: 'urgent',
+      contextLine: snapshot.userState.standupGoal
+        ? `Today is anchored on: ${snapshot.userState.standupGoal}`
+        : 'Use exceptions only for direct deadline relief.',
+      overridePrompt: 'Explain how this directly reduces the current deadline risk.',
+      overrideOptions: [
+        { minutes: 3, label: '3 min verify', default: true },
+        { minutes: 5, label: '5 min reference' },
+        { minutes: 10, label: '10 min only if essential' },
+      ],
+      minReasonChars: 14,
+      frictionSeconds: 6,
+    };
+  }
+
+  if (mode === 'protect_focus') {
+    return {
+      mode,
+      headline: 'Protect this focus block',
+      tone: 'firm',
+      contextLine: `Focus is worth preserving right now. ${snapshot.moment.guidance}`,
+      overridePrompt: 'Explain why this is part of the current session, not a context switch.',
+      overrideOptions: [
+        { minutes: 5, label: '5 min task check', default: true },
+        { minutes: 10, label: '10 min reference' },
+        { minutes: 15, label: '15 min if necessary' },
+      ],
+      minReasonChars: 16,
+      frictionSeconds: 10,
+    };
+  }
+
+  if (mode === 'planning') {
+    return {
+      mode,
+      headline: 'Keep tonight clean',
+      tone: 'gentle',
+      contextLine: 'This is a planning/cleanup window, so detours should stay short and intentional.',
+      overridePrompt: 'Explain whether this helps planning, review, or setup for tomorrow.',
+      overrideOptions: [
+        { minutes: 5, label: '5 min review', default: true },
+        { minutes: 10, label: '10 min cleanup' },
+        { minutes: 15, label: '15 min planning' },
+      ],
+      minReasonChars: 10,
+      frictionSeconds: 3,
+    };
+  }
+
+  return {
+    mode,
+    headline: 'Intervention',
+    tone: 'firm',
+    contextLine: snapshot.moment.guidance,
+    overridePrompt: 'If this is needed, explain the specific session-relevant reason.',
+    overrideOptions: [
+      { minutes: 5, label: '5 min check' },
+      { minutes: 10, label: '10 min override', default: true },
+      { minutes: 15, label: '15 min override' },
+    ],
+    minReasonChars: alertFatigue === 'high' ? 14 : 10,
+    frictionSeconds: alertFatigue === 'high' ? 6 : 4,
+  };
+}
+
 function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianDecision {
   const focusScore = session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? 100;
   const history = session.focusScoreHistory;
   const recentEvents = session.tabEventLog.filter((event) => event.timestamp >= Date.now() - 300_000);
-  const tabSwitchesLast5Min = recentEvents.filter((event) => event.type === 'tab').length;
-  const distractionRevisits = recentEvents.filter((event) => event.type === 'tab' && classifyUrlForGuardian(event.url, session.sessionClassificationCache, true) === 'distraction').length;
+  const tabSwitchesLast5Min = recentEvents.filter((event) => isContinuityEvent(event)).length;
+  const distractionRevisits = recentEvents.filter((event) => isContinuityEvent(event) && getEventClassification(session, event) === 'distraction').length;
   const idleSeconds = recentEvents
     .filter((event) => event.type === 'idle')
     .reduce((sum, event) => sum + (event.idleSeconds || 0), 0);
   const recentDwells = recentEvents
-    .filter((event) => event.type === 'tab' && typeof event.dwellSeconds === 'number')
+    .filter((event) => isContinuityEvent(event) && typeof event.dwellSeconds === 'number')
     .map((event) => event.dwellSeconds || 0);
   const avgRecentDwell = recentDwells.length > 0 ? recentDwells.reduce((sum, dwell) => sum + dwell, 0) / recentDwells.length : 0;
   const cooldownPassed = decisionCooldownPassed(session, policy);
@@ -659,11 +867,15 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const screenCtx = session.screenContext;
   const visionDepth = screenCtx?.engagementDepth ?? 'unknown';
   const visionAlignment = screenCtx?.taskAlignmentAvg ?? null;
-  const visionTrend = screenCtx?.visionTrend ?? 'unknown';
   const visionObsCount = screenCtx?.recentObservations.length ?? 0;
   const hasReliableVision = visionObsCount >= 3; // enough observations to trust
+  const {
+    deepFlowAlignmentThreshold,
+    offTopicAlignmentThreshold,
+    productiveScatterAlignmentThreshold,
+  } = getAdaptiveVisionAlignmentThresholds();
 
-  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}, visionDepth=${visionDepth}, visionAlignment=${visionAlignment ?? 'none'}`;
+  const explainabilityBase = `score=${focusScore}, tabSwitchesLast5Min=${tabSwitchesLast5Min}, distractionRevisits=${distractionRevisits}, idleSeconds=${idleSeconds}, avgRecentDwell=${Math.round(avgRecentDwell)}, attentionCategory=${attentionCategory}, energyComposite=${session.energyComposite ?? 'unknown'}, visionDepth=${visionDepth}, visionAlignment=${visionAlignment ?? 'none'}, adaptiveVisionBands=good:${Math.round(deepFlowAlignmentThreshold)} neutral:${Math.round(productiveScatterAlignmentThreshold)} poor:${Math.round(offTopicAlignmentThreshold)}`;
 
   // ── Vision-aware flow silence ────────────────────────────────────────────────
   // If vision confirms active_creation with high alignment, the user is in a genuine
@@ -671,7 +883,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   if (
     hasReliableVision &&
     visionDepth === 'active_creation' &&
-    (visionAlignment ?? 0) >= 70 &&
+    (visionAlignment ?? 0) >= deepFlowAlignmentThreshold &&
     focusScore >= (policy.thresholds.flowSilenceThreshold ?? 80)
   ) {
     const recentAllCreation = screenCtx!.recentObservations
@@ -692,7 +904,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   if (
     hasReliableVision &&
     visionDepth === 'distraction' &&
-    (visionAlignment ?? 100) <= 20 &&
+    (visionAlignment ?? 100) <= offTopicAlignmentThreshold &&
     cooldownPassed
   ) {
     const lastDistraction = screenCtx!.recentObservations.at(-1);
@@ -755,6 +967,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
           explainability: 'You revisited a distraction target repeatedly during a protected study session.',
           targetDisplay: session.targetTitle,
           urlPattern: getDomain(session.currentUrl),
+          interventionPolicy: buildInterventionPolicy(session, 'block'),
           createdAt: Date.now(),
         },
       };
@@ -774,6 +987,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
           explainability: 'The guardian saw repeated rapid switches into a distraction target.',
           targetDisplay: session.targetTitle,
           urlPattern: getDomain(session.currentUrl),
+          interventionPolicy: buildInterventionPolicy(session, 'block'),
           createdAt: Date.now(),
         },
       };
@@ -786,7 +1000,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
     const productiveScatter =
       hasReliableVision &&
       visionDepth === 'active_learning' &&
-      (visionAlignment ?? 0) >= 55;
+      (visionAlignment ?? 0) >= productiveScatterAlignmentThreshold;
 
     if (!productiveScatter) {
       return {
@@ -1000,7 +1214,6 @@ export function adjustGuardianSessionDuration(sessionId: string, newDurationMinu
     // Sync to Google Calendar if this session was launched from a soft watch commitment
     const linkedCommitment = Array.from(softWatchMap.values()).find(c => c.lockedInSessionId === sessionId);
     if (linkedCommitment && linkedCommitment.calendarEventId) {
-      const { updateCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
       const newEndTime = new Date(session.startedAt + newDurationMinutes * 60_000);
       updateCalendarEvent(linkedCommitment.calendarEventId, { endTime: newEndTime }).catch(() => {});
     }
@@ -1023,7 +1236,12 @@ export function getActiveGuardianSession(): GuardianState | null {
 
 export function startGuardianSession(input: GuardianStartRequest): GuardianState {
   const sessionId = randomId('session');
-  const durationMinutes = input.durationMinutes || 60;
+  const profile = getIntelligenceProfile();
+  const learnedDuration =
+    profile.adaptiveThresholds?.sessionDurationSweetSpot ||
+    profile.optimalSessionMinutes ||
+    60;
+  const durationMinutes = input.durationMinutes || Math.max(15, Math.min(180, Math.round(learnedDuration)));
   const targetTitle = input.conceptNodeName || input.goalTitle || input.topic || 'Deep Work';
   const briefing = getDayBriefing('default');
 
@@ -1200,24 +1418,8 @@ export function endGuardianSession(sessionId: string) {
     logGoalTime(parseInt(session.goalId, 10) || null, sessionId, elapsedMinutes);
   }
 
-  // Insert pending session_completion for post-session review
-  try {
-    const db = getDb();
-    // Look up task by matching title if taskId not explicitly set on session
-    let taskId: number | null = null;
-    if (session.conceptNodeName) {
-      const task = db.prepare(
-        `SELECT id FROM tasks WHERE title = ? AND status NOT IN ('done', 'cancelled') LIMIT 1`
-      ).get(session.conceptNodeName) as { id: number } | undefined;
-      taskId = task?.id ?? null;
-    }
-    db.prepare(`
-      INSERT INTO session_completions (session_id, task_id, status)
-      VALUES (?, ?, 'pending')
-    `).run(sessionId, taskId);
-  } catch (err) {
-    console.error('[guardian] session_completions insert failed:', err);
-  }
+  // Task completion is now driven by linked time targets in session-task-sync.
+  // Avoid creating generic pending reviews for every focus session.
 
   // Write time-based habit checkins from this session
   try {
@@ -1225,16 +1427,38 @@ export function endGuardianSession(sessionId: string) {
     const today = new Date().toISOString().slice(0, 10);
     const windowStart = new Date(session.startedAt).toISOString();
     const windowEnd = new Date().toISOString();
-    const timeHabits = db.prepare(
-      `SELECT id, goal_target FROM habits WHERE archived = 0 AND goal_metric = 'time'`
-    ).all() as { id: number; goal_target: number }[];
+    const timeHabits = db.prepare(`
+      SELECT h.id, h.name, h.icon, h.goal_metric, h.goal_target,
+             CASE WHEN hc.id IS NOT NULL THEN hc.completed ELSE 0 END as checked_today,
+             COALESCE(hc.value, 0) as today_value,
+             g.title as goal_title,
+             (SELECT COUNT(*) FROM habit_checkins WHERE habit_id = h.id AND completed = 1) as total_checkins
+      FROM habits h
+      LEFT JOIN goals g ON g.id = h.goal_id
+      LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?
+      WHERE h.archived = 0 AND h.goal_metric = 'time'
+    `).all(today) as AdaptiveHabitInput[];
+
+    for (const habit of timeHabits) {
+      const checkins = db.prepare('SELECT date FROM habit_checkins WHERE habit_id = ? AND completed = 1 ORDER BY date DESC').all(habit.id) as { date: string }[];
+      habit.current_streak = getStreakCount(checkins.map(c => c.date));
+      habit.automaticity_score = getAutomaticityScore(habit.current_streak);
+    }
+
+    const habitPersonalization = buildPersonalizationSnapshot({
+      surface: 'habits',
+      maxInsights: 2,
+      includeMemoryFacts: 4,
+    });
+    const adaptivePlans = buildAdaptiveHabitPlans(timeHabits, habitPersonalization);
 
     for (const habit of timeHabits) {
       const existing = db.prepare(
         `SELECT id, value FROM habit_checkins WHERE habit_id = ? AND date = ?`
       ).get(habit.id, today) as { id: number; value: number } | undefined;
       const newValue = (existing?.value ?? 0) + elapsedMinutes;
-      const completed = newValue >= habit.goal_target ? 1 : 0;
+      const todayTarget = adaptivePlans.get(habit.id)?.adaptive_today_target ?? habit.goal_target ?? 1;
+      const completed = newValue >= todayTarget ? 1 : 0;
       if (existing) {
         db.prepare(
           `UPDATE habit_checkins SET value = ?, completed = ?, window_end = ?, session_id = ? WHERE id = ?`
@@ -1271,8 +1495,8 @@ export function endGuardianSession(sessionId: string) {
     } catch { /* non-fatal */ }
 
     // Build a brief score breakdown from session event log
-    const allTabEvents = session.tabEventLog.filter(e => e.type === 'tab');
-    const distractionEvents = allTabEvents.filter(e => classifyUrlForGuardian(e.url, session.sessionClassificationCache, true) === 'distraction');
+    const allTabEvents = session.tabEventLog.filter(e => isContinuityEvent(e));
+    const distractionEvents = allTabEvents.filter(e => getEventClassification(session, e) === 'distraction');
     const totalSwitches = allTabEvents.length;
     const totalDistracted = distractionEvents.length;
     const breakdownParts: string[] = [];
@@ -1333,12 +1557,12 @@ export function endGuardianSession(sessionId: string) {
     // Update calendar event with actual duration and focus score
     const eventId = calendarEventIds.get(sessionId);
     if (eventId && isCalendarConfigured()) {
-      const scoreLabel = avgFocusScore >= 85 ? 'Excellent' : avgFocusScore >= 70 ? 'Good' : avgFocusScore >= 55 ? 'Fair' : 'Poor';
+      const focusQuality = adaptiveFocusQuality(avgFocusScore);
       await updateCalendarEvent(eventId, {
-        summary: `📚 ${session.targetTitle} — ${scoreLabel} focus (${avgFocusScore}/100)`,
-        description: `LifeOS Guardian session\nElapsed: ${elapsedMinutes} min\nFocus score: ${avgFocusScore}/100\nBlocks: ${session.blockedCount}\n\n${reflection ?? ''}`.trim(),
+        summary: `📚 ${session.targetTitle} — ${focusQuality.label} focus (${avgFocusScore}/100)`,
+        description: `LifeOS Guardian session\nElapsed: ${elapsedMinutes} min\nFocus score: ${avgFocusScore}/100\nAdaptive quality: ${focusQuality.reason}\nBlocks: ${session.blockedCount}\n\n${reflection ?? ''}`.trim(),
         endTime: new Date(),
-        colorId: avgFocusScore >= 70 ? '2' : '11', // sage=good, tomato=poor
+        colorId: focusQuality.calendarColorId,
       });
       calendarEventIds.delete(sessionId);
     }
@@ -1385,8 +1609,8 @@ export function endGuardianSession(sessionId: string) {
 
     const domains = [...new Set(
       session.tabEventLog
-        .filter(e => e.domain)
-        .map(e => e.domain as string)
+        .map(e => getEventDomainKey(e))
+        .filter((domain): domain is string => !!domain)
     )];
 
     await extractMemoryFromSession({
@@ -1523,6 +1747,35 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
       attentionCategory: event.url ? getAttentionCategory(session, event.url) : undefined,
     },
   };
+
+  if (normalized.type === 'native_context') {
+    const payload = normalized.payload ?? {};
+    const app = typeof payload.appInFocus === 'string' && payload.appInFocus.trim()
+      ? payload.appInFocus.trim()
+      : 'Unknown App';
+    const title = normalized.title || (typeof payload.windowTitle === 'string' ? payload.windowTitle : '') || app;
+    const classification = classificationFromNativeCategory(payload.category);
+
+    normalized.url = normalized.url || nativeAppUrl(app);
+    normalized.domain = normalized.domain || `native:${app.toLowerCase()}`;
+    normalized.title = title;
+    normalized.payload = {
+      ...payload,
+      appInFocus: app,
+      windowTitle: title,
+      classification,
+      attentionCategory: classification === 'on_topic'
+        ? 'productive_support'
+        : classification === 'distraction'
+          ? 'blocked_distractor'
+          : 'ambiguous_context',
+    };
+
+    session.currentUrl = normalized.url;
+    session.currentTitle = title;
+    session.currentClassification = classification;
+    session.currentTabStartedAt = normalized.timestamp;
+  }
 
   if (normalized.type === 'tab') {
     session.currentUrl = normalized.url || '';
@@ -1914,9 +2167,77 @@ export function seedGuardianBaselineEval() {
 
 // ─── SOFT_WATCH ──────────────────────────────────────────────────────────────
 
-const SOFT_WATCH_REMINDER_WINDOW_MS = 5 * 60_000;    // remind within 5 min of intended start
-const SOFT_WATCH_CHECKIN_DELAY_MS = 30 * 60_000;     // check-in 30 min after intended start
-const SOFT_WATCH_EXPIRE_MS = 60 * 60_000;             // expire 60 min after intended start
+interface SoftWatchPolicy {
+  reminderWindowMs: number;
+  checkInDelayMs: number;
+  expireMs: number;
+  tone: 'gentle' | 'normal' | 'direct';
+  reason: string;
+}
+
+export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plannedMinutes' | 'targetTitle'>): SoftWatchPolicy {
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'scheduler',
+      maxInsights: 2,
+      includeMemoryFacts: 3,
+    });
+    const plannedMinutes = Math.max(5, Number(commitment.plannedMinutes || getAdaptiveSessionMinutes()));
+    const lowEnergy = snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low';
+    const deadlinePressure = snapshot.moment.mode === 'deadline_pressure' || snapshot.today.overdueTasks > 0;
+    const alertFatigue = snapshot.feedback.alertFatigueLevel;
+
+    if (deadlinePressure) {
+      return {
+        reminderWindowMs: 8 * 60_000,
+        checkInDelayMs: Math.max(10, Math.min(20, Math.round(plannedMinutes * 0.35))) * 60_000,
+        expireMs: Math.max(45, Math.round(plannedMinutes * 1.25)) * 60_000,
+        tone: 'direct',
+        reason: 'deadline pressure shortens the follow-up loop',
+      };
+    }
+
+    if (lowEnergy) {
+      return {
+        reminderWindowMs: 12 * 60_000,
+        checkInDelayMs: Math.max(25, Math.min(45, Math.round(plannedMinutes * 0.7))) * 60_000,
+        expireMs: Math.max(75, Math.round(plannedMinutes * 1.75)) * 60_000,
+        tone: 'gentle',
+        reason: 'recovery/low energy gives more ramp time',
+      };
+    }
+
+    if (alertFatigue === 'high') {
+      return {
+        reminderWindowMs: 4 * 60_000,
+        checkInDelayMs: Math.max(35, Math.round(plannedMinutes * 0.75)) * 60_000,
+        expireMs: Math.max(70, Math.round(plannedMinutes * 1.5)) * 60_000,
+        tone: 'gentle',
+        reason: 'high alert fatigue reduces reminder pressure',
+      };
+    }
+
+    return {
+      reminderWindowMs: 5 * 60_000,
+      checkInDelayMs: Math.max(20, Math.min(40, Math.round(plannedMinutes * 0.55))) * 60_000,
+      expireMs: Math.max(60, Math.round(plannedMinutes * 1.5)) * 60_000,
+      tone: 'normal',
+      reason: 'balanced timing from planned session length',
+    };
+  } catch {
+    return {
+      reminderWindowMs: 5 * 60_000,
+      checkInDelayMs: 30 * 60_000,
+      expireMs: 60 * 60_000,
+      tone: 'normal',
+      reason: 'fallback soft-watch timing',
+    };
+  }
+}
+
+function formatPolicyMinutes(ms: number): number {
+  return Math.max(1, Math.round(ms / 60_000));
+}
 
 function persistSoftWatch(c: SoftWatchCommitment) {
   try {
@@ -1968,8 +2289,10 @@ function tickSoftWatchChecker() {
 
     const sincStart = now - commitment.intendedStartAt;
 
-    // Expire if more than 60 min past intended start
-    if (sincStart > SOFT_WATCH_EXPIRE_MS) {
+    const policy = buildSoftWatchPolicy(commitment);
+
+    // Expire according to current mode and planned session length.
+    if (sincStart > policy.expireMs) {
       commitment.status = 'expired';
       softWatchMap.set(id, commitment);
       persistSoftWatch(commitment);
@@ -1978,33 +2301,38 @@ function tickSoftWatchChecker() {
       continue;
     }
 
-    // Reminder: fire once when within 5 min of intended start time
-    if (!commitment.reminderSentAt && Math.abs(now - commitment.intendedStartAt) <= SOFT_WATCH_REMINDER_WINDOW_MS) {
+    // Reminder: fire once inside the adaptive start window.
+    if (!commitment.reminderSentAt && Math.abs(now - commitment.intendedStartAt) <= policy.reminderWindowMs) {
       commitment.reminderSentAt = now;
       softWatchMap.set(id, commitment);
       persistSoftWatch(commitment);
       void speak(
         'soft_watch',
-        `Heads up — you planned to work on ${commitment.targetTitle} now. Ready to lock in?`,
-        'normal',
+        policy.tone === 'gentle'
+          ? `Soft reminder — ${commitment.targetTitle} is coming up. Want to start small?`
+          : `Heads up — you planned to work on ${commitment.targetTitle} now. Ready to lock in?`,
+        policy.tone === 'direct' ? 'urgent' : 'normal',
         'midpoint_checkin'
       );
-      void sendTelegram(formatSoftWatchReminder(commitment.targetTitle, 0), 'HTML', SOFT_WATCH_KEYBOARD);
+      void sendTelegram(`${formatSoftWatchReminder(commitment.targetTitle, 0)}\n\n<i>${policy.reason}</i>`, 'HTML', SOFT_WATCH_KEYBOARD);
       continue;
     }
 
-    // Check-in: fire once if 30 min past intended start and still pending
-    if (!commitment.checkInSentAt && sincStart >= SOFT_WATCH_CHECKIN_DELAY_MS) {
+    // Check-in: fire once after the adaptive grace period and still pending.
+    if (!commitment.checkInSentAt && sincStart >= policy.checkInDelayMs) {
       commitment.checkInSentAt = now;
       softWatchMap.set(id, commitment);
       persistSoftWatch(commitment);
+      const delayMinutes = formatPolicyMinutes(policy.checkInDelayMs);
       void speak(
         'soft_watch',
-        `Still here. You committed to ${commitment.targetTitle} about 30 minutes ago. Start now or let it go?`,
-        'normal',
+        policy.tone === 'gentle'
+          ? `Still holding ${commitment.targetTitle}. Do you want a smaller start or should I let it go?`
+          : `Still here. You committed to ${commitment.targetTitle} about ${delayMinutes} minutes ago. Start now or let it go?`,
+        policy.tone === 'direct' ? 'urgent' : 'normal',
         'direct_push'
       );
-      void sendTelegram(`⏰ <b>Still pending</b>\n\nYou committed to <b>${commitment.targetTitle}</b> 30 min ago and haven't started. Lock in or reschedule?`, 'HTML', SOFT_WATCH_KEYBOARD);
+      void sendTelegram(`⏰ <b>Still pending</b>\n\nYou committed to <b>${commitment.targetTitle}</b> about ${delayMinutes} min ago and haven't started. Lock in, shrink it, or reschedule?\n\n<i>${policy.reason}</i>`, 'HTML', SOFT_WATCH_KEYBOARD);
     }
   }
 }
@@ -2047,7 +2375,7 @@ export function createSoftWatchCommitment(input: {
     goalId: input.goalId ?? null,
     taskId: input.taskId ?? null,
     intendedStartAt: input.intendedStartAt,
-    plannedMinutes: input.plannedMinutes ?? 60,
+    plannedMinutes: input.plannedMinutes ?? getAdaptiveSessionMinutes(),
     source: input.source ?? 'voice',
     reminderSentAt: null,
     checkInSentAt: null,
@@ -2087,7 +2415,6 @@ export function dismissSoftWatchCommitment(id: string): boolean {
   persistSoftWatch(commitment);
   
   if (commitment.calendarEventId) {
-    const { deleteCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
     deleteCalendarEvent(commitment.calendarEventId).catch(() => {});
   }
   return true;
@@ -2107,7 +2434,6 @@ export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, ne
   persistSoftWatch(commitment);
   
   if (commitment.calendarEventId) {
-    const { updateCalendarEvent } = require('./google-calendar') as typeof import('./google-calendar');
     const startTime = new Date(newStartAt);
     const endTime = new Date(newStartAt + commitment.plannedMinutes * 60_000);
     updateCalendarEvent(commitment.calendarEventId, { startTime, endTime }).catch(() => {});

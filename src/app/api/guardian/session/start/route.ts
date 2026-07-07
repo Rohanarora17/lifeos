@@ -102,7 +102,7 @@ export async function POST(req: Request) {
       sessionContext: body.sessionContext as string | undefined,
     };
 
-    let parsedIntent: any = null;
+    let parsedIntent: Awaited<ReturnType<typeof parseLockInIntent>> | null = null;
     if (transcript) {
       parsedIntent = await parseLockInIntent(transcript);
       if (parsedIntent?.clarificationNeeded && !parsedIntent?.parameters?.topic) {
@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       startInput = {
         ...startInput,
         topic: startInput.topic || parsedIntent?.parameters?.topic,
-        durationMinutes: startInput.durationMinutes || parsedIntent?.parameters?.durationMinutes || 60,
+        durationMinutes: startInput.durationMinutes || parsedIntent?.parameters?.durationMinutes,
         mood: startInput.mood || parsedIntent?.parameters?.mood || null,
         source: 'voice',
         sessionContext: startInput.sessionContext || transcript, // full utterance carries nuance
