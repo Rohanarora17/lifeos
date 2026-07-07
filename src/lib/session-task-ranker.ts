@@ -1,13 +1,13 @@
 /**
  * Session Task Ranker — Student-focused rewrite.
  *
- * Uses LLM-generated priority_rank as the primary sort.
- * Falls back to due_date when priority_rank is missing.
- * Energy composite is retained as a parameter for future fine-tuning
- * but does NOT override the LLM rank.
+ * Uses adaptive task recommendations as the primary sort.
+ * Falls back to LLM-generated priority_rank and due_date when adaptive scores are missing.
  */
 
 import { getDb } from '@/lib/db';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
 
 export interface RankedTask {
   id: number;
@@ -33,10 +33,17 @@ export interface RankedTask {
  * `energyComposite` — [0–100] from computeEnergyComposite(), or null to skip.
  */
 export function rankTasksForSession(
-  energyComposite: number | null,
+  _energyComposite: number | null,
   limit = 5
 ): RankedTask[] {
   const db = getDb();
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'tasks',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+  });
+  const adaptiveRecommendations = getAdaptiveTaskRecommendations(personalization, 100);
+  const adaptiveById = new Map(adaptiveRecommendations.map((task, index) => [task.id, { ...task, rank: index + 1 }]));
 
   const tasks = db.prepare(`
     SELECT t.id, t.title, t.status, t.priority, t.task_type, t.course,
@@ -75,22 +82,41 @@ export function rankTasksForSession(
 
   if (tasks.length === 0) return [];
 
-  return tasks.slice(0, limit).map((task, i) => ({
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    priority: task.priority,
-    task_type: task.task_type,
-    course: task.course,
-    due_date: task.due_date,
-    due_time: task.due_time,
-    energy_required: task.energy_required,
-    estimated_minutes: task.estimated_minutes,
-    goal_id: task.goal_id,
-    goal_title: task.goal_title,
-    goal_health: task.goal_health,
-    priority_rank: task.priority_rank,
-    score: 100 - i, // Synthetic descending score for API consumers expecting a score field
-    reason: task.priority_reason ?? (task.due_date ? `due ${task.due_date}` : task.status),
-  }));
+  return tasks
+    .sort((a, b) => {
+      const adaptiveA = adaptiveById.get(a.id);
+      const adaptiveB = adaptiveById.get(b.id);
+      const scoreDiff = (adaptiveB?.score ?? Number.NEGATIVE_INFINITY) - (adaptiveA?.score ?? Number.NEGATIVE_INFINITY);
+      if (scoreDiff !== 0) return scoreDiff;
+      const rankA = a.priority_rank ?? Number.MAX_SAFE_INTEGER;
+      const rankB = b.priority_rank ?? Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      if (a.due_date === null && b.due_date !== null) return 1;
+      if (a.due_date !== null && b.due_date === null) return -1;
+      return String(a.due_date ?? '').localeCompare(String(b.due_date ?? ''));
+    })
+    .slice(0, limit)
+    .map((task, i) => {
+      const adaptive = adaptiveById.get(task.id);
+      return {
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        task_type: task.task_type,
+        course: task.course,
+        due_date: task.due_date,
+        due_time: task.due_time,
+        energy_required: task.energy_required,
+        estimated_minutes: task.estimated_minutes,
+        goal_id: task.goal_id,
+        goal_title: task.goal_title,
+        goal_health: task.goal_health,
+        priority_rank: task.priority_rank,
+        score: adaptive?.score ?? 100 - i,
+        reason: adaptive
+          ? `${adaptive.momentFit} fit · ${adaptive.reason}`
+          : task.priority_reason ?? (task.due_date ? `due ${task.due_date}` : task.status),
+      };
+    });
 }
