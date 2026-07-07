@@ -13,12 +13,16 @@ import {
     formatCalibrationStatus,
     buildTaskChipsKeyboard,
 } from './telegram';
-import { startGuardianSession, endGuardianSession, getActiveGuardianSession, adjustGuardianSessionDuration } from './guardian-runtime';
-import { getMemoryContext } from './memory';
-import { classifyEnergy } from './adaptive-bands';
+import { startGuardianSession, endGuardianSession, getActiveGuardianSession } from './guardian-runtime';
+import { classifyEnergy, getAdaptiveBands } from './adaptive-bands';
 import { getDb, getSetting, setSetting } from './db';
-import { getIntelligenceContext, touchIntelligence } from './intelligence';
+import { touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
+import { formatCommandMomentLine, getAdaptiveSessionMinutes, getAdaptiveSessionMinutesLabel } from './adaptive-command-defaults';
+import { buildAdaptiveNewHabitDefaults } from './adaptive-habit-plan';
+import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
+import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
@@ -38,6 +42,14 @@ function consumePendingConfirmation(chatId: string): { action: string; payload: 
     }
     pendingConfirmations.delete(chatId);
     return pending;
+}
+
+function focusStatusIcon(score: number): string {
+    const bands = getAdaptiveBands();
+    if (score >= bands.focusExcellent) return '🔥';
+    if (score >= bands.focusGood) return '🟢';
+    if (score >= bands.focusNeutral) return '🟡';
+    return '🔴';
 }
 
 function isConfirmation(text: string): boolean {
@@ -71,7 +83,7 @@ const TELEGRAM_SYSTEM_PROMPT = `You are LifeOS, an intelligent personal agent on
 6. **Missing Required Fields:** If a required field (like goal type) is missing from the user's prompt, do NOT guess. Use CHAT to ask them for it.
 
 AVAILABLE ACTIONS:
-- "START_SESSION": Start a focus session RIGHT NOW (requires explicit trigger). Payload: targetTitle, durationMinutes (default 60), mood (high/medium/low).
+- "START_SESSION": Start a focus session RIGHT NOW (requires explicit trigger). Payload: targetTitle, durationMinutes (omit durationMinutes unless the user explicitly gave one), mood (high/medium/low).
 - "CREATE_SESSION_TASK": Create a task indicating a planned session. Used when user says "I want to do a 50 min session on X". Payload: title (topic), durationMinutes, due_date (YYYY-MM-DD).
 - "SCHEDULE_SESSION": Schedule a session for a FUTURE time (adds to calendar). Payload: targetTitle, durationMinutes, intendedStartAt (unix ms).
 - "RESCHEDULE_SESSION": Move an existing pending session to a new time. Payload: searchTitle, durationMinutes (optional), intendedStartAt (unix ms).
@@ -93,13 +105,13 @@ AVAILABLE ACTIONS:
 - "STANDUP": Show standup brief (energy + suggestions).
 - "STATUS": Current session status.
 - "MENU": Show the full action menu.
-- "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam), status (todo/doing, default todo), priority (low/medium/high/critical, default medium), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (string or null).
+- "CREATE_TASK": Create a new task. Payload: title (required), task_type (task/assignment/exam), status (todo/doing, default todo), priority (low/medium/high/critical only if the user explicitly states it), due_date (YYYY-MM-DD or null), due_time (HH:MM 24h or null), course (string or null). Omit priority when unstated so LifeOS can choose from today's context.
 - "UPDATE_TASK": Update an existing task. Payload: searchTitle, title, status, priority, due_date, due_time, course, task_type.
 - "DELETE_TASK": Delete a task by title. Payload: searchTitle.
 - "CREATE_GOAL": Create a new goal. Payload: title (required), type (required: build_feature/learn_skill/launch_project/general), category (productivity/health/learning/finance/relationships/other), deadline (YYYY-MM-DD or null).
 - "UPDATE_GOAL": Update a goal's deadline or status. Payload: searchTitle, deadline (YYYY-MM-DD or null), active (0 or 1).
 - "DELETE_GOAL": Delete a goal. Payload: searchTitle.
-- "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, default ✅), goal_metric (boolean/time, default boolean), goal_target (minutes if time, default 60).
+- "CREATE_HABIT": Create a new habit. Payload: name (required), icon (emoji, optional), goal_metric (boolean/time, optional), goal_target (minutes if time, optional). Omit metric/target unless the user explicitly gives them; LifeOS will choose adaptive defaults for the current day.
 - "UPDATE_HABIT": Rename a habit. Payload: searchName, newName.
 - "DELETE_HABIT": Delete/archive a habit. Payload: searchName.
 - "MULTI_ACTION": Execute multiple actions in sequence (e.g. archiving X, prioritizing Y, scheduling Z). Payload: actions (array of action objects).
@@ -111,7 +123,7 @@ Respond ONLY with valid JSON:
   "replyText": "<HTML reply to user, very brief, Telegram HTML allowed (<b>, <i>). For MULTI_ACTION, put the final combined reply here.>",
   "payload": {
     "targetTitle": "string",
-    "durationMinutes": 60,
+    "durationMinutes": 0,
     "intendedStartAt": 1234567890,
     "mood": "high|medium|low",
     "habitTitle": "string",
@@ -133,7 +145,7 @@ Respond ONLY with valid JSON:
     "name": "string",
     "icon": "string",
     "goal_metric": "boolean|time",
-    "goal_target": 60,
+    "goal_target": 0,
     "active": 1,
     "actions": [{"action": "string", "replyText": "string", "payload": {}}]
   }
@@ -379,41 +391,56 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(average_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
         const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','todo','doing')`).get() as { total: number; done: number };
         const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
-        const emoji = sessRow.avg_focus >= 85 ? '🔥' : sessRow.avg_focus >= 70 ? '✅' : sessRow.avg_focus >= 50 ? '🟡' : '🔴';
+        const avgFocus = Number(sessRow.avg_focus ?? 0);
+        const emoji = focusStatusIcon(avgFocus);
         await sendTelegram(
-            `📊 <b>Daily Report — ${today}</b>\n\n${emoji} <b>Avg Focus:</b> ${Math.round(sessRow.avg_focus)}/100\n🛡️ <b>Sessions:</b> ${sessRow.count} (${sessRow.total_minutes}m total)\n📋 <b>Tasks:</b> ${tasksRow.done}/${tasksRow.total} done\n💪 <b>Habits:</b> ${habitsRow.done}/${habitsRow.total} checked`,
+            `📊 <b>Daily Report — ${today}</b>\n\n${emoji} <b>Avg Focus:</b> ${Math.round(avgFocus)}/100\n🛡️ <b>Sessions:</b> ${sessRow.count} (${sessRow.total_minutes}m total)\n📋 <b>Tasks:</b> ${tasksRow.done}/${tasksRow.total} done\n💪 <b>Habits:</b> ${habitsRow.done}/${habitsRow.total} checked`,
             'HTML', FULL_MENU_KEYBOARD
         );
         return;
     }
     if (cmdLower === '/status') {
         const session = getActiveGuardianSession();
-        const { getIntelligenceProfile: getProfile } = require('./intelligence') as typeof import('./intelligence');
-        const profile = getProfile();
+        const focusScore = session?.focusScoreHistory?.at(-1) ?? null;
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'voice',
+            maxInsights: 2,
+            includeThresholds: false,
+            includeMemoryFacts: 4,
+            activeSession: session ? {
+                sessionId: session.sessionId,
+                targetTitle: session.targetTitle,
+                focusScore,
+                elapsedMinutes: Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)),
+            } : null,
+        });
         const lines: string[] = [];
 
         if (session) {
             const elapsed = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
             const remaining = Math.max(0, session.durationMinutes - elapsed);
-            const focusScore = session.focusScoreHistory?.at(-1) ?? 100;
-            const stateIcon = session.state === 'BREAK' ? '⏸' : focusScore >= 75 ? '🟢' : focusScore >= 50 ? '🟡' : '🔴';
+            const liveFocusScore = focusScore ?? 100;
+            const stateIcon = session.state === 'BREAK' ? '⏸' : focusStatusIcon(liveFocusScore);
             lines.push(`${stateIcon} <b>Active:</b> ${session.targetTitle}`);
             lines.push(`⏱ <b>Time:</b> ${elapsed}m elapsed · ${remaining}m remaining`);
-            lines.push(`🎯 <b>Focus:</b> ${focusScore}/100  |  <b>State:</b> ${session.state}`);
+            lines.push(`🎯 <b>Focus:</b> ${liveFocusScore}/100  |  <b>State:</b> ${session.state}`);
         } else {
             lines.push(`💤 <b>No active session</b>`);
-            if (profile.nextBestFocusWindow) {
-                lines.push(`⚡ <b>Best window:</b> ${profile.nextBestFocusWindow}`);
+            lines.push(`🧭 <b>${formatCommandMomentLine(personalization)}</b>`);
+            lines.push(`⏱ <b>Suggested session:</b> ${getAdaptiveSessionMinutes()}m`);
+            if (personalization.userState.nextBestFocusWindow) {
+                lines.push(`⚡ <b>Best window:</b> ${personalization.userState.nextBestFocusWindow}`);
             }
         }
 
         lines.push('');
-        lines.push(`📈 <b>Trend:</b> ${profile.focusTrend || 'stable'}  ·  <b>Style:</b> ${profile.preferredCoachingStyle || 'balanced'}`);
+        lines.push(`📈 <b>Trend:</b> ${personalization.userState.focusTrend || 'stable'}  ·  <b>Style:</b> ${personalization.userState.coachingStyle || 'balanced'}`);
 
-        if (profile.coachingInsights?.length) {
+        const insights = personalization.intelligenceContext.match(/💡 Coaching insights:\n([\s\S]*)/)?.[1]?.split('\n').slice(0, 3) ?? [];
+        if (insights.length) {
             lines.push('');
             lines.push(`<b>Insights:</b>`);
-            profile.coachingInsights.slice(0, 3).forEach((ins: string) => lines.push(`• ${ins}`));
+            insights.forEach((ins: string) => lines.push(ins.replace(/^\s*\d+\.\s*/, '• ')));
         }
 
         await sendTelegram(lines.join('\n'), 'HTML', SESSION_START_KEYBOARD);
@@ -436,7 +463,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     // /addtask <title>
     if (cmdLower.startsWith('/addtask ')) {
         const title = cmd.slice('/addtask '.length).trim();
-        await executeAction('CREATE_TASK', '', { title, status: 'todo', priority: 'medium' });
+        await executeAction('CREATE_TASK', '', { title, status: 'todo' });
         return;
     }
     if (cmdLower === '/addtask') {
@@ -482,13 +509,13 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     // /session <topic> or just /session
     if (cmdLower.startsWith('/session ')) {
         const topic = cmd.slice('/session '.length).trim();
-        await executeAction('START_SESSION', '', { targetTitle: topic, durationMinutes: 60 });
+        await executeAction('START_SESSION', '', { targetTitle: topic });
         return;
     }
     // Allow user to literally type "session:60" or "/session:60"
     if (cmdLower.startsWith('session:') || cmdLower.startsWith('/session:')) {
         const parts = cmd.split(':');
-        const duration = parseInt(parts[1]?.trim(), 10) || 60;
+        const duration = getAdaptiveSessionMinutes(parseInt(parts[1]?.trim(), 10));
         await executeAction('START_SESSION', '', { targetTitle: 'Focus Session', durationMinutes: duration });
         return;
     }
@@ -515,13 +542,25 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         return;
     }
 
-    const memoryCtx = getMemoryContext(3);
     const activeSession = getActiveGuardianSession();
+    const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
 
     // Build the same rich context block the voice parser uses
     // Signal new data so UIL profile is fresh for this message (prevents stale context)
     touchIntelligence('telegram_message');
-    const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true, includeThresholds: false });
+    const personalization = buildPersonalizationSnapshot({
+        surface: 'voice',
+        maxInsights: 2,
+        includeThresholds: false,
+        includeMemoryFacts: 4,
+        activeSession: activeSession ? {
+            sessionId: activeSession.sessionId,
+            targetTitle: activeSession.targetTitle,
+            focusScore: activeFocusScore,
+            elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000)),
+        } : null,
+    });
+    const personalizationContext = formatPersonalizationContext(personalization);
     const sessionBlock = activeSession
         ? [
             'ACTIVE SESSION:',
@@ -535,7 +574,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     const nowMs = Date.now();
     const localTimeStr = new Date(nowMs).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    const contextBlock = `--- CURRENT STATE ---\nCURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs})\nTIMEZONE: Asia/Kolkata (IST, UTC+5:30)\n${sessionBlock}\nUSER MEMORY: ${memoryCtx || 'None'}\n\n${uilContext}\n---------------------`;
+    const contextBlock = `--- CURRENT STATE ---\nCURRENT TIME: ${localTimeStr} (Unix ms: ${nowMs})\nTIMEZONE: Asia/Kolkata (IST, UTC+5:30)\n${sessionBlock}\n\n${personalizationContext}\n---------------------`;
 
     // Load recent conversation turns for multi-turn context
     let turnHistoryBlock = '';
@@ -593,10 +632,9 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         // Gate START_SESSION through confirmation unless already confirmed
         if (parsed.action === 'START_SESSION' && !getActiveGuardianSession()) {
             const title = (parsed.payload?.targetTitle as string | undefined) || 'General Focus';
-            const duration = Number(parsed.payload?.durationMinutes) || 60;
             setPendingConfirmation(SINGLE_USER_KEY, 'START_SESSION', parsed.payload ?? {}, parsed.replyText);
             await sendTelegram(
-                `Starting a <b>${duration}-min session</b> on "<b>${title}</b>". Go? (yes / no)`,
+                `Starting a <b>${getAdaptiveSessionMinutesLabel(parsed.payload?.durationMinutes)} session</b> on "<b>${title}</b>". Go? (yes / no)`,
                 'HTML', FULL_MENU_KEYBOARD
             );
         } else {
@@ -638,17 +676,27 @@ export async function executeAction(
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the session task be called?', ''); break; }
             const db = getDb();
-            const duration = Number(payload.durationMinutes) || 60;
+            const personalization = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
+            const defaults = buildAdaptiveTaskDefaults({
+                title,
+                taskType: 'session',
+                dueDate: (payload.due_date as string | undefined) || null,
+                explicitEstimateMinutes: payload.durationMinutes,
+                snapshot: personalization,
+            });
+            const duration = defaults.estimatedMinutes;
             const result = db.prepare(
-                `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, due_date) VALUES (?, 'todo', 'medium', 'session', ?, ?)`
+                `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, energy_required, due_date) VALUES (?, 'todo', ?, 'session', ?, ?, ?)`
             ).run(
                 title,
+                defaults.priority,
                 duration,
+                defaults.energyRequired,
                 (payload.due_date as string | undefined) || null
             );
             const taskId = Number(result.lastInsertRowid);
             try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(console.error); } catch { /* non-fatal */ }
-            if (replyText) await sendTelegram(`✅ Session Task added: <b>${title}</b> (${duration}m)`, 'HTML', FULL_MENU_KEYBOARD);
+            if (replyText) await sendTelegram(`✅ Session Task added: <b>${title}</b> (${duration}m, ${defaults.priority}, ${defaults.energyRequired} energy)\n${defaults.reason}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
@@ -656,7 +704,7 @@ export async function executeAction(
             const title = (payload.targetTitle as string | undefined)?.trim();
             if (!title) { await sendTelegram('What topic should I schedule?', ''); break; }
             const intendedStartAt = Number(payload.intendedStartAt) || Date.now() + 60 * 60_000;
-            const plannedMinutes = Number(payload.durationMinutes) || 60;
+            const plannedMinutes = getAdaptiveSessionMinutes(payload.durationMinutes);
 
             const { createSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const commitment = createSoftWatchCommitment({
@@ -781,7 +829,7 @@ export async function executeAction(
                 break;
             }
             const title = (payload.targetTitle as string | undefined) || 'General Focus';
-            const duration = Number(payload.durationMinutes) || 60;
+            const duration = getAdaptiveSessionMinutes(payload.durationMinutes);
             const moodRaw = payload.mood as string | undefined;
             const mood = (moodRaw === 'high' || moodRaw === 'medium' || moodRaw === 'low') ? moodRaw : undefined;
             startGuardianSession({ topic: title, durationMinutes: duration, mood, source: 'api' });
@@ -837,12 +885,13 @@ export async function executeAction(
             try {
                 const habit = db.prepare(`SELECT id FROM habits WHERE archived = 0 AND LOWER(name) LIKE ? LIMIT 1`).get(`%${title.toLowerCase()}%`) as { id: number } | undefined;
                 if (!habit) { await sendTelegram(`Habit "${title}" not found.`, ''); break; }
-                db.prepare(`
-          INSERT INTO habit_checkins (habit_id, date, completed, value, source)
-          VALUES (?, ?, 1, NULL, 'telegram')
-          ON CONFLICT(habit_id, date) DO UPDATE SET completed = 1, source = 'telegram'
-        `).run(habit.id, today);
-                await sendTelegram(`✅ ${replyText || `Logged: ${title}`}`, 'HTML', FULL_MENU_KEYBOARD);
+                const checkin = recordAdaptiveHabitCheckin({
+                    habitId: habit.id,
+                    date: today,
+                    source: 'telegram',
+                    forceComplete: true,
+                });
+                await sendTelegram(`✅ ${replyText || `Logged: ${title}`}\n${checkin.value}/${checkin.adaptiveTarget} · ${checkin.adaptiveReason ?? 'adaptive habit target'}`, 'HTML', FULL_MENU_KEYBOARD);
             } catch (err) {
                 await sendTelegram(`Failed: ${(err as Error).message}`, '');
             }
@@ -974,16 +1023,28 @@ export async function executeAction(
             const db = getDb();
             const safeStatus = ['todo', 'doing', 'done'].includes(payload.status as string) ? (payload.status as string) : 'todo';
             const safeType = ['task', 'assignment', 'exam'].includes(payload.task_type as string) ? (payload.task_type as string) : 'task';
+            const personalization = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
+            const defaults = buildAdaptiveTaskDefaults({
+                title,
+                taskType: safeType,
+                dueDate: (payload.due_date as string | undefined) || null,
+                explicitPriority: payload.priority,
+                explicitEstimateMinutes: payload.estimated_minutes ?? payload.durationMinutes,
+                explicitEnergyRequired: payload.energy_required,
+                snapshot: personalization,
+            });
             const result = db.prepare(
-                `INSERT INTO tasks (title, status, priority, task_type, due_date, due_time, course) VALUES (?, ?, ?, ?, ?, ?, ?)`
+                `INSERT INTO tasks (title, status, priority, task_type, due_date, due_time, course, estimated_minutes, energy_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
             ).run(
                 title,
                 safeStatus,
-                (payload.priority as string | undefined) || 'medium',
+                defaults.priority,
                 safeType,
                 (payload.due_date as string | undefined) || null,
                 (payload.due_time as string | undefined) || null,
                 (payload.course as string | undefined) || null,
+                defaults.estimatedMinutes,
+                defaults.energyRequired,
             );
             const taskId = Number(result.lastInsertRowid);
             // Fire-and-forget: auto-link + prioritize
@@ -992,7 +1053,7 @@ export async function executeAction(
             const typeLabel = safeType === 'exam' ? ' (exam)' : safeType === 'assignment' ? ' (assignment)' : '';
             const courseLabel = payload.course ? ` [${payload.course}]` : '';
             const dueLabel = payload.due_date ? ` · due ${payload.due_date}` : '';
-            await sendTelegram(`✅ Task created: <b>${title}</b>${typeLabel}${courseLabel}${dueLabel}`, 'HTML', FULL_MENU_KEYBOARD);
+            await sendTelegram(`✅ Task created: <b>${title}</b>${typeLabel}${courseLabel}${dueLabel}\n${defaults.priority} · ${defaults.estimatedMinutes}m · ${defaults.energyRequired} energy\n${defaults.reason}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
@@ -1058,14 +1119,31 @@ export async function executeAction(
         case 'CREATE_HABIT': {
             const name = (payload.name as string | undefined)?.trim();
             if (!name) { await sendTelegram('What should the habit be called?', ''); break; }
+            const habitPersonalization = buildPersonalizationSnapshot({
+                surface: 'habits',
+                maxInsights: 2,
+                includeMemoryFacts: 4,
+            });
+            const habitDefaults = buildAdaptiveNewHabitDefaults(habitPersonalization);
+            const goalMetric = payload.goal_metric === 'time' || payload.goal_metric === 'boolean'
+                ? payload.goal_metric
+                : habitDefaults.goalMetric;
+            const hasExplicitTarget = payload.goal_target !== undefined && payload.goal_target !== null && payload.goal_target !== '';
+            const parsedTarget = Number(payload.goal_target);
+            const goalTarget = goalMetric === 'time'
+                ? Math.max(1, Math.round(hasExplicitTarget && Number.isFinite(parsedTarget) ? parsedTarget : habitDefaults.timeTargetMinutes))
+                : 1;
             const db = getDb();
             db.prepare(`INSERT INTO habits (name, icon, frequency, goal_metric, goal_target) VALUES (?, ?, 'daily', ?, ?)`).run(
                 name,
                 (payload.icon as string | undefined) || '✅',
-                (payload.goal_metric as string | undefined) || 'boolean',
-                Number(payload.goal_target) || 1
+                goalMetric,
+                goalTarget
             );
-            await sendTelegram(`✅ Habit created: <b>${name}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+            const detail = goalMetric === 'time'
+                ? `${goalTarget} min ${habitDefaults.intensity} target`
+                : `${habitDefaults.intensity} checkbox`;
+            await sendTelegram(`✅ Habit created: <b>${name}</b>\n${detail} · ${habitDefaults.reason}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 

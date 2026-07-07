@@ -1,7 +1,18 @@
 import { getSetting, setSetting } from './db';
-import { classifyAccuracy } from './adaptive-bands';
+import { classifyAccuracy, getAdaptiveBands } from './adaptive-bands';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+
+type TelegramMomentMode = PersonalizationSnapshot['moment']['mode'];
+
+const MODE_LABEL: Record<TelegramMomentMode, string> = {
+  protect_focus: 'Protect focus',
+  deadline_pressure: 'Deadline pressure',
+  recovery: 'Recovery',
+  planning: 'Planning',
+  normal: 'Balanced',
+};
 
 function token(): string {
   return BOT_TOKEN || getSetting('telegram_bot_token');
@@ -9,6 +20,58 @@ function token(): string {
 
 function chatId(): string {
   return process.env.TELEGRAM_CHAT_ID || getSetting('telegram_chat_id');
+}
+
+function getTelegramSnapshot(): PersonalizationSnapshot | null {
+  try {
+    return buildPersonalizationSnapshot({
+      surface: 'telegram',
+      maxInsights: 2,
+      includeMemoryFacts: 4,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function modeLine(snapshot: PersonalizationSnapshot | null): string | null {
+  if (!snapshot) return null;
+  return `<i>${MODE_LABEL[snapshot.moment.mode]} · ${snapshot.userState.energy} energy · ${snapshot.moment.guidance}</i>`;
+}
+
+function scoreEmoji(score: number, snapshot: PersonalizationSnapshot | null, kind: 'focus' | 'day'): string {
+  const bands = getAdaptiveBands();
+  const excellent = kind === 'focus' ? bands.focusExcellent : snapshot?.moment.mode === 'recovery' ? 78 : 85;
+  const good = kind === 'focus' ? bands.focusGood : snapshot?.moment.mode === 'recovery' ? 62 : 70;
+  const neutral = kind === 'focus' ? bands.focusNeutral : snapshot?.moment.mode === 'recovery' ? 45 : 50;
+
+  if (score >= excellent) return '🔥';
+  if (score >= good) return '✅';
+  if (score >= neutral) return '🟡';
+  return '🔴';
+}
+
+function closingLine(snapshot: PersonalizationSnapshot | null, surface: 'morning' | 'daily' | 'session'): string {
+  const mode = snapshot?.moment.mode ?? 'normal';
+  if (surface === 'morning') {
+    if (mode === 'recovery') return 'Make today smaller on purpose: one low-friction win first.';
+    if (mode === 'deadline_pressure') return 'Start with the deadline path before opening optional work.';
+    if (mode === 'protect_focus') return 'Protect the first clean focus block; defer low-value pings.';
+    if (mode === 'planning') return 'Use today to set up the next clear move.';
+    return 'Pick the next useful action and keep the loop tight.';
+  }
+  if (surface === 'daily') {
+    if (mode === 'recovery') return 'Read this as recovery data, not a verdict. Choose one easier reset for tomorrow.';
+    if (mode === 'deadline_pressure') return 'Tomorrow starts with the smallest action that reduces deadline risk.';
+    if (mode === 'protect_focus') return 'Keep the momentum path narrow; do not add extra work just because the score looks good.';
+    if (mode === 'planning') return 'Use this review to pre-decide the first block for tomorrow.';
+    return 'Use the pattern, not the score alone, to choose tomorrow morning.';
+  }
+  if (mode === 'recovery') return 'Good enough counts today; log what helped and keep the next step light.';
+  if (mode === 'deadline_pressure') return 'Capture the next deadline-relief step while it is still clear.';
+  if (mode === 'protect_focus') return 'You had useful momentum; resume from the same thread if possible.';
+  if (mode === 'planning') return 'Turn this into one setup action for the next block.';
+  return 'Carry forward the clearest next action.';
 }
 
 // ─── Inline keyboard types ────────────────────────────────────────────────────
@@ -227,6 +290,7 @@ export async function captureChatId(): Promise<string | null> {
 // ─── Formatters ───────────────────────────────────────────────────────────────
 
 export function formatSessionStart(targetTitle: string, durationMinutes: number, mood: string): string {
+  const snapshot = getTelegramSnapshot();
   const moodEmoji = mood === 'high' ? '⚡' : mood === 'low' ? '😴' : '🎯';
   return [
     `🛡️ <b>Guardian Session Started</b>`,
@@ -234,9 +298,16 @@ export function formatSessionStart(targetTitle: string, durationMinutes: number,
     `📚 <b>Topic:</b> ${targetTitle}`,
     `⏱️ <b>Duration:</b> ${durationMinutes} min`,
     `${moodEmoji} <b>Mood:</b> ${mood}`,
+    modeLine(snapshot),
     ``,
-    `Good luck. I'm watching. 👁️`,
-  ].join('\n');
+    snapshot?.moment.mode === 'recovery'
+      ? `Keep the scope small; I will favor gentle checks.`
+      : snapshot?.moment.mode === 'deadline_pressure'
+        ? `I will prioritize deadline relief and block drift sooner.`
+        : snapshot?.moment.mode === 'protect_focus'
+          ? `I will stay quiet unless the focus thread is at risk.`
+          : `I will watch for the next useful adjustment.`,
+  ].filter(Boolean).join('\n');
 }
 
 export function formatSessionEnd(
@@ -247,19 +318,22 @@ export function formatSessionEnd(
   reflection?: string,
   breakdown?: string,
 ): string {
-  const scoreEmoji = avgFocusScore >= 85 ? '🔥' : avgFocusScore >= 70 ? '✅' : avgFocusScore >= 55 ? '🟡' : '🔴';
+  const snapshot = getTelegramSnapshot();
+  const focusEmoji = scoreEmoji(avgFocusScore, snapshot, 'focus');
   const lines = [
     `🏁 <b>Session Complete</b>`,
     ``,
     `📚 <b>${targetTitle}</b>`,
     `⏱️ <b>Elapsed:</b> ${elapsedMinutes} min`,
-    `${scoreEmoji} <b>Focus score:</b> ${avgFocusScore}/100`,
+    `${focusEmoji} <b>Focus score:</b> ${avgFocusScore}/100`,
+    modeLine(snapshot),
     breakdown ? `<i>${breakdown}</i>` : null,
     `🚫 <b>Blocks fired:</b> ${blockedCount}`,
   ].filter(Boolean);
   if (reflection) {
     lines.push(``, `💬 <i>${reflection}</i>`);
   }
+  lines.push(``, closingLine(snapshot, 'session'));
   return lines.join('\n');
 }
 
@@ -275,7 +349,8 @@ export function formatDailyReport(data: {
   xp: number;
   sessionsToday: number;
 }): string {
-  const scoreEmoji = data.score >= 85 ? '🔥' : data.score >= 70 ? '✅' : data.score >= 50 ? '🟡' : '🔴';
+  const snapshot = getTelegramSnapshot();
+  const dayScoreEmoji = scoreEmoji(data.score, snapshot, 'day');
   const ph = Math.floor(data.productiveMinutes / 60);
   const pm = data.productiveMinutes % 60;
   const dh = Math.floor(data.distractionMinutes / 60);
@@ -284,14 +359,17 @@ export function formatDailyReport(data: {
   return [
     `📊 <b>Daily Report — ${data.date}</b>`,
     ``,
-    `${scoreEmoji} <b>Score:</b> ${data.score}/100  |  <b>XP:</b> +${data.xp}`,
+    `${dayScoreEmoji} <b>Score:</b> ${data.score}/100  |  <b>XP:</b> +${data.xp}`,
+    modeLine(snapshot),
     ``,
     `⏱️ <b>Productive:</b> ${ph}h ${pm}m`,
     `😈 <b>Distracted:</b> ${dh}h ${dm}m`,
     `📋 <b>Tasks:</b> ${data.tasksCompleted}/${data.totalTasks} done`,
     `🔥 <b>Habits:</b> ${data.habitsCompleted}/${data.totalHabits} checked`,
     `🛡️ <b>Sessions:</b> ${data.sessionsToday}`,
-  ].join('\n');
+    ``,
+    closingLine(snapshot, 'daily'),
+  ].filter(Boolean).join('\n');
 }
 
 export function formatMorningBrief(data: {
@@ -301,8 +379,10 @@ export function formatMorningBrief(data: {
   upcomingEvents: string[];
   streak: number;
   peakHoursLine?: string | null;
+  adaptiveLine?: string | null;
   deadlines?: Array<{ title: string; due_date: string; due_time: string | null; task_type: string; course: string | null; daysLeft: number }>;
 }): string {
+  const snapshot = getTelegramSnapshot();
   const events = data.upcomingEvents.length
     ? data.upcomingEvents.slice(0, 3).map(e => `  • ${e}`).join('\n')
     : '  • No meetings today';
@@ -313,10 +393,14 @@ export function formatMorningBrief(data: {
     `🔥 <b>Streak:</b> ${data.streak} days`,
     `📋 <b>Tasks pending:</b> ${data.pendingTasks}`,
     `💪 <b>Habits to check:</b> ${data.habitsToday}`,
+    modeLine(snapshot),
   ];
 
   if (data.peakHoursLine) {
     lines.push(data.peakHoursLine);
+  }
+  if (data.adaptiveLine) {
+    lines.push(data.adaptiveLine);
   }
 
   // Deadlines this week
@@ -336,7 +420,7 @@ export function formatMorningBrief(data: {
     `📅 <b>Today's calendar:</b>`,
     events,
     ``,
-    `Let's make it count.`,
+    closingLine(snapshot, 'morning'),
   );
 
   return lines.join('\n');
@@ -461,7 +545,10 @@ export function formatPendingReviews(reviews: Array<{
   average_focus_score: number | null;
   mood: string | null;
 }>): string {
-  if (reviews.length === 0) return `📝 <b>Review Queue</b>\n\nNo pending reviews — you're all caught up!`;
+  const snapshot = getTelegramSnapshot();
+  if (reviews.length === 0) {
+    return [`📝 <b>Review Queue</b>`, ``, modeLine(snapshot), `No pending reviews right now.`].filter(Boolean).join('\n');
+  }
   const r = reviews[0];
   const name = r.task_title ?? r.target_title ?? 'Session';
   const score = r.average_focus_score != null ? `${Math.round(r.average_focus_score)}/100` : '—';
@@ -473,9 +560,14 @@ export function formatPendingReviews(reviews: Array<{
     ``,
     `📚 <b>${name}</b>`,
     `⏱️ ${mins} · Focus: ${score}${mood}`,
+    modeLine(snapshot),
     ``,
-    `Mark this session:${remaining}`,
-  ].join('\n');
+    snapshot?.moment.mode === 'recovery'
+      ? `Mark only what you clearly remember; skip noisy reviews.${remaining}`
+      : snapshot?.moment.mode === 'deadline_pressure'
+        ? `Confirm anything that changes the next deadline step.${remaining}`
+        : `Mark this session:${remaining}`,
+  ].filter(Boolean).join('\n');
 }
 
 export function formatCalibrationStatus(data: {
@@ -527,12 +619,25 @@ export function formatTasksList(
   }>,
   maxItems = 7
 ): string {
-  if (tasks.length === 0) return 'No tasks found.';
+  const snapshot = getTelegramSnapshot();
+  if (tasks.length === 0) {
+    return [`No tasks found.`, modeLine(snapshot)].filter(Boolean).join('\n');
+  }
 
   const ist = Date.now() + 19800000;
   const today = new Date(ist).toISOString().slice(0, 10);
 
-  const lines = tasks.slice(0, maxItems).map((t, i) => {
+  const lines = [
+    modeLine(snapshot),
+    snapshot?.moment.mode === 'recovery'
+      ? '<i>Showing the order that best fits low-friction progress.</i>'
+      : snapshot?.moment.mode === 'deadline_pressure'
+        ? '<i>Showing deadline-relief work first.</i>'
+        : snapshot?.moment.mode === 'protect_focus'
+          ? '<i>Showing tasks that preserve the current focus thread first.</i>'
+          : null,
+    '',
+    ...tasks.slice(0, maxItems).map((t, i) => {
     const rankTag = t.priority_rank ? `<b>#${t.priority_rank}</b> ` : `${i + 1}. `;
     const courseTag = t.course ? `[${t.course}] ` : '';
     const typeTag = t.task_type === 'exam' ? ' 📊' : t.task_type === 'assignment' ? ' 📝' : '';
@@ -550,7 +655,8 @@ export function formatTasksList(
     }
     const reasonTag = t.priority_reason ? `\n   <i>${t.priority_reason}</i>` : '';
     return `${rankTag}${courseTag}${t.title}${typeTag}${dueBadge}${reasonTag}`;
-  });
+    }),
+  ].filter(line => line !== null) as string[];
 
   return lines.join('\n');
 }

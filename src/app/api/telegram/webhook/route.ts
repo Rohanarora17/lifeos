@@ -5,15 +5,9 @@ import {
     SESSION_START_KEYBOARD,
     FULL_MENU_KEYBOARD,
     buildReviewKeyboard,
-    buildTaskChipsKeyboard,
     buildClassifyKeyboard,
-    formatHabitStatus,
     formatPendingReviews,
     formatWeeklyPlanSummary,
-    formatGoalHealthStatus,
-    formatStandupBrief,
-    formatCalibrationStatus,
-    formatTasksList,
 } from '@/lib/telegram';
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
 import { parseScreenTimeReport, storeScreenTimeReport, formatPhoneScreenTimeSummary } from '@/lib/phone-screen-time';
@@ -22,6 +16,8 @@ import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
 import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
 import { downloadTelegramVoice, transcribeAudio } from '@/lib/stt';
+import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
+import { getAdaptiveBands } from '@/lib/adaptive-bands';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -309,11 +305,16 @@ async function handleActionCallback(payload: string) {
         WHERE h.archived = 0
       `).get(today) as { total: number; done: number };
 
-            const scoreEmoji = sessionsRow.avg_focus >= 85 ? '🔥' : sessionsRow.avg_focus >= 70 ? '✅' : sessionsRow.avg_focus >= 50 ? '🟡' : '🔴';
+            const focusBands = getAdaptiveBands();
+            const avgFocus = Number(sessionsRow.avg_focus ?? 0);
+            const scoreEmoji =
+                avgFocus >= focusBands.focusExcellent ? '🔥' :
+                    avgFocus >= focusBands.focusGood ? '✅' :
+                        avgFocus >= focusBands.focusNeutral ? '🟡' : '🔴';
             const text = [
                 `📊 <b>Daily Report — ${today}</b>`,
                 ``,
-                `${scoreEmoji} <b>Avg Focus:</b> ${Math.round(sessionsRow.avg_focus)}/100`,
+                `${scoreEmoji} <b>Avg Focus:</b> ${Math.round(avgFocus)}/100`,
                 `🛡️ <b>Sessions:</b> ${sessionsRow.count} (${sessionsRow.total_minutes}m total)`,
                 `📋 <b>Tasks:</b> ${tasksRow.done}/${tasksRow.total} done`,
                 `💪 <b>Habits:</b> ${habitsRow.done}/${habitsRow.total} checked`,
@@ -459,7 +460,7 @@ async function handleTaskCallback(rest: string) {
         const db = getDb();
         const task = db.prepare(`SELECT title, estimated_minutes FROM tasks WHERE id = ?`).get(id) as { title: string; estimated_minutes: number | null } | undefined;
         if (!task) { await sendTelegram('Task not found.', '', FULL_MENU_KEYBOARD); return; }
-        const duration = task.estimated_minutes ?? 60;
+        const duration = getAdaptiveSessionMinutes(task.estimated_minutes);
         // Store pending state and ask for context before starting
         setSetting('pending_session_context', JSON.stringify({ topic: task.title, duration, source: 'api' }));
         await sendTelegram(
