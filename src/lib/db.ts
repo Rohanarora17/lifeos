@@ -72,6 +72,13 @@ function initSchema(db: Database.Database) {
 
   try { db.prepare('ALTER TABLE alerts ADD COLUMN title TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE alerts ADD COLUMN priority TEXT DEFAULT NULL').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN outcome_id INTEGER REFERENCES agent_action_outcomes(id)').run(); } catch { }
+  try { db.prepare("ALTER TABLE alerts ADD COLUMN feedback TEXT CHECK(feedback IN ('helpful','not_helpful','dismissed'))").run(); } catch { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN feedback_reason TEXT').run(); } catch { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN feedback_at TEXT').run(); } catch { }
+  try { db.prepare('ALTER TABLE alerts ADD COLUMN adaptive_reason TEXT').run(); } catch { }
+  try { db.prepare('CREATE INDEX IF NOT EXISTS idx_alerts_outcome ON alerts(outcome_id)').run(); } catch { }
+  try { db.prepare('CREATE INDEX IF NOT EXISTS idx_alerts_feedback ON alerts(feedback, feedback_at DESC)').run(); } catch { }
   // daily_checkins: sleep/wake/intention fields (migration 025) — idempotent guards
   // SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so we try/catch each one.
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN sleep_time TEXT').run(); } catch (e) { }
@@ -99,6 +106,72 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE tasks ADD COLUMN estimated_minutes INTEGER DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE tasks ADD COLUMN blocked_since TEXT DEFAULT NULL').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE tasks ADD COLUMN subtask_of INTEGER REFERENCES tasks(id)').run(); } catch (e) { }
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS task_session_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        session_title TEXT NOT NULL,
+        credited_minutes INTEGER NOT NULL,
+        focus_score REAL DEFAULT NULL,
+        auto_completed INTEGER NOT NULL DEFAULT 0,
+        credited_at TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(task_id, session_id)
+      )
+    `).run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_task_session_logs_task ON task_session_logs(task_id, credited_at DESC)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_task_session_logs_session ON task_session_logs(session_id)').run();
+  } catch (e) { }
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS daily_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_date TEXT NOT NULL UNIQUE,
+        source_checkin_id INTEGER REFERENCES daily_checkins(id) ON DELETE SET NULL,
+        sleep_time TEXT,
+        wake_estimate TEXT,
+        mood TEXT,
+        energy TEXT,
+        evening_notes TEXT,
+        tomorrow_intention TEXT,
+        generated_summary TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('draft','active','archived')),
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `).run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date DESC)').run();
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS planned_focus_sessions (
+        id TEXT PRIMARY KEY,
+        plan_id INTEGER NOT NULL REFERENCES daily_plans(id) ON DELETE CASCADE,
+        task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        planned_start TEXT NOT NULL,
+        planned_end TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        session_type TEXT NOT NULL DEFAULT 'study',
+        rule_json TEXT NOT NULL DEFAULT '{}',
+        reward_xp INTEGER NOT NULL DEFAULT 0,
+        reward_coins INTEGER NOT NULL DEFAULT 0,
+        calendar_event_id TEXT,
+        calendar_status TEXT NOT NULL DEFAULT 'not_configured' CHECK(calendar_status IN ('not_configured','created','synced','failed','deleted')),
+        soft_watch_id TEXT,
+        status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','started','completed','skipped','cancelled')),
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `).run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_planned_focus_sessions_plan ON planned_focus_sessions(plan_id, planned_start)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_planned_focus_sessions_task ON planned_focus_sessions(task_id, planned_start)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_planned_focus_sessions_status ON planned_focus_sessions(status, planned_start)').run();
+  } catch (e) { }
+  try { db.prepare("ALTER TABLE rewards_store ADD COLUMN category TEXT DEFAULT 'custom'").run(); } catch { }
+  try { db.prepare("ALTER TABLE rewards_store ADD COLUMN pricing_json TEXT DEFAULT '{}'").run(); } catch { }
+  try { db.prepare('ALTER TABLE rewards_store ADD COLUMN adaptive_reason TEXT DEFAULT NULL').run(); } catch { }
+  try { db.prepare('ALTER TABLE rewards_store ADD COLUMN user_cost_override INTEGER DEFAULT 0').run(); } catch { }
+  try { db.prepare('CREATE INDEX IF NOT EXISTS idx_rewards_store_category ON rewards_store(category, cost)').run(); } catch { }
 
   // ─── P0.3: goals — type system + velocity tracking ────────────────────────
   try { db.prepare("ALTER TABLE goals ADD COLUMN goal_type TEXT DEFAULT 'milestone'").run(); } catch (e) { }
@@ -163,7 +236,7 @@ function initSchema(db: Database.Database) {
     -- EPISODIC MEMORY: structured episode log
     CREATE TABLE IF NOT EXISTS mem_episodes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source TEXT NOT NULL CHECK(source IN ('guardian','voice','chat','browse','manual')),
+      source TEXT NOT NULL CHECK(source IN ('guardian','voice','chat','browse','manual','native_copilot')),
       summary TEXT NOT NULL,
       raw_context TEXT,
       importance REAL DEFAULT 0.5,
@@ -410,7 +483,7 @@ function initSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS screen_observations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       observed_at TEXT NOT NULL,
-      source TEXT NOT NULL DEFAULT 'screenshot' CHECK(source IN ('screenshot','daemon','extension_screenshot','extension_daemon')),
+      source TEXT NOT NULL DEFAULT 'screenshot' CHECK(source IN ('screenshot','daemon','extension_screenshot','extension_daemon','screen_vision','native_copilot')),
       app TEXT,
       window_title TEXT,
       activity TEXT,
@@ -427,6 +500,34 @@ function initSchema(db: Database.Database) {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_screen_obs_observed_at ON screen_observations(observed_at DESC)
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS native_guidance_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      outcome_id INTEGER REFERENCES agent_action_outcomes(id),
+      session_id TEXT REFERENCES guardian_sessions(session_id),
+      feedback TEXT NOT NULL CHECK(feedback IN ('helpful','not_helpful','dismissed','retry')),
+      reason TEXT,
+      metadata TEXT,
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_native_guidance_feedback_outcome ON native_guidance_feedback(outcome_id, created_at DESC);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_recommendation_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      surface TEXT NOT NULL DEFAULT 'dashboard',
+      moment_mode TEXT,
+      feedback TEXT NOT NULL CHECK(feedback IN ('helpful','not_now','wrong','started','completed','dismissed')),
+      reason TEXT,
+      outcome_id INTEGER REFERENCES agent_action_outcomes(id),
+      created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_reco_feedback_task ON task_recommendation_feedback(task_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_reco_feedback_signal ON task_recommendation_feedback(feedback, created_at DESC);
   `);
 
   db.exec(`
@@ -459,10 +560,11 @@ function initSchema(db: Database.Database) {
     github_pat: '',
     github_username: '',
     calendar_ics_url: '',
-    nudge_threshold_minutes: '15',
-    daily_summary_time: '23:00',
-    morning_brief_time: '08:00',
-    xp_per_task: '50',
+	    nudge_threshold_minutes: '15',
+	    daily_summary_time: '23:00',
+	    morning_brief_time: '08:00',
+	    evening_reflection_time: '21:30',
+	    xp_per_task: '50',
     xp_per_habit: '20',
     xp_per_productive_hour: '30',
     xp_per_commit: '10',
