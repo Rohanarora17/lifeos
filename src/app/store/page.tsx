@@ -14,6 +14,9 @@ interface StoreItem {
     title: string;
     cost: number;
     icon: string;
+    category: string | null;
+    adaptive_reason: string | null;
+    user_cost_override: number | null;
 }
 
 interface Badge {
@@ -24,13 +27,49 @@ interface Badge {
     metric: string;
     target: number;
     unlocked_at: string | null;
+    adaptive_current_value?: number;
+    adaptive_unlock_target?: number;
+    adaptive_progress?: number;
+    adaptive_canonical_progress?: number;
+    adaptive_remaining?: number;
+    adaptive_unlock_ready?: boolean;
+    adaptive_reason?: string;
+    adaptive_next_step?: string;
+    adaptive_moment_fit?: 'high' | 'medium' | 'low';
 }
+
+interface RewardPolicy {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    helpfulRate: number | null;
+    coinMultiplier: number;
+    earningGuidance: string;
+    spendingGuidance: string;
+}
+
+const MODE_LABEL: Record<RewardPolicy['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+};
+
+const FIT_COLOR: Record<'high' | 'medium' | 'low', string> = {
+    high: 'var(--accent-green)',
+    medium: 'var(--accent-blue)',
+    low: 'var(--accent-orange)',
+};
 
 export default function StorePage() {
     const [balance, setBalance] = useState(0);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [store, setStore] = useState<StoreItem[]>([]);
     const [badges, setBadges] = useState<Badge[]>([]);
+    const [rewardPolicy, setRewardPolicy] = useState<RewardPolicy | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -41,11 +80,18 @@ export default function StorePage() {
         try {
             const res = await fetch('/api/gamification');
             if (res.ok) {
-                const data = await res.json();
-                setBalance(data.balance);
-                setTransactions(data.transactions);
-                setStore(data.store);
-                setBadges(data.badges);
+                const data = await res.json() as {
+                    balance?: number;
+                    transactions?: Transaction[];
+                    store?: StoreItem[];
+                    badges?: Badge[];
+                    rewardPolicy?: RewardPolicy;
+                };
+                setBalance(data.balance ?? 0);
+                setTransactions(data.transactions ?? []);
+                setStore(data.store ?? []);
+                setBadges(data.badges ?? []);
+                setRewardPolicy(data.rewardPolicy ?? null);
             }
         } catch (e) {
             console.error(e);
@@ -86,13 +132,34 @@ export default function StorePage() {
                     <h1 className="text-3xl font-black tracking-tight mb-2" style={{ color: 'var(--text-primary)' }}>
                         Store & Badges
                     </h1>
-                    <p style={{ color: 'var(--text-secondary)' }}>Spend your hard-earned Life Coins and track your achievements.</p>
+                    <p style={{ color: 'var(--text-secondary)' }}>
+                        {rewardPolicy
+                            ? `${MODE_LABEL[rewardPolicy.mode]} · ${rewardPolicy.energy} energy · ${rewardPolicy.earningGuidance}`
+                            : 'Rewards adapt to today, your energy, and recent feedback.'}
+                    </p>
                 </div>
                 <div className="card text-center" style={{ padding: '1rem 2rem', minWidth: '200px', background: 'var(--bg-card)', border: '2px solid var(--accent-orange)' }}>
                     <p className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--accent-orange)' }}>Coin Balance</p>
                     <p className="text-4xl font-black mt-1" style={{ color: 'var(--text-primary)' }}>{balance.toLocaleString()}</p>
                 </div>
             </header>
+
+            {rewardPolicy && (
+                <section
+                    className="rounded-lg px-4 py-3 text-sm"
+                    style={{
+                        background: 'rgba(255,255,255,0.04)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        color: 'var(--text-secondary)',
+                    }}
+                >
+                    <span className="font-bold" style={{ color: 'var(--accent-orange)' }}>
+                        Today&apos;s reward policy
+                    </span>
+                    {' · '}
+                    Earn multiplier {rewardPolicy.coinMultiplier.toFixed(2)}x · {rewardPolicy.spendingGuidance}
+                </section>
+            )}
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -109,6 +176,10 @@ export default function StorePage() {
                                     <div className="flex-1 min-w-0">
                                         <h3 className="font-bold whitespace-nowrap overflow-hidden text-ellipsis">{item.title}</h3>
                                         <p className="text-xs font-medium" style={{ color: 'var(--accent-orange)' }}>{item.cost} Coins</p>
+                                            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                                                {item.user_cost_override ? 'manual price' : `adaptive ${item.category ?? 'custom'}`}
+                                                {item.adaptive_reason ? ` · ${item.adaptive_reason}` : ''}
+                                            </p>
                                     </div>
                                     <button
                                         onClick={() => buyItem(item.id)}
@@ -127,7 +198,7 @@ export default function StorePage() {
                     <section className="card" style={{ padding: '1.5rem', border: '1px dashed var(--accent-orange)' }}>
                         <h3 className="text-lg font-bold mb-3 flex items-center gap-2">✨ Create Custom Reward</h3>
                         <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-                            Set your own real-world rewards (e.g. "Buy a Video Game") to spend your coins on!
+                            Set your own real-world rewards (e.g. &quot;Buy a Video Game&quot;) to spend your coins on!
                         </p>
                         <form
                             className="flex flex-col sm:flex-row gap-3"
@@ -136,22 +207,31 @@ export default function StorePage() {
                                 const form = e.target as HTMLFormElement;
                                 const title = (form.elements.namedItem('title') as HTMLInputElement).value;
                                 const cost = (form.elements.namedItem('cost') as HTMLInputElement).value;
+                                    const category = (form.elements.namedItem('category') as HTMLSelectElement).value;
 
                                 try {
                                     const res = await fetch('/api/gamification', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ title, cost, icon: '🌟' })
+                                        body: JSON.stringify({ title, cost: cost || null, category, icon: '🌟' })
                                     });
                                     if (res.ok) {
                                         form.reset();
                                         fetchGamificationData();
                                     }
-                                } catch (err) { }
+                                } catch { }
                             }}
                         >
                             <input required name="title" type="text" placeholder="Reward Title..." className="input flex-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
-                            <input required name="cost" type="number" min="1" placeholder="Cost..." className="input w-32" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
+                                <select name="category" className="input w-40" defaultValue="custom" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                                    <option value="custom">Custom</option>
+                                    <option value="restorative">Restorative</option>
+                                    <option value="leisure">Leisure</option>
+                                    <option value="purchase">Purchase</option>
+                                    <option value="escape">Escape</option>
+                                    <option value="social">Social</option>
+                                </select>
+                            <input name="cost" type="number" min="1" placeholder="Auto price" className="input w-32" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
                             <button type="submit" className="btn btn-primary" style={{ background: 'var(--accent-orange)' }}>Add</button>
                         </form>
                     </section>
@@ -183,8 +263,36 @@ export default function StorePage() {
                                             <h4 className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>{badge.name}</h4>
                                             <p className="text-[10px] mt-1 line-clamp-2" style={{ color: 'var(--text-muted)' }}>{badge.description}</p>
                                             <div className="mt-2 text-[10px] font-bold" style={{ color: 'var(--text-secondary)' }}>
-                                                Goal: {badge.target} {badge.metric.replace('_', ' ')}
+                                                {badge.adaptive_current_value ?? 0}/{badge.adaptive_unlock_target ?? badge.target} {badge.metric.replace('_', ' ')}
                                             </div>
+                                            {badge.adaptive_unlock_target !== undefined && badge.adaptive_unlock_target < badge.target && (
+                                                <div className="mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                                                    Today&apos;s adaptive target · long-term badge {badge.target}
+                                                </div>
+                                            )}
+                                            <div className="mt-2 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                                                <div
+                                                    className="h-full"
+                                                    style={{
+                                                        width: `${badge.adaptive_progress ?? 0}%`,
+                                                        background: badge.adaptive_moment_fit ? FIT_COLOR[badge.adaptive_moment_fit] : 'var(--accent-orange)',
+                                                    }}
+                                                />
+                                            </div>
+                                            {badge.adaptive_next_step && (
+                                                <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                                                    <span style={{ color: badge.adaptive_moment_fit ? FIT_COLOR[badge.adaptive_moment_fit] : 'var(--text-secondary)', fontWeight: 700 }}>
+                                                        {badge.adaptive_moment_fit ?? 'medium'} fit
+                                                    </span>
+                                                    {' · '}
+                                                    {badge.adaptive_next_step}
+                                                </p>
+                                            )}
+                                            {badge.adaptive_remaining !== undefined && badge.adaptive_remaining > 0 && (
+                                                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                                                    {badge.adaptive_remaining} more for today&apos;s unlock target.
+                                                </p>
+                                            )}
                                         </div>
                                     ))}
                                 </div>

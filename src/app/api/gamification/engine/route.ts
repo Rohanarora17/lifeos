@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkAchievements } from '@/lib/intelligence';
+import { checkAchievements } from '@/lib/achievements';
 
 export async function POST() {
     try {
