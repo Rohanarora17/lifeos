@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface StudyBlock {
     title: string;
@@ -13,18 +13,66 @@ interface StudyPlan {
     topic: string;
     overview: string;
     blocks: StudyBlock[];
+    adaptiveContext?: {
+        mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+        energy: 'high' | 'medium' | 'low';
+        mood: 'high' | 'medium' | 'low' | null;
+        guidance: string;
+        studyBlockMinutes: number;
+        breakMinutes: number;
+        generatedBy: 'ai' | 'adaptive_fallback';
+    };
 }
+
+interface StudyPlanDefaults {
+    recommendedDurationMinutes: number;
+    adaptiveContext: {
+        mode: NonNullable<StudyPlan['adaptiveContext']>['mode'];
+        energy: NonNullable<StudyPlan['adaptiveContext']>['energy'];
+        mood: NonNullable<StudyPlan['adaptiveContext']>['mood'];
+        guidance: string;
+        nextBestFocusWindow: string;
+        standupGoal: string | null;
+        studyBlockMinutes: number;
+        breakMinutes: number;
+    };
+}
+
+const modeLabel: Record<NonNullable<StudyPlan['adaptiveContext']>['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+};
 
 export default function StudyPlanPage() {
     const [topic, setTopic] = useState('');
-    const [duration, setDuration] = useState(60);
+    const [duration, setDuration] = useState<number | ''>('');
     const [difficulty, setDifficulty] = useState('intermediate');
     const [plan, setPlan] = useState<StudyPlan | null>(null);
+    const [defaults, setDefaults] = useState<StudyPlanDefaults | null>(null);
+    const [durationTouched, setDurationTouched] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/study-plan')
+            .then((res) => res.ok ? res.json() : null)
+            .then((data: StudyPlanDefaults | null) => {
+                if (cancelled || !data?.recommendedDurationMinutes) return;
+                setDefaults(data);
+                if (!durationTouched) setDuration(Math.round(data.recommendedDurationMinutes));
+            })
+            .catch(() => { });
+        return () => {
+            cancelled = true;
+        };
+    }, [durationTouched]);
+
     const generatePlan = async () => {
-        if (!topic) return;
+        if (!topic || !duration) return;
         setLoading(true);
         setError('');
         try {
@@ -39,7 +87,7 @@ export default function StudyPlanPage() {
             } else {
                 setError(data.error || 'Failed to generate plan');
             }
-        } catch (e) {
+        } catch {
             setError('Error connecting to server');
         } finally {
             setLoading(false);
@@ -53,7 +101,7 @@ export default function StudyPlanPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Study Plans 📚</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        Generate optimized Pomodoro-style study sessions for any topic.
+                        Generate study sessions shaped by the current day, energy, and workload.
                     </p>
                 </div>
             </div>
@@ -75,13 +123,23 @@ export default function StudyPlanPage() {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Time Available (min)</label>
-                                <input
-                                    type="number"
-                                    className="w-full input-field"
-                                    value={duration}
-                                    onChange={(e) => setDuration(parseInt(e.target.value) || 60)}
-                                    min={10} max={480}
-                                />
+	                                <input
+	                                    type="number"
+	                                    className="w-full input-field"
+	                                    value={duration}
+	                                    onChange={(e) => {
+	                                        setDurationTouched(true);
+	                                        const parsed = parseInt(e.target.value, 10);
+	                                        setDuration(Number.isFinite(parsed) && parsed > 0 ? parsed : '');
+	                                    }}
+	                                    min={10} max={480}
+	                                />
+                                {defaults && (
+                                    <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                                        Suggested {Math.round(defaults.recommendedDurationMinutes)}m from {modeLabel[defaults.adaptiveContext.mode].toLowerCase()} mode · {defaults.adaptiveContext.studyBlockMinutes}m blocks
+                                        {defaults.adaptiveContext.breakMinutes > 0 ? ` · ${defaults.adaptiveContext.breakMinutes}m breaks` : ''}
+                                    </p>
+                                )}
                             </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Current Skill Level</label>
@@ -94,17 +152,26 @@ export default function StudyPlanPage() {
                                     <option value="intermediate">Intermediate</option>
                                     <option value="advanced">Advanced</option>
                                 </select>
-                            </div>
-                            <div className="flex items-end">
-                                <button
-                                    className="w-full btn-primary h-[42px] flex items-center justify-center gap-2"
-                                    onClick={generatePlan}
-                                    disabled={loading || !topic}
-                                >
+	                            </div>
+	                            <div className="flex items-end">
+	                                <button
+	                                    className="w-full btn-primary h-[42px] flex items-center justify-center gap-2"
+	                                    onClick={generatePlan}
+	                                    disabled={loading || !topic || !duration}
+	                                >
                                     {loading ? 'Generating...' : '✨ Generate Plan'}
                                 </button>
                             </div>
                         </div>
+                        {defaults && (
+                            <div className="mt-2 text-xs rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.03)' }}>
+                                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{modeLabel[defaults.adaptiveContext.mode]}</span>
+                                {' '}· {defaults.adaptiveContext.energy} energy
+                                {defaults.adaptiveContext.nextBestFocusWindow ? ` · best window ${defaults.adaptiveContext.nextBestFocusWindow}` : ''}
+                                {defaults.adaptiveContext.standupGoal ? ` · today: ${defaults.adaptiveContext.standupGoal}` : ''}
+                                <div className="mt-1">{defaults.adaptiveContext.guidance}</div>
+                            </div>
+                        )}
                         {error && <p className="text-red-500 text-sm">{error}</p>}
                     </div>
 
@@ -112,10 +179,26 @@ export default function StudyPlanPage() {
                     {plan && (
                         <div className="space-y-6 animate-fade-in section-slide-up">
                             <div className="card p-6 border rounded-xl" style={{ borderColor: 'rgba(59, 130, 246, 0.3)', background: 'linear-gradient(to bottom right, rgba(59, 130, 246, 0.05), transparent)' }}>
-                                <h3 className="text-xl font-bold mb-2 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
-                                    <span>🧠</span> {plan.topic}
-                                </h3>
+                                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3 mb-2">
+                                    <h3 className="text-xl font-bold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                                        <span>🧠</span> {plan.topic}
+                                    </h3>
+                                    {plan.adaptiveContext && (
+                                        <div className="text-xs px-3 py-2 rounded-lg border" style={{ borderColor: 'rgba(99, 102, 241, 0.25)', background: 'rgba(99, 102, 241, 0.08)', color: 'var(--text-secondary)' }}>
+                                            <span className="font-bold" style={{ color: 'var(--text-primary)' }}>
+                                                {modeLabel[plan.adaptiveContext.mode]}
+                                            </span>
+                                            {' '}· {plan.adaptiveContext.energy} energy · {plan.adaptiveContext.studyBlockMinutes}m blocks
+                                            {plan.adaptiveContext.breakMinutes > 0 ? ` · ${plan.adaptiveContext.breakMinutes}m breaks` : ''}
+                                        </div>
+                                    )}
+                                </div>
                                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{plan.overview}</p>
+                                {plan.adaptiveContext && (
+                                    <p className="text-xs mt-3" style={{ color: 'var(--text-secondary)' }}>
+                                        {plan.adaptiveContext.guidance}
+                                    </p>
+                                )}
                             </div>
 
                             <div className="relative">

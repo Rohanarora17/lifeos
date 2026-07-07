@@ -2,6 +2,7 @@ import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { getIntelligenceProfile } from './intelligence';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import type { GuardianStartRequest, SessionIntentProfile, WorkMode } from './guardian-types';
 
 // ─── Session history for similar topics ──────────────────────────────────────
@@ -53,9 +54,9 @@ export async function resolveSessionIntent(
 ): Promise<SessionIntentProfile> {
   const topic = request.topic || 'Deep Work';
   const mood = request.mood || null;
-  const durationMinutes = request.durationMinutes || 60;
 
   const uil = getIntelligenceProfile();
+  const durationMinutes = getAdaptiveSessionMinutes(request.durationMinutes);
   const energyAtStart = (mood ?? uil.currentEnergyEstimate ?? 'medium') as 'high' | 'medium' | 'low';
   const coachingStyle = uil.preferredCoachingStyle ?? 'balanced';
   const recentDistractionTriggers = uil.distractionTriggers?.slice(0, 5) ?? [];

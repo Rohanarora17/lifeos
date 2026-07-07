@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import type { GuardianPolicyBundle, GuardianEvalScenario, LLMCalibrationSignal } from './guardian-types';
 
 export async function extractEvalCaseFromFeedback(
@@ -69,7 +70,7 @@ export async function extractEvalCaseFromFeedback(
     `).get(sessionId) as { target_title: string; duration_minutes: number } | undefined;
 
     const scenario: GuardianEvalScenario = {
-      durationMinutes: sessionRow?.duration_minutes ?? 60,
+      durationMinutes: getAdaptiveSessionMinutes(sessionRow?.duration_minutes),
       targetTitle: sessionRow?.target_title ?? 'Unknown Session',
       events: scenarioEvents,
       expected,
