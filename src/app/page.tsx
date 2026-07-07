@@ -1,11 +1,38 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import ScoreRing from '@/components/ScoreRing';
 import DonutChart from '@/components/DonutChart';
 import AICoach from '@/components/AICoach';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
-import { scoreColor, scoreBadgeBg, scoreBadgeBorder, scoreBadgeText, classifyScore, efficacyEmoji, cognitiveLoadColor, progressColor } from '@/lib/score-classify';
+import { scoreColor, scoreBadgeBg, scoreBadgeBorder, scoreBadgeText, classifyScore, cognitiveLoadColor, progressColor } from '@/lib/score-classify';
+
+type PersonalizationMode = 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+
+interface DashboardPersonalization {
+  mode: PersonalizationMode;
+  guidance: string;
+  recommendedSessionMinutes: number;
+  openTasks: number;
+  overdueTasks: number;
+  doingTasks: string[];
+  uncheckedHabits: string[];
+  calendarEvents: string[];
+  recentDistractionMinutes: number;
+  standupGoal: string | null;
+  narrative: string;
+  energy: 'high' | 'medium' | 'low';
+  mood: 'high' | 'medium' | 'low' | null;
+  coachingStyle: 'direct' | 'balanced' | 'gentle';
+  focusTrend: 'improving' | 'declining' | 'stable';
+  nextBestFocusWindow: string;
+  alertFatigueLevel: 'low' | 'medium' | 'high';
+  recentAlerts: number;
+  helpfulRate: number | null;
+  corrections30d: number;
+  activeSessionTarget: string | null;
+}
 
 interface DashboardData {
   today: {
@@ -36,13 +63,42 @@ interface DashboardData {
     distraction_minutes: number; tasks_completed: number;
   }[];
   intelligence?: {
-    cognitiveLoad: { openTaskCount: number; mentalBandwidth: number; status: string; quickWins: any[] };
-    recommendedTasks: { id: number; title: string; priority: string; goalTitle: string | null; score: number; reason: string }[];
+    cognitiveLoad: { openTaskCount: number; mentalBandwidth: number; status: string; quickWins: unknown[] };
+    recommendedTasks: {
+      id: number;
+      title: string;
+      priority: string;
+      goalTitle: string | null;
+      score: number;
+      reason: string;
+      momentFit?: 'high' | 'medium' | 'low';
+      estimatedMinutes?: number | null;
+      energyRequired?: 'low' | 'medium' | 'high' | null;
+      feedbackHint?: string | null;
+    }[];
     efficacyMode: { rate: number; isRecoveryMode: boolean; message: string; suggestedActions: string[] };
     goalConflicts: { goalA: string; goalB: string; message: string }[];
     topGoals: { id: number; title: string; deadline: string | null; category: string; total_tasks: number; done_tasks: number; progress: number }[];
     unreadAlerts: number;
+    dashboardPolicy: {
+      mode: PersonalizationMode;
+      headline: string;
+      primaryAction: 'continue_focus' | 'start_recommended_task' | 'clear_deadline' | 'minimum_habit' | 'plan_tomorrow' | 'recover' | 'review_day';
+      primaryLabel: string;
+      primaryReason: string;
+      focusTarget: {
+        type: 'task' | 'session' | 'habit' | 'planning' | 'review';
+        id: number | null;
+        title: string;
+      };
+      sessionMinutes: number;
+      sessionReason: string;
+      notificationPosture: 'normal' | 'quiet' | 'urgent_only';
+      notificationReason: string;
+      dashboardEmphasis: Array<'tasks' | 'habits' | 'calendar' | 'recovery' | 'reflection' | 'activity'>;
+    };
   };
+  personalization?: DashboardPersonalization;
 }
 
 interface InsightsData {
@@ -56,20 +112,119 @@ interface InsightsData {
   habits: { completionRate: number | null };
 }
 
+interface FocusSessionHistory {
+  actual_duration_seconds?: number | null;
+  duration_minutes?: number | null;
+  productive_seconds?: number | null;
+  distraction_seconds?: number | null;
+  neutral_seconds?: number | null;
+  ai_report?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  top_domains?: string | null;
+  task_title?: string | null;
+  goal_title?: string | null;
+  primary_domain?: string | null;
+  status?: string | null;
+  tabs_blocked?: number | null;
+  tabs_overridden?: number | null;
+}
+
+interface AlertCenterPolicy {
+  posture: 'normal' | 'quiet' | 'urgent_only';
+  reason: string;
+  emptyState: string;
+  visibleSeverities: string[];
+  quietedCount: number;
+  summary: string;
+  rawUnreadCount: number;
+  mode: PersonalizationMode;
+  alertFatigueLevel: 'low' | 'medium' | 'high';
+}
+
+interface SessionDomainSummary {
+  domain?: string;
+}
+
+const modeLabels: Record<PersonalizationMode, string> = {
+  protect_focus: 'Protect focus',
+  deadline_pressure: 'Deadline pressure',
+  recovery: 'Recovery',
+  planning: 'Planning',
+  normal: 'Balanced',
+};
+
+const modeAccents: Record<PersonalizationMode, string> = {
+  protect_focus: '#22c55e',
+  deadline_pressure: '#ef4444',
+  recovery: '#f59e0b',
+  planning: '#38bdf8',
+  normal: '#a78bfa',
+};
+
+function formatHelpfulRate(rate: number | null) {
+  return rate === null ? 'learning' : `${Math.round(rate * 100)}% helpful`;
+}
+
+function formatAdaptiveSignal(personalization: DashboardPersonalization) {
+  if (personalization.overdueTasks > 0) {
+    return `${personalization.overdueTasks} overdue task${personalization.overdueTasks === 1 ? '' : 's'} need concrete relief.`;
+  }
+  if (personalization.mode === 'protect_focus') {
+    return 'Focus looks worth protecting, so low-urgency nudges should stay quiet.';
+  }
+  if (personalization.mode === 'recovery') {
+    return 'Energy is low, so suggestions should shrink to minimum viable actions.';
+  }
+  if (personalization.recentDistractionMinutes >= 20) {
+    return `${personalization.recentDistractionMinutes} distraction minutes in the last 2 hours.`;
+  }
+  if (personalization.standupGoal) {
+    return `Today is anchored on: ${personalization.standupGoal}`;
+  }
+  return personalization.guidance;
+}
+
+function formatNotificationEmpty(personalization?: DashboardPersonalization, alertPolicy?: AlertCenterPolicy | null) {
+  if (alertPolicy) return alertPolicy.emptyState;
+  if (!personalization) return 'No new notifications';
+  if (personalization.alertFatigueLevel === 'high') return 'Quieting non-urgent notifications for now';
+  if (personalization.mode === 'protect_focus') return 'No routine notifications during this focus window';
+  if (personalization.mode === 'recovery') return 'Only important nudges right now';
+  return 'No new notifications';
+}
+
+function taskFitColor(fit?: 'high' | 'medium' | 'low') {
+  if (fit === 'high') return '#22c55e';
+  if (fit === 'low') return '#f59e0b';
+  return '#667eea';
+}
+
+function taskFitBg(fit?: 'high' | 'medium' | 'low') {
+  if (fit === 'high') return 'rgba(34,197,94,0.08)';
+  if (fit === 'low') return 'rgba(245,158,11,0.08)';
+  return 'rgba(102,126,234,0.1)';
+}
+
 export default function DashboardPage() {
+  const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [alerts, setAlerts] = useState<{ id: number; type: string; message: string; severity: string; created_at: string }[]>([]);
+  const [alerts, setAlerts] = useState<{
+    id: number;
+    type: string;
+    message: string;
+    severity: string;
+    created_at: string;
+    feedback?: 'helpful' | 'not_helpful' | 'dismissed' | null;
+    adaptive_reason?: string | null;
+  }[]>([]);
+  const [alertPolicy, setAlertPolicy] = useState<AlertCenterPolicy | null>(null);
   const [showAlerts, setShowAlerts] = useState(false);
   const [insights, setInsights] = useState<InsightsData | null>(null);
   const { session, start: startSession, end: endSession } = useGuardianSession();
-  const focusSessions: any[] = []; // Legacy section hidden — guardian history is at /guardian
-  const [liveFocusStats, setLiveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
-
-  // Reset live stats when a new session starts
-  useEffect(() => {
-    if (session.active) setLiveFocusStats({ productiveSeconds: 0, distractionSeconds: 0 });
-  }, [session.sessionId]);
+  const focusSessions: FocusSessionHistory[] = []; // Legacy section hidden — guardian history is at /guardian
+  const [liveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -78,7 +233,10 @@ export default function DashboardPage() {
       .catch(() => setLoading(false));
     fetch('/api/alerts')
       .then(r => r.json())
-      .then(d => setAlerts(d.alerts || []))
+      .then(d => {
+        setAlerts(d.alerts || []);
+        setAlertPolicy(d.alertPolicy || null);
+      })
       .catch(() => { });
     fetch('/api/guardian/insights')
       .then(r => r.json())
@@ -93,13 +251,41 @@ export default function DashboardPage() {
     }
   }, [session.active, session.timeLeftSeconds, endSession]);
 
-  const startFocus = async (goalId: number | null, goalTitle: string | null, taskTitle: string | null, mins: number = 60) => {
+  const startFocus = async (goalId: number | null, goalTitle: string | null, taskTitle: string | null, mins?: number) => {
+    const durationMinutes = mins ?? data?.personalization?.recommendedSessionMinutes;
     await startSession({
       goalId: goalId ? String(goalId) : null,
       goalTitle,
       conceptNodeName: taskTitle || goalTitle || 'Focus Session',
-      durationMinutes: mins,
+      durationMinutes,
     });
+  };
+
+  const runDashboardPolicyAction = async () => {
+    const policy = data?.intelligence?.dashboardPolicy;
+    if (!policy) return;
+
+    if (policy.focusTarget.type === 'task') {
+      if (policy.focusTarget.id) {
+        sendRecommendationFeedback(policy.focusTarget.id, 'started', `started from dashboard policy: ${policy.primaryAction}`);
+      }
+      await startFocus(null, null, policy.focusTarget.title, policy.sessionMinutes);
+      return;
+    }
+
+    if (policy.focusTarget.type === 'planning') {
+      router.push('/planner');
+      return;
+    }
+
+    if (policy.focusTarget.type === 'habit') {
+      router.push('/habits');
+      return;
+    }
+
+    if (policy.focusTarget.type === 'review') {
+      router.push('/guardian');
+    }
   };
 
   const cancelFocus = async () => {
@@ -111,6 +297,29 @@ export default function DashboardPage() {
     await fetch('/api/alerts', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     setAlerts([]);
     setShowAlerts(false);
+  };
+
+  const sendAlertFeedback = async (id: number, feedback: 'helpful' | 'not_helpful' | 'dismissed') => {
+    setAlerts(prev => prev.map(alert => alert.id === id ? { ...alert, feedback } : alert));
+    await fetch('/api/alerts', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, feedback }),
+    }).catch(() => {
+      setAlerts(prev => prev.map(alert => alert.id === id ? { ...alert, feedback: null } : alert));
+    });
+  };
+
+  const sendRecommendationFeedback = async (
+    taskId: number,
+    feedback: 'helpful' | 'not_now' | 'wrong' | 'started' | 'completed' | 'dismissed',
+    reason?: string,
+  ) => {
+    await fetch('/api/dashboard/recommendation-feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId, feedback, reason, surface: 'dashboard' }),
+    }).catch(() => { });
   };
 
   if (loading) {
@@ -135,9 +344,32 @@ export default function DashboardPage() {
   }
 
   const formatTime = (mins: number) => {
-    if (mins < 60) return `${mins}m`;
-    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    const rounded = Math.max(0, Math.round(mins));
+    if (rounded < 60) return `${rounded}m`;
+    const hours = Math.floor(rounded / 60);
+    const minutes = rounded % 60;
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
   };
+  const personalization = data?.personalization;
+  const dashboardPolicy = data?.intelligence?.dashboardPolicy;
+  const adaptiveFocusMinutes = dashboardPolicy?.sessionMinutes ?? personalization?.recommendedSessionMinutes ?? null;
+  const adaptiveFocusMinutesRounded = adaptiveFocusMinutes ? Math.max(5, Math.round(adaptiveFocusMinutes)) : null;
+  const selectedPolicyTarget = dashboardPolicy?.focusTarget.type === 'task' && dashboardPolicy.focusTarget.id
+    ? `task-${dashboardPolicy.focusTarget.id}`
+    : '';
+  const durationOptions = adaptiveFocusMinutes
+    ? Array.from(new Set(
+      [
+        adaptiveFocusMinutesRounded,
+        adaptiveFocusMinutes,
+        adaptiveFocusMinutes * 0.65,
+        adaptiveFocusMinutes * 1.35,
+        adaptiveFocusMinutes * 1.8,
+      ]
+        .filter((mins): mins is number => typeof mins === 'number' && mins > 0)
+        .map(mins => Math.max(5, Math.round(mins / 5) * 5))
+    )).sort((a, b) => a - b)
+    : [];
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-6 animate-fade-in">
@@ -212,9 +444,10 @@ export default function DashboardPage() {
             {/* Goal/Task selector */}
             <div style={{ flex: 1 }}>
               <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>What are you working on?</label>
-              <select
-                id="dashboard-focus-target"
-                style={{
+	              <select
+	                id="dashboard-focus-target"
+	                defaultValue={selectedPolicyTarget}
+	                style={{
                   width: '100%', padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px',
                   color: 'var(--text-primary)', fontSize: '13px',
@@ -233,31 +466,39 @@ export default function DashboardPage() {
             {/* Duration picker */}
             <div>
               <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Duration</label>
-              <select
-                id="dashboard-focus-duration"
+	              <select
+	                id="dashboard-focus-duration"
                 style={{
                   padding: '8px 10px', background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px',
                   color: 'var(--text-primary)', fontSize: '13px',
                 }}
-                defaultValue="60"
+	                defaultValue={adaptiveFocusMinutesRounded ? String(adaptiveFocusMinutesRounded) : ''}
               >
-                <option value="25">25 min</option>
-                <option value="45">45 min</option>
-                <option value="60">1 hour</option>
-                <option value="90">90 min</option>
-                <option value="120">2 hours</option>
+                {!adaptiveFocusMinutesRounded && (
+                  <option value="">Learning duration...</option>
+                )}
+                {durationOptions.map(mins => (
+	                  <option key={mins} value={mins}>
+	                    {mins === adaptiveFocusMinutesRounded ? `Adaptive (${formatTime(mins)})` : formatTime(mins)}
+	                  </option>
+	                ))}
               </select>
             </div>
 
             {/* Start button */}
             <button
+              disabled={!adaptiveFocusMinutesRounded}
               onClick={() => {
                 const targetEl = document.getElementById('dashboard-focus-target') as HTMLSelectElement;
                 const durationEl = document.getElementById('dashboard-focus-duration') as HTMLSelectElement;
                 const selected = targetEl?.value || '';
                 const selectedOption = targetEl?.options[targetEl.selectedIndex];
-                const mins = parseInt(durationEl?.value || '60');
+                const mins = parseInt(durationEl?.value || '');
+                if (!Number.isFinite(mins) || mins <= 0) {
+                  alert('LifeOS is still learning a session length for this moment.');
+                  return;
+                }
                 let goalId: number | null = null, goalTitle: string | null = null, taskTitle: string | null = null;
                 const label = selectedOption?.dataset?.title || selectedOption?.textContent?.replace(/^[🎯📋]\s*/, '') || null;
                 if (selected.startsWith('goal-')) {
@@ -273,7 +514,9 @@ export default function DashboardPage() {
                 background: 'linear-gradient(135deg, #9d4edd, #667eea)',
                 border: 'none', borderRadius: '8px',
                 color: 'white', fontWeight: 600, fontSize: '13px',
-                cursor: 'pointer', whiteSpace: 'nowrap',
+                cursor: adaptiveFocusMinutesRounded ? 'pointer' : 'not-allowed',
+                opacity: adaptiveFocusMinutesRounded ? 1 : 0.55,
+                whiteSpace: 'nowrap',
                 transition: 'all 0.15s',
               }}
             >▶ Start Focus</button>
@@ -296,21 +539,40 @@ export default function DashboardPage() {
               onClick={() => setShowAlerts(!showAlerts)}
               className="w-10 h-10 rounded-xl flex items-center justify-center transition-all"
               style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              title={alertPolicy?.reason ?? 'Notifications'}
             >
               🔔
-              {alerts.length > 0 && (
+              {(alerts.length > 0 || (alertPolicy?.quietedCount ?? 0) > 0) && (
                 <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold"
-                  style={{ background: 'var(--accent-red)', color: 'white', fontSize: '0.65rem' }}>
-                  {alerts.length}
+                  style={{
+                    background: alerts.length > 0 ? 'var(--accent-red)' : 'var(--text-muted)',
+                    color: 'white',
+                    fontSize: '0.65rem',
+                  }}>
+                  {alerts.length || alertPolicy?.quietedCount}
                 </span>
               )}
             </button>
             {showAlerts && (
               <div className="absolute right-0 top-12 w-80 max-h-96 overflow-y-auto card z-50 shadow-2xl" style={{ padding: '0' }}>
                 <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: 'var(--border)' }}>
-                  <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Notifications</span>
+                  <div>
+                    <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>Notifications</span>
+                    {alertPolicy && (
+                      <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        {alertPolicy.summary}
+                      </p>
+                    )}
+                  </div>
                   {alerts.length > 0 && <button onClick={markAllRead} className="text-xs" style={{ color: 'var(--accent-blue)' }}>Mark all read</button>}
                 </div>
+                {alertPolicy && alertPolicy.quietedCount > 0 && (
+                  <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'rgba(255,255,255,0.03)' }}>
+                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      {alertPolicy.quietedCount} lower-priority alert{alertPolicy.quietedCount === 1 ? '' : 's'} quieted: {alertPolicy.reason}
+                    </p>
+                  </div>
+                )}
                 {alerts.length > 0 ? alerts.slice(0, 10).map(a => (
                   <div key={a.id} className="px-3 py-2 border-b text-sm" style={{ borderColor: 'var(--border)' }}>
                     <div className="flex items-start gap-2">
@@ -320,11 +582,44 @@ export default function DashboardPage() {
                         <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                           {new Date(a.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                         </p>
+                        <div className="flex items-center gap-1 mt-2">
+                          {a.feedback ? (
+                            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                              learned: {a.feedback.replace('_', ' ')}
+                            </span>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => sendAlertFeedback(a.id, 'helpful')}
+                                className="text-[10px] px-2 py-0.5 rounded"
+                                style={{ background: 'rgba(34,197,94,0.12)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.2)' }}
+                              >
+                                useful
+                              </button>
+                              <button
+                                onClick={() => sendAlertFeedback(a.id, 'not_helpful')}
+                                className="text-[10px] px-2 py-0.5 rounded"
+                                style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.18)' }}
+                              >
+                                off
+                              </button>
+                              <button
+                                onClick={() => sendAlertFeedback(a.id, 'dismissed')}
+                                className="text-[10px] px-2 py-0.5 rounded"
+                                style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.08)' }}
+                              >
+                                later
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
                 )) : (
-                  <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>No new notifications ✨</p>
+                  <p className="text-sm text-center py-6" style={{ color: 'var(--text-muted)' }}>
+                    {formatNotificationEmpty(personalization, alertPolicy)}
+                  </p>
                 )}
               </div>
             )}
@@ -335,6 +630,94 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+	      {personalization && (
+	        <div className="card" style={{
+	          borderColor: `${modeAccents[personalization.mode]}55`,
+	          background: `linear-gradient(135deg, ${modeAccents[personalization.mode]}12, rgba(255,255,255,0.015))`,
+	        }}>
+	          <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr_1fr] gap-4">
+	            <div>
+	              <p className="text-xs font-semibold mb-2" style={{
+                color: modeAccents[personalization.mode],
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+	              }}>Today Mode</p>
+	              <div className="flex items-center gap-3 flex-wrap">
+	                <h2 className="text-xl font-bold">{dashboardPolicy?.headline ?? modeLabels[personalization.mode]}</h2>
+	                <span className="text-xs px-2 py-1 rounded-md" style={{
+	                  background: `${modeAccents[personalization.mode]}1f`,
+                  color: modeAccents[personalization.mode],
+                  border: `1px solid ${modeAccents[personalization.mode]}44`,
+                }}>{personalization.energy} energy{personalization.mood ? ` · ${personalization.mood} mood` : ''}</span>
+	              </div>
+	              <p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+	                {dashboardPolicy?.primaryReason ?? formatAdaptiveSignal(personalization)}
+	              </p>
+	              {dashboardPolicy && !session.active && (
+	                <div className="flex items-center gap-2 mt-3 flex-wrap">
+	                  <button
+	                    onClick={runDashboardPolicyAction}
+	                    className="btn btn-sm btn-primary"
+	                    style={{ background: modeAccents[dashboardPolicy.mode], borderColor: `${modeAccents[dashboardPolicy.mode]}66` }}
+	                  >
+	                    {dashboardPolicy.primaryLabel}
+	                  </button>
+	                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+	                    {dashboardPolicy.sessionReason}
+	                  </span>
+	                </div>
+	              )}
+	              {personalization.narrative && (
+	                <p className="text-xs mt-2 line-clamp-2" style={{ color: 'var(--text-muted)' }}>
+                  {personalization.narrative}
+                </p>
+              )}
+            </div>
+
+	            <div>
+	              <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>Adaptive Defaults</p>
+	              <div className="space-y-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+	                  <span style={{ color: 'var(--text-muted)' }}>Focus sprint</span>
+	                  <strong>{formatTime(dashboardPolicy?.sessionMinutes ?? personalization.recommendedSessionMinutes)}</strong>
+	                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span style={{ color: 'var(--text-muted)' }}>Best window</span>
+                  <strong className="text-right">{personalization.nextBestFocusWindow || 'learning'}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+	                  <span style={{ color: 'var(--text-muted)' }}>Coaching</span>
+	                  <strong>{personalization.coachingStyle}</strong>
+	                </div>
+	                {dashboardPolicy && (
+	                  <div className="flex items-center justify-between gap-3">
+	                    <span style={{ color: 'var(--text-muted)' }}>Notifications</span>
+	                    <strong>{dashboardPolicy.notificationPosture.replace('_', ' ')}</strong>
+	                  </div>
+	                )}
+	              </div>
+	            </div>
+
+            <div>
+              <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>What It Knows Now</p>
+              <div className="flex flex-wrap gap-2">
+                <span className="badge badge-blue">{personalization.openTasks} open</span>
+                {personalization.overdueTasks > 0 && <span className="badge badge-red">{personalization.overdueTasks} overdue</span>}
+                {personalization.uncheckedHabits.length > 0 && <span className="badge badge-yellow">{personalization.uncheckedHabits.length} habits left</span>}
+                {personalization.calendarEvents.length > 0 && <span className="badge badge-green">{personalization.calendarEvents.length} calendar</span>}
+                <span className="badge" style={{
+                  background: personalization.alertFatigueLevel === 'high' ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.05)',
+                  color: personalization.alertFatigueLevel === 'high' ? '#ef4444' : 'var(--text-secondary)',
+                }}>alerts {personalization.alertFatigueLevel}</span>
+              </div>
+	              <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+	                {dashboardPolicy?.notificationReason ?? `Feedback loop: ${formatHelpfulRate(personalization.helpfulRate)} · ${personalization.corrections30d} corrections in 30d`}
+	              </p>
+	            </div>
+          </div>
+        </div>
+      )}
 
       {/* Top Row: Score + Level + Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -540,7 +923,7 @@ export default function DashboardPage() {
               <span>📋</span> Daily Plan (AI Curated)
             </h3>
             <div className="space-y-2">
-              {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map((t, i) => (
+              {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map(t => (
                 <div key={t.id} className="flex items-start gap-3 py-2 group">
                   <button
                     onClick={() => {
@@ -555,19 +938,68 @@ export default function DashboardPage() {
                           }
                         };
                       });
+                      sendRecommendationFeedback(t.id, 'completed', 'completed from daily plan');
                       // API Call
-                      fetch('/api/tasks/' + t.id, {
+                      fetch('/api/tasks', {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ status: 'done' })
+                        body: JSON.stringify({ id: t.id, status: 'done' })
                       }).catch(() => { });
                     }}
                     title="Mark task as done"
                     className="w-5 h-5 rounded-full mt-0.5 border-2 flex-shrink-0 border-slate-500 hover:border-green-500 hover:bg-green-500/10 transition-colors"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{t.title}</p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="text-sm font-medium truncate">{t.title}</p>
+                      {t.momentFit && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0" style={{
+                          color: taskFitColor(t.momentFit),
+                          border: `1px solid ${taskFitColor(t.momentFit)}44`,
+                          background: taskFitBg(t.momentFit),
+                        }}>{t.momentFit} fit</span>
+                      )}
+                    </div>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t.reason}</p>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {t.estimatedMinutes ? (
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t.estimatedMinutes}m</span>
+                      ) : null}
+                      {t.energyRequired ? (
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t.energyRequired} energy</span>
+                      ) : null}
+                      {t.feedbackHint ? (
+                        <span className="text-[10px]" style={{ color: 'var(--accent-orange)' }}>{t.feedbackHint}</span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => sendRecommendationFeedback(t.id, 'helpful', 'user marked daily plan task as a good pick')}
+                        className="text-[10px] px-2 py-0.5 rounded"
+                        style={{ background: 'rgba(34,197,94,0.1)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.18)' }}
+                      >
+                        good pick
+                      </button>
+                      <button
+                        onClick={() => {
+                          sendRecommendationFeedback(t.id, 'not_now', 'user rejected daily plan timing');
+                          setData(prev => {
+                            if (!prev || !prev.intelligence) return prev;
+                            return {
+                              ...prev,
+                              intelligence: {
+                                ...prev.intelligence,
+                                recommendedTasks: prev.intelligence.recommendedTasks.filter(rt => rt.id !== t.id)
+                              }
+                            };
+                          });
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded"
+                        style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.18)' }}
+                      >
+                        not now
+                      </button>
+                    </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className="badge text-xs flex-shrink-0" style={{
@@ -577,7 +1009,10 @@ export default function DashboardPage() {
                     <button
                       className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-0.5 rounded cursor-pointer"
                       style={{ background: 'var(--accent-purple)', color: 'white' }}
-                      onClick={() => startFocus(null, null, t.title)}
+                      onClick={() => {
+                        sendRecommendationFeedback(t.id, 'started', 'started focus from daily plan');
+                        startFocus(null, null, t.title);
+                      }}
                       disabled={session.active}
                     >
                       ⏱️ Focus
@@ -672,20 +1107,32 @@ export default function DashboardPage() {
             <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>🎯 Recent Focus Sessions</h3>
           </div>
           <div className="space-y-3">
-            {focusSessions.slice(0, 5).map((s: any, i: number) => {
+            {focusSessions.slice(0, 5).map((s, i) => {
               const duration = s.actual_duration_seconds ? Math.round(s.actual_duration_seconds / 60) : (s.duration_minutes || 0);
-              const prodMin = s.productive_seconds ? Math.round(s.productive_seconds / 60) : 0;
-              const distMin = s.distraction_seconds ? Math.round(s.distraction_seconds / 60) : 0;
-              const neutMin = s.neutral_seconds ? Math.round(s.neutral_seconds / 60) : 0;
-              const totalSecs = (s.productive_seconds || 0) + (s.distraction_seconds || 0) + (s.neutral_seconds || 0);
-              const prodPct = totalSecs > 0 ? Math.round((s.productive_seconds / totalSecs) * 100) : 0;
-              const distPct = totalSecs > 0 ? Math.round((s.distraction_seconds / totalSecs) * 100) : 0;
-              const neutPct = totalSecs > 0 ? Math.round((s.neutral_seconds / totalSecs) * 100) : 0;
+              const productiveSeconds = s.productive_seconds ?? 0;
+              const distractionSeconds = s.distraction_seconds ?? 0;
+              const neutralSeconds = s.neutral_seconds ?? 0;
+              const tabsBlocked = s.tabs_blocked ?? 0;
+              const tabsOverridden = s.tabs_overridden ?? 0;
+              const prodMin = productiveSeconds ? Math.round(productiveSeconds / 60) : 0;
+              const distMin = distractionSeconds ? Math.round(distractionSeconds / 60) : 0;
+              const neutMin = neutralSeconds ? Math.round(neutralSeconds / 60) : 0;
+              const totalSecs = productiveSeconds + distractionSeconds + neutralSeconds;
+              const prodPct = totalSecs > 0 ? Math.round((productiveSeconds / totalSecs) * 100) : 0;
+              const distPct = totalSecs > 0 ? Math.round((distractionSeconds / totalSecs) * 100) : 0;
+              const neutPct = totalSecs > 0 ? Math.round((neutralSeconds / totalSecs) * 100) : 0;
               const score = s.ai_report ? (() => { try { return JSON.parse(s.ai_report)?.score; } catch { return null; } })() : null;
               const startTime = s.started_at ? new Date(s.started_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
               const endTime = s.ended_at ? new Date(s.ended_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
               const dateStr = s.started_at ? new Date(s.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-              const topDomains = s.top_domains ? (() => { try { return JSON.parse(s.top_domains); } catch { return []; } })() : [];
+              const topDomains: Array<string | SessionDomainSummary> = s.top_domains ? (() => {
+                try {
+                  const parsed: unknown = JSON.parse(s.top_domains);
+                  return Array.isArray(parsed) ? parsed as Array<string | SessionDomainSummary> : [];
+                } catch {
+                  return [];
+                }
+              })() : [];
 
               return (
                 <div key={i} style={{
@@ -735,15 +1182,15 @@ export default function DashboardPage() {
 
                   {/* Stats Row */}
                   <div className="flex gap-4" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                    {(s.tabs_blocked > 0 || s.tabs_overridden > 0) && (
+                    {(tabsBlocked > 0 || tabsOverridden > 0) && (
                       <>
-                        {s.tabs_blocked > 0 && <span>🛑 {s.tabs_blocked} blocked</span>}
-                        {s.tabs_overridden > 0 && <span>⚠️ {s.tabs_overridden} overrides</span>}
+                        {tabsBlocked > 0 && <span>🛑 {tabsBlocked} blocked</span>}
+                        {tabsOverridden > 0 && <span>⚠️ {tabsOverridden} overrides</span>}
                       </>
                     )}
                     {topDomains.length > 0 && (
                       <span className="truncate">
-                        🌐 {topDomains.slice(0, 3).map((d: any) => typeof d === 'string' ? d : d.domain).join(', ')}
+                        🌐 {topDomains.slice(0, 3).map(d => typeof d === 'string' ? d : d.domain).filter(Boolean).join(', ')}
                       </span>
                     )}
                   </div>

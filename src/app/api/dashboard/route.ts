@@ -1,17 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getLevel, getStreakCount, getAccountabilityScore } from '@/lib/scoring';
-import { getCognitiveLoadAudit, getSmartPrioritization, getSelfEfficacyMode, detectGoalConflicts } from '@/lib/intelligence';
+import { getLevel, getStreakCount, getAccountabilityScore, getDailyActivityStats } from '@/lib/scoring';
+import { getCognitiveLoadAudit, getSelfEfficacyMode, detectGoalConflicts } from '@/lib/intelligence';
 import { getUnreadAlerts } from '@/lib/notifications';
 import { getKnowledgeMasteryBonus } from '@/lib/graph';
+import { getActiveGuardianSession } from '@/lib/guardian-runtime';
+import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
+import { getAdaptiveBands } from '@/lib/adaptive-bands';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
+import { buildAdaptiveDashboardPolicy } from '@/lib/adaptive-dashboard-policy';
+import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
 
 // GET: Dashboard overview data
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const db = getDb();
     const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
-    const { getDailyActivityStats } = require('@/lib/scoring');
     const activityStats = getDailyActivityStats(db, today);
 
     // Today's tasks
@@ -90,11 +96,35 @@ export async function GET(request: NextRequest) {
       FROM daily_scores
       WHERE date >= date('now', '-7 days')
       ORDER BY date ASC
-    `).all();
+    `).all() as Array<{
+      date: string;
+      xp_earned: number | null;
+      productive_minutes: number | null;
+      distraction_minutes: number | null;
+      tasks_completed: number | null;
+      habits_completed: number | null;
+      task_score: number;
+      habit_score: number;
+      tasks_assigned: number;
+      tasks_pending: number;
+    }>;
+
+    const activeSession = getActiveGuardianSession();
+    const personalization = buildPersonalizationSnapshot({
+      surface: 'dashboard',
+      maxInsights: 2,
+      includeMemoryFacts: 3,
+      activeSession: activeSession ? {
+        sessionId: activeSession.sessionId,
+        targetTitle: activeSession.targetTitle,
+        focusScore: activeSession.focusScoreHistory?.at(-1) ?? null,
+        elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000)),
+      } : null,
+    });
 
     // Phase 12: Intelligence layer
     const cognitiveLoad = getCognitiveLoadAudit();
-    const recommendedTasks = getSmartPrioritization();
+    const recommendedTasks = getAdaptiveTaskRecommendations(personalization);
     const efficacyMode = getSelfEfficacyMode();
     const goalConflicts = detectGoalConflicts();
 
@@ -105,7 +135,14 @@ export async function GET(request: NextRequest) {
         (SELECT COUNT(*) FROM tasks WHERE goal_id = g.id AND status = 'done') as done_tasks
       FROM goals g WHERE g.active = 1
       ORDER BY g.created_at DESC LIMIT 3
-    `).all() as any[];
+    `).all() as {
+      id: number;
+      title: string;
+      deadline: string | null;
+      category: string;
+      total_tasks: number;
+      done_tasks: number;
+    }[];
 
     const goalsWithProgress = topGoals.map(g => ({
       ...g,
@@ -114,6 +151,23 @@ export async function GET(request: NextRequest) {
 
     // Unread alerts count
     const unreadAlerts = getUnreadAlerts(100).length;
+    const recommendedSessionMinutes = getAdaptiveSessionMinutes();
+    const adaptiveBands = getAdaptiveBands();
+    const dashboardPolicy = buildAdaptiveDashboardPolicy({
+      snapshot: personalization,
+      recommendedTasks,
+      recommendedSessionMinutes,
+      habitStats,
+      unreadAlerts,
+      productiveMinutes: activityStats.productive_minutes || 0,
+      distractionMinutes: activityStats.distraction_minutes || 0,
+    });
+    const analyticsPolicy = buildAdaptiveAnalyticsPolicy({
+      snapshot: personalization,
+      weekTrend,
+      dailyCapacityMinutes: adaptiveBands.dailyCapacityMinutes,
+      recommendedSessionMinutes,
+    });
 
     return NextResponse.json({
       today: {
@@ -135,9 +189,34 @@ export async function GET(request: NextRequest) {
         cognitiveLoad,
         recommendedTasks,
         efficacyMode,
-        goalConflicts,
-        topGoals: goalsWithProgress,
-        unreadAlerts,
+	        goalConflicts,
+	        topGoals: goalsWithProgress,
+	        unreadAlerts,
+	        dashboardPolicy,
+	        analyticsPolicy,
+	      },
+      personalization: {
+        mode: personalization.moment.mode,
+        guidance: personalization.moment.guidance,
+        recommendedSessionMinutes,
+        openTasks: personalization.today.openTasks,
+        overdueTasks: personalization.today.overdueTasks,
+        doingTasks: personalization.today.doingTasks,
+        uncheckedHabits: personalization.today.uncheckedHabits,
+        calendarEvents: personalization.today.calendarEvents,
+        recentDistractionMinutes: personalization.today.recentDistractionMinutes,
+        standupGoal: personalization.userState.standupGoal,
+        narrative: personalization.userState.narrative,
+        energy: personalization.userState.energy,
+        mood: personalization.userState.mood,
+        coachingStyle: personalization.userState.coachingStyle,
+        focusTrend: personalization.userState.focusTrend,
+        nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+        alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+        recentAlerts: personalization.feedback.recentAlerts,
+        helpfulRate: personalization.feedback.helpfulRate,
+        corrections30d: personalization.feedback.corrections30d,
+        activeSessionTarget: personalization.activeSession?.targetTitle ?? null,
       },
     });
   } catch (error) {

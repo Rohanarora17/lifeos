@@ -49,7 +49,7 @@ const DEFAULT_BANDS: AdaptiveBands = {
 let clientBands: AdaptiveBands | null = null;
 
 export function setClientBands(bands: AdaptiveBands): void {
-  clientBands = bands;
+  clientBands = { ...DEFAULT_BANDS, ...bands };
 }
 
 function bands(): AdaptiveBands {
