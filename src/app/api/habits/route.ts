@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getAutomaticityScore, getStreakCount } from '@/lib/scoring';
 import { sanitizeText } from '@/lib/sanitize';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { buildAdaptiveHabitPlans, buildAdaptiveNewHabitDefaults, type AdaptiveHabitInput } from '@/lib/adaptive-habit-plan';
+import { getAdaptiveRewardDecision } from '@/lib/adaptive-rewards';
+import { buildAdaptiveHabitHistory } from '@/lib/adaptive-habit-history';
+
+type HabitRow = AdaptiveHabitInput & {
+    frequency: string;
+    created_at: string;
+    archived: number;
+    goal_id: number | null;
+};
 
 // GET: Fetch all habits with today's checkin status, or a full year of checkins for heatmap
 export async function GET(request: NextRequest) {
@@ -11,6 +22,11 @@ export async function GET(request: NextRequest) {
         const habit_id = searchParams.get('habit_id');
 
         const db = getDb();
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'habits',
+            maxInsights: 2,
+            includeMemoryFacts: 4,
+        });
 
         // Day-by-day habit history with daily scores
         if (searchParams.get('history') === 'true') {
@@ -37,11 +53,12 @@ export async function GET(request: NextRequest) {
                 ORDER BY dates.d ASC
             `).all() as { date: string; habits_completed: number; total_habits: number }[];
 
-            // Calculate daily habit score and add per-habit breakdown
+            // Calculate daily habit score and add adaptive interpretation.
             const historyWithScores = dailyHistory.map(day => {
                 const score = day.total_habits > 0 ? Math.round((day.habits_completed / day.total_habits) * 100) : null;
                 return { ...day, habit_score: score };
             });
+            const adaptiveHistory = buildAdaptiveHabitHistory(historyWithScores, personalization);
 
             // Per-habit breakdown with names
             const habitBreakdown = db.prepare(`
@@ -52,7 +69,7 @@ export async function GET(request: NextRequest) {
                 ORDER BY h.created_at ASC, hc.date ASC
             `).all();
 
-            return NextResponse.json({ history: historyWithScores, habitBreakdown, totalHabits });
+            return NextResponse.json({ history: adaptiveHistory, habitBreakdown, totalHabits });
         }
 
         if (heatmap) {
@@ -77,24 +94,54 @@ export async function GET(request: NextRequest) {
 
             query += ' GROUP BY hc.date ORDER BY hc.date ASC';
 
-            const data = db.prepare(query).all(...params);
-            return NextResponse.json({ heatmap: data });
+            const data = db.prepare(query).all(...params) as Array<{
+                date: string;
+                checkins: number;
+                habits_done: number;
+                total_habits: number;
+            }>;
+            const adaptiveHeatmap = buildAdaptiveHabitHistory(data.map(day => ({
+                date: day.date,
+                habits_completed: day.habits_done,
+                total_habits: day.total_habits,
+            })), personalization).map((day, index) => ({
+                ...data[index],
+                adaptive_target_habits: day.adaptive_target_habits,
+                adaptive_habit_score: day.adaptive_habit_score,
+                adaptive_heatmap_level: day.adaptive_heatmap_level,
+                adaptive_posture: day.adaptive_posture,
+                adaptive_reason: day.adaptive_reason,
+            }));
+            return NextResponse.json({ heatmap: adaptiveHeatmap });
         }
 
         // Default: return all active habits with today's status
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const habits = db.prepare(`
-      SELECT h.*, 
-        CASE WHEN hc.id IS NOT NULL THEN hc.completed ELSE 0 END as checked_today,
-        COALESCE(hc.value, 0) as today_value,
-        (SELECT COUNT(*) FROM habit_checkins WHERE habit_id = h.id AND completed = 1) as total_checkins
-      FROM habits h
-      LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?
-      WHERE h.archived = 0
-      ORDER BY h.created_at ASC
-    `).all(today) as any[];
+	      SELECT h.*,
+            g.title as goal_title,
+	        CASE WHEN hc.id IS NOT NULL THEN hc.completed ELSE 0 END as checked_today,
+	        COALESCE(hc.value, 0) as today_value,
+	        (SELECT COUNT(*) FROM habit_checkins WHERE habit_id = h.id AND completed = 1) as total_checkins
+	      FROM habits h
+          LEFT JOIN goals g ON g.id = h.goal_id
+	      LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?
+	      WHERE h.archived = 0
+	      ORDER BY h.created_at ASC
+	    `).all(today) as HabitRow[];
 
-        // Auto-update time-based habits for today
+        // Calculate Habit Automaticity Score (Lally Curve) before adaptive planning.
+        for (const h of habits) {
+            const checkins = db.prepare('SELECT date FROM habit_checkins WHERE habit_id = ? AND completed = 1 ORDER BY date DESC').all(h.id) as { date: string }[];
+            const streak = getStreakCount(checkins.map(c => c.date));
+            h.current_streak = streak;
+            h.automaticity_score = getAutomaticityScore(streak);
+        }
+
+        const habitDefaults = buildAdaptiveNewHabitDefaults(personalization);
+        const adaptivePlans = buildAdaptiveHabitPlans(habits, personalization);
+
+        // Auto-update time-based habits for today against today's adaptive target, not the static base target.
         const timeHabits = habits.filter(h => h.goal_metric === 'time');
         if (timeHabits.length > 0) {
             const productiveMinutes = db.prepare(`
@@ -104,7 +151,7 @@ export async function GET(request: NextRequest) {
 
             const todayProdMins = Math.round(productiveMinutes?.mins || 0);
 
-            db.transaction((habitsToUpdate: any[]) => {
+            db.transaction((habitsToUpdate: HabitRow[]) => {
                 for (const h of habitsToUpdate) {
                     // The activities table records ALL productive time including guardian session time.
                     // So MAX(session_value, activities_value) = activities_value (subsumes sessions),
@@ -119,7 +166,8 @@ export async function GET(request: NextRequest) {
                     const bestSource = (existing?.source === 'guardian_session' && (existing.value ?? 0) >= todayProdMins)
                         ? 'guardian_session'
                         : 'screen_time';
-                    const isCompleted = bestValue >= (h.goal_target || 1) ? 1 : 0;
+                    const todayTarget = adaptivePlans.get(h.id)?.adaptive_today_target ?? h.goal_target ?? 1;
+                    const isCompleted = bestValue >= todayTarget ? 1 : 0;
 
                     db.prepare(`
                         INSERT INTO habit_checkins (habit_id, date, completed, value, source)
@@ -135,20 +183,35 @@ export async function GET(request: NextRequest) {
             })(timeHabits);
         }
 
-        // Calculate Habit Automaticity Score (Lally Curve)
-        for (const h of habits) {
-            const checkins = db.prepare('SELECT date FROM habit_checkins WHERE habit_id = ? AND completed = 1 ORDER BY date DESC').all(h.id) as { date: string }[];
-            const streak = getStreakCount(checkins.map(c => c.date));
-            h.current_streak = streak;
-            h.automaticity_score = getAutomaticityScore(streak);
-        }
+        const adaptiveHabits = habits.map(habit => ({
+            ...habit,
+            ...adaptivePlans.get(habit.id),
+        })).sort((a, b) => {
+            if (a.checked_today !== b.checked_today) return a.checked_today - b.checked_today;
+            const scoreDiff = (b.adaptive_priority_score ?? 0) - (a.adaptive_priority_score ?? 0);
+            if (scoreDiff !== 0) return scoreDiff;
+            return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        });
 
         // Global streak: how many consecutive days have ALL habits been completed
         const allDates = db.prepare(`
       SELECT DISTINCT date FROM habit_checkins WHERE completed = 1 ORDER BY date DESC
     `).all() as { date: string }[];
 
-        return NextResponse.json({ habits, streakDates: allDates.map(d => d.date) });
+        return NextResponse.json({
+            habits: adaptiveHabits,
+            streakDates: allDates.map(d => d.date),
+            personalization: {
+                mode: personalization.moment.mode,
+                guidance: personalization.moment.guidance,
+                energy: personalization.userState.energy,
+                mood: personalization.userState.mood,
+                standupGoal: personalization.userState.standupGoal,
+                alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+                nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+            },
+            habitDefaults,
+        });
     } catch (error) {
         console.error('Habits GET error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -170,6 +233,11 @@ export async function POST(request: NextRequest) {
             }
 
             const checkinDate = date || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const rewardSnapshot = buildPersonalizationSnapshot({
+                surface: 'rewards',
+                maxInsights: 2,
+                includeMemoryFacts: 3,
+            });
 
             // Toggle: if already checked in, remove it; otherwise add it
             const existing = db.prepare(
@@ -184,22 +252,37 @@ export async function POST(request: NextRequest) {
                 } else {
                     db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
                     // Only deduct coins if balance would remain >= 0
+                    const reward = getAdaptiveRewardDecision({
+                        action: 'habit_uncheck',
+                        baseCoins: 20,
+                        subject: `ID: ${habit_id}`,
+                        snapshot: rewardSnapshot,
+                    });
+                    let applied = false;
                     try {
                         const bal = db.prepare('SELECT COALESCE(SUM(amount), 0) as b FROM coin_ledger').get() as { b: number };
-                        if (bal.b >= 20) {
-                            db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(-20, 'Unchecked Habit (ID: ' + habit_id + ')');
+                        if (bal.b >= Math.abs(reward.coins)) {
+                            db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason);
+                            applied = true;
                         }
-                    } catch (e) { }
-                    return NextResponse.json({ checked: false });
+                    } catch { }
+                    return NextResponse.json({ checked: false, reward: { ...reward, applied } });
                 }
             } else {
                 const isCompleted = completed !== undefined ? completed : 1;
                 const finalValue = value !== undefined ? value : 1;
                 db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, isCompleted ? 1 : 0, finalValue);
+                let reward = null;
                 if (isCompleted) {
-                    try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(20, 'Completed Habit (ID: ' + habit_id + ')'); } catch (e) { }
+                    reward = getAdaptiveRewardDecision({
+                        action: 'habit_checkin',
+                        baseCoins: 20,
+                        subject: `ID: ${habit_id}`,
+                        snapshot: rewardSnapshot,
+                    });
+                    try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason); } catch { }
                 }
-                return NextResponse.json({ checked: !!isCompleted, value: finalValue });
+                return NextResponse.json({ checked: !!isCompleted, value: finalValue, reward });
             }
         }
 
@@ -209,14 +292,36 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'name is required' }, { status: 400 });
         }
 
+        const createPersonalization = buildPersonalizationSnapshot({
+            surface: 'habits',
+            maxInsights: 2,
+            includeMemoryFacts: 4,
+        });
+        const createDefaults = buildAdaptiveNewHabitDefaults(createPersonalization);
+        const resolvedGoalMetric = goal_metric === 'time' || goal_metric === 'boolean'
+            ? goal_metric
+            : createDefaults.goalMetric;
+        const hasExplicitGoalTarget = goal_target !== undefined && goal_target !== null && goal_target !== '';
+        const parsedGoalTarget = Number(goal_target);
+        const resolvedGoalTarget = resolvedGoalMetric === 'time'
+            ? Math.max(1, Math.round(hasExplicitGoalTarget && Number.isFinite(parsedGoalTarget) ? parsedGoalTarget : createDefaults.timeTargetMinutes))
+            : 1;
+
         const safeName = sanitizeText(name, 200);
         const safeIcon = sanitizeText(icon || '✅', 10);
 
         const result = db.prepare(
             'INSERT INTO habits (name, icon, frequency, goal_metric, goal_target, goal_id) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(safeName, safeIcon, frequency || 'daily', goal_metric || 'boolean', goal_target || 1, goal_id || null);
+        ).run(safeName, safeIcon, frequency || 'daily', resolvedGoalMetric, resolvedGoalTarget, goal_id || null);
 
-        return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 });
+        return NextResponse.json({
+            id: result.lastInsertRowid,
+            adaptiveDefaults: {
+                ...createDefaults,
+                appliedGoalMetric: resolvedGoalMetric,
+                appliedGoalTarget: resolvedGoalTarget,
+            },
+        }, { status: 201 });
     } catch (error) {
         console.error('Habits POST error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

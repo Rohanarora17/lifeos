@@ -2,13 +2,34 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_PRO } from '@/lib/models';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getAdaptiveRewardDecision, type AdaptiveRewardDecision } from '@/lib/adaptive-rewards';
+import { recordAdaptiveHabitCheckin } from '@/lib/adaptive-habit-checkin';
 
 
 export const maxDuration = 60; // Allow 60s for Vision API processing
 
+interface ProofRequestBody {
+    habit_id?: number;
+    image_base64?: string;
+    metadata?: unknown;
+    date?: string;
+}
+
+interface HabitProofRow {
+    name: string;
+}
+
+interface VerificationResult {
+    verified: boolean;
+    reason: string;
+    reward?: AdaptiveRewardDecision | null;
+    checkin?: ReturnType<typeof recordAdaptiveHabitCheckin> | null;
+}
+
 export async function POST(request: NextRequest) {
     try {
-        const body = await request.json();
+        const body = await request.json() as ProofRequestBody;
         const { habit_id, image_base64, metadata, date } = body;
 
         if (!habit_id || !image_base64) {
@@ -16,7 +37,7 @@ export async function POST(request: NextRequest) {
         }
 
         const db = getDb();
-        const habit = db.prepare('SELECT name FROM habits WHERE id = ?').get(habit_id) as any;
+        const habit = db.prepare('SELECT name FROM habits WHERE id = ?').get(habit_id) as HabitProofRow | undefined;
         if (!habit) return NextResponse.json({ error: 'Habit not found' }, { status: 404 });
 
         const ai = getGenAI();
@@ -60,10 +81,15 @@ Return EXACTLY a JSON object with this schema:
         if (text.startsWith('\`\`\`')) text = text.substring(3);
         if (text.endsWith('\`\`\`')) text = text.substring(0, text.length - 3);
 
-        let verificationResult = { verified: false, reason: 'Failed to parse AI response' };
+        let verificationResult: VerificationResult = { verified: false, reason: 'Failed to parse AI response', reward: null };
         try {
-            verificationResult = JSON.parse(text.trim());
-        } catch (e) {
+            const parsed = JSON.parse(text.trim()) as Partial<VerificationResult>;
+            verificationResult = {
+                verified: !!parsed.verified,
+                reason: parsed.reason || 'No verification reason returned',
+                reward: null,
+            };
+        } catch {
             console.error('Failed to parse Gemini Vision JSON:', text);
         }
 
@@ -71,12 +97,29 @@ Return EXACTLY a JSON object with this schema:
             // Reward the user: Log the check-in and award coins
             const checkinDate = date || new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
-            const existing = db.prepare('SELECT id FROM habit_checkins WHERE habit_id = ? AND date = ?').get(habit_id, checkinDate);
-            if (!existing) {
-                db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, 1, 1);
+            const checkin = recordAdaptiveHabitCheckin({
+                habitId: habit_id,
+                date: checkinDate,
+                source: 'photo_proof',
+                forceComplete: true,
+            });
+            verificationResult.checkin = checkin;
+            if (!checkin.alreadyCompleted && checkin.completed) {
+                const rewardSnapshot = buildPersonalizationSnapshot({
+                    surface: 'rewards',
+                    maxInsights: 2,
+                    includeMemoryFacts: 3,
+                });
+                const reward = getAdaptiveRewardDecision({
+                    action: 'photo_proof',
+                    baseCoins: 50,
+                    subject: `${habit.name} (ID: ${habit_id})`,
+                    snapshot: rewardSnapshot,
+                });
                 try {
-                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(50, `Photo Verified: ${habit.name}`);
-                } catch (e) { }
+                    db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason);
+                } catch { }
+                verificationResult.reward = reward;
             }
         }
 
@@ -84,14 +127,18 @@ Return EXACTLY a JSON object with this schema:
 
         return NextResponse.json(verificationResult);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Proof API error:', error);
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        const status = typeof error === 'object' && error !== null && 'status' in error
+            ? Number((error as { status?: unknown }).status)
+            : undefined;
 
         // Handle Gemini 503 Overloaded or API Key exhaustions gracefully
-        if (error.status === 503 || error.message?.includes('overloaded')) {
+        if (status === 503 || message.includes('overloaded')) {
             return NextResponse.json({ verified: false, reason: "Gemini Vision is currently rate-limited or overloaded. Please try again in 1 minute." });
         }
 
-        return NextResponse.json({ verified: false, reason: 'Vision processing failed: ' + error.message });
+        return NextResponse.json({ verified: false, reason: 'Vision processing failed: ' + message });
     }
 }

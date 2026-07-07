@@ -9,6 +9,11 @@ interface DayHabitHistory {
     habits_completed: number;
     total_habits: number;
     habit_score: number | null;
+    adaptive_target_habits?: number;
+    adaptive_habit_score?: number | null;
+    adaptive_heatmap_level?: number;
+    adaptive_posture?: 'minimum' | 'steady' | 'stretch' | 'learning';
+    adaptive_reason?: string;
 }
 
 interface HabitBreakdownEntry {
@@ -32,6 +37,37 @@ interface Habit {
     goal_target: number;
     current_streak: number;
     automaticity_score: number;
+    adaptive_priority_score: number | null;
+    adaptive_rank: number | null;
+    adaptive_reason: string | null;
+    adaptive_today_target: number | null;
+    adaptive_intensity: 'minimum' | 'normal' | 'stretch' | null;
+    adaptive_moment_fit: 'high' | 'medium' | 'low' | null;
+    adaptive_goal_anchor: string | null;
+}
+
+interface HabitPersonalization {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    standupGoal: string | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+    nextBestFocusWindow: string;
+}
+
+interface HabitDefaults {
+    goalMetric: 'boolean' | 'time';
+    timeTargetMinutes: number;
+    intensity: 'minimum' | 'normal' | 'stretch';
+    reason: string;
+}
+
+interface RewardFeedback {
+    label: string;
+    reason: string;
+    mode: HabitPersonalization['mode'];
+    applied?: boolean;
 }
 
 interface HeatmapDay {
@@ -39,10 +75,38 @@ interface HeatmapDay {
     checkins: number;
     habits_done: number;
     total_habits: number;
+    adaptive_target_habits?: number;
+    adaptive_habit_score?: number | null;
+    adaptive_heatmap_level?: number;
+    adaptive_posture?: 'minimum' | 'steady' | 'stretch' | 'learning';
+    adaptive_reason?: string;
 }
+
+const MODE_LABEL: Record<HabitPersonalization['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+};
+
+const FIT_COLOR: Record<'high' | 'medium' | 'low', string> = {
+    high: 'var(--accent-green)',
+    medium: 'var(--accent-blue)',
+    low: 'var(--accent-orange)',
+};
+
+const POSTURE_LABEL: Record<NonNullable<HeatmapDay['adaptive_posture']>, string> = {
+    minimum: 'minimum',
+    steady: 'steady',
+    stretch: 'stretch',
+    learning: 'learning',
+};
 
 export default function HabitsPage() {
     const [habits, setHabits] = useState<Habit[]>([]);
+    const [personalization, setPersonalization] = useState<HabitPersonalization | null>(null);
+    const [habitDefaults, setHabitDefaults] = useState<HabitDefaults | null>(null);
     const [heatmapData, setHeatmapData] = useState<HeatmapDay[]>([]);
     const [streakDates, setStreakDates] = useState<string[]>([]);
     const [showNewHabit, setShowNewHabit] = useState(false);
@@ -50,9 +114,11 @@ export default function HabitsPage() {
     const [newIcon, setNewIcon] = useState('✅');
     const [newGoalMetric, setNewGoalMetric] = useState<'boolean' | 'time'>('boolean');
     const [newGoalTarget, setNewGoalTarget] = useState<number>(60);
+    const [newGoalTargetTouched, setNewGoalTargetTouched] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [habitHistory, setHabitHistory] = useState<DayHabitHistory[]>([]);
     const [habitBreakdown, setHabitBreakdown] = useState<HabitBreakdownEntry[]>([]);
+    const [rewardNotice, setRewardNotice] = useState<RewardFeedback | null>(null);
 
     const [proofHabitId, setProofHabitId] = useState<number | null>(null);
     const [verifying, setVerifying] = useState(false);
@@ -68,33 +134,64 @@ export default function HabitsPage() {
 
     const fetchHabits = async () => {
         const res = await fetch('/api/habits');
-        const data = await res.json();
+        const data = await res.json() as { habits?: Habit[]; streakDates?: string[]; personalization?: HabitPersonalization; habitDefaults?: HabitDefaults };
         setHabits(data.habits || []);
         setStreakDates(data.streakDates || []);
+        setPersonalization(data.personalization ?? null);
+        setHabitDefaults(data.habitDefaults ?? null);
+        if (!newGoalTargetTouched && data.habitDefaults?.timeTargetMinutes) {
+            setNewGoalTarget(data.habitDefaults.timeTargetMinutes);
+        }
     };
 
     useEffect(() => {
-        fetchHabits();
-        fetchHeatmap();
-    }, []);
+        let cancelled = false;
+
+        Promise.all([
+            fetch('/api/habits').then(res => res.json() as Promise<{ habits?: Habit[]; streakDates?: string[]; personalization?: HabitPersonalization; habitDefaults?: HabitDefaults }>),
+            fetch('/api/habits?heatmap=true').then(res => res.json() as Promise<{ heatmap?: HeatmapDay[] }>),
+        ])
+            .then(([habitData, heatmap]) => {
+                if (cancelled) return;
+                setHabits(habitData.habits || []);
+                setStreakDates(habitData.streakDates || []);
+                setPersonalization(habitData.personalization ?? null);
+                setHabitDefaults(habitData.habitDefaults ?? null);
+                if (!newGoalTargetTouched && habitData.habitDefaults?.timeTargetMinutes) {
+                    setNewGoalTarget(habitData.habitDefaults.timeTargetMinutes);
+                }
+                setHeatmapData(heatmap.heatmap || []);
+            })
+            .catch(error => console.error('Failed to load habits', error));
+
+        return () => { cancelled = true; };
+    }, [newGoalTargetTouched]);
 
     useEffect(() => {
-        if (showHistory) fetchHistory();
+        if (!showHistory) return;
+
+        let cancelled = false;
+
+        fetch('/api/habits?history=true&days=14')
+            .then(res => res.json())
+            .then(data => {
+                if (cancelled) return;
+                setHabitHistory(data.history || []);
+                setHabitBreakdown(data.habitBreakdown || []);
+            })
+            .catch(error => console.error('Failed to load habit history', error));
+
+        return () => { cancelled = true; };
     }, [showHistory]);
 
-    const fetchHistory = async () => {
-        const res = await fetch('/api/habits?history=true&days=14');
-        const data = await res.json();
-        setHabitHistory(data.history || []);
-        setHabitBreakdown(data.habitBreakdown || []);
-    };
-
     const toggleCheckin = async (habitId: number) => {
-        await fetch('/api/habits', {
+        const res = await fetch('/api/habits', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'checkin', habit_id: habitId }),
         });
+        const data = await res.json() as { reward?: RewardFeedback | null };
+        setRewardNotice(data.reward ?? null);
         fetchHabits();
         fetchHeatmap();
     };
@@ -113,10 +210,23 @@ export default function HabitsPage() {
         });
         setNewName('');
         setNewIcon('✅');
-        setNewGoalMetric('boolean');
-        setNewGoalTarget(60);
+        setNewGoalMetric(habitDefaults?.goalMetric ?? 'boolean');
+        setNewGoalTarget(habitDefaults?.timeTargetMinutes ?? 30);
+        setNewGoalTargetTouched(false);
         setShowNewHabit(false);
         fetchHabits();
+    };
+
+    const openNewHabitForm = () => {
+        setNewGoalMetric(habitDefaults?.goalMetric ?? 'boolean');
+        setNewGoalTarget(habitDefaults?.timeTargetMinutes ?? 30);
+        setNewGoalTargetTouched(false);
+        setShowNewHabit(true);
+    };
+
+    const closeNewHabitForm = () => {
+        setShowNewHabit(false);
+        setNewGoalTargetTouched(false);
     };
 
     const deleteHabit = async (id: number) => {
@@ -180,7 +290,7 @@ export default function HabitsPage() {
                         make: exifData.Make,
                     };
                 }
-            } catch (err) {
+            } catch {
                 console.log('No EXIF data found or parse error');
             }
 
@@ -203,7 +313,8 @@ export default function HabitsPage() {
 
                 const data = await res.json();
                 if (data.verified) {
-                    alert(`✅ Verified! ${data.reason}\n\nEarned +50 Coins!`);
+                    const rewardText = data.reward?.label ? `\n\n${data.reward.label}: ${data.reward.reason}` : '';
+                    alert(`✅ Verified! ${data.reason}${rewardText}`);
                     fetchHabits();
                     fetchHeatmap();
                 } else {
@@ -229,7 +340,7 @@ export default function HabitsPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Habits 🔥</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        Every action is a vote for the person you wish to become.
+                        {personalization ? `${MODE_LABEL[personalization.mode]} · ${personalization.energy} energy · ${personalization.guidance}` : 'Habits adapt to today, not a fixed streak script.'}
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -247,6 +358,23 @@ export default function HabitsPage() {
                 </div>
             </div>
 
+            {rewardNotice && (
+                <div
+                    className="mb-5 rounded-lg px-4 py-3 text-sm"
+                    style={{
+                        background: 'rgba(255,255,255,0.04)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        color: 'var(--text-secondary)',
+                    }}
+                >
+                    <span className="font-bold" style={{ color: rewardNotice.applied === false ? 'var(--text-muted)' : 'var(--accent-green)' }}>
+                        {rewardNotice.applied === false ? 'No coin change' : rewardNotice.label}
+                    </span>
+                    {' · '}
+                    {MODE_LABEL[rewardNotice.mode]} · {rewardNotice.reason}
+                </div>
+            )}
+
             {/* Habit History Section */}
             {showHistory && (
                 <div className="mb-6">
@@ -261,9 +389,9 @@ export default function HabitsPage() {
                                     <div
                                         className="w-full rounded-t"
                                         style={{
-                                            height: `${Math.max(day.habit_score ?? 0, 4)} % `,
-                                            background: day.habit_score !== null
-                                                ? progressColor(day.habit_score)
+                                            height: `${Math.max(day.adaptive_habit_score ?? day.habit_score ?? 0, 4)}%`,
+                                            background: (day.adaptive_habit_score ?? day.habit_score) !== null
+                                                ? progressColor(Math.min(day.adaptive_habit_score ?? day.habit_score ?? 0, 100))
                                                 : 'var(--border)',
                                             minHeight: day.total_habits > 0 ? '4px' : '0',
                                         }}
@@ -314,9 +442,21 @@ export default function HabitsPage() {
                                         <tr style={{ background: 'var(--bg-secondary)' }}>
                                             <td style={{ padding: '0.5rem 1rem', fontSize: '0.75rem', fontWeight: 700, position: 'sticky', left: 0, background: 'var(--bg-secondary)' }}>Score</td>
                                             {habitHistory.map(day => (
-                                                <td key={day.date} style={{ padding: '0.5rem 0.25rem', textAlign: 'center', fontSize: '0.7rem', fontWeight: 700, color: day.habit_score !== null ? progressColor(day.habit_score) : 'var(--text-muted)' }}>
-                                                    {day.habit_score !== null ? `${day.habit_score} % ` : '—'}
-                                                </td>
+	                                                <td
+	                                                    key={day.date}
+	                                                    title={day.adaptive_reason}
+	                                                    style={{
+	                                                        padding: '0.5rem 0.25rem',
+	                                                        textAlign: 'center',
+	                                                        fontSize: '0.7rem',
+	                                                        fontWeight: 700,
+	                                                        color: (day.adaptive_habit_score ?? day.habit_score) !== null
+	                                                            ? progressColor(Math.min(day.adaptive_habit_score ?? day.habit_score ?? 0, 100))
+	                                                            : 'var(--text-muted)'
+	                                                    }}
+	                                                >
+	                                                    {(day.adaptive_habit_score ?? day.habit_score) !== null ? `${day.adaptive_habit_score ?? day.habit_score}%` : '—'}
+	                                                </td>
                                             ))}
                                         </tr>
                                     </tbody>
@@ -329,21 +469,21 @@ export default function HabitsPage() {
 
             {/* Heatmap */}
             <div className="card mb-6">
-                <Heatmap data={heatmapData} />
-                <div className="flex items-center justify-between mt-3">
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                        {heatmapData.length} check-ins in the last year
-                    </p>
-                    <div className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                        <span>Less</span>
-                        <div className="heatmap-cell" style={{ width: 10, height: 10 }} />
-                        <div className="heatmap-cell level-1" style={{ width: 10, height: 10 }} />
-                        <div className="heatmap-cell level-2" style={{ width: 10, height: 10 }} />
-                        <div className="heatmap-cell level-3" style={{ width: 10, height: 10 }} />
-                        <div className="heatmap-cell level-4" style={{ width: 10, height: 10 }} />
-                        <span>More</span>
-                    </div>
-                </div>
+	                <Heatmap data={heatmapData} />
+	                <div className="flex items-center justify-between mt-3">
+	                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+	                        {heatmapData.length} check-ins in the last year · adaptive levels use your recent baseline
+	                    </p>
+	                    <div className="flex items-center gap-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+	                        <span>Learning</span>
+	                        <div className="heatmap-cell" style={{ width: 10, height: 10 }} />
+	                        <div className="heatmap-cell level-1" style={{ width: 10, height: 10 }} />
+	                        <div className="heatmap-cell level-2" style={{ width: 10, height: 10 }} />
+	                        <div className="heatmap-cell level-3" style={{ width: 10, height: 10 }} />
+	                        <div className="heatmap-cell level-4" style={{ width: 10, height: 10 }} />
+	                        <span>Stretch</span>
+	                    </div>
+	                </div>
             </div>
 
             {/* Habits List */}
@@ -395,7 +535,7 @@ export default function HabitsPage() {
                                 )}
                                 {habit.goal_metric === 'time' && (
                                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
-                                        {habit.today_value} / {habit.goal_target} min
+                                            {habit.today_value} / {habit.adaptive_today_target ?? habit.goal_target} min today
                                     </span>
                                 )}
                             </div>
@@ -405,7 +545,7 @@ export default function HabitsPage() {
                                     <div
                                         className="h-full transition-all"
                                         style={{
-                                            width: `${Math.min((habit.today_value / habit.goal_target) * 100, 100)} % `,
+                                            width: `${Math.min((habit.today_value / (habit.adaptive_today_target ?? habit.goal_target)) * 100, 100)}%`,
                                             backgroundColor: habit.checked_today ? 'var(--accent-green)' : 'var(--accent-purple)'
                                         }}
                                     />
@@ -437,6 +577,25 @@ export default function HabitsPage() {
                                     </div>
                                 )}
                             </div>
+                            {habit.adaptive_reason && (
+                                <div
+                                    className="text-xs rounded-lg px-3 py-2"
+                                    style={{
+                                        background: 'rgba(255,255,255,0.035)',
+                                        border: '1px solid rgba(255,255,255,0.07)',
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                >
+                                    <span style={{ color: habit.adaptive_moment_fit ? FIT_COLOR[habit.adaptive_moment_fit] : 'var(--text-muted)', fontWeight: 700 }}>
+                                        {habit.adaptive_moment_fit ?? 'medium'} fit
+                                    </span>
+                                    {' · '}
+                                    {habit.adaptive_intensity === 'minimum' ? 'minimum viable today' : habit.adaptive_intensity === 'stretch' ? 'stretch option today' : 'normal target today'}
+                                    {' · '}
+                                    {habit.adaptive_reason}
+                                    {habit.adaptive_goal_anchor ? ` · ${habit.adaptive_goal_anchor}` : ''}
+                                </div>
+                            )}
                         </div>
                         <button onClick={() => deleteHabit(habit.id)} className="btn btn-ghost btn-sm">🗑️</button>
                     </div>
@@ -465,7 +624,13 @@ export default function HabitsPage() {
                                     <select
                                         className="input text-sm"
                                         value={newGoalMetric}
-                                        onChange={(e: any) => setNewGoalMetric(e.target.value)}
+                                        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                                            const nextMetric = e.target.value as 'boolean' | 'time';
+                                            setNewGoalMetric(nextMetric);
+                                            if (nextMetric === 'time' && !newGoalTargetTouched) {
+                                                setNewGoalTarget(habitDefaults?.timeTargetMinutes ?? 30);
+                                            }
+                                        }}
                                     >
                                         <option value="boolean">Simple Checkbox</option>
                                         <option value="time">Time based (Productive minutes)</option>
@@ -474,28 +639,36 @@ export default function HabitsPage() {
                                     {newGoalMetric === 'time' && (
                                         <div className="flex items-center gap-2">
                                             <input
-                                                type="number"
-                                                className="input w-24 text-sm"
-                                                value={newGoalTarget}
-                                                onChange={(e) => setNewGoalTarget(Math.max(1, parseInt(e.target.value) || 60))}
-                                                min="1"
-                                            />
-                                            <span className="text-sm text-gray-400">min</span>
-                                        </div>
+	                                                type="number"
+	                                                className="input w-24 text-sm"
+	                                                value={newGoalTarget}
+	                                                onChange={(e) => {
+                                                        setNewGoalTargetTouched(true);
+                                                        setNewGoalTarget(Math.max(1, parseInt(e.target.value) || habitDefaults?.timeTargetMinutes || 30));
+                                                    }}
+	                                                min="1"
+	                                            />
+	                                            <span className="text-sm text-gray-400">min</span>
+	                                        </div>
+	                                    )}
+	                                </div>
+                                    {habitDefaults && (
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                                            Suggested new habit: {habitDefaults.goalMetric === 'time' ? `${habitDefaults.timeTargetMinutes} min` : 'simple checkbox'} · {habitDefaults.intensity} · {habitDefaults.reason}
+                                        </p>
                                     )}
-                                </div>
-                            </div>
+	                            </div>
                         </div>
                         <div className="flex gap-2">
                             <button className="btn btn-primary btn-sm" onClick={addHabit}>Add Habit</button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => setShowNewHabit(false)}>Cancel</button>
+	                            <button className="btn btn-ghost btn-sm" onClick={closeNewHabitForm}>Cancel</button>
                         </div>
                     </div>
                 ) : (
                     <button
                         className="w-full py-4 border-2 border-dashed rounded-xl text-sm transition-colors"
                         style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-                        onClick={() => setShowNewHabit(true)}
+	                        onClick={openNewHabitForm}
                         onMouseOver={e => { (e.target as HTMLElement).style.borderColor = 'rgba(102,126,234,0.4)'; (e.target as HTMLElement).style.color = 'var(--text-primary)'; }}
                         onMouseOut={e => { (e.target as HTMLElement).style.borderColor = 'var(--border)'; (e.target as HTMLElement).style.color = 'var(--text-muted)'; }}
                     >+ New habit</button>
@@ -527,7 +700,7 @@ export default function HabitsPage() {
 
 function Heatmap({ data }: { data: HeatmapDay[] }) {
     // Build 365 days grid
-    const days: { date: string; level: number }[] = [];
+    const days: { date: string; level: number; title: string }[] = [];
     const dataMap = new Map(data.map(d => [d.date, d]));
 
     const today = new Date();
@@ -537,14 +710,21 @@ function Heatmap({ data }: { data: HeatmapDay[] }) {
         const dateStr = d.toISOString().split('T')[0];
         const entry = dataMap.get(dateStr);
         let level = 0;
+        let title = `${dateStr}: No check-ins`;
         if (entry) {
-            const ratio = entry.total_habits > 0 ? entry.habits_done / entry.total_habits : 0;
-            if (ratio >= 1) level = 4;
-            else if (ratio >= 0.75) level = 3;
-            else if (ratio >= 0.5) level = 2;
-            else if (ratio > 0) level = 1;
+            if (entry.adaptive_heatmap_level !== undefined) {
+                level = entry.adaptive_heatmap_level;
+            } else {
+                const ratio = entry.total_habits > 0 ? entry.habits_done / entry.total_habits : 0;
+                if (ratio >= 1) level = 4;
+                else if (ratio >= 0.75) level = 3;
+                else if (ratio >= 0.5) level = 2;
+                else if (ratio > 0) level = 1;
+            }
+            const posture = entry.adaptive_posture ? POSTURE_LABEL[entry.adaptive_posture] : `level ${level}`;
+            title = `${dateStr}: ${posture} · ${entry.adaptive_reason ?? `${entry.habits_done}/${entry.total_habits} habits`}`;
         }
-        days.push({ date: dateStr, level });
+        days.push({ date: dateStr, level, title });
     }
 
     // Group by week
@@ -579,11 +759,11 @@ function Heatmap({ data }: { data: HeatmapDay[] }) {
                                     {showMonth ? months[new Date(firstDay.date).getMonth()] : ''}
                                 </div>
                                 {week.map((day, di) => (
-                                    <div
-                                        key={di}
-                                        className={`heatmap - cell ${day.level > 0 ? `level-${day.level}` : ''}`}
-                                        title={`${day.date}: ${day.level > 0 ? `Level ${day.level}` : 'No check-ins'}`}
-                                    />
+	                                    <div
+	                                        key={di}
+	                                        className={`heatmap-cell ${day.level > 0 ? `level-${day.level}` : ''}`}
+	                                        title={day.title}
+	                                    />
                                 ))}
                             </div>
                         );
