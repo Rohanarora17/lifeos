@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb, getSetting, setSetting } from '@/lib/db';
+import { getDb, setSetting } from '@/lib/db';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { buildAdaptiveSettingsPolicy } from '@/lib/adaptive-settings-policy';
 
 // GET: Fetch all settings (hide sensitive keys partially)
 export async function GET() {
@@ -17,7 +19,27 @@ export async function GET() {
             }
         }
 
-        return NextResponse.json({ settings });
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'settings',
+            maxInsights: 2,
+            includeThresholds: true,
+            includeMemoryFacts: 4,
+        });
+        const adaptivePolicy = buildAdaptiveSettingsPolicy(settings, personalization);
+
+        return NextResponse.json({
+            settings,
+            adaptivePolicy,
+            personalization: {
+                mode: personalization.moment.mode,
+                guidance: personalization.moment.guidance,
+                energy: personalization.userState.energy,
+                mood: personalization.userState.mood,
+                focusTrend: personalization.userState.focusTrend,
+                alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+                nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+            },
+        });
     } catch (error) {
         console.error('Settings GET error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
