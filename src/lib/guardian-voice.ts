@@ -22,6 +22,11 @@ import { sendTelegram } from './telegram';
 import { getDb } from './db';
 import { getIntelligenceContext, getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { extractMemoryFromVoice } from './memory-extractor';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { getAdaptiveTaskRecommendations } from './adaptive-task-recommendations';
+import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
+import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
+import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import {
   computeFocusSessions,
   computeFocusScore,
@@ -276,6 +281,48 @@ function normalizeMood(value: string | null | undefined): 'high' | 'medium' | 'l
   return null;
 }
 
+function buildVoicePersonalization(activeSessionId?: string | null): PersonalizationSnapshot {
+  const session = activeSessionId ? getGuardianSession(activeSessionId) : null;
+  const focusScore = session?.focusScoreHistory?.at(-1) ?? null;
+  const elapsedMinutes = session ? Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)) : 0;
+
+  return buildPersonalizationSnapshot({
+    surface: 'voice',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+    activeSession: session ? {
+      sessionId: session.sessionId,
+      targetTitle: session.targetTitle,
+      focusScore,
+      elapsedMinutes,
+    } : null,
+  });
+}
+
+function voiceModeLabel(snapshot: PersonalizationSnapshot): string {
+  if (snapshot.moment.mode === 'recovery') return 'Low-energy mode';
+  if (snapshot.moment.mode === 'deadline_pressure') return 'Deadline mode';
+  if (snapshot.moment.mode === 'protect_focus') return 'Protected-focus mode';
+  if (snapshot.moment.mode === 'planning') return 'Planning mode';
+  return 'Balanced mode';
+}
+
+function voiceSessionNudge(snapshot: PersonalizationSnapshot): string {
+  if (snapshot.moment.mode === 'recovery') return 'Keep it small and concrete.';
+  if (snapshot.moment.mode === 'deadline_pressure') return 'Use the next move for deadline relief.';
+  if (snapshot.moment.mode === 'protect_focus') return 'Stay with the current thread.';
+  if (snapshot.moment.mode === 'planning') return 'Use this to set up the next clean step.';
+  return snapshot.moment.guidance;
+}
+
+function voiceCompletionLine(snapshot: PersonalizationSnapshot, elapsed: number): string {
+  if (snapshot.moment.mode === 'recovery') return `Session ended after ${elapsed} minutes. That counts as a recovery-sized win.`;
+  if (snapshot.moment.mode === 'deadline_pressure') return `Session ended after ${elapsed} minutes. Capture the next deadline step while it is still fresh.`;
+  if (snapshot.moment.mode === 'protect_focus') return `Session ended after ${elapsed} minutes. Good protected block.`;
+  if (snapshot.moment.mode === 'planning') return `Session ended after ${elapsed} minutes. Use the notes to set up tomorrow.`;
+  return `Session ended after ${elapsed} minutes. Good work.`;
+}
+
 // ─── Heuristic intent parser (offline fallback, session-aware) ──────────────
 
 function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
@@ -299,6 +346,17 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
 
   if (/(day briefing|brief me|what's the plan today|today's plan|today plan)/.test(lower)) {
     return { action: 'day_briefing', durationMinutes };
+  }
+
+  if (/(what are my tasks|show( me)? tasks|task list|tasks today|today'?s tasks|what should i work on)/.test(lower)) {
+    const taskFilterScope = /high priority|urgent|important/.test(lower)
+      ? 'high_priority'
+      : /blocked|stuck/.test(lower)
+        ? 'blocked'
+        : /week|this week/.test(lower)
+          ? 'this_week'
+          : 'today';
+    return { action: 'show_tasks', taskFilterScope };
   }
 
   if (/(override|allow this|let me use|unblock|i need this site)/.test(lower)) {
@@ -395,7 +453,7 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
   // Create task
   const taskMatch = lower.match(/(?:add task|create task|note:|remind me to|add to my list)\s*[:.\-]?\s*(.+)/);
   if (taskMatch) {
-    return { action: 'create_task', taskTitle: taskMatch[1].trim(), taskPriority: 'medium' };
+    return { action: 'create_task', taskTitle: taskMatch[1].trim() };
   }
 
   return { action: 'unknown' };
@@ -664,6 +722,8 @@ async function runFreeformConversation(
     const { activeSession, activeGoals, activeTasks } = getGuardianContext();
     const goalTitles = (Array.isArray(activeGoals) ? activeGoals as Array<{ title: string }> : []).map(g => g.title);
     const taskTitles = (Array.isArray(activeTasks) ? activeTasks as Array<{ title: string }> : []).map(t => t.title);
+    const personalization = buildVoicePersonalization(activeSessionId);
+    const personalizationContext = formatPersonalizationContext(personalization);
 
     const historyContents = getHistoryAsContents(historyKey, 10);
     const contents = [
@@ -679,6 +739,7 @@ async function runFreeformConversation(
       `Current session: ${activeSession?.targetTitle || 'none'}`,
       `Goals: ${goalTitles.join(', ') || 'none'}`,
       `Tasks: ${taskTitles.join(', ') || 'none'}`,
+      personalizationContext,
     ].join('\n');
 
     const result = await generateWithFallback(ai, {
@@ -720,6 +781,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   const transcript = input.transcript.trim();
   const activeSessionId = getActiveSessionId(input.sessionId);
   const hKey = sessionKey(activeSessionId);
+  const personalization = buildVoicePersonalization(activeSessionId);
 
   // Load history from DB on first access for this session key
   loadVoiceHistory(hKey);
@@ -752,7 +814,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
     const intendedStartAt = intent.intendedStartAt || Date.now() + 60 * 60_000;
-    const plannedMinutes = intent.durationMinutes || 60;
+    const plannedMinutes = getAdaptiveSessionMinutes(intent.durationMinutes);
     const commitment = createSoftWatchCommitment({
       targetTitle: intent.topic,
       intendedStartAt,
@@ -798,7 +860,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
           colorId: '9',
         });
         if (eventId) {
-          const { attachCalendarEventId } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+          const { attachCalendarEventId } = await import('./guardian-runtime');
           attachCalendarEventId(commitment.id, eventId);
         }
       }
@@ -810,7 +872,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       );
     })();
 
-    const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr}. Calendar event created with reminders.`;
+    const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr} for ${plannedMinutes} minutes. ${voiceModeLabel(personalization)} shaped that duration. Calendar event created with reminders.`;
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_scheduled', transcript, intent, session: commitment, responseText: response };
   }
@@ -823,7 +885,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
-    const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+    const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = await import('./guardian-runtime');
     const comms = listSoftWatchCommitments();
     const search = intent.topic.toLowerCase();
     const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
@@ -849,7 +911,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
-    const { listSoftWatchCommitments, dismissSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+    const { listSoftWatchCommitments, dismissSoftWatchCommitment } = await import('./guardian-runtime');
     const comms = listSoftWatchCommitments();
     const search = intent.topic.toLowerCase();
     const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
@@ -891,7 +953,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
     const elapsed = Math.max(0, Math.round((Date.now() - adjusted.startedAt) / 60_000));
     const remaining = Math.max(0, newDuration - elapsed);
-    const response = `Done. Session adjusted to ${newDuration} minutes. You have ${remaining} minutes remaining.`;
+    const response = `${voiceModeLabel(personalization)}. Session adjusted to ${newDuration} minutes; ${remaining} minutes remaining. ${voiceSessionNudge(personalization)}`;
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_adjusted', transcript, intent, session: adjusted, responseText: response };
@@ -907,7 +969,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
     const ended = endGuardianSession(activeSessionId);
     const elapsed = ended ? Math.max(1, Math.round((Date.now() - (ended as { startedAt: number }).startedAt) / 60_000)) : 0;
-    const response = `Session ended. You worked for ${elapsed} minutes. Good work.`;
+    const response = voiceCompletionLine(personalization, elapsed);
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_ended', transcript, intent, session: ended, responseText: response };
@@ -922,7 +984,9 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
     pauseGuardianSession(activeSessionId);
-    const response = 'Session paused. Take your time — I\'ll be here when you\'re back.';
+    const response = personalization.moment.mode === 'recovery'
+      ? 'Session paused. Take the reset without guilt; come back with one small next step.'
+      : `Session paused. ${voiceSessionNudge(personalization)}`;
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_paused', transcript, intent, responseText: response };
@@ -939,7 +1003,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     resumeGuardianSession(activeSessionId);
     const session = getGuardianSession(activeSessionId);
     const remaining = session ? Math.max(0, session.durationMinutes - Math.round((Date.now() - session.startedAt) / 60_000)) : 0;
-    const response = `Welcome back. ${remaining} minutes remaining on ${session?.targetTitle || 'your session'}. Lock in.`;
+    const response = `Welcome back. ${remaining} minutes remaining on ${session?.targetTitle || 'your session'}. ${voiceSessionNudge(personalization)}`;
     await maybeSpeakVoiceResponse(activeSessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_resumed', transcript, intent, responseText: response };
@@ -967,13 +1031,16 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
         return { type: 'intent_only', transcript, intent, responseText: response };
       }
 
-      db.prepare(`
-        INSERT INTO habit_checkins (habit_id, date, completed, value, source)
-        VALUES (?, ?, 1, NULL, 'voice')
-        ON CONFLICT(habit_id, date) DO UPDATE SET completed = 1, source = 'voice'
-      `).run(habit.id, today);
+      const checkin = recordAdaptiveHabitCheckin({
+        habitId: habit.id,
+        date: today,
+        source: 'voice',
+        forceComplete: true,
+      });
 
-      const response = `Logged ${habit.name}. Keep the streak going.`;
+      const response = personalization.moment.mode === 'recovery'
+        ? `Logged ${habit.name}. ${checkin.adaptiveIntensity ?? 'minimum'} target today: ${checkin.value}/${checkin.adaptiveTarget}.`
+        : `Logged ${habit.name}. ${checkin.value}/${checkin.adaptiveTarget}. ${voiceSessionNudge(personalization)}`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'habit_logged', transcript, intent, responseText: response };
@@ -989,29 +1056,51 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'show_tasks') {
     try {
       const db = getDb();
-      const scope = (intent as any).taskFilterScope || 'today';
-      let whereClause = `status IN ('todo','doing')`;
-      if (scope === 'high_priority') whereClause += ` AND priority IN ('high','critical')`;
-      else if (scope === 'this_week') whereClause += ` AND (due_date IS NULL OR due_date <= date('now', '+7 days'))`;
-      else if (scope === 'blocked') whereClause += ` AND blocked_since IS NOT NULL`;
-
-      const tasks = db.prepare(
-        `SELECT title, priority, status, due_date FROM tasks WHERE ${whereClause} ORDER BY
-         CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-         CASE WHEN due_date IS NOT NULL THEN due_date ELSE '9999' END ASC
-         LIMIT 7`
-      ).all() as { title: string; priority: string; status: string; due_date: string | null }[];
+      const scope = intent.taskFilterScope || 'today';
+      const adaptiveTasks = getAdaptiveTaskRecommendations(personalization, 10);
+      const blockedTasks = scope === 'blocked'
+        ? db.prepare(`
+          SELECT id, title, priority, status, due_date
+          FROM tasks
+          WHERE status IN ('todo','doing') AND blocked_since IS NOT NULL
+          ORDER BY blocked_since ASC
+          LIMIT 7
+        `).all() as { id: number; title: string; priority: string; status: string; due_date: string | null }[]
+        : [];
+      const tasks = scope === 'blocked'
+        ? blockedTasks.map(task => ({
+          title: task.title,
+          priority: task.priority,
+          status: task.status,
+          dueDate: task.due_date,
+          reason: 'blocked and needs a decision',
+        }))
+        : adaptiveTasks
+          .filter(task => {
+            if (scope === 'high_priority') return task.priority === 'high' || task.priority === 'critical';
+            if (scope === 'this_week') return true;
+            return true;
+          })
+          .slice(0, 7)
+          .map(task => ({
+            title: task.title,
+            priority: task.priority,
+            status: task.status,
+            dueDate: null,
+            reason: task.reason,
+          }));
 
       let response: string;
       if (tasks.length === 0) {
         response = scope === 'today' ? 'No active tasks right now.' : `No ${scope.replace('_', ' ')} tasks.`;
       } else {
         const taskLines = tasks.map((t, i) => {
-          const dueStr = t.due_date ? `, due ${t.due_date}` : '';
+          const dueStr = t.dueDate ? `, due ${t.dueDate}` : '';
           const prioStr = t.priority === 'critical' || t.priority === 'high' ? ` [${t.priority}]` : '';
-          return `${i + 1}. ${t.title}${prioStr}${dueStr}`;
+          const reasonStr = t.reason ? ` — ${t.reason}` : '';
+          return `${i + 1}. ${t.title}${prioStr}${dueStr}${reasonStr}`;
         });
-        response = `You have ${tasks.length} task${tasks.length > 1 ? 's' : ''}: ${taskLines.join('; ')}.`;
+        response = `${voiceModeLabel(personalization)}. I would use this order: ${taskLines.join('; ')}.`;
       }
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
@@ -1073,14 +1162,21 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
     try {
       const db = getDb();
-      const duration = intent.durationMinutes || 60;
+      const defaults = buildAdaptiveTaskDefaults({
+        title: taskTitle,
+        taskType: 'session',
+        dueDate: intent.taskDueDate || null,
+        explicitEstimateMinutes: intent.durationMinutes,
+        snapshot: personalization,
+      });
+      const duration = defaults.estimatedMinutes;
       const result = db.prepare(
-        `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, due_date) VALUES (?, 'todo', 'medium', 'session', ?, ?)`
-      ).run(taskTitle, duration, intent.taskDueDate || null);
+        `INSERT INTO tasks (title, status, priority, task_type, estimated_minutes, energy_required, due_date) VALUES (?, 'todo', ?, 'session', ?, ?, ?)`
+      ).run(taskTitle, defaults.priority, duration, defaults.energyRequired, intent.taskDueDate || null);
       const taskId = Number(result.lastInsertRowid);
-      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* ignore */ }
+      try { const { autoLinkTaskToGoal } = await import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* ignore */ }
       
-      const response = `Scheduled session task: ${taskTitle} for ${duration} minutes.`;
+      const response = `Scheduled session task: ${taskTitle} for ${duration} minutes. ${defaults.priority} priority, ${defaults.energyRequired} energy. ${defaults.reason}.`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'task_created', transcript, intent, responseText: response };
@@ -1260,12 +1356,11 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     try {
       const db = getDb();
       const safeCategory = ['study', 'work', 'health', 'personal'].includes(intent.goalCategory ?? '') ? intent.goalCategory : 'study';
-      const result = db.prepare(
+      db.prepare(
         `INSERT INTO goals (title, type, category, deadline, archived, active) VALUES (?, ?, ?, ?, 0, 1)`
       ).run(goalTitle, type, safeCategory, intent.goalDeadline ?? null);
-      const goalId = Number(result.lastInsertRowid);
       // Auto-link existing tasks to this goal
-      try { const { autoLinkAllUnlinkedTasks } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => { }); } catch { /* non-fatal */ }
+      try { const { autoLinkAllUnlinkedTasks } = await import('./task-auto-linker'); autoLinkAllUnlinkedTasks().catch(() => { }); } catch { /* non-fatal */ }
       const deadlineStr = intent.goalDeadline ? `, deadline ${intent.goalDeadline}` : '';
       const response = `Goal created: "${goalTitle}"${deadlineStr}. What tasks should I add for it?`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
@@ -1289,17 +1384,23 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     }
     try {
       const db = getDb();
-      const safePriority = ['low', 'medium', 'high'].includes(intent.taskPriority ?? '') ? intent.taskPriority : 'medium';
+      const defaults = buildAdaptiveTaskDefaults({
+        title: taskTitle,
+        taskType: 'task',
+        dueDate: intent.taskDueDate ?? null,
+        explicitPriority: intent.taskPriority,
+        snapshot: personalization,
+      });
       const result = db.prepare(
-        `INSERT INTO tasks (title, status, priority, task_type, due_date) VALUES (?, 'todo', ?, 'task', ?)`
-      ).run(taskTitle, safePriority, intent.taskDueDate ?? null);
+        `INSERT INTO tasks (title, status, priority, task_type, due_date, estimated_minutes, energy_required) VALUES (?, 'todo', ?, 'task', ?, ?, ?)`
+      ).run(taskTitle, defaults.priority, intent.taskDueDate ?? null, defaults.estimatedMinutes, defaults.energyRequired);
       const taskId = Number(result.lastInsertRowid);
       // Background: auto-link to goal and re-rank
-      try { const { autoLinkTaskToGoal } = require('./task-auto-linker') as typeof import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* non-fatal */ }
-      try { const { triggerPrioritize } = require('./task-priority-ranker') as typeof import('./task-priority-ranker'); triggerPrioritize(); } catch { /* non-fatal */ }
+      try { const { autoLinkTaskToGoal } = await import('./task-auto-linker'); autoLinkTaskToGoal(taskId).catch(() => { }); } catch { /* non-fatal */ }
+      try { const { triggerPrioritize } = await import('./task-priority-ranker'); triggerPrioritize(); } catch { /* non-fatal */ }
 
       const dueStr = intent.taskDueDate ? `, due ${intent.taskDueDate}` : '';
-      const response = `Task added: "${taskTitle}"${dueStr}.`;
+      const response = `Task added: "${taskTitle}"${dueStr}. ${defaults.priority} priority, ${defaults.estimatedMinutes} minutes, ${defaults.energyRequired} energy. ${defaults.reason}.`;
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'task_created', transcript, intent, responseText: response };
@@ -1315,7 +1416,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'start_session' && intent.topic) {
     const session = startGuardianSession({
       topic: intent.topic,
-      durationMinutes: intent.durationMinutes || 60,
+      durationMinutes: intent.durationMinutes ? getAdaptiveSessionMinutes(intent.durationMinutes) : undefined,
       mood: intent.mood || null,
       source: 'voice',
       sessionContext: transcript, // full voice utterance carries nuance: "I'll be switching tabs", tools, etc.
@@ -1324,8 +1425,8 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
     // Proactive coaching: speak top UIL insight with the session start confirmation
     const profile = getIntelligenceProfile();
     const topInsight = profile.coachingInsights?.[0];
-    const response = `Starting a guarded session for ${session.targetTitle} for ${session.durationMinutes} minutes.` +
-      (topInsight ? ` ${topInsight}` : ' Lock in.');
+    const response = `Starting a guarded session for ${session.targetTitle} for ${session.durationMinutes} minutes. ${voiceSessionNudge(personalization)}` +
+      (topInsight ? ` ${topInsight}` : '');
     await maybeSpeakVoiceResponse(session.sessionId, response);
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_started', transcript, intent, session, responseText: response };
@@ -1345,7 +1446,6 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       // Pull everything the brain knows
       const profile = getIntelligenceProfile();
       const contextBlock = getIntelligenceContext({ maxInsights: 5, includeToday: true, includeThresholds: true });
-      const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
       // Focus score last 7 days
       const focusTrend: string[] = [];
       for (let i = 6; i >= 0; i--) {
@@ -1403,7 +1503,7 @@ RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specif
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'deep_analysis', transcript, intent, responseText: response };
-    } catch (err) {
+    } catch {
       const response = 'Could not run deep analysis right now. Try again.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
       return { type: 'intent_only', transcript, intent, responseText: response };

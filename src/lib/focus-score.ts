@@ -2,6 +2,39 @@ import { GuardianPolicyBundle, GuardianState } from './guardian-types';
 
 export type Trend = 'rising' | 'stable' | 'falling';
 
+function isContinuityEvent(event: { type: string }) {
+    return event.type === 'tab' || event.type === 'native_context';
+}
+
+function nativeClassification(category?: unknown) {
+    if (category === 'distraction') return 'distraction';
+    if (category === 'deep_work' || category === 'shallow_work' || category === 'communication') return 'on_topic';
+    return 'unknown';
+}
+
+function eventClassification(event: { url?: string; payload?: Record<string, unknown> }) {
+    const payloadClassification = event.payload?.classification;
+    if (payloadClassification === 'on_topic' || payloadClassification === 'distraction') return payloadClassification;
+    return nativeClassification(event.payload?.category);
+}
+
+function eventAttentionCategory(event: { payload?: Record<string, unknown> }) {
+    const attention = event.payload?.attentionCategory;
+    return typeof attention === 'string' ? attention : null;
+}
+
+function eventDomainKey(event: { url?: string; domain?: string; payload?: Record<string, unknown> }) {
+    if (event.domain) return event.domain;
+    if (typeof event.payload?.appInFocus === 'string' && event.payload.appInFocus.trim()) {
+        return `native:${event.payload.appInFocus.trim().toLowerCase()}`;
+    }
+    try {
+        return new URL(event.url || '').hostname;
+    } catch {
+        return null;
+    }
+}
+
 export function computeFocusScore(
     session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory' | 'screenContext'>,
     policy?: GuardianPolicyBundle,
@@ -26,10 +59,10 @@ export function computeFocusScore(
             idleSeconds += event.idleSeconds;
             return;
         }
+        if (!isContinuityEvent(event)) return;
         switches++;
-        const url = event.url || '';
-        const payloadClassification = event.payload?.classification;
-        const payloadAttentionCategory = event.payload?.attentionCategory;
+        const payloadClassification = eventClassification(event);
+        const payloadAttentionCategory = eventAttentionCategory(event);
         const isDistraction =
             payloadClassification === 'distraction' || payloadAttentionCategory === 'blocked_distractor';
         const isProductive =
@@ -39,13 +72,11 @@ export function computeFocusScore(
             onTopicSeconds += event.dwellSeconds;
         }
         if (isDistraction) {
-            try {
-                const domain = new URL(url).hostname;
-                if (distractionDomains.has(domain)) {
-                    distractionRevisits++;
-                }
-                distractionDomains.add(domain);
-            } catch { }
+            const domain = eventDomainKey(event);
+            if (domain && distractionDomains.has(domain)) {
+                distractionRevisits++;
+            }
+            if (domain) distractionDomains.add(domain);
         }
     });
 
@@ -78,7 +109,7 @@ export function computeFocusScore(
 
     const dwellTarget = thresholds?.dwellDepthTargetSeconds ?? 180;
     const tabsWithDwell = session.tabEventLog.filter(
-        (e) => e.type === 'tab' && typeof e.dwellSeconds === 'number'
+        (e) => isContinuityEvent(e) && typeof e.dwellSeconds === 'number'
     );
     const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
     const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;

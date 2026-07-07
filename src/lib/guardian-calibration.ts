@@ -1,8 +1,9 @@
 import { getDb } from '@/lib/db';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_PRO } from '@/lib/models';
-import { insertFact, findFactsByTopic, supersedeFact } from '@/lib/memory';
-import type { GuardianPolicyBundle, LLMCalibrationSignal, SessionIntentProfile, WorkMode } from '@/lib/guardian-types';
+import { insertFact } from '@/lib/memory';
+import type { GuardianPolicyBundle, LLMCalibrationSignal, SessionIntentProfile } from '@/lib/guardian-types';
+import { getAdaptiveBands } from '@/lib/adaptive-bands';
 
 const LEARNING_RATE = 0.02;
 const MIN_WEIGHT = 0.05;
@@ -81,8 +82,10 @@ export function extractSignals(rawText: string, metrics: SessionMetrics): Calibr
   const felt_distracted = distractedWords.test(text);
   const felt_focused = focusedWords.test(text);
 
-  const systemFocusGood = (metrics.system_focus_score ?? 50) >= 70;
-  const systemFocusPoor = (metrics.system_focus_score ?? 50) < 50;
+  const focusBands = getAdaptiveBands();
+  const systemFocusScore = metrics.system_focus_score ?? focusBands.focusNeutral;
+  const systemFocusGood = systemFocusScore >= focusBands.focusGood;
+  const systemFocusPoor = systemFocusScore < focusBands.focusNeutral;
 
   const focus_over_estimated = systemFocusGood && felt_distracted;
   const focus_under_estimated = systemFocusPoor && felt_focused;
