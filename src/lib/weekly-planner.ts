@@ -6,13 +6,15 @@
  *   - Per-day energy forecast (historical focus quality by day-of-week)
  *   - Goal velocity urgency (off_track goals get first pick)
  *   - Task priority, status, energy requirement
- *   - Daily capacity cap (default 90 min)
+ *   - Learned daily capacity, calendar load, and next-day planned sessions
  *
  * The output is stored as plan_json in the weekly_plans table.
  */
 
 import { getDb } from '@/lib/db';
 import { classifyEnergy, getAdaptiveBands } from './adaptive-bands';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +36,8 @@ export interface WeeklyPlanDay {
   energy_forecast: 'high' | 'medium' | 'low';
   tasks: WeeklyPlanTask[];
   total_minutes: number;
+  capacity_minutes: number;
+  capacity_reason: string;
 }
 
 export interface WeeklyPlan {
@@ -42,6 +46,16 @@ export interface WeeklyPlan {
   unscheduled: Array<{ task_id: number; title: string; reason: string }>;
   summary: string;
   generated_at: string;
+  personalization?: {
+    mode: PersonalizationSnapshot['moment']['mode'];
+    guidance: string;
+    energy: PersonalizationSnapshot['userState']['energy'];
+    mood: PersonalizationSnapshot['userState']['mood'];
+    standupGoal: string | null;
+    alertFatigueLevel: PersonalizationSnapshot['feedback']['alertFatigueLevel'];
+    nextBestFocusWindow: string;
+    learnedSprintMinutes: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +94,21 @@ function energyBand(score: number): 'high' | 'medium' | 'low' {
   return classifyEnergy(score * 100);
 }
 
+function todayIso(): string {
+  return new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+}
+
+function textMatches(text: string, query: string | null | undefined): boolean {
+  if (!query) return false;
+  const textLower = text.toLowerCase();
+  const terms = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(term => term.length >= 4);
+  if (terms.length === 0) return false;
+  return terms.some(term => textLower.includes(term));
+}
+
 /**
  * Compute per-day-of-week energy forecast from historical guardian_session_summaries.
  * Returns a map {0..6} → [0,1] representing avg focus score ratio.
@@ -104,6 +133,136 @@ function computeDayEnergyMap(): Record<number, number> {
   return map;
 }
 
+function loadCalendarMinutesByDate(dates: string[]): Record<string, number> {
+  const map = Object.fromEntries(dates.map(date => [date, 0])) as Record<string, number>;
+  if (dates.length === 0) return map;
+
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT date(start_time, 'localtime') as date,
+             SUM(MAX(0, (julianday(end_time) - julianday(start_time)) * 24 * 60)) as minutes
+      FROM calendar_events
+      WHERE date(start_time, 'localtime') BETWEEN ? AND ?
+      GROUP BY date(start_time, 'localtime')
+    `).all(dates[0], dates[dates.length - 1]) as Array<{ date: string; minutes: number | null }>;
+    for (const row of rows) {
+      if (row.date in map) map[row.date] = Math.round(Number(row.minutes ?? 0));
+    }
+  } catch { /* calendar table may not exist */ }
+
+  return map;
+}
+
+function loadPlannedCommitmentsByDate(dates: string[]): Record<string, { minutes: number; taskIds: Set<number> }> {
+  const map = Object.fromEntries(dates.map(date => [date, { minutes: 0, taskIds: new Set<number>() }])) as Record<string, { minutes: number; taskIds: Set<number> }>;
+  if (dates.length === 0) return map;
+
+  try {
+    const rows = getDb().prepare(`
+      SELECT date(planned_start, 'localtime') as date,
+             task_id,
+             duration_minutes
+      FROM planned_focus_sessions
+      WHERE date(planned_start, 'localtime') BETWEEN ? AND ?
+        AND status IN ('planned', 'started', 'completed')
+    `).all(dates[0], dates[dates.length - 1]) as Array<{ date: string; task_id: number | null; duration_minutes: number | null }>;
+
+    for (const row of rows) {
+      if (!(row.date in map)) continue;
+      map[row.date].minutes += Math.max(0, Math.round(Number(row.duration_minutes ?? 0)));
+      if (row.task_id) map[row.date].taskIds.add(row.task_id);
+    }
+  } catch { /* next-day planner tables may not exist yet */ }
+
+  return map;
+}
+
+function loadTaskFeedbackAdjustments(): Map<number, { score: number; reason: string | null }> {
+  const map = new Map<number, { score: number; reason: string | null }>();
+  try {
+    const rows = getDb().prepare(`
+      SELECT task_id, feedback, COUNT(*) as count
+      FROM task_recommendation_feedback
+      WHERE created_at >= datetime('now', '-30 days')
+      GROUP BY task_id, feedback
+    `).all() as Array<{ task_id: number; feedback: string; count: number }>;
+
+    for (const row of rows) {
+      const current = map.get(row.task_id) ?? { score: 0, reason: null };
+      if (row.feedback === 'completed') current.score += row.count * 12;
+      else if (row.feedback === 'started') current.score += row.count * 8;
+      else if (row.feedback === 'helpful') current.score += row.count * 6;
+      else if (row.feedback === 'not_now' || row.feedback === 'dismissed') current.score -= row.count * 8;
+      else if (row.feedback === 'wrong') current.score -= row.count * 14;
+
+      if (current.score > 0) current.reason = 'recently fit this moment';
+      if (current.score < 0) current.reason = 'recently rejected';
+      map.set(row.task_id, current);
+    }
+  } catch { /* feedback table may not exist yet */ }
+  return map;
+}
+
+function computeDayCapacity(input: {
+  date: string;
+  energy: WeeklyPlanDay['energy_forecast'];
+  baseCapacity: number;
+  calendarMinutes: number;
+  plannedMinutes: number;
+  snapshot: PersonalizationSnapshot;
+}): { capacity: number; reason: string } {
+  const reasons: string[] = [];
+  let capacity = input.baseCapacity;
+
+  if (input.energy === 'high') {
+    capacity *= 1.1;
+    reasons.push('high-energy forecast');
+  } else if (input.energy === 'low') {
+    capacity *= 0.8;
+    reasons.push('low-energy forecast');
+  }
+
+  if (input.date === todayIso()) {
+    if (input.snapshot.moment.mode === 'recovery') {
+      capacity *= 0.65;
+      reasons.push('today is recovery mode');
+    } else if (input.snapshot.moment.mode === 'deadline_pressure') {
+      capacity *= 1.15;
+      reasons.push('deadline pressure today');
+    } else if (input.snapshot.moment.mode === 'planning') {
+      capacity *= 0.75;
+      reasons.push('planning/cleanup mode today');
+    } else if (input.snapshot.moment.mode === 'protect_focus') {
+      capacity *= 1.05;
+      reasons.push('protecting active focus');
+    }
+
+    if (input.snapshot.feedback.alertFatigueLevel === 'high') {
+      capacity *= 0.85;
+      reasons.push('alert fatigue high');
+    }
+  }
+
+  if (input.calendarMinutes > 0) {
+    const calendarPenalty = Math.min(input.calendarMinutes * 0.45, input.baseCapacity * 0.4);
+    capacity -= calendarPenalty;
+    reasons.push(`${input.calendarMinutes}m calendar load`);
+  }
+
+  if (input.plannedMinutes > 0) {
+    const plannedPenalty = Math.min(input.plannedMinutes, input.baseCapacity * 0.85);
+    capacity -= plannedPenalty;
+    reasons.push(`${input.plannedMinutes}m already owned by next-day plan`);
+  }
+
+  const rounded = Math.max(20, Math.round(capacity / 5) * 5);
+  return {
+    capacity: rounded,
+    reason: reasons.join('; ') || 'adaptive baseline capacity',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Ranked candidate tasks (similar scoring logic to session-task-ranker)
 // ---------------------------------------------------------------------------
@@ -123,6 +282,10 @@ interface CandidateTask {
   score: number;
   reason: string;
 }
+
+type CandidateTaskRow = Omit<CandidateTask, 'estimated_minutes' | 'score' | 'reason'> & {
+  estimated_minutes: number | null;
+};
 
 const STATUS_WEIGHT: Record<string, number> = {
   doing:     5,
@@ -145,12 +308,14 @@ const ENERGY_MATCH: Record<string, Record<string, number>> = {
   low:    { high: -2, medium: 0, low: 3 },
 };
 
-function loadAndScoreCandidates(): CandidateTask[] {
+function loadAndScoreCandidates(snapshot: PersonalizationSnapshot): CandidateTask[] {
   const db = getDb();
+  const feedback = loadTaskFeedbackAdjustments();
+  const learnedSprint = getAdaptiveSessionMinutes();
   const tasks = db.prepare(`
     SELECT t.id, t.title, t.status, t.priority,
            COALESCE(t.energy_required, 'medium') as energy_required,
-           COALESCE(t.estimated_minutes, 30) as estimated_minutes,
+           t.estimated_minutes as estimated_minutes,
            t.goal_id,
            g.title as goal_title,
            g.health_status as goal_health,
@@ -161,11 +326,18 @@ function loadAndScoreCandidates(): CandidateTask[] {
       AND t.blocked_since IS NULL
     ORDER BY t.position ASC, t.id DESC
     LIMIT 200
-  `).all() as CandidateTask[];
+  `).all() as CandidateTaskRow[];
 
   return tasks.map(task => {
     let score = 0;
     const reasons: string[] = [];
+    const estimatedMinutes = task.estimated_minutes && task.estimated_minutes > 0
+      ? Math.round(task.estimated_minutes)
+      : learnedSprint;
+
+    if (!task.estimated_minutes || task.estimated_minutes <= 0) {
+      reasons.push(`${learnedSprint}m learned estimate`);
+    }
 
     score += (STATUS_WEIGHT[task.status] ?? 1) * 10;
     score += (PRIORITY_WEIGHT[task.priority] ?? 2) * 8;
@@ -179,8 +351,35 @@ function loadAndScoreCandidates(): CandidateTask[] {
       if (gap > 0) { score += Math.min(15, gap * 3); reasons.push('velocity gap'); }
     }
 
+    if (snapshot.userState.standupGoal && textMatches(task.title, snapshot.userState.standupGoal)) {
+      score += 25;
+      reasons.push('matches today standup goal');
+    }
+
+    if (snapshot.today.doingTasks.some(title => textMatches(task.title, title) || textMatches(title, task.title))) {
+      score += 18;
+      reasons.push('already in progress');
+    }
+
+    if (snapshot.moment.mode === 'recovery') {
+      if (task.energy_required === 'low') { score += 12; reasons.push('low-energy fit'); }
+      if (task.energy_required === 'high') { score -= 12; reasons.push('deferred high-energy work'); }
+      if (estimatedMinutes > learnedSprint) { score -= 8; reasons.push(`larger than ${learnedSprint}m sprint`); }
+    }
+
+    if (snapshot.moment.mode === 'deadline_pressure' && ['critical', 'high'].includes(task.priority)) {
+      score += 12;
+      reasons.push('deadline-pressure priority');
+    }
+
+    const feedbackSignal = feedback.get(task.id);
+    if (feedbackSignal) {
+      score += feedbackSignal.score;
+      if (feedbackSignal.reason) reasons.push(feedbackSignal.reason);
+    }
+
     const reason = reasons.length > 0 ? reasons.join(', ') : task.status;
-    return { ...task, score, reason };
+    return { ...task, estimated_minutes: estimatedMinutes, score, reason };
   }).sort((a, b) => b.score - a.score);
 }
 
@@ -194,7 +393,7 @@ function assignTasksToDay(
   assignedIds: Set<number>
 ): void {
   const band = day.energy_forecast;
-  const capacity = getAdaptiveBands().dailyCapacityMinutes;
+  const capacity = day.capacity_minutes;
   let remaining = capacity - day.total_minutes;
 
   for (const task of candidates) {
@@ -232,19 +431,45 @@ function assignTasksToDay(
 export function generateWeeklyPlan(fromDate?: Date): WeeklyPlan {
   const weekStartStr = weekStart(fromDate);
   const dates = weekDates(weekStartStr);
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'scheduler',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+  });
+  const bands = getAdaptiveBands();
   const dayEnergyMap = computeDayEnergyMap();
-  const candidates = loadAndScoreCandidates();
+  const calendarMinutes = loadCalendarMinutesByDate(dates);
+  const plannedCommitments = loadPlannedCommitmentsByDate(dates);
+  const candidates = loadAndScoreCandidates(personalization);
 
-  const days: WeeklyPlanDay[] = dates.map(date => ({
-    date,
-    day_name: DAY_NAMES[dayOfWeek(date)],
-    energy_forecast: energyBand(dayEnergyMap[dayOfWeek(date)] ?? 0.5),
-    tasks: [],
-    total_minutes: 0,
-  }));
+  const days: WeeklyPlanDay[] = dates.map(date => {
+    const forecast = date === todayIso()
+      ? personalization.userState.energy
+      : energyBand(dayEnergyMap[dayOfWeek(date)] ?? 0.5);
+    const capacity = computeDayCapacity({
+      date,
+      energy: forecast,
+      baseCapacity: bands.dailyCapacityMinutes,
+      calendarMinutes: calendarMinutes[date] ?? 0,
+      plannedMinutes: plannedCommitments[date]?.minutes ?? 0,
+      snapshot: personalization,
+    });
+    return {
+      date,
+      day_name: DAY_NAMES[dayOfWeek(date)],
+      energy_forecast: forecast,
+      tasks: [],
+      total_minutes: 0,
+      capacity_minutes: capacity.capacity,
+      capacity_reason: capacity.reason,
+    };
+  });
 
   // Sort days: high-energy days get first priority on demanding tasks
   const assignedIds = new Set<number>();
+  for (const commitment of Object.values(plannedCommitments)) {
+    for (const taskId of commitment.taskIds) assignedIds.add(taskId);
+  }
   const sortedDayIndices = [...days.keys()].sort((a, b) => {
     const scoreOf = (band: string) => band === 'high' ? 3 : band === 'medium' ? 2 : 1;
     return scoreOf(days[b].energy_forecast) - scoreOf(days[a].energy_forecast);
@@ -265,13 +490,24 @@ export function generateWeeklyPlan(fromDate?: Date): WeeklyPlan {
   const totalTasks = days.reduce((s, d) => s + d.tasks.length, 0);
   const totalMins = days.reduce((s, d) => s + d.total_minutes, 0);
   const summary = `${goalIds.size} goal${goalIds.size !== 1 ? 's' : ''} covered, ${totalTasks} tasks scheduled (${totalMins} min across 7 days)`;
+  const adaptiveSummary = `${summary}; ${personalization.moment.mode} mode, ${personalization.userState.energy} energy, ${getAdaptiveSessionMinutes()}m learned sprint`;
 
   return {
     week_start: weekStartStr,
     days,
     unscheduled,
-    summary,
+    summary: adaptiveSummary,
     generated_at: new Date().toISOString(),
+    personalization: {
+      mode: personalization.moment.mode,
+      guidance: personalization.moment.guidance,
+      energy: personalization.userState.energy,
+      mood: personalization.userState.mood,
+      standupGoal: personalization.userState.standupGoal,
+      alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+      nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+      learnedSprintMinutes: getAdaptiveSessionMinutes(),
+    },
   };
 }
 
