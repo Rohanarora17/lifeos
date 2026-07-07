@@ -56,6 +56,43 @@ interface InsightsData {
         preferredCoachingStyle: string | null;
     };
     habits: { completionRate: number | null };
+    personalization?: {
+        mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+        guidance: string;
+        recommendedSessionMinutes: number;
+        energy: 'high' | 'medium' | 'low';
+        mood: 'high' | 'medium' | 'low' | null;
+        standupGoal: string | null;
+        alertFatigueLevel: 'low' | 'medium' | 'high';
+        recentAlerts: number;
+        nextBestFocusWindow: string;
+    };
+    recommendedTasks?: Array<{
+        id: number;
+        title: string;
+        priority: string;
+        score: number;
+        reason: string;
+        momentFit: 'high' | 'medium' | 'low';
+        estimatedMinutes: number | null;
+        energyRequired: 'low' | 'medium' | 'high' | null;
+    }>;
+}
+
+const modeLabel: Record<NonNullable<InsightsData['personalization']>['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+};
+
+function formatDuration(mins: number) {
+    const rounded = Math.max(0, Math.round(mins));
+    if (rounded < 60) return `${rounded}m`;
+    const hours = Math.floor(rounded / 60);
+    const minutes = rounded % 60;
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
 export default function ExtensionSidebar() {
@@ -65,7 +102,23 @@ export default function ExtensionSidebar() {
     const [stats, setStats] = useState<DashStats | null>(null);
     const [insights, setInsights] = useState<InsightsData | null>(null);
     const [focusTarget, setFocusTarget] = useState('');
-    const [focusDuration, setFocusDuration] = useState(60);
+    const topRecommendedTask = insights?.recommendedTasks?.[0] ?? null;
+    const [focusDuration, setFocusDuration] = useState<number | null>(null);
+    const adaptiveDuration = insights?.personalization?.recommendedSessionMinutes
+        ?? topRecommendedTask?.estimatedMinutes
+        ?? null;
+    const effectiveFocusDuration = focusDuration ?? (adaptiveDuration ? Math.round(adaptiveDuration) : null);
+    const durationOptions = Array.from(new Set(
+        [
+            adaptiveDuration ? Math.round(adaptiveDuration) : null,
+            topRecommendedTask?.estimatedMinutes ? Math.round(topRecommendedTask.estimatedMinutes) : null,
+            25,
+            45,
+            60,
+            90,
+            120,
+        ].filter((m): m is number => Boolean(m && m > 0))
+    ));
 
     // Notify extension background when session state changes
     useEffect(() => {
@@ -76,7 +129,7 @@ export default function ExtensionSidebar() {
         } else {
             rt.sendMessage({ type: 'STOP_GUARDIAN' });
         }
-    }, [session.active, session.sessionId]);
+    }, [session.active, session.sessionId, session.targetTitle, session.durationMinutes, session.startedAt]);
 
     // Poll tasks/goals/stats (separate from session — handled by hook)
     const fetchContext = useCallback(async () => {
@@ -99,14 +152,23 @@ export default function ExtensionSidebar() {
                     streak: dashData.today.streak || 0,
                 });
             }
-            if (!insightsData.error) setInsights(insightsData as InsightsData);
+            if (!insightsData.error) {
+                const nextInsights = insightsData as InsightsData;
+                setInsights(nextInsights);
+                if (!session.active && nextInsights.personalization?.recommendedSessionMinutes) {
+                    setFocusDuration(prev => prev ?? Math.round(nextInsights.personalization!.recommendedSessionMinutes));
+                }
+            }
         } catch { }
-    }, []);
+    }, [session.active]);
 
     useEffect(() => {
-        fetchContext();
+        const initial = setTimeout(fetchContext, 0);
         const interval = setInterval(fetchContext, 30_000); // tasks/stats refresh slower
-        return () => clearInterval(interval);
+        return () => {
+            clearTimeout(initial);
+            clearInterval(interval);
+        };
     }, [fetchContext]);
 
     // Auto-end when timer hits zero
@@ -125,25 +187,29 @@ export default function ExtensionSidebar() {
     }, [endGuardianSession]);
 
     const startFocus = async () => {
-        if (!focusTarget) return;
+        if (!focusTarget || !effectiveFocusDuration) return;
         const selectedOption = document.querySelector<HTMLOptionElement>(`#sidebar-focus-target option[value="${focusTarget}"]`);
         const label = selectedOption?.textContent || '';
-        let goalId = null, goalTitle = null, taskTitle = null;
+        let goalId = null, goalTitle = null, taskTitle = null, taskId: number | null = null;
         if (focusTarget.startsWith('goal-')) {
             goalId = parseInt(focusTarget.replace('goal-', ''));
             goalTitle = label;
         } else if (focusTarget.startsWith('task-')) {
+            taskId = parseInt(focusTarget.replace('task-', ''));
             taskTitle = label;
         }
         const sessionId = await startGuardianSession({
             goalId: goalId ? String(goalId) : null,
             goalTitle,
             conceptNodeName: taskTitle || goalTitle || label,
-            durationMinutes: focusDuration,
+            durationMinutes: effectiveFocusDuration,
             source: 'extension',
         });
         if (sessionId && window.parent !== window) {
-            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: label, durationMinutes: focusDuration, startedAt: Date.now() } }, '*');
+            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: label, durationMinutes: effectiveFocusDuration } }, '*');
+        }
+        if (sessionId && taskId) {
+            sendRecommendationFeedback(taskId, 'started', 'started from extension sidebar');
         }
     };
 
@@ -154,19 +220,31 @@ export default function ExtensionSidebar() {
     };
 
     const formatTime = (mins: number) => {
-        if (mins < 60) return `${Math.round(mins)}m`;
-        return `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m`;
+        return formatDuration(mins);
     };
 
     const markTaskDone = async (id: number) => {
         try {
+            sendRecommendationFeedback(id, 'completed', 'completed from extension sidebar');
             await fetch('/api/tasks', {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id, action: 'done' })
+                body: JSON.stringify({ id, status: 'done' })
             });
             fetchContext();
         } catch { }
+    };
+
+    const sendRecommendationFeedback = async (
+        taskId: number,
+        feedback: 'helpful' | 'not_now' | 'wrong' | 'started' | 'completed' | 'dismissed',
+        reason?: string,
+    ) => {
+        await fetch('/api/dashboard/recommendation-feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ taskId, feedback, reason, surface: 'extension_sidebar' }),
+        }).catch(() => { });
     };
 
     return (
@@ -217,6 +295,79 @@ export default function ExtensionSidebar() {
                             <div style={{ fontSize: '9px', color: '#8888a0', marginTop: '1px' }}>{s.label}</div>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {insights?.personalization && (
+                <div style={{ padding: '0 10px 8px' }}>
+                    <div style={{
+                        background: 'linear-gradient(135deg, rgba(102,126,234,0.1), rgba(34,197,94,0.04))',
+                        border: '1px solid rgba(102,126,234,0.25)',
+                        borderRadius: '10px',
+                        padding: '10px',
+                    }}>
+                        <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            gap: '8px', marginBottom: '6px',
+                        }}>
+                            <div style={{ fontSize: '10px', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700 }}>
+                                {modeLabel[insights.personalization.mode]}
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#8888a0' }}>
+                                {insights.personalization.energy} energy · {adaptiveDuration ? formatDuration(adaptiveDuration) : 'learning length'}
+                            </div>
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#c8c8df', lineHeight: 1.4 }}>
+                            {insights.personalization.guidance}
+                        </div>
+                        {topRecommendedTask && (
+                            <div style={{
+                                marginTop: '8px',
+                                paddingTop: '8px',
+                                borderTop: '1px solid rgba(255,255,255,0.06)',
+                            }}>
+                                <div style={{ fontSize: '10px', color: '#8888a0', marginBottom: '3px' }}>Best next task</div>
+                                <div style={{ fontSize: '12px', color: '#f0f0f5', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {topRecommendedTask.title}
+                                </div>
+                                <div style={{ fontSize: '10px', color: '#8888a0', marginTop: '3px', lineHeight: 1.35 }}>
+                                    {topRecommendedTask.reason}
+                                </div>
+                                <div style={{ display: 'flex', gap: '6px', marginTop: '7px' }}>
+                                    <button
+                                        onClick={() => {
+                                            setFocusTarget(`task-${topRecommendedTask.id}`);
+                                            setFocusDuration(adaptiveDuration);
+                                            sendRecommendationFeedback(topRecommendedTask.id, 'helpful', 'accepted top extension recommendation');
+                                        }}
+                                        style={{
+                                            flex: 1, padding: '5px 7px', borderRadius: '6px',
+                                            border: '1px solid rgba(34,197,94,0.2)', background: 'rgba(34,197,94,0.1)',
+                                            color: '#22c55e', fontSize: '10px', fontWeight: 700, cursor: 'pointer',
+                                        }}
+                                    >
+                                        Use this
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            sendRecommendationFeedback(topRecommendedTask.id, 'not_now', 'rejected top extension recommendation');
+                                            setInsights(prev => prev ? {
+                                                ...prev,
+                                                recommendedTasks: prev.recommendedTasks?.filter(t => t.id !== topRecommendedTask.id),
+                                            } : prev);
+                                        }}
+                                        style={{
+                                            flex: 1, padding: '5px 7px', borderRadius: '6px',
+                                            border: '1px solid rgba(245,158,11,0.2)', background: 'rgba(245,158,11,0.08)',
+                                            color: '#f59e0b', fontSize: '10px', fontWeight: 700, cursor: 'pointer',
+                                        }}
+                                    >
+                                        Not now
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
 
@@ -300,30 +451,33 @@ export default function ExtensionSidebar() {
                             </select>
                             <div style={{ display: 'flex', gap: '6px' }}>
                                 <select
-                                    value={focusDuration}
-                                    onChange={(e) => setFocusDuration(parseInt(e.target.value))}
+                                    value={effectiveFocusDuration ?? ''}
+                                    onChange={(e) => setFocusDuration(parseInt(e.target.value, 10))}
                                     style={{
                                         flex: 1, padding: '7px', background: '#0a0a12', color: '#f0f0f5',
                                         border: '1px solid #2a2a40', borderRadius: '6px', fontSize: '12px',
                                         cursor: 'pointer',
                                     }}
                                 >
-                                    <option value="25">25m</option>
-                                    <option value="45">45m</option>
-                                    <option value="60">60m</option>
-                                    <option value="90">90m</option>
-                                    <option value="120">2h</option>
+                                    {!effectiveFocusDuration && (
+                                        <option value="" disabled>Loading adaptive length</option>
+                                    )}
+                                    {durationOptions.map(m => (
+                                        <option key={m} value={m}>
+                                            {adaptiveDuration && m === Math.round(adaptiveDuration) ? `Adaptive (${formatDuration(m)})` : formatDuration(m)}
+                                        </option>
+                                    ))}
                                 </select>
                                 <button
                                     onClick={startFocus}
-                                    disabled={!focusTarget}
+                                    disabled={!focusTarget || !effectiveFocusDuration}
                                     style={{
                                         flex: 1, padding: '7px', border: 'none', borderRadius: '8px',
-                                        background: focusTarget
+                                        background: focusTarget && effectiveFocusDuration
                                             ? 'linear-gradient(135deg, #3b82f6, #8b5cf6)'
                                             : '#2a2a40',
-                                        color: focusTarget ? 'white' : '#555570',
-                                        fontSize: '12px', fontWeight: 600, cursor: focusTarget ? 'pointer' : 'default',
+                                        color: focusTarget && effectiveFocusDuration ? 'white' : '#555570',
+                                        fontSize: '12px', fontWeight: 600, cursor: focusTarget && effectiveFocusDuration ? 'pointer' : 'default',
                                     }}
                                 >
                                     Start Focus
