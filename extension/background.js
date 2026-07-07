@@ -34,6 +34,7 @@ fetchGuardianConfig();
 let sessionContext = null;
 let currentActiveTabId = null;
 let sessionGroupId = null; // Chrome tab group for the active session
+let guardianPersonalization = null;
 
 function getUrlDomain(url) {
     try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
@@ -72,8 +73,12 @@ function buildGuardianStatus() {
     }
 
     const now = Date.now();
-    const durationMinutes = sessionContext.durationMinutes || 60;
-    const endsAt = sessionContext.endsAt || (sessionContext.startedAt ? sessionContext.startedAt + durationMinutes * 60 * 1000 : now);
+    const durationMinutes =
+        sessionContext.durationMinutes ||
+        sessionContext.plannedMinutes ||
+        guardianPersonalization?.recommendedSessionMinutes ||
+        null;
+    const endsAt = sessionContext.endsAt || (sessionContext.startedAt && durationMinutes ? sessionContext.startedAt + durationMinutes * 60 * 1000 : null);
 
     return {
         active: true,
@@ -81,12 +86,22 @@ function buildGuardianStatus() {
         context: sessionContext,
         targetTitle: sessionContext.targetTitle || sessionContext.conceptNodeName || sessionContext.goalTitle || 'Focus Session',
         durationMinutes,
-        remainingSeconds: Math.max(0, Math.round((endsAt - now) / 1000)),
+        remainingSeconds: endsAt ? Math.max(0, Math.round((endsAt - now) / 1000)) : null,
         blockedCount: sessionContext.blockedCount || 0,
         overrideCount: sessionContext.overrideCount || 0,
         productiveSeconds: sessionContext.productiveSeconds || 0,
         distractionSeconds: sessionContext.distractionSeconds || 0,
     };
+}
+
+function enableSessionCaptureAlarms() {
+    chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+    chrome.alarms.create('lifeos-screenshot', { periodInMinutes: 1 });
+}
+
+function disableSessionCaptureAlarms() {
+    chrome.alarms.clear('lifeos-guardian-heartbeat');
+    chrome.alarms.clear('lifeos-screenshot');
 }
 
 // Sync config
@@ -102,6 +117,7 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
 // Context Menu Setup
 chrome.runtime.onInstalled.addListener(() => {
     console.log('[LifeOS] Guardian installed. Silent mode active.');
+    disableSessionCaptureAlarms();
     chrome.contextMenus.create({
         id: "send-to-lifeos",
         title: "Extract Task to LifeOS",
@@ -111,6 +127,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+    disableSessionCaptureAlarms();
     chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
 });
 
@@ -162,6 +179,93 @@ async function getAuthHeaders() {
     return headers;
 }
 
+async function refreshGuardianPersonalization() {
+    if (!guardianActive) return null;
+    try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/guardian/insights`, { headers });
+        if (!res.ok) return guardianPersonalization;
+        const data = await res.json();
+        guardianPersonalization = data.personalization || guardianPersonalization;
+        return guardianPersonalization;
+    } catch {
+        return guardianPersonalization;
+    }
+}
+
+function buildLocalInterventionPolicy() {
+    const p = guardianPersonalization;
+    const mode = p?.mode || 'normal';
+    const energy = p?.energy || sessionContext?.mood || 'medium';
+    const guidance = p?.guidance || 'Keep the protected session intentional.';
+
+    if (mode === 'recovery' || energy === 'low') {
+        return {
+            mode,
+            headline: 'Choose the smallest useful move',
+            tone: 'gentle',
+            contextLine: 'Low energy today. Keep the session protected without turning this into a fight.',
+            overridePrompt: 'If this helps the task, name the one concrete thing you need from it.',
+            overrideOptions: [
+                { minutes: 3, label: '3 min check' },
+                { minutes: 5, label: '5 min source check', default: true },
+                { minutes: 10, label: '10 min bounded detour' },
+            ],
+            minReasonChars: 8,
+            frictionSeconds: 2,
+        };
+    }
+
+    if (mode === 'deadline_pressure') {
+        return {
+            mode,
+            headline: 'Deadline capacity is protected',
+            tone: 'urgent',
+            contextLine: p?.standupGoal ? `Today is anchored on: ${p.standupGoal}` : 'Use exceptions only for direct deadline relief.',
+            overridePrompt: 'Explain how this directly reduces the current deadline risk.',
+            overrideOptions: [
+                { minutes: 3, label: '3 min verify', default: true },
+                { minutes: 5, label: '5 min reference' },
+                { minutes: 10, label: '10 min only if essential' },
+            ],
+            minReasonChars: 14,
+            frictionSeconds: 6,
+        };
+    }
+
+    if (mode === 'protect_focus') {
+        return {
+            mode,
+            headline: 'Protect this focus block',
+            tone: 'firm',
+            contextLine: guidance,
+            overridePrompt: 'Explain why this is part of the current session, not a context switch.',
+            overrideOptions: [
+                { minutes: 5, label: '5 min task check', default: true },
+                { minutes: 10, label: '10 min reference' },
+                { minutes: 15, label: '15 min if necessary' },
+            ],
+            minReasonChars: 16,
+            frictionSeconds: 10,
+        };
+    }
+
+    return {
+        mode,
+        headline: mode === 'planning' ? 'Keep tonight clean' : 'Intervention',
+        tone: mode === 'planning' ? 'gentle' : 'firm',
+        contextLine: guidance,
+        overridePrompt: 'If this is needed, explain the specific session-relevant reason.',
+        overrideOptions: [
+            { minutes: 5, label: '5 min check' },
+            { minutes: 10, label: '10 min override', default: true },
+            { minutes: 15, label: '15 min override' },
+        ],
+        minReasonChars: p?.alertFatigueLevel === 'high' ? 14 : 10,
+        frictionSeconds: p?.alertFatigueLevel === 'high' ? 6 : 4,
+    };
+}
+
 async function applyGuardianCommands(commands = [], tabIdHint = null) {
     for (const command of commands) {
         const targetTabId = tabIdHint || currentActiveTabId;
@@ -174,6 +278,7 @@ async function applyGuardianCommands(commands = [], tabIdHint = null) {
                 explainability: command.explainability,
                 targetDisplay: command.targetDisplay || sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session',
                 urlPattern: command.urlPattern,
+                interventionPolicy: command.interventionPolicy,
             });
             if (sessionContext) sessionContext.blockedCount = (sessionContext.blockedCount || 0) + 1;
         }
@@ -215,7 +320,7 @@ async function postGuardianEvent(payload, tabIdHint = null) {
             guardianActive = false;
             sessionContext = null;
             activeTabs.clear();
-            chrome.alarms.clear('lifeos-guardian-heartbeat');
+            disableSessionCaptureAlarms();
             chrome.action.setBadgeText({ text: '' });
             return null;
         }
@@ -402,6 +507,7 @@ async function reportTabActivity(tabId, url, title, groupInfo) {
             reason: `${domain} is a distraction. You're in a focus session for: ${target}.`,
             explainability: 'You navigated to a known distraction site during an active guardian session.',
             targetDisplay: target,
+            interventionPolicy: buildLocalInterventionPolicy(),
         });
         if (sessionContext) sessionContext.blockedCount = (sessionContext.blockedCount || 0) + 1;
     }
@@ -464,10 +570,11 @@ async function checkExternalSession() {
             guardianActive = true;
             sessionContext = data.activeSession;
             sessionGroupId = null;
+            refreshGuardianPersonalization();
             chrome.action.setBadgeText({ text: 'ON' });
             chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
             activeTabs.clear();
-            chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+            enableSessionCaptureAlarms();
 
             // Immediately track + group the currently-active tab so tracking starts now
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -481,9 +588,10 @@ async function checkExternalSession() {
             console.log('[LifeOS] Guardian Mode STOPPED (via polling)');
             guardianActive = false;
             sessionContext = null;
+            guardianPersonalization = null;
             chrome.action.setBadgeText({ text: '' });
             activeTabs.clear();
-            chrome.alarms.clear('lifeos-guardian-heartbeat');
+            disableSessionCaptureAlarms();
             if (sessionGroupId !== null) {
                 chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
                 sessionGroupId = null;
@@ -501,11 +609,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sessionGroupId = null;
         // Refresh domain config so this session gets the latest DB state
         fetchGuardianConfig();
+        refreshGuardianPersonalization();
         console.log('[LifeOS] Guardian Mode ACTIVE', sessionContext);
         chrome.action.setBadgeText({ text: 'ON' });
         chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
         activeTabs.clear();
-        chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
+        enableSessionCaptureAlarms();
         // Start SSE listener for ElevenLabs TTS playback
         if (sessionContext?.sessionId) startGuardianSSE(sessionContext.sessionId);
         // Capture the currently active tab IMMEDIATELY — tracks dwell from session start, not from first navigation.
@@ -564,10 +673,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         guardianActive = false;
         sessionContext = null;
+        guardianPersonalization = null;
         console.log('[LifeOS] Guardian Mode STOPPED');
         chrome.action.setBadgeText({ text: '' });
         activeTabs.clear();
-        chrome.alarms.clear('lifeos-guardian-heartbeat');
+        disableSessionCaptureAlarms();
         stopGuardianSSE();
         // Collapse the session group so it's preserved but out of the way
         if (sessionGroupId !== null) {
@@ -613,7 +723,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.tabs.sendMessage(sender.tab ? sender.tab.id : msg.tabId, {
             type: 'BLOCK_TAB',
             reason: msg.reason,
-            targetDisplay: sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session'
+            explainability: msg.explainability,
+            targetDisplay: sessionContext?.conceptNodeName || sessionContext?.goalTitle || 'Focus Session',
+            interventionPolicy: msg.interventionPolicy,
         });
         sendResponse({ ok: true });
     }
@@ -649,7 +761,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                         question: msg.question || 'Explain what I am looking at in the context of my session goal.',
                         appInFocus: 'Chrome',
                         windowTitle: msg.windowTitle || '',
-                        source: 'extension_hotkey',
+                        source: msg.selectedText ? 'extension_selection' : 'extension_hotkey',
                     }),
                 });
                 sendResponse({ ok: true });
@@ -738,6 +850,10 @@ async function waitForOffscreenReady(maxWaitMs = 2000) {
 
 chrome.commands.onCommand.addListener(async (command) => {
     if (command !== 'push-to-talk') return;
+    if (!guardianActive || !sessionContext?.sessionId) {
+        chrome.action.setBadgeText({ text: '' });
+        return;
+    }
 
     if (!pttRecording) {
         // Start recording
@@ -875,7 +991,7 @@ function stopGuardianSSE() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SCREENSHOTS — Capture MacBook screen every 60s via captureVisibleTab()
+// SCREENSHOTS — active-session only capture via captureVisibleTab()
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const SCREENSHOT_SENSITIVE_PATTERNS = [
@@ -883,10 +999,9 @@ const SCREENSHOT_SENSITIVE_PATTERNS = [
     /chrome:\/\/password/i, /accounts\.google\.com/i,
 ];
 
-chrome.alarms.create('lifeos-screenshot', { periodInMinutes: 1 });
-
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name !== 'lifeos-screenshot') return;
+    if (!guardianActive || !sessionContext?.sessionId) return;
 
     try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });

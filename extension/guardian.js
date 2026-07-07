@@ -18,7 +18,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } else if (request.type === 'PTT_STATE') {
         updatePttOverlay(request.state, request.transcript);
     }
-});
+	});
+	
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 function injectBlockOverlay(data) {
     if (document.getElementById('lifeos-guardian-block-overlay')) return;
@@ -27,30 +36,59 @@ function injectBlockOverlay(data) {
 
     const target = data.targetDisplay || 'Focus Session';
     const reason = data.reason || 'Context Violation Detected';
+    const policy = data.interventionPolicy || {};
+    const headline = policy.headline || 'Intervention';
+    const contextLine = policy.contextLine || 'This page does not currently fit the protected session.';
+    const overridePrompt = policy.overridePrompt || 'If this site is actually needed, explain why and request a short override.';
+    const minReasonChars = Number(policy.minReasonChars || 10);
+    const frictionSeconds = Math.max(0, Number(policy.frictionSeconds || 0));
+    const tone = policy.tone || 'firm';
+    const accentColor = tone === 'gentle' ? '#60a5fa' : tone === 'urgent' ? '#f97316' : '#ef4444';
+    const overrideOptions = Array.isArray(policy.overrideOptions) && policy.overrideOptions.length > 0
+        ? policy.overrideOptions
+        : [
+            { minutes: 5, label: '5 min override' },
+            { minutes: 10, label: '10 min override', default: true },
+            { minutes: 15, label: '15 min override' },
+        ];
+    const optionsHtml = overrideOptions.map(option => {
+        const minutes = Number(option.minutes || 5);
+        const label = escapeHtml(option.label || `${minutes} min override`);
+        const selected = option.default ? ' selected' : '';
+        return `<option value="${minutes}"${selected}>${label}</option>`;
+    }).join('');
+    const safeHeadline = escapeHtml(headline);
+    const safeReason = escapeHtml(reason);
+    const safeTarget = escapeHtml(target);
+    const safeContextLine = escapeHtml(contextLine);
+    const safeExplainability = escapeHtml(data.explainability || reason);
+    const safeOverridePrompt = escapeHtml(overridePrompt);
 
     const overlayHTML = `
         <div id="lifeos-guardian-block-overlay" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(10, 10, 12, 0.98); z-index: 2147483647; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif; color: #fff; backdrop-filter: blur(10px);">
-            <div style="max-width: 500px; width: 100%; text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+            <div style="max-width: 520px; width: 100%; text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
                 <div style="font-size: 48px; margin-bottom: 20px;">🛑</div>
-                <h1 style="font-size: 24px; font-weight: 900; margin: 0 0 10px 0; letter-spacing: -0.5px; color: #ef4444;">Intervention</h1>
-                <p style="font-size: 16px; color: #aaa; margin-bottom: 30px; line-height: 1.5;">${reason}</p>
+                <h1 style="font-size: 24px; font-weight: 900; margin: 0 0 10px 0; letter-spacing: 0; color: ${accentColor};">${safeHeadline}</h1>
+                <p style="font-size: 16px; color: #aaa; margin-bottom: 30px; line-height: 1.5;">${safeReason}</p>
                 
                 <div style="background: rgba(0,0,0,0.5); padding: 15px; border-radius: 10px; margin-bottom: 30px; text-align: center;">
                     <p style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #888; margin: 0 0 8px 0;">Currently Focused On</p>
-                    <p style="font-size: 16px; font-weight: 700; color: #3b82f6; margin: 0;">${target}</p>
+                    <p style="font-size: 16px; font-weight: 700; color: #3b82f6; margin: 0;">${safeTarget}</p>
+                </div>
+                <div style="background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.18); padding: 12px; border-radius: 10px; margin-bottom: 14px; text-align: left;">
+                    <p style="font-size: 11px; color: #93c5fd; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">Today-aware policy</p>
+                    <p style="font-size: 13px; color: #dbeafe; margin: 0;">${safeContextLine}</p>
                 </div>
                 <div style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: 10px; margin-bottom: 18px; text-align: left;">
                     <p style="font-size: 11px; color: #9ca3af; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px;">Why this block happened</p>
-                    <p style="font-size: 13px; color: #e5e7eb; margin: 0;">${data.explainability || reason}</p>
+                    <p style="font-size: 13px; color: #e5e7eb; margin: 0;">${safeExplainability}</p>
                 </div>
-                <textarea id="lifeos-override-reason" placeholder="If this site is actually needed, explain why and request a short override." style="width: 100%; min-height: 90px; background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; padding: 12px; resize: vertical; font-size: 13px; margin-bottom: 12px;"></textarea>
+                <textarea id="lifeos-override-reason" placeholder="${safeOverridePrompt}" style="width: 100%; min-height: 90px; background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; padding: 12px; resize: vertical; font-size: 13px; margin-bottom: 12px;"></textarea>
                 <div style="display: flex; gap: 12px; margin-bottom: 16px;">
                     <select id="lifeos-override-minutes" style="flex: 1; padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.45); color: #fff; border: 1px solid rgba(255,255,255,0.08);">
-                        <option value="5">5 min override</option>
-                        <option value="10" selected>10 min override</option>
-                        <option value="15">15 min override</option>
+                        ${optionsHtml}
                     </select>
-                    <button id="lifeos-btn-request-override" style="flex: 1; padding: 12px 16px; background: rgba(59,130,246,0.12); color: #93c5fd; border: 1px solid rgba(59,130,246,0.35); border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer;">Ask For Override</button>
+                    <button id="lifeos-btn-request-override" style="flex: 1; padding: 12px 16px; background: rgba(59,130,246,0.12); color: #93c5fd; border: 1px solid rgba(59,130,246,0.35); border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer;">${frictionSeconds > 0 ? `Wait ${frictionSeconds}s` : 'Ask For Override'}</button>
                 </div>
                 <div id="lifeos-override-status" style="min-height: 18px; font-size: 12px; color: #9ca3af; margin-bottom: 16px;"></div>
                 
@@ -73,12 +111,32 @@ function injectBlockOverlay(data) {
     document.getElementById('lifeos-btn-stay-locked').addEventListener('click', () => {
         window.history.back();
     });
-    document.getElementById('lifeos-btn-request-override').addEventListener('click', () => {
+    const overrideButton = document.getElementById('lifeos-btn-request-override');
+    if (frictionSeconds > 0) {
+        overrideButton.disabled = true;
+        overrideButton.style.opacity = '0.65';
+        overrideButton.style.cursor = 'not-allowed';
+        let remaining = frictionSeconds;
+        const timer = setInterval(() => {
+            remaining -= 1;
+            if (remaining > 0) {
+                overrideButton.textContent = `Wait ${remaining}s`;
+                return;
+            }
+            clearInterval(timer);
+            overrideButton.disabled = false;
+            overrideButton.style.opacity = '1';
+            overrideButton.style.cursor = 'pointer';
+            overrideButton.textContent = 'Ask For Override';
+        }, 1000);
+    }
+    overrideButton.addEventListener('click', () => {
+        if (overrideButton.disabled) return;
         const reasonText = document.getElementById('lifeos-override-reason').value.trim();
         const requestedMinutes = parseInt(document.getElementById('lifeos-override-minutes').value, 10);
         const status = document.getElementById('lifeos-override-status');
-        if (!reasonText) {
-            status.textContent = 'Explain why this target is needed before requesting an override.';
+        if (reasonText.length < minReasonChars) {
+            status.textContent = `Explain why this target is needed in at least ${minReasonChars} characters.`;
             return;
         }
 
@@ -355,6 +413,31 @@ window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'STOP_GUARDIAN') {
         chrome.runtime.sendMessage(event.data);
     }
+});
+
+// Browser support surface. The extension contributes DOM selection and page
+// context that the native app cannot see; the native app contributes OS-level
+// app, screen, audio, and overlay state that the extension cannot see.
+let lastLifeOSSelectedText = '';
+document.addEventListener('mouseup', () => {
+    const selected = window.getSelection()?.toString().trim() || '';
+    if (selected) lastLifeOSSelectedText = selected;
+});
+document.addEventListener('mousedown', () => {
+    lastLifeOSSelectedText = '';
+});
+document.addEventListener('keydown', (event) => {
+    if (!event.altKey || event.code !== 'KeyD' || event.metaKey || event.ctrlKey) return;
+    event.preventDefault();
+    const selectedText = lastLifeOSSelectedText || window.getSelection()?.toString().trim() || '';
+    chrome.runtime.sendMessage({
+        type: 'GUIDANCE_REQUEST',
+        selectedText,
+        question: selectedText
+            ? `Explain the following and how it relates to my session goal: "${selectedText.slice(0, 300)}"`
+            : 'Explain what I am looking at in the context of my session goal.',
+        windowTitle: document.title,
+    });
 });
 
 } // end __lifeosGuardianLoaded guard

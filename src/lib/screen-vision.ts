@@ -14,6 +14,8 @@ import { ScreenVisionSignal, ScreenContext, GuardianState } from './guardian-typ
 import { generateWithFallback, getGenAI } from './ai';
 import { MODEL_FLASH } from './models';
 import { getDb } from './db';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
+import { getAdaptiveBands } from './adaptive-bands';
 
 // ---------------------------------------------------------------------------
 // MacBook client connection tracking
@@ -57,6 +59,13 @@ const SENSITIVE_FULL_APP_SKIP = ['1password 8', '1password 7', 'bitwarden', 'las
 export function isSensitiveApp(appName: string, windowTitle: string): boolean {
   const appLower = appName.toLowerCase();
   if (SENSITIVE_FULL_APP_SKIP.some((a) => appLower.includes(a))) return true;
+  if (
+    DEFAULT_SENSITIVE_APPS.some((a) => appLower.includes(a)) &&
+    !appLower.includes('terminal') &&
+    !appLower.includes('iterm')
+  ) {
+    return true;
+  }
   if (appLower.includes('terminal') || appLower.includes('iterm')) {
     return SENSITIVE_TITLE_PATTERNS.some((p) => p.test(windowTitle));
   }
@@ -124,30 +133,133 @@ export function getChangeMagnitude(
 
 export type CaptureState = ScreenContext['captureState'];
 
+export interface CaptureStateDecision {
+  state: CaptureState;
+  intervalMs: number;
+  reason: string;
+  momentMode: PersonalizationSnapshot['moment']['mode'] | 'unknown';
+}
+
+let capturePersonalizationCache: {
+  sessionId: string;
+  expiresAt: number;
+  snapshot: PersonalizationSnapshot;
+} | null = null;
+
+function clampInterval(ms: number, minMs: number, maxMs: number): number {
+  return Math.max(minMs, Math.min(maxMs, Math.round(ms / 1000) * 1000));
+}
+
+function getVisionPersonalization(session: GuardianState): PersonalizationSnapshot | null {
+  const now = Date.now();
+  if (
+    capturePersonalizationCache &&
+    capturePersonalizationCache.sessionId === session.sessionId &&
+    capturePersonalizationCache.expiresAt > now
+  ) {
+    return capturePersonalizationCache.snapshot;
+  }
+
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'screen_vision',
+      maxInsights: 1,
+      includeMemoryFacts: 2,
+      activeSession: {
+        sessionId: session.sessionId,
+        targetTitle: session.targetTitle,
+        focusScore: session.focusScoreHistory.at(-1) ?? null,
+        elapsedMinutes: Math.round((Date.now() - session.startedAt) / 60_000),
+      },
+    });
+    capturePersonalizationCache = {
+      sessionId: session.sessionId,
+      expiresAt: now + 15_000,
+      snapshot,
+    };
+    return snapshot;
+  } catch (err) {
+    console.warn('[Vision] Personalization unavailable for capture cadence:', err);
+    return null;
+  }
+}
+
+function tuneCaptureInterval(
+  state: CaptureState,
+  baseIntervalMs: number,
+  snapshot: PersonalizationSnapshot | null,
+  score: number,
+): CaptureStateDecision {
+  const bands = getAdaptiveBands();
+  const reasons: string[] = [`base ${state}`];
+  let multiplier = 1;
+
+  if (snapshot) {
+    if (snapshot.moment.mode === 'protect_focus' && state !== 'heightened' && score >= bands.focusGood) {
+      multiplier *= 1.35;
+      reasons.push(`protecting strong focus (${Math.round(bands.focusGood)}+ learned band)`);
+    }
+    if (snapshot.moment.mode === 'deadline_pressure' || snapshot.today.overdueTasks > 0) {
+      multiplier *= 0.8;
+      reasons.push('deadline pressure');
+    }
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+      multiplier *= state === 'heightened' ? 1.1 : 1.3;
+      reasons.push('low-energy recovery mode');
+    }
+    const distractionTolerance = Math.max(10, Math.round(bands.dailyCapacityMinutes * 0.22));
+    if (snapshot.today.recentDistractionMinutes >= distractionTolerance && state !== 'deep_focus') {
+      multiplier *= 0.85;
+      reasons.push(`${snapshot.today.recentDistractionMinutes}m recent distraction over ${distractionTolerance}m tolerance`);
+    }
+    if (snapshot.feedback.alertFatigueLevel === 'high') {
+      multiplier *= 1.25;
+      reasons.push('alert fatigue high');
+    }
+    if (snapshot.feedback.helpfulRate !== null && snapshot.feedback.helpfulRate < 0.4) {
+      multiplier *= 1.15;
+      reasons.push('recent interventions rated low');
+    }
+  }
+
+  const minMs = state === 'guidance_burst' ? 5_000 : 7_000;
+  const maxMs = state === 'deep_focus' ? 45_000 : 30_000;
+  return {
+    state,
+    intervalMs: clampInterval(baseIntervalMs * multiplier, minMs, maxMs),
+    reason: reasons.join('; '),
+    momentMode: snapshot?.moment.mode ?? 'unknown',
+  };
+}
+
 export function computeCaptureState(
   session: GuardianState,
   currentCaptureState: CaptureState,
-): { state: CaptureState; intervalMs: number } {
-  const score = session.focusScoreHistory.at(-1) ?? 50;
+): CaptureStateDecision {
+  const bands = getAdaptiveBands();
+  const score = session.focusScoreHistory.at(-1) ?? bands.focusNeutral;
   const screenCtx = session.screenContext;
   const recentDepths = screenCtx?.recentObservations.slice(-3).map((o) => o.engagementDepth) ?? [];
+  const personalization = getVisionPersonalization(session);
 
   // Downshift from guidance_burst after 30s (handled by caller via timestamp)
   if (currentCaptureState === 'guidance_burst') {
-    return { state: 'guidance_burst', intervalMs: 5_000 };
+    return tuneCaptureInterval('guidance_burst', 5_000, personalization, score);
   }
 
   const allActiveCreation = recentDepths.length >= 3 && recentDepths.every((d) => d === 'active_creation');
-  if (score > 85 && allActiveCreation) {
-    return { state: 'deep_focus', intervalMs: 25_000 };
+  if (score >= bands.focusExcellent && allActiveCreation) {
+    return tuneCaptureInterval('deep_focus', Math.round(bands.deepWorkMinMinutes * 1000), personalization, score);
   }
 
   const trend = screenCtx?.visionTrend ?? 'unknown';
-  if (score < 50 || trend === 'declining') {
-    return { state: 'heightened', intervalMs: 9_000 };
+  if (score < bands.focusNeutral || trend === 'declining') {
+    const heightenedBase = Math.max(7_000, Math.round(bands.sessionGapMinutes * 1000 * 1.8));
+    return tuneCaptureInterval('heightened', heightenedBase, personalization, score);
   }
 
-  return { state: 'normal', intervalMs: 13_000 };
+  const normalBase = Math.max(10_000, Math.round(bands.sessionGapMinutes * 1000 * 2.6));
+  return tuneCaptureInterval('normal', normalBase, personalization, score);
 }
 
 // ---------------------------------------------------------------------------

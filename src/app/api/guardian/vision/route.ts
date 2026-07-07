@@ -165,6 +165,8 @@ export async function POST(req: Request) {
       },
       captureState: captureStateResult.state,
       nextIntervalMs: captureStateResult.intervalMs,
+      captureReason: captureStateResult.reason,
+      momentMode: captureStateResult.momentMode,
       decision: result.decision,
     });
   } catch (error) {
@@ -201,6 +203,8 @@ export async function GET() {
     topic: session.intentProfile?.topic ?? session.targetTitle,
     captureState: captureStateResult.state,
     nextIntervalMs: captureStateResult.intervalMs,
+    captureReason: captureStateResult.reason,
+    momentMode: captureStateResult.momentMode,
     focusScore: session.focusScoreHistory.at(-1) ?? 50,
     macbookClient: {
       connected: clientConnected,

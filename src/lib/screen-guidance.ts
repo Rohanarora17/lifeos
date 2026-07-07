@@ -6,42 +6,88 @@
  *
  * Triggered by:
  *   - Voice PTT: "explain this" / "help me" / "what is X"
- *   - MacBook client hotkey (Option+D / Cmd+Shift+G) → POST /api/guardian/guidance
- *   - Extension text selection + shortcut
+ *   - Native Mac surface hotkey/PTT/selection capture
+ *   - Extension DOM selection, tab, and page-context signals
+ *
+ * Native and extension surfaces are complementary sensors. Both feed the same
+ * Guardian, UIL, memory, and guidance layers instead of separate product lanes.
  */
 
 import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning } from './cloud-privacy';
 import { MODEL_PRO, MODEL_FLASH } from './models';
-import { getIntelligenceContext } from './intelligence';
 import { getGuardianSession, getActiveGuardianSession } from './guardian-runtime';
 import { getDb } from './db';
 import type { ScreenVisionSignal, ScreenContext } from './guardian-types';
+import type { FocusCopilotCallout } from './focus-copilot-types';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface GuidanceInput {
   sessionId?: string | null;
-  base64Jpeg?: string;        // current screenshot (high-res from MacBook client or extension)
+  base64Jpeg?: string;        // current screenshot from a native or extension surface
   appInFocus?: string;
   windowTitle?: string;
-  selectedText?: string;      // highlighted text via extension content script or clipboard
+  selectedText?: string;      // highlighted text via extension DOM or native clipboard bridge
   question: string;           // "explain this" / "help me debug this" / "what is X"
-  source: 'voice' | 'client_hotkey' | 'extension_hotkey' | 'extension_selection';
+  source: 'voice' | 'client_hotkey' | 'extension_hotkey' | 'extension_selection' | 'native_hotkey' | 'native_ptt' | 'native_selection';
+  screenSize?: {
+    width: number;
+    height: number;
+  };
+  cursorPoint?: {
+    x: number;
+    y: number;
+  };
 }
 
 export interface GuidanceResponse {
   answer: string;             // full response (for dashboard display)
   spokenAnswer: string;       // condensed for TTS (≤100 words)
+  callouts: FocusCopilotCallout[];
   contextUsed: {
     hadScreenshot: boolean;
     hadSelectedText: boolean;
     hadScreenHistory: boolean;
     hadContextNarrative: boolean;
+    hadCursorPoint?: boolean;
+    usedUilContext?: boolean;
   };
 }
 
-// ─── Recent observations from DB (fallback when screenContext is thin) ────────
+function validateCallouts(raw: unknown, screenSize?: GuidanceInput['screenSize']): FocusCopilotCallout[] {
+  if (!Array.isArray(raw)) return [];
+  const maxWidth = Math.max(1, screenSize?.width ?? 10000);
+  const maxHeight = Math.max(1, screenSize?.height ?? 10000);
+
+  return raw.slice(0, 4).flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const c = item as Record<string, unknown>;
+    const x = typeof c.x === 'number' ? c.x : Number(c.x);
+    const y = typeof c.y === 'number' ? c.y : Number(c.y);
+    const width = c.width === undefined ? undefined : (typeof c.width === 'number' ? c.width : Number(c.width));
+    const height = c.height === undefined ? undefined : (typeof c.height === 'number' ? c.height : Number(c.height));
+    const confidence = typeof c.confidence === 'number' ? c.confidence : Number(c.confidence ?? 0);
+    const label = typeof c.label === 'string' ? c.label.trim() : '';
+
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !label || confidence < 0.35) return [];
+    if (x < 0 || y < 0 || x > maxWidth || y > maxHeight) return [];
+    if (width !== undefined && (!Number.isFinite(width) || width < 0 || width > maxWidth)) return [];
+    if (height !== undefined && (!Number.isFinite(height) || height < 0 || height > maxHeight)) return [];
+
+    return [{
+      x,
+      y,
+      ...(width !== undefined ? { width } : {}),
+      ...(height !== undefined ? { height } : {}),
+      label,
+      confidence: Math.max(0, Math.min(1, confidence)),
+    }];
+  });
+}
+
+// ─── Recent observations from DB (shared history when screenContext is thin) ──
 
 function getRecentScreenObservations(sessionId: string, limit = 8): Array<{
   observed_at: string;
@@ -58,7 +104,7 @@ function getRecentScreenObservations(sessionId: string, limit = 8): Array<{
              task_alignment, engagement_depth
       FROM screen_observations
       WHERE session_id = ?
-        AND source = 'screen_vision'
+        AND source IN ('screen_vision', 'native_copilot', 'extension_screenshot', 'extension_daemon')
       ORDER BY observed_at DESC
       LIMIT ?
     `).all(sessionId, limit) as ReturnType<typeof getRecentScreenObservations>;
@@ -112,7 +158,8 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
     return {
       answer: 'Guidance is ready, but cloud reasoning is unavailable right now.',
       spokenAnswer: 'Cloud reasoning is unavailable right now.',
-      contextUsed: { hadScreenshot: false, hadSelectedText: false, hadScreenHistory: false, hadContextNarrative: false },
+      callouts: [],
+      contextUsed: { hadScreenshot: false, hadSelectedText: false, hadScreenHistory: false, hadContextNarrative: false, usedUilContext: false },
     };
   }
 
@@ -131,12 +178,25 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
   // ── Collect context pieces ─────────────────────────────────────────────────
   const dbObs = sessionId ? getRecentScreenObservations(sessionId) : [];
   const screenHistory = formatScreenHistory(screenContext, dbObs);
-  const uilContext = getIntelligenceContext({ maxInsights: 3, includeToday: true });
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'guidance',
+    maxInsights: 3,
+    includeThresholds: false,
+    includeMemoryFacts: 6,
+    activeSession: session ? {
+      sessionId: session.sessionId,
+      targetTitle: session.targetTitle,
+      focusScore,
+      elapsedMinutes: elapsedMin ?? 0,
+    } : null,
+  });
+  const personalizationContext = formatPersonalizationContext(personalization);
 
   const hadScreenshot = !!input.base64Jpeg;
   const hadSelectedText = !!input.selectedText?.trim();
   const hadScreenHistory = screenHistory.length > 0;
   const hadContextNarrative = !!screenContext?.contextNarrative;
+  const hadCursorPoint = !!input.cursorPoint;
 
   // ── Build system instruction ───────────────────────────────────────────────
   const sessionBlock = session
@@ -153,11 +213,9 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
     'Answer their question using ALL available context: what they are looking at, what they have been doing,',
     'their session goal, and their longitudinal intelligence profile.',
     'Be specific. Reference what is actually on their screen. Keep the spoken answer under 80 words.',
-    'Separate your response into two parts using this exact format:',
-    '---ANSWER---',
-    '[Full answer here — can be longer, include code snippets or explanations]',
-    '---SPOKEN---',
-    '[Spoken version here — under 80 words, no markdown, no code blocks, natural speech]',
+    'Return ONLY valid JSON with this shape:',
+    '{"answer":"full answer","spokenAnswer":"short natural speech under 80 words","callouts":[{"x":100,"y":200,"width":120,"height":40,"label":"short label","confidence":0.7}]}',
+    'Callouts are optional. Only include callouts when you can point to a visible place in the screenshot. Coordinates must be in screenshot pixels.',
     '',
     '=== SESSION ===',
     sessionBlock,
@@ -167,8 +225,10 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
     `=== CURRENT APP ===`,
     input.appInFocus ? `App: ${input.appInFocus}` : '',
     input.windowTitle ? `Window: ${input.windowTitle}` : '',
+    input.screenSize ? `Screen size: ${input.screenSize.width}x${input.screenSize.height}` : '',
+    input.cursorPoint ? `Cursor point: ${input.cursorPoint.x},${input.cursorPoint.y}` : '',
     '',
-    uilContext ? `=== INTELLIGENCE PROFILE ===\n${uilContext}` : '',
+    personalizationContext ? `=== PERSONALIZATION CONTEXT ===\n${personalizationContext}` : '',
   ].filter(Boolean).join('\n');
 
   // ── Build contents array (multimodal if screenshot provided) ───────────────
@@ -200,33 +260,31 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
 
   const rawText = (result.text || '').trim();
 
-  // ── Parse answer vs spoken sections ───────────────────────────────────────
   let answer = rawText;
   let spokenAnswer = rawText;
+  let callouts: FocusCopilotCallout[] = [];
 
-  const answerMatch = rawText.match(/---ANSWER---\n([\s\S]*?)(?:---SPOKEN---|$)/);
-  const spokenMatch = rawText.match(/---SPOKEN---\n([\s\S]*?)$/);
+  try {
+    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+    const parsed = JSON.parse(cleaned) as { answer?: unknown; spokenAnswer?: unknown; callouts?: unknown };
+    answer = typeof parsed.answer === 'string' ? parsed.answer.trim() : rawText;
+    spokenAnswer = typeof parsed.spokenAnswer === 'string' ? parsed.spokenAnswer.trim() : answer;
+    callouts = validateCallouts(parsed.callouts, input.screenSize);
+  } catch {
+    // Backward-compatible fallback for older delimiter-style model responses.
+    const answerMatch = rawText.match(/---ANSWER---\n([\s\S]*?)(?:---SPOKEN---|$)/);
+    const spokenMatch = rawText.match(/---SPOKEN---\n([\s\S]*?)$/);
+    if (answerMatch) answer = answerMatch[1].trim();
+    if (spokenMatch) spokenAnswer = spokenMatch[1].trim();
+  }
 
-  if (answerMatch) {
-    answer = answerMatch[1].trim();
-  }
-  if (spokenMatch) {
-    spokenAnswer = spokenMatch[1].trim();
-  }
-
-  // Fallback: if model didn't use delimiters, use full text for both but cap spoken
-  if (!answerMatch && !spokenMatch && rawText.length > 0) {
-    answer = rawText;
-    // Truncate for speech: keep first ~80 words
-    const words = rawText.split(/\s+/);
-    spokenAnswer = words.length > 80
-      ? words.slice(0, 80).join(' ') + '…'
-      : rawText;
-  }
+  const words = spokenAnswer.split(/\s+/);
+  if (words.length > 80) spokenAnswer = `${words.slice(0, 80).join(' ')}...`;
 
   return {
     answer: answer || 'I could not generate a response.',
     spokenAnswer: spokenAnswer || answer || 'I could not generate a response.',
-    contextUsed: { hadScreenshot, hadSelectedText, hadScreenHistory, hadContextNarrative },
+    callouts,
+    contextUsed: { hadScreenshot, hadSelectedText, hadScreenHistory, hadContextNarrative, hadCursorPoint, usedUilContext: !!personalizationContext },
   };
 }
