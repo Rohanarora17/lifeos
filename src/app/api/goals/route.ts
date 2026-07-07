@@ -1,19 +1,148 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sanitizeText } from '@/lib/sanitize';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from '@/lib/personalization-context';
+import { buildAdaptiveGoalPolicy } from '@/lib/adaptive-goal-policy';
+
+type LinkedTask = { id: number; title: string; status: string; completed_at: string | null };
+type LinkedHabit = { id: number; name: string; icon: string; total_checkins: number; week_checkins: number };
+type GoalRecord = {
+    id: number;
+    title: string;
+    description?: string | null;
+    type?: string | null;
+    category?: string | null;
+    deadline: string | null;
+    active: number;
+    archived?: number | null;
+    created_at: string;
+    health_status: 'on_track' | 'at_risk' | 'off_track' | null;
+    velocity_needed: number | null;
+    actual_velocity: number | null;
+    [key: string]: unknown;
+};
+
+function textMatches(text: string | null | undefined, query: string | null | undefined): boolean {
+    if (!text || !query) return false;
+    const textLower = text.toLowerCase();
+    const terms = query
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(term => term.length >= 4);
+    return terms.length > 0 && terms.some(term => textLower.includes(term));
+}
+
+function clamp01(value: number): number {
+    return Math.max(0.05, Math.min(1, value));
+}
+
+function buildAdaptiveGoalMotivation(input: {
+    goal: GoalRecord;
+    linkedTasks: LinkedTask[];
+    linkedHabits: LinkedHabit[];
+    selfEfficacy: number;
+    snapshot: PersonalizationSnapshot;
+}) {
+    const { goal, linkedTasks, linkedHabits, selfEfficacy, snapshot } = input;
+    const active = Number(goal.active ?? 0) === 1;
+    const goalTitle = goal.title;
+    const standupMatch = textMatches(goalTitle, snapshot.userState.standupGoal) ||
+        linkedTasks.some(task => textMatches(task.title, snapshot.userState.standupGoal));
+    const doingMatch = snapshot.today.doingTasks.some(taskTitle =>
+        textMatches(goalTitle, taskTitle) ||
+        linkedTasks.some(task => textMatches(task.title, taskTitle))
+    );
+    const incompleteTask = linkedTasks.find(task => task.status !== 'done');
+    const underdoneHabit = linkedHabits.find(habit => habit.week_checkins < 5);
+
+    let expectancy = selfEfficacy / 100;
+    let value = active ? 1.0 : 0.25;
+    let impulsiveness = 0.5;
+    const reasons: string[] = [];
+
+    if (standupMatch) {
+        value += 0.35;
+        expectancy += 0.08;
+        reasons.push('matches today goal');
+    }
+    if (doingMatch) {
+        value += 0.2;
+        reasons.push('already in motion');
+    }
+    if (goal.health_status === 'off_track') {
+        value += 0.25;
+        reasons.push('off track');
+    } else if (goal.health_status === 'at_risk') {
+        value += 0.15;
+        reasons.push('at risk');
+    }
+
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low') {
+        impulsiveness += 0.2;
+        expectancy -= 0.05;
+        reasons.push('low-energy day');
+    }
+    if (snapshot.moment.mode === 'deadline_pressure') {
+        value += 0.2;
+        impulsiveness = Math.max(0.25, impulsiveness - 0.15);
+        reasons.push('deadline-pressure mode');
+    }
+    if (snapshot.moment.mode === 'protect_focus') {
+        impulsiveness = Math.max(0.25, impulsiveness - 0.1);
+        reasons.push('protect focus');
+    }
+    if (snapshot.feedback.alertFatigueLevel === 'high') {
+        impulsiveness += 0.15;
+        reasons.push('alert fatigue high');
+    }
+
+    const daysUntilDeadline = goal.deadline && active
+        ? Math.max(0, Math.round((new Date(goal.deadline).getTime() - Date.now()) / 86400000))
+        : null;
+    const delay = daysUntilDeadline ?? 14;
+    const tmtScore = active
+        ? Math.round(((clamp01(expectancy) * value) / (1 + impulsiveness * delay)) * 100)
+        : null;
+
+    const nextAction = snapshot.moment.mode === 'recovery'
+        ? `Minimum viable step: ${incompleteTask ? incompleteTask.title : underdoneHabit ? `${underdoneHabit.icon} ${underdoneHabit.name}` : goalTitle} for 10 minutes.`
+        : snapshot.moment.mode === 'deadline_pressure'
+            ? `Move this first: ${incompleteTask?.title || goalTitle}.`
+            : snapshot.moment.mode === 'planning'
+                ? `Define the next concrete task for ${goalTitle}.`
+                : incompleteTask
+                    ? `Next best step: ${incompleteTask.title}.`
+                    : underdoneHabit
+                        ? `Stabilize habit support: ${underdoneHabit.icon} ${underdoneHabit.name}.`
+                        : 'No obvious next action; review whether this goal still matters.';
+
+    return {
+        tmtScore,
+        tmtReason: reasons.slice(0, 4).join(' · ') || snapshot.moment.guidance,
+        adaptiveNextAction: nextAction,
+        adaptiveMode: snapshot.moment.mode,
+        adaptiveValue: Number(value.toFixed(2)),
+        adaptiveImpulsiveness: Number(impulsiveness.toFixed(2)),
+    };
+}
 
 // GET — List goals with linked tasks, habits, computed progress, TMT motivation, and self-efficacy
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const showAll = searchParams.get('all') === 'true';
     const db = getDb();
+    const personalization = buildPersonalizationSnapshot({
+        surface: 'dashboard',
+        maxInsights: 2,
+        includeMemoryFacts: 4,
+    });
     // By default only return active (non-archived) goals — mirrors what the dashboard shows.
     // Pass ?all=true to include archived goals (e.g. for admin/history views).
     const goals = db.prepare(
         showAll
             ? 'SELECT * FROM goals ORDER BY active DESC, created_at DESC'
             : 'SELECT * FROM goals WHERE active = 1 AND (archived = 0 OR archived IS NULL) ORDER BY created_at DESC'
-    ).all() as any[];
+    ).all() as GoalRecord[];
 
     // Compute rolling self-efficacy (task success rate over last 14 days)
     const efficacyRow = db.prepare(`
@@ -32,7 +161,7 @@ export async function GET(request: Request) {
         // Get linked tasks
         const linkedTasks = db.prepare(
             'SELECT id, title, status, completed_at FROM tasks WHERE goal_id = ? ORDER BY position ASC'
-        ).all(goal.id) as { id: number; title: string; status: string; completed_at: string | null }[];
+        ).all(goal.id) as LinkedTask[];
 
         // Get linked habits
         const linkedHabits = db.prepare(`
@@ -40,7 +169,7 @@ export async function GET(request: Request) {
                 (SELECT COUNT(*) FROM habit_checkins WHERE habit_id = h.id AND completed = 1) as total_checkins,
                 (SELECT COUNT(DISTINCT date) FROM habit_checkins WHERE habit_id = h.id AND completed = 1 AND date >= date('now', '-7 days')) as week_checkins
             FROM habits h WHERE h.goal_id = ? AND h.archived = 0
-        `).all(goal.id) as any[];
+        `).all(goal.id) as LinkedHabit[];
 
         // Compute progress from linked tasks
         const totalTasks = linkedTasks.length;
@@ -49,7 +178,7 @@ export async function GET(request: Request) {
 
         // Factor in habit consistency for overall goal health
         const habitHealth = linkedHabits.length > 0
-            ? Math.round(linkedHabits.reduce((sum: number, h: any) => sum + (h.week_checkins / 7) * 100, 0) / linkedHabits.length)
+            ? Math.round(linkedHabits.reduce((sum, habit) => sum + (habit.week_checkins / 7) * 100, 0) / linkedHabits.length)
             : null;
 
         // Overall goal progress: weighted blend of task completion + habit consistency
@@ -57,19 +186,13 @@ export async function GET(request: Request) {
             ? Math.round(taskProgress * 0.7 + habitHealth * 0.3)  // tasks weigh more
             : taskProgress;
 
-        // TMT Motivation Score: (Expectancy × Value) / (1 + Impulsiveness × Delay)
-        // Expectancy = self-efficacy (0-1), Value = 1 for active goals, Delay = days until deadline
-        let tmtScore = null;
-        if (goal.deadline && goal.active) {
-            const daysUntilDeadline = Math.max(0,
-                Math.round((new Date(goal.deadline).getTime() - Date.now()) / 86400000)
-            );
-            const expectancy = selfEfficacy / 100;
-            const value = 1.0;  // all active goals have full value
-            const impulsiveness = 0.5;  // moderate default
-            const delay = daysUntilDeadline;
-            tmtScore = Math.round(((expectancy * value) / (1 + impulsiveness * delay)) * 100);
-        }
+        const adaptiveMotivation = buildAdaptiveGoalMotivation({
+            goal,
+            linkedTasks,
+            linkedHabits,
+            selfEfficacy,
+            snapshot: personalization,
+        });
 
         // Goal gradient: are we accelerating? Compare recent task completion rate to earlier rate
         let momentum = null;
@@ -91,6 +214,22 @@ export async function GET(request: Request) {
             FROM intentions WHERE goal_id = ? AND active = 1
         `).all(goal.id);
 
+        const adaptiveGoalPolicy = buildAdaptiveGoalPolicy({
+            id: goal.id,
+            title: goal.title,
+            deadline: goal.deadline,
+            active: goal.active,
+            health_status: goal.health_status,
+            velocity_needed: goal.velocity_needed,
+            actual_velocity: goal.actual_velocity,
+            progress,
+            taskProgress,
+            habitHealth,
+            linkedTasks,
+            linkedHabits,
+            momentum,
+        }, personalization);
+
         goal.linkedTasks = linkedTasks;
         goal.linkedHabits = linkedHabits;
         goal.intentions = intentions;
@@ -99,11 +238,33 @@ export async function GET(request: Request) {
         goal.habitHealth = habitHealth;
         goal.completedTasks = completedTasks;
         goal.totalTasks = totalTasks;
-        goal.tmtScore = tmtScore;
+        goal.tmtScore = adaptiveMotivation.tmtScore;
+        goal.tmtReason = adaptiveMotivation.tmtReason;
+        goal.adaptiveNextAction = adaptiveMotivation.adaptiveNextAction;
+        goal.adaptiveMode = adaptiveMotivation.adaptiveMode;
+        goal.adaptiveValue = adaptiveMotivation.adaptiveValue;
+        goal.adaptiveImpulsiveness = adaptiveMotivation.adaptiveImpulsiveness;
+        goal.adaptiveGoalStatus = adaptiveGoalPolicy.adaptiveGoalStatus;
+        goal.adaptiveProgressTarget = adaptiveGoalPolicy.adaptiveProgressTarget;
+        goal.adaptiveProgressDelta = adaptiveGoalPolicy.adaptiveProgressDelta;
+        goal.adaptiveProgressFit = adaptiveGoalPolicy.adaptiveProgressFit;
+        goal.adaptiveGoalReason = adaptiveGoalPolicy.adaptiveGoalReason;
+        goal.adaptiveGoalCheckpoint = adaptiveGoalPolicy.adaptiveGoalCheckpoint;
         goal.momentum = momentum;
     }
 
-    return NextResponse.json({ goals, selfEfficacy });
+    return NextResponse.json({
+        goals,
+        selfEfficacy,
+        personalization: {
+            mode: personalization.moment.mode,
+            guidance: personalization.moment.guidance,
+            energy: personalization.userState.energy,
+            mood: personalization.userState.mood,
+            standupGoal: personalization.userState.standupGoal,
+            alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+        },
+    });
 }
 
 // POST — Create goal

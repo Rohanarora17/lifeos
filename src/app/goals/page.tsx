@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { progressColor, efficacyEmoji } from '@/lib/score-classify';
 
 interface LinkedTask {
@@ -32,7 +32,18 @@ interface Goal {
     completedTasks: number;
     totalTasks: number;
     tmtScore: number | null;
-    momentum: number | null;
+    tmtReason?: string;
+    adaptiveNextAction?: string;
+    adaptiveMode?: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+	    adaptiveValue?: number;
+	    adaptiveImpulsiveness?: number;
+	    adaptiveGoalStatus?: 'protect' | 'deadline_risk' | 'recovery_minimum' | 'stalled' | 'aligned' | 'stretch' | 'inactive';
+	    adaptiveProgressTarget?: number;
+	    adaptiveProgressDelta?: number;
+	    adaptiveProgressFit?: 'high' | 'medium' | 'low';
+	    adaptiveGoalReason?: string;
+	    adaptiveGoalCheckpoint?: string;
+	    momentum: number | null;
     linkedTasks: LinkedTask[];
     linkedHabits: LinkedHabit[];
     intentions: { id: number; if_condition: string; then_action: string; active: number; times_triggered: number }[];
@@ -41,13 +52,33 @@ interface Goal {
     actual_velocity: number | null;
 }
 
+type TaskOption = { id: number; title: string; status: string; goal_id: number | null };
+type HabitOption = { id: number; name: string; icon: string; goal_id: number | null };
+
+const ADAPTIVE_STATUS_LABEL: Record<NonNullable<Goal['adaptiveGoalStatus']>, string> = {
+    protect: 'Protect focus',
+    deadline_risk: 'Risk focus',
+    recovery_minimum: 'Minimum step',
+    stalled: 'Restart',
+    aligned: 'Aligned',
+    stretch: 'Stretch',
+    inactive: 'Inactive',
+};
+
+const ADAPTIVE_FIT_COLOR: Record<NonNullable<Goal['adaptiveProgressFit']>, string> = {
+    high: 'var(--accent-green)',
+    medium: 'var(--accent-blue)',
+    low: 'var(--accent-orange)',
+};
+
 export default function GoalsPage() {
     const [goals, setGoals] = useState<Goal[]>([]);
     const [selfEfficacy, setSelfEfficacy] = useState(50);
+    const [todayDate] = useState(() => new Date().toISOString().slice(0, 10));
     const [showNewGoal, setShowNewGoal] = useState(false);
     const [expandedGoal, setExpandedGoal] = useState<number | null>(null);
-    const [allTasks, setAllTasks] = useState<{ id: number; title: string; status: string; goal_id: number | null }[]>([]);
-    const [allHabits, setAllHabits] = useState<{ id: number; name: string; icon: string; goal_id: number | null }[]>([]);
+    const [allTasks, setAllTasks] = useState<TaskOption[]>([]);
+    const [allHabits, setAllHabits] = useState<HabitOption[]>([]);
     const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
     const [editingGoalTitle, setEditingGoalTitle] = useState('');
 
@@ -61,28 +92,30 @@ export default function GoalsPage() {
     const [newIf, setNewIf] = useState('');
     const [newThen, setNewThen] = useState('');
 
-    useEffect(() => {
-        fetchGoals();
-        fetchUnlinked();
-    }, []);
-
-    const fetchGoals = async () => {
+    const fetchGoals = useCallback(async () => {
         const res = await fetch('/api/goals');
-        const data = await res.json();
+        const data = await res.json() as { goals?: Goal[]; selfEfficacy?: number };
         setGoals(data.goals || []);
         setSelfEfficacy(data.selfEfficacy ?? 50);
-    };
+    }, []);
 
-    const fetchUnlinked = async () => {
+    const fetchUnlinked = useCallback(async () => {
         const [tasksRes, habitsRes] = await Promise.all([
             fetch('/api/tasks'),
             fetch('/api/habits')
         ]);
-        const tasksData = await tasksRes.json();
-        const habitsData = await habitsRes.json();
-        setAllTasks((tasksData.tasks || []).filter((t: any) => !t.goal_id));
-        setAllHabits((habitsData.habits || []).filter((h: any) => !h.goal_id));
-    };
+        const tasksData = await tasksRes.json() as { tasks?: TaskOption[] };
+        const habitsData = await habitsRes.json() as { habits?: HabitOption[] };
+        setAllTasks((tasksData.tasks || []).filter(t => !t.goal_id));
+        setAllHabits((habitsData.habits || []).filter(h => !h.goal_id));
+    }, []);
+
+    useEffect(() => {
+        void (async () => {
+            await fetchGoals();
+            await fetchUnlinked();
+        })();
+    }, [fetchGoals, fetchUnlinked]);
 
     const addGoal = async () => {
         if (!title.trim()) return;
@@ -135,13 +168,13 @@ export default function GoalsPage() {
     };
 
     const linkHabit = async (habitId: number, goalId: number) => {
-        // habits don't have a PATCH for goal_id yet, use the DB directly
-        await fetch('/api/goals', {
+        await fetch('/api/habits', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: goalId }), // triggers a refetch
+            body: JSON.stringify({ id: habitId, goal_id: goalId }),
         });
-        // For now, we'll do this through a custom endpoint - let's add it via tasks API pattern
+        fetchGoals();
+        fetchUnlinked();
     };
 
     const unlinkTask = async (taskId: number) => {
@@ -176,7 +209,8 @@ export default function GoalsPage() {
     };
 
     const daysUntil = (dateStr: string) => {
-        const d = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
+        if (!todayDate) return '';
+        const d = Math.ceil((new Date(dateStr).getTime() - new Date(`${todayDate}T00:00:00`).getTime()) / 86400000);
         if (d < 0) return `${Math.abs(d)}d overdue`;
         if (d === 0) return 'Today';
         if (d === 1) return 'Tomorrow';
@@ -255,7 +289,7 @@ export default function GoalsPage() {
                                         <span className="badge text-xs" style={{
                                             background: goal.tmtScore > 20 ? 'rgba(76,175,80,0.15)' : 'rgba(255,85,85,0.15)',
                                             color: goal.tmtScore > 20 ? 'var(--accent-green)' : 'var(--accent-red)',
-                                        }} title="TMT Motivation Score — higher = more motivated">
+                                        }} title={goal.tmtReason ? `Adaptive TMT: ${goal.tmtReason}` : 'Adaptive TMT Motivation Score — higher = more urgent now'}>
                                             {goal.tmtScore > 20 ? '🔋' : '⚡'} TMT {goal.tmtScore}%
                                         </span>
                                     )}
@@ -267,9 +301,21 @@ export default function GoalsPage() {
                                             {goal.momentum > 0 ? '📈' : '📉'} {goal.momentum > 0 ? '+' : ''}{goal.momentum}%
                                         </span>
                                     )}
+                                    {goal.adaptiveGoalStatus && (
+                                        <span
+                                            className="badge text-xs"
+                                            style={{
+                                                background: 'rgba(99,102,241,0.12)',
+                                                color: goal.adaptiveProgressFit ? ADAPTIVE_FIT_COLOR[goal.adaptiveProgressFit] : 'var(--accent-blue)',
+                                            }}
+                                            title={goal.adaptiveGoalReason}
+                                        >
+                                            {ADAPTIVE_STATUS_LABEL[goal.adaptiveGoalStatus]}
+                                        </span>
+                                    )}
                                     {goal.health_status && goal.health_status !== 'on_track' && (
-                                        <span className="badge text-xs" style={{
-                                            background: goal.health_status === 'off_track' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
+	                                        <span className="badge text-xs" style={{
+	                                            background: goal.health_status === 'off_track' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)',
                                             color: goal.health_status === 'off_track' ? '#ef4444' : '#f59e0b',
                                         }} title={goal.velocity_needed != null ? `Need ${goal.velocity_needed.toFixed(0)}m/day · getting ${(goal.actual_velocity ?? 0).toFixed(0)}m/day` : undefined}>
                                             {goal.health_status === 'off_track' ? 'Off track' : 'At risk'}
@@ -300,11 +346,22 @@ export default function GoalsPage() {
                                         {goal.progress}%
                                     </span>
                                 </div>
-                                {goal.velocity_needed != null && (
+                                {goal.adaptiveProgressTarget !== undefined && goal.adaptiveProgressTarget > goal.progress && (
                                     <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                                        {(goal.actual_velocity ?? 0).toFixed(0)}m/day actual · {goal.velocity_needed.toFixed(0)}m/day needed
+                                        Today&apos;s adaptive target: {goal.adaptiveProgressTarget}% ({goal.adaptiveProgressDelta ?? 0}% movement) · {goal.adaptiveGoalReason}
                                     </div>
                                 )}
+                                {goal.velocity_needed != null && (
+	                                    <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+	                                        {(goal.actual_velocity ?? 0).toFixed(0)}m/day actual · {goal.velocity_needed.toFixed(0)}m/day needed
+	                                    </div>
+	                                )}
+                                {(goal.adaptiveGoalCheckpoint || goal.adaptiveNextAction) && (
+	                                    <div className="text-xs mt-2 px-3 py-2 rounded-lg" style={{ background: 'rgba(99,102,241,0.08)', color: 'var(--text-secondary)', border: '1px solid rgba(99,102,241,0.18)' }}>
+	                                        <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>Today:</span> {goal.adaptiveGoalCheckpoint ?? goal.adaptiveNextAction}
+	                                        {goal.tmtReason && <span style={{ color: 'var(--text-muted)' }}> · {goal.tmtReason}</span>}
+	                                    </div>
+	                                )}
 
                                 {/* Mini Stats */}
                                 <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
@@ -377,6 +434,18 @@ export default function GoalsPage() {
                                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No habits linked yet — link from the habits page</p>
                                     )}
                                 </div>
+                                {allHabits.length > 0 && (
+                                    <select
+                                        className="input text-sm mt-3 w-full"
+                                        onChange={(e) => { if (e.target.value) { linkHabit(parseInt(e.target.value), goal.id); e.target.value = ''; } }}
+                                        defaultValue=""
+                                    >
+                                        <option value="" disabled>+ Link an existing habit...</option>
+                                        {allHabits.map(h => (
+                                            <option key={h.id} value={h.id}>{h.icon} {h.name}</option>
+                                        ))}
+                                    </select>
+                                )}
 
                                 {/* Implementation Intentions */}
                                 <h4 className="text-xs font-semibold mt-4 mb-2" style={{ color: 'var(--text-secondary)' }}>
@@ -430,7 +499,7 @@ export default function GoalsPage() {
                             onChange={e => setDescription(e.target.value)}
                         />
                         <div className="grid grid-cols-2 gap-3">
-                            <select className="input text-sm" value={category} onChange={(e: any) => setCategory(e.target.value)}>
+                            <select className="input text-sm" value={category} onChange={(e) => setCategory(e.target.value)}>
                                 <option value="productivity">🔧 Productivity</option>
                                 <option value="learning">📚 Learning</option>
                                 <option value="health">💪 Health</option>
