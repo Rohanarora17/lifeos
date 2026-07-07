@@ -46,6 +46,9 @@ next-env.d.ts
 data/
 .env.local
 
+# SwiftPM build outputs
+**/.build/
+
 # Secrets and credentials
 client_secret*.json
 *-sa.json
