@@ -3,6 +3,10 @@ import { sendTelegram, formatAlert, ALERT_KEYBOARD } from './telegram';
 import { getGuardianContext } from './guardian-runtime';
 import { getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { getAdaptiveBands } from './adaptive-bands';
+import { getGenAI, generateWithFallback } from './ai';
+import { MODEL_FLASH } from './models';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
+import { recordExplicitFeedbackLearning } from './feedback-learning';
 
 // ============================================================
 //  NOTIFICATION ENGINE — Real-time alerts + email via Resend
@@ -20,18 +24,45 @@ export type AlertType =
     | 'efficacy_drop'
     | 'weekly_review'
     | 'habit_levelup'
-    | 'goal_conflict';
+    | 'goal_conflict'
+    | 'evening_planner';
 
 export type Severity = 'info' | 'warning' | 'urgent';
 
-interface Alert {
+export interface Alert {
     id: number;
-    type: AlertType;
+    type: string;
     message: string;
     severity: Severity;
     read: number;
     emailed: number;
+    outcome_id: number | null;
+    feedback: 'helpful' | 'not_helpful' | 'dismissed' | null;
+    feedback_reason: string | null;
+    feedback_at: string | null;
+    adaptive_reason: string | null;
     created_at: string;
+}
+
+export type AlertFeedback = 'helpful' | 'not_helpful' | 'dismissed';
+
+interface AdaptiveAlertOptions {
+    /**
+     * A stable key for per-entity alerts. Example: task_due_today_42.
+     * Defaults to the alert type.
+     */
+    key?: string;
+    context?: Record<string, unknown>;
+    skipAiRewrite?: boolean;
+}
+
+interface AlertDecision {
+    shouldSend: boolean;
+    typeKey: string;
+    message: string;
+    severity: Severity;
+    dedupMinutes: number;
+    reason: string;
 }
 
 // Dedup window — don't fire the same alert type within this many minutes
@@ -48,7 +79,429 @@ const DEDUP_MINUTES: Record<string, number> = {
     weekly_review: 10080,
     habit_levelup: 1440,
     goal_conflict: 1440,
+    evening_planner: 1440,
 };
+
+const IST_OFFSET_MS = 19_800_000;
+
+function getIstNow(): Date {
+    return new Date(Date.now() + IST_OFFSET_MS);
+}
+
+function scoreEmoji(score: number): string {
+    if (score >= 85) return 'strong';
+    if (score >= 70) return 'steady';
+    if (score >= 55) return 'wobbly';
+    return 'low';
+}
+
+function compactList(items: string[], max = 2): string {
+    const clean = items.map(s => s.trim()).filter(Boolean);
+    if (clean.length === 0) return '';
+    const shown = clean.slice(0, max).join(', ');
+    return clean.length > max ? `${shown}, +${clean.length - max} more` : shown;
+}
+
+function computeAdaptiveDedupMinutes(type: AlertType, severity: Severity, recentAlertCount: number): number {
+    const base = DEDUP_MINUTES[type] || 60;
+    const fatigueMultiplier = recentAlertCount >= 5 ? 2 : recentAlertCount >= 3 ? 1.5 : 1;
+    const severityMultiplier = severity === 'urgent' ? 0.75 : severity === 'info' ? 1.25 : 1;
+    return Math.max(20, Math.round(base * fatigueMultiplier * severityMultiplier));
+}
+
+function getRecentAlertCount(hours = 2): number {
+    try {
+        const db = getDb();
+        return (db.prepare(`
+            SELECT COUNT(*) as c FROM alerts
+            WHERE created_at >= datetime('now', ?)
+        `).get(`-${hours} hours`) as { c: number }).c;
+    } catch {
+        return 0;
+    }
+}
+
+function getAlertFeedbackStats(type: AlertType): {
+    rated: number;
+    helpfulRate: number | null;
+    notHelpful: number;
+    dismissed: number;
+} {
+    try {
+        const rows = getDb().prepare(`
+            SELECT helpful, actual_outcome
+            FROM agent_action_outcomes
+            WHERE action_type = ?
+              AND created_at >= datetime('now', '-30 days')
+              AND (helpful IS NOT NULL OR actual_outcome LIKE '%"feedback":"dismissed"%')
+        `).all(`alert:${type}`) as Array<{ helpful: number | null; actual_outcome: string | null }>;
+        const ratedRows = rows.filter(row => row.helpful !== null);
+        const helpfulRate = ratedRows.length
+            ? ratedRows.reduce((sum, row) => sum + (row.helpful ? 1 : 0), 0) / ratedRows.length
+            : null;
+        return {
+            rated: ratedRows.length,
+            helpfulRate,
+            notHelpful: ratedRows.filter(row => row.helpful === 0).length,
+            dismissed: rows.filter(row => row.actual_outcome?.includes('"feedback":"dismissed"')).length,
+        };
+    } catch {
+        return { rated: 0, helpfulRate: null, notHelpful: 0, dismissed: 0 };
+    }
+}
+
+function getTodayMicroContext(): {
+    hour: number;
+    date: string;
+    openTasks: number;
+    overdueTasks: number;
+    uncheckedHabitCount: number;
+    todayEvents: string[];
+    plannedSessionsToday: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }>;
+    plannedSessionsTomorrow: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }>;
+    recentDistractionMinutes: number;
+} {
+    const db = getDb();
+    const nowIst = getIstNow();
+    const date = nowIst.toISOString().slice(0, 10);
+    const hour = nowIst.getHours();
+
+    let openTasks = 0;
+    let overdueTasks = 0;
+    let uncheckedHabitCount = 0;
+    let todayEvents: string[] = [];
+    let plannedSessionsToday: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }> = [];
+    let plannedSessionsTomorrow: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }> = [];
+    let recentDistractionMinutes = 0;
+
+    try {
+        openTasks = (db.prepare(
+            "SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'doing')"
+        ).get() as { c: number }).c;
+    } catch { /* optional table */ }
+
+    try {
+        overdueTasks = (db.prepare(`
+            SELECT COUNT(*) as c FROM tasks
+            WHERE status NOT IN ('done','cancelled') AND due_date < date('now')
+        `).get() as { c: number }).c;
+    } catch { /* optional table */ }
+
+    try {
+        uncheckedHabitCount = (db.prepare(`
+            SELECT COUNT(*) as c FROM habits h
+            WHERE h.archived = 0
+            AND h.id NOT IN (
+              SELECT habit_id FROM habit_checkins WHERE date = ? AND completed = 1
+            )
+        `).get(date) as { c: number }).c;
+    } catch { /* optional table */ }
+
+    try {
+        todayEvents = (db.prepare(`
+            SELECT title FROM calendar_events
+            WHERE date(start_time, 'localtime') = ?
+            ORDER BY start_time ASC LIMIT 3
+        `).all(date) as { title: string }[]).map(r => r.title);
+    } catch { /* calendar is optional */ }
+
+    try {
+        const tomorrow = new Date(nowIst);
+        tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+        const tomorrowDate = tomorrow.toISOString().slice(0, 10);
+        const rows = db.prepare(`
+            SELECT pfs.id,
+                   pfs.task_id as taskId,
+                   pfs.title,
+                   pfs.planned_start as start,
+                   pfs.duration_minutes as durationMinutes,
+                   pfs.status,
+                   dp.plan_date as planDate
+            FROM planned_focus_sessions pfs
+            JOIN daily_plans dp ON dp.id = pfs.plan_id
+            WHERE dp.plan_date IN (?, ?)
+              AND pfs.status IN ('planned','started')
+            ORDER BY pfs.planned_start ASC
+            LIMIT 12
+        `).all(date, tomorrowDate) as Array<{
+            id: string;
+            taskId: number | null;
+            title: string;
+            start: string;
+            durationMinutes: number;
+            status: string;
+            planDate: string;
+        }>;
+        plannedSessionsToday = rows
+            .filter(row => row.planDate === date)
+            .map(row => ({
+                id: row.id,
+                taskId: row.taskId,
+                title: row.title,
+                start: row.start,
+                durationMinutes: row.durationMinutes,
+                status: row.status,
+            }));
+        plannedSessionsTomorrow = rows
+            .filter(row => row.planDate === tomorrowDate)
+            .map(row => ({
+                id: row.id,
+                taskId: row.taskId,
+                title: row.title,
+                start: row.start,
+                durationMinutes: row.durationMinutes,
+                status: row.status,
+            }));
+    } catch { /* planner tables are optional during migrations */ }
+
+    try {
+        const row = db.prepare(`
+            SELECT COALESCE(SUM(duration_seconds), 0) as seconds
+            FROM activities
+            WHERE started_at >= datetime('now', '-2 hours')
+              AND category = 'distraction'
+        `).get() as { seconds: number };
+        recentDistractionMinutes = Math.round((row.seconds || 0) / 60);
+    } catch { /* optional table */ }
+
+    return {
+        hour,
+        date,
+        openTasks,
+        overdueTasks,
+        uncheckedHabitCount,
+        todayEvents,
+        plannedSessionsToday,
+        plannedSessionsTomorrow,
+        recentDistractionMinutes,
+    };
+}
+
+function formatPlannedSession(session: { title: string; start: string; durationMinutes: number }): string {
+    const time = new Date(session.start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return `${time} ${session.title} (${session.durationMinutes}m)`;
+}
+
+function taskReminderAlreadyPlanned(
+    opts: AdaptiveAlertOptions | undefined,
+    sessions: Array<{ taskId: number | null; title: string; start: string; durationMinutes: number }>
+): { planned: boolean; label: string | null } {
+    const taskId = typeof opts?.context?.taskId === 'number' ? opts.context.taskId : null;
+    const title = typeof opts?.context?.title === 'string' ? opts.context.title.toLowerCase() : '';
+    const match = sessions.find(session => {
+        if (taskId !== null && session.taskId === taskId) return true;
+        return title.length >= 4 && session.title.toLowerCase().includes(title);
+    });
+    return match ? { planned: true, label: formatPlannedSession(match) } : { planned: false, label: null };
+}
+
+function deterministicAlertDecision(
+    type: AlertType,
+    message: string,
+    severity: Severity,
+    opts?: AdaptiveAlertOptions
+): AlertDecision {
+    const uil = getIntelligenceProfile();
+    const bands = getAdaptiveBands();
+    const recentAlertCount = getRecentAlertCount(2);
+    const feedbackStats = getAlertFeedbackStats(type);
+    const today = getTodayMicroContext();
+    const { activeSession } = getGuardianContext();
+    const typeKey = opts?.key || type;
+    let nextMessage = message;
+    let nextSeverity = severity;
+    let shouldSend = true;
+    const reasons: string[] = [];
+
+    const inPeakWindow = uil.peakFocusHours.includes(today.hour);
+    const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
+    const focusedNow = activeFocusScore !== null && activeFocusScore >= bands.focusGood;
+    const overloadedDay = today.overdueTasks > 0 || today.openTasks >= uil.adaptiveThresholds.cognitiveLoadThreshold;
+    const lowEnergy = uil.currentEnergyEstimate === 'low' || uil.moodToday === 'low';
+    const taskAlreadyPlanned = taskReminderAlreadyPlanned(opts, today.plannedSessionsToday);
+
+    if (recentAlertCount >= 5 && nextSeverity === 'info') {
+        shouldSend = false;
+        reasons.push('suppressed info alert because recent alert volume is high');
+    }
+
+    if (feedbackStats.rated >= 3 && feedbackStats.helpfulRate !== null && feedbackStats.helpfulRate < 0.35) {
+        if (nextSeverity === 'info') {
+            shouldSend = false;
+            reasons.push(`suppressed because recent ${type} alerts were rarely useful`);
+        } else if (nextSeverity === 'warning') {
+            nextSeverity = 'info';
+            reasons.push(`softened because recent ${type} alerts were rarely useful`);
+        }
+    }
+
+    if (feedbackStats.dismissed >= 3 && nextSeverity === 'info') {
+        shouldSend = false;
+        reasons.push(`suppressed because ${type} alerts are often dismissed`);
+    }
+
+    if (focusedNow && nextSeverity !== 'urgent' && ['habit_streak', 'midday_checkin', 'goal_gradient'].includes(type)) {
+        shouldSend = false;
+        reasons.push(`suppressed while guardian focus is ${scoreEmoji(activeFocusScore)}`);
+    }
+
+    if (inPeakWindow && nextSeverity === 'info' && !overloadedDay) {
+        shouldSend = false;
+        reasons.push('suppressed low-urgency alert during a personal peak-focus hour');
+    }
+
+    if (type === 'midday_checkin' && uil.standupGoalToday) {
+        nextMessage = `Mid-day pulse: you said today is about "${uil.standupGoalToday}". ${uil.currentNarrative || 'Want to protect the next focused block?'}`;
+        reasons.push('anchored check-in to today standup goal');
+    }
+
+    if (type === 'habit_streak' && lowEnergy) {
+        nextMessage = `${message} Keep it tiny today: one minimum viable rep is enough.`;
+        reasons.push('low energy/mood changed habit alert to minimum viable action');
+    }
+
+    if (type === 'cognitive_load' && today.overdueTasks > 0) {
+        nextMessage = `${message} You also have ${today.overdueTasks} overdue task${today.overdueTasks > 1 ? 's' : ''}; clear the smallest one first.`;
+        reasons.push('added overdue-task context');
+    }
+
+    if (type === 'focus_drop' && uil.standupGoalToday) {
+        nextMessage = `${message} The thing to return to is "${uil.standupGoalToday}".`;
+        reasons.push('linked focus drop to stated day priority');
+    }
+
+    if (today.todayEvents.length > 0 && (type === 'task_reminder' || type === 'goal_deadline')) {
+        nextMessage = `${nextMessage} Calendar today: ${compactList(today.todayEvents)}.`;
+        reasons.push('added calendar pressure context');
+    }
+
+    if (type === 'task_reminder' && lowEnergy && nextSeverity === 'warning') {
+        nextSeverity = 'info';
+        reasons.push('softened warning because current energy estimate is low');
+    }
+
+    if (type === 'task_reminder' && taskAlreadyPlanned.planned && taskAlreadyPlanned.label) {
+        if (nextSeverity === 'info') {
+            shouldSend = false;
+            reasons.push(`suppressed because task is already planned today at ${taskAlreadyPlanned.label}`);
+        } else {
+            nextMessage = `${nextMessage} It is already on today's focus plan: ${taskAlreadyPlanned.label}.`;
+            reasons.push('linked task reminder to planned focus session');
+        }
+    }
+
+    if (type === 'midday_checkin' && today.plannedSessionsToday.length > 0) {
+        nextMessage = `${nextMessage} Next planned block: ${formatPlannedSession(today.plannedSessionsToday[0])}.`;
+        reasons.push('added next planned focus block');
+    }
+
+    if (type === 'evening_planner') {
+        if (today.plannedSessionsTomorrow.length > 0) {
+            nextMessage = `Tomorrow already has ${today.plannedSessionsTomorrow.length} planned focus block${today.plannedSessionsTomorrow.length === 1 ? '' : 's'}. Review sleep/wake and adjust if tonight changed. First: ${formatPlannedSession(today.plannedSessionsTomorrow[0])}.`;
+            reasons.push('evening reminder anchored to existing next-day plan');
+        } else if (lowEnergy) {
+            nextMessage = 'Evening planning check: energy looks low, so tomorrow should start lighter. Send sleep time, wake estimate, mood, and the one thing worth protecting.';
+            reasons.push('low energy changed evening reminder to recovery planning');
+        } else if (overloadedDay) {
+            nextMessage = `Evening planning check: ${today.openTasks} open task${today.openTasks === 1 ? '' : 's'} are still in the system. Send sleep/wake plus tomorrow's top time target so I can schedule blocks.`;
+            reasons.push('open-task pressure changed evening reminder');
+        }
+    }
+
+    const dedupMinutes = computeAdaptiveDedupMinutes(type, nextSeverity, recentAlertCount);
+    if (recentAlertCount >= 3) reasons.push(`extended dedup from alert fatigue (${recentAlertCount} alerts in 2h)`);
+    const feedbackDedupMinutes = feedbackStats.notHelpful >= 2 || feedbackStats.dismissed >= 3
+        ? Math.round(dedupMinutes * 1.5)
+        : dedupMinutes;
+    if (feedbackDedupMinutes !== dedupMinutes) {
+        reasons.push('extended dedup from past alert feedback');
+    }
+
+    return {
+        shouldSend,
+        typeKey,
+        message: nextMessage,
+        severity: nextSeverity,
+        dedupMinutes: feedbackDedupMinutes,
+        reason: reasons.join('; ') || 'sent with adaptive defaults',
+    };
+}
+
+export function composeEveningPlanningReminder(): { shouldSend: boolean; message: string; reason: string } {
+    const decision = deterministicAlertDecision(
+        'evening_planner',
+        'Evening planning check: send sleep time, wake estimate, mood, anything that affected today, and what you want to do tomorrow.',
+        'info',
+        { key: 'evening_planner_reminder', skipAiRewrite: true }
+    );
+    return {
+        shouldSend: decision.shouldSend,
+        message: decision.message,
+        reason: decision.reason,
+    };
+}
+
+async function rewriteAlertWithAi(
+    type: AlertType,
+    decision: AlertDecision,
+    opts?: AdaptiveAlertOptions
+): Promise<AlertDecision> {
+    if (opts?.skipAiRewrite || !decision.shouldSend) return decision;
+    if (decision.severity === 'info' && type !== 'midday_checkin') return decision;
+
+    try {
+        const ai = getGenAI();
+        const { activeSession } = getGuardianContext();
+        const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'notification',
+            maxInsights: 2,
+            includeThresholds: true,
+            includeMemoryFacts: 5,
+            activeSession: activeSession ? {
+                sessionId: activeSession.sessionId,
+                targetTitle: activeSession.targetTitle,
+                focusScore: activeFocusScore,
+                elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60000)),
+            } : null,
+        });
+        const contextBlock = formatPersonalizationContext(personalization);
+        const result = await generateWithFallback(ai, {
+            model: MODEL_FLASH,
+            contents: `Rewrite this LifeOS notification so it is specific to the user's actual day and not generic.
+
+Rules:
+- Return ONLY JSON: {"message":"...","severity":"info|warning|urgent"}
+- Max 220 characters.
+- Keep the concrete fact that triggered the alert.
+- Do not be dramatic.
+- Do not invent facts.
+- Make the ask fit their current energy and workload.
+
+Alert type: ${type}
+Current severity: ${decision.severity}
+Current message: ${decision.message}
+Decision reason: ${decision.reason}
+Extra context: ${JSON.stringify(opts?.context ?? {})}
+
+${contextBlock}`,
+            config: { responseMimeType: 'application/json', temperature: 0.2 },
+        });
+        const parsed = JSON.parse((result.text || '').trim()) as { message?: string; severity?: Severity };
+        if (!parsed.message || parsed.message.length > 260) return decision;
+        return {
+            ...decision,
+            message: parsed.message,
+            severity: parsed.severity === 'info' || parsed.severity === 'warning' || parsed.severity === 'urgent'
+                ? parsed.severity
+                : decision.severity,
+            reason: `${decision.reason}; ai_personalized`,
+        };
+    } catch (err) {
+        console.warn('[Alert] AI rewrite skipped:', err);
+        return decision;
+    }
+}
 
 /**
  * Send an alert — stores in DB + optionally emails via Resend.
@@ -57,31 +510,55 @@ const DEDUP_MINUTES: Record<string, number> = {
 export async function sendAlert(
     type: AlertType,
     message: string,
-    severity: Severity = 'info'
+    severity: Severity = 'info',
+    opts?: AdaptiveAlertOptions
 ): Promise<boolean> {
     const db = getDb();
+    const deterministic = deterministicAlertDecision(type, message, severity, opts);
+    const decision = await rewriteAlertWithAi(type, deterministic, opts);
+
+    if (!decision.shouldSend) {
+        console.log(`[Alert] Suppressed ${decision.typeKey}: ${decision.reason}`);
+        touchIntelligence(`alert_suppressed:${type}`);
+        return false;
+    }
 
     // Dedup check: has this alert type been sent recently?
-    const dedupMinutes = DEDUP_MINUTES[type] || 60;
     const recent = db.prepare(`
     SELECT id FROM alerts 
-    WHERE type = ? AND created_at >= datetime('now', '-${dedupMinutes} minutes')
+    WHERE type = ? AND created_at >= datetime('now', '-${decision.dedupMinutes} minutes')
     LIMIT 1
-  `).get(type);
+  `).get(decision.typeKey);
 
     if (recent) return false; // Already alerted recently
 
+    const outcome = db.prepare(`
+        INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, helpful)
+        VALUES (?, ?, ?, NULL)
+    `).run(
+        `alert:${type}`,
+        JSON.stringify({
+            typeKey: decision.typeKey,
+            severity: decision.severity,
+            message: decision.message,
+            adaptiveReason: decision.reason,
+            context: opts?.context ?? null,
+        }),
+        JSON.stringify({ status: 'sent', channel: decision.severity === 'info' ? 'in_app' : 'telegram_email_candidate' }),
+    );
+
     // Store in DB
     db.prepare(
-        'INSERT INTO alerts (type, message, severity) VALUES (?, ?, ?)'
-    ).run(type, message, severity);
+        'INSERT INTO alerts (type, message, severity, outcome_id, adaptive_reason) VALUES (?, ?, ?, ?, ?)'
+    ).run(decision.typeKey, decision.message, decision.severity, outcome.lastInsertRowid, decision.reason);
 
-    console.log(`[Alert] ${severity.toUpperCase()}: ${type} — ${message}`);
+    console.log(`[Alert] ${decision.severity.toUpperCase()}: ${decision.typeKey} — ${decision.message} (${decision.reason})`);
+    touchIntelligence(`alert_sent:${type}`);
 
     // Notify via Telegram + email for warning/urgent alerts
-    if (severity !== 'info') {
-        void sendTelegram(formatAlert(type, message, severity), 'HTML', ALERT_KEYBOARD);
-        await trySendEmail(type, message, severity);
+    if (decision.severity !== 'info') {
+        void sendTelegram(formatAlert(type, decision.message, decision.severity), 'HTML', ALERT_KEYBOARD);
+        await trySendEmail(type, decision.message, decision.severity, decision.typeKey);
     }
 
     return true;
@@ -120,6 +597,71 @@ export function markAlertsRead(ids?: number[]): void {
     }
 }
 
+export function recordAlertFeedback(alertId: number, feedback: AlertFeedback, reason?: string | null): Alert | null {
+    const db = getDb();
+    const alert = db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId) as Alert | undefined;
+    if (!alert) return null;
+
+    const normalizedReason = reason?.trim() ? reason.trim().slice(0, 500) : null;
+    db.prepare(`
+        UPDATE alerts
+        SET feedback = ?, feedback_reason = ?, feedback_at = datetime('now','localtime'), read = 1
+        WHERE id = ?
+    `).run(feedback, normalizedReason, alertId);
+
+    if (alert.outcome_id) {
+        db.prepare(`
+            UPDATE agent_action_outcomes
+            SET helpful = ?,
+                actual_outcome = ?,
+                was_corrected = CASE WHEN ? = 'not_helpful' THEN 1 ELSE was_corrected END,
+                correction_text = CASE WHEN ? = 'not_helpful' THEN COALESCE(?, correction_text) ELSE correction_text END
+            WHERE id = ?
+        `).run(
+            feedback === 'helpful' ? 1 : feedback === 'not_helpful' ? 0 : null,
+            JSON.stringify({
+                status: 'rated',
+                feedback,
+                reason: normalizedReason,
+                source: 'alert_feedback',
+            }),
+            feedback,
+            feedback,
+            normalizedReason,
+            alert.outcome_id,
+        );
+    } else {
+        db.prepare(`
+            INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, was_corrected, correction_text, helpful)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+            `alert:${alert.type}`,
+            JSON.stringify({ alertId: alert.id, severity: alert.severity, message: alert.message }),
+            JSON.stringify({ status: 'rated', feedback, reason: normalizedReason, source: 'alert_feedback' }),
+            feedback === 'not_helpful' ? 1 : 0,
+            feedback === 'not_helpful' ? normalizedReason : null,
+            feedback === 'helpful' ? 1 : feedback === 'not_helpful' ? 0 : null,
+        );
+    }
+
+    recordExplicitFeedbackLearning({
+        source: 'alert',
+        feedback,
+        reason: normalizedReason,
+        surface: 'dashboard_alerts',
+        subject: `${alert.type}: ${alert.message}`,
+        outcomeId: alert.outcome_id ?? null,
+        metadata: {
+            alertId: alert.id,
+            severity: alert.severity,
+            read: alert.read,
+        },
+    });
+
+    touchIntelligence(`alert_feedback:${feedback}`);
+    return db.prepare('SELECT * FROM alerts WHERE id = ?').get(alertId) as Alert;
+}
+
 /**
  * Clear old alerts (older than 7 days).
  */
@@ -131,7 +673,7 @@ export function clearOldAlerts(): void {
 /**
  * Send email via Resend if configured.
  */
-async function trySendEmail(type: AlertType, message: string, severity: Severity): Promise<void> {
+async function trySendEmail(type: AlertType, message: string, severity: Severity, typeKey: string = type): Promise<void> {
     try {
         const apiKey = getSetting('resend_api_key');
         const email = getSetting('notification_email');
@@ -169,7 +711,7 @@ async function trySendEmail(type: AlertType, message: string, severity: Severity
         const db = getDb();
         db.prepare(
             "UPDATE alerts SET emailed = 1 WHERE type = ? AND created_at >= datetime('now', '-1 minute')"
-        ).run(type);
+        ).run(typeKey);
 
         console.log(`[Alert] Email sent to ${email}: ${type}`);
     } catch (err) {
@@ -193,7 +735,7 @@ export async function sendWeeklyEmail(): Promise<void> {
         if (!apiKey || !email || enabled === 'false') return;
 
         const db = getDb();
-        const now = new Date(Date.now() + 19800000); // IST
+        const now = getIstNow();
         const weekStart = new Date(now);
         weekStart.setDate(weekStart.getDate() - 6);
         const weekStartStr = weekStart.toISOString().slice(0, 10);
@@ -249,7 +791,7 @@ export async function sendWeeklyEmail(): Promise<void> {
             ? Math.round(sessions.reduce((s, r) => s + r.average_focus_score, 0) / sessions.length)
             : 0;
         const totalFocusMin = sessions.reduce((s, r) => s + r.elapsed_minutes, 0);
-        const scoreEmoji = avgScore >= 85 ? '🔥' : avgScore >= 70 ? '✅' : avgScore >= 55 ? '🟡' : '🔴';
+        const avgScoreIcon = avgScore >= 85 ? '🔥' : avgScore >= 70 ? '✅' : avgScore >= 55 ? '🟡' : '🔴';
 
         // Build focus trend bars
         const trendBars = dailyScores.map(d => {
@@ -331,7 +873,7 @@ export async function sendWeeklyEmail(): Promise<void> {
       <p style="margin:0;color:#888;font-size:14px;">${weekStartStr} → ${todayStr}</p>
       <div style="margin-top:20px;display:flex;gap:24px;flex-wrap:wrap;">
         <div>
-          <div style="font-size:28px;font-weight:bold;color:#fff;">${scoreEmoji} ${avgScore}</div>
+          <div style="font-size:28px;font-weight:bold;color:#fff;">${avgScoreIcon} ${avgScore}</div>
           <div style="font-size:12px;color:#888;margin-top:2px;">avg focus score</div>
         </div>
         <div>
@@ -603,18 +1145,20 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
             for (const tier of tiers) {
                 if (!tier.condition) continue;
-                const dedupWindow = tier.severity === 'urgent' ? (daysLeft < 0 ? 720 : 360) : 1440;
-                const alreadySent = db.prepare(
-                    `SELECT id FROM alerts WHERE type = ? AND created_at >= datetime('now', '-${dedupWindow} minutes') LIMIT 1`
-                ).get(tier.key);
-                if (!alreadySent) {
-                    const alertType = daysLeft < 0 ? 'task_overdue' : 'task_reminder';
-                    db.prepare('INSERT INTO alerts (type, message, severity) VALUES (?, ?, ?)')
-                        .run(tier.key, tier.msg, tier.severity);
-                    console.log(`[Alert] ${tier.severity.toUpperCase()}: ${tier.key} — ${tier.msg}`);
-                    if (tier.severity !== 'info') {
-                        void sendTelegram(formatAlert(alertType as AlertType, tier.msg, tier.severity), 'HTML', ALERT_KEYBOARD);
-                    }
+                const alertType: AlertType = daysLeft < 0 ? 'task_overdue' : 'task_reminder';
+                const sent = await sendAlert(alertType, tier.msg, tier.severity, {
+                    key: tier.key,
+                    context: {
+                        taskId: t.id,
+                        title: t.title,
+                        dueDate: t.due_date,
+                        dueTime: t.due_time,
+                        taskType: t.task_type,
+                        course: t.course,
+                        daysLeft,
+                    },
+                });
+                if (sent) {
                     triggered.push(tier.key);
                 }
                 break; // Only fire the highest matching tier per task
