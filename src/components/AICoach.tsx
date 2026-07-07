@@ -1,10 +1,62 @@
 import React, { useState, useRef, useEffect } from 'react';
 
+type CoachFeedback = 'helpful' | 'not_helpful' | 'dismissed';
+
+interface CoachMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    outcomeId?: number | null;
+    feedback?: CoachFeedback | null;
+}
+
+interface CoachContext {
+    personalization?: {
+        mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+        guidance: string;
+        recommendedSessionMinutes: number;
+        energy: 'high' | 'medium' | 'low';
+        mood: 'high' | 'medium' | 'low' | null;
+        standupGoal: string | null;
+        nextBestFocusWindow: string;
+        alertFatigueLevel: 'low' | 'medium' | 'high';
+    };
+    intelligence?: {
+        recommendedTasks: Array<{
+            id: number;
+            title: string;
+            reason: string;
+            momentFit?: 'high' | 'medium' | 'low';
+            estimatedMinutes?: number | null;
+        }>;
+    };
+}
+
+const modeLabel: Record<NonNullable<CoachContext['personalization']>['mode'], string> = {
+    protect_focus: 'protect focus',
+    deadline_pressure: 'deadline pressure',
+    recovery: 'recovery',
+    planning: 'planning',
+    normal: 'balanced',
+};
+
+function feedbackButtonStyle(color: string): React.CSSProperties {
+    return {
+        background: `${color}1A`,
+        color,
+        border: `1px solid ${color}33`,
+        borderRadius: '6px',
+        padding: '2px 6px',
+        fontSize: '10px',
+        cursor: 'pointer',
+    };
+}
+
 export default function AICoach() {
     const [isOpen, setIsOpen] = useState(false);
-    const [messages, setMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+    const [messages, setMessages] = useState<CoachMessage[]>([]);
     const [inputTitle, setInputTitle] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [context, setContext] = useState<CoachContext | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -15,8 +67,16 @@ export default function AICoach() {
         scrollToBottom();
     }, [messages, isOpen]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        fetch('/api/dashboard')
+            .then(r => r.json())
+            .then((data: CoachContext) => setContext(data))
+            .catch(() => setContext(null));
+    }, [isOpen]);
+
     const parseMarkdown = (text: string) => {
-        let html = text
+        const html = text
             // Escape HTML to prevent basic XSS
             .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;")
             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -26,12 +86,13 @@ export default function AICoach() {
         return { __html: html };
     };
 
-    const handleSend = async () => {
-        if (!inputTitle.trim()) return;
+    const sendMessage = async (text: string) => {
+        if (!text.trim()) return;
 
-        const userMsg = inputTitle.trim();
+        const userMsg = text.trim();
         setInputTitle('');
-        setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+        const history = [...messages, { role: 'user' as const, content: userMsg }];
+        setMessages(history);
         setIsLoading(true);
 
         try {
@@ -39,21 +100,53 @@ export default function AICoach() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    messages: [...messages, { role: 'user', content: userMsg }]
+                    messages: history.map(({ role, content }) => ({ role, content }))
                 })
             });
 
-            const data = await res.json();
-            if (data.text) {
-                setMessages(prev => [...prev, { role: 'assistant', content: data.text }]);
+            const outcomeId = Number(res.headers.get('X-LifeOS-Outcome-Id')) || null;
+            const contentType = res.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const data = await res.json() as { text?: string; outcomeId?: number };
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: data.text || 'Sorry, I had trouble processing that.',
+                    outcomeId: data.outcomeId ?? outcomeId,
+                    feedback: null,
+                }]);
             } else {
-                setMessages(prev => [...prev, { role: 'assistant', content: "Sorry, I had trouble processing that." }]);
+                const textResponse = await res.text();
+                setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: textResponse || 'Sorry, I had trouble processing that.',
+                    outcomeId,
+                    feedback: null,
+                }]);
             }
-        } catch (e) {
-            setMessages(prev => [...prev, { role: 'assistant', content: "Error communicating with Jarvis." }]);
+        } catch {
+            setMessages(prev => [...prev, { role: 'assistant', content: "Error communicating with Jarvis.", feedback: null }]);
         } finally {
             setIsLoading(false);
         }
+    };
+
+    const handleSend = async () => {
+        await sendMessage(inputTitle);
+    };
+
+    const sendFeedback = async (messageIndex: number, outcomeId: number, feedback: CoachFeedback) => {
+        setMessages(prev => prev.map((message, index) => (
+            index === messageIndex ? { ...message, feedback } : message
+        )));
+        await fetch('/api/chat/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcomeId, feedback }),
+        }).catch(() => {
+            setMessages(prev => prev.map((message, index) => (
+                index === messageIndex ? { ...message, feedback: null } : message
+            )));
+        });
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -62,6 +155,14 @@ export default function AICoach() {
             handleSend();
         }
     };
+
+    const topTask = context?.intelligence?.recommendedTasks?.[0];
+    const personalization = context?.personalization;
+    const starterPrompts = [
+        personalization ? `Given ${modeLabel[personalization.mode]} mode, what should I do next?` : 'What should I do next?',
+        topTask ? `Help me start: ${topTask.title}` : null,
+        personalization?.standupGoal ? `Keep me honest about: ${personalization.standupGoal}` : null,
+    ].filter(Boolean) as string[];
 
     return (
         <div style={{ position: 'fixed', bottom: '30px', right: '30px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -80,9 +181,16 @@ export default function AICoach() {
                 }}>
                     {/* Header */}
                     <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#232333' }}>
-                        <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            🤖 Jarvis Coach
-                        </h3>
+                        <div>
+                            <h3 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                Jarvis Coach
+                            </h3>
+                            {personalization && (
+                                <p style={{ margin: '4px 0 0', color: '#a1a1aa', fontSize: '11px' }}>
+                                    {modeLabel[personalization.mode]} · {personalization.energy} energy · {personalization.recommendedSessionMinutes}m default
+                                </p>
+                            )}
+                        </div>
                         <button onClick={() => setIsOpen(false)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '18px' }}>
                             ✕
                         </button>
@@ -91,20 +199,73 @@ export default function AICoach() {
                     {/* Messages Area */}
                     <div style={{ flex: 1, padding: '16px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                         {messages.length === 0 ? (
-                            <div style={{ color: '#888', textAlign: 'center', marginTop: '40px', fontSize: '14px' }}>
-                                How can I help you focus today?
+                            <div style={{ color: '#a1a1aa', marginTop: '24px', fontSize: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                <div style={{ textAlign: 'center' }}>
+                                    <div style={{ color: '#f8fafc', fontWeight: 600, marginBottom: '6px' }}>
+                                        {personalization ? `${modeLabel[personalization.mode]} mode` : 'Loading your current mode...'}
+                                    </div>
+                                    <div style={{ fontSize: '12px', lineHeight: 1.5 }}>
+                                        {personalization?.guidance || 'Jarvis will use your current tasks, energy, feedback, and day context.'}
+                                    </div>
+                                </div>
+                                {topTask && (
+                                    <div style={{
+                                        border: '1px solid rgba(102,126,234,0.25)',
+                                        background: 'rgba(102,126,234,0.08)',
+                                        borderRadius: '8px',
+                                        padding: '10px',
+                                    }}>
+                                        <div style={{ fontSize: '11px', color: '#93c5fd', marginBottom: '4px' }}>Current best pick</div>
+                                        <div style={{ color: '#f8fafc', fontSize: '13px', fontWeight: 600 }}>{topTask.title}</div>
+                                        <div style={{ color: '#a1a1aa', fontSize: '11px', marginTop: '4px' }}>{topTask.reason}</div>
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {starterPrompts.map(prompt => (
+                                        <button
+                                            key={prompt}
+                                            onClick={() => sendMessage(prompt)}
+                                            disabled={isLoading}
+                                            style={{
+                                                textAlign: 'left',
+                                                border: '1px solid rgba(255,255,255,0.08)',
+                                                background: 'rgba(255,255,255,0.04)',
+                                                color: '#e5e7eb',
+                                                borderRadius: '8px',
+                                                padding: '8px 10px',
+                                                fontSize: '12px',
+                                                cursor: isLoading ? 'not-allowed' : 'pointer',
+                                            }}
+                                        >
+                                            {prompt}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                         ) : (
                             messages.map((m, idx) => (
-                                <div key={idx} style={{
-                                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                                    backgroundColor: m.role === 'user' ? '#3b82f6' : '#2d2d3d',
-                                    padding: '10px 14px',
-                                    borderRadius: '12px',
-                                    maxWidth: '85%',
-                                    fontSize: '14px',
-                                    lineHeight: '1.4'
-                                }} dangerouslySetInnerHTML={parseMarkdown(m.content)} />
+                                <div key={idx} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
+                                    <div style={{
+                                        backgroundColor: m.role === 'user' ? '#3b82f6' : '#2d2d3d',
+                                        padding: '10px 14px',
+                                        borderRadius: '12px',
+                                        fontSize: '14px',
+                                        lineHeight: '1.4'
+                                    }} dangerouslySetInnerHTML={parseMarkdown(m.content)} />
+                                    {m.role === 'assistant' && m.outcomeId && (
+                                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px', paddingLeft: '4px' }}>
+                                            {m.feedback ? (
+                                                <span style={{ fontSize: '10px', color: '#888' }}>learned: {m.feedback.replace('_', ' ')}</span>
+                                            ) : (
+                                                <>
+                                                    <button onClick={() => sendFeedback(idx, m.outcomeId as number, 'helpful')} style={feedbackButtonStyle('#22c55e')}>useful</button>
+                                                    <button onClick={() => sendFeedback(idx, m.outcomeId as number, 'not_helpful')} style={feedbackButtonStyle('#ef4444')}>off</button>
+                                                    <button onClick={() => sendFeedback(idx, m.outcomeId as number, 'dismissed')} style={feedbackButtonStyle('#a1a1aa')}>later</button>
+                                                </>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
                             ))
                         )}
                         {isLoading && (
