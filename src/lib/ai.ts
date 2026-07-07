@@ -6,6 +6,7 @@ import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
 import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_FLASH, MODEL_THINKING } from './models';
+import type { PersonalizationSnapshot } from './personalization-context';
 
 
 let genAI: GoogleGenAI | null = null;
@@ -514,9 +515,17 @@ export async function generateDailySummary(date: string, stats: {
     xp: number;
 }): Promise<string> {
     const ai = getGenAI();
+    let personalization: PersonalizationSnapshot | null = null;
 
     try {
-        const userContext = getIntelligenceContext({ maxInsights: 4, includeToday: true });
+        const { buildPersonalizationSnapshot, formatPersonalizationContext } = await import('./personalization-context');
+        personalization = buildPersonalizationSnapshot({
+            surface: 'summary',
+            maxInsights: 4,
+            includeThresholds: true,
+            includeMemoryFacts: 6,
+        });
+        const personalizationContext = formatPersonalizationContext(personalization);
 
         // Phase 9: Inject habit completion data for holistic daily feedback
         let habitContext = '';
@@ -536,9 +545,10 @@ export async function generateDailySummary(date: string, stats: {
             }
         } catch { /* ignore */ }
 
-        const prompt = `Generate a concise, motivating daily productivity report. Use emojis. Be encouraging but honest about distractions. Keep it under 200 words.
+        const prompt = `Generate a concise daily productivity report under 200 words.
+Do not use a fixed motivational template. Not every day is the same: adapt honesty, tone, next action, and recovery pressure to this exact user's current mode, energy, workload, feedback history, and known patterns.
 
-${userContext}
+${personalizationContext}
 ${habitContext}
 
 Date: ${date}
@@ -554,7 +564,13 @@ XP earned: ${stats.xp}
 Top sites by time:
 ${stats.topDomains.map(d => `- ${d.domain}: ${d.minutes}min (${d.category})`).join('\n')}
 
-Use the behavioral profile above to personalize this report. Reference their patterns, habit streaks, and known triggers. If habits were missed, give specific encouragement. Compare today to their usual behavior. Format as a clean report with sections.`;
+Instructions:
+- If mode is recovery or energy is low, reduce shame and suggest a minimum viable reset.
+- If deadline_pressure is active, name the concrete pressure and next action.
+- If protect_focus is active, keep it brief and avoid derailing flow.
+- If alert fatigue is high, do not pile on generic advice.
+- Reference actual tasks, habits, domains, or known triggers only when present in the context.
+- Format as a clean report with short sections.`;
 
         // PRO: Deep synthesis and behavior reasoning
         const result = await generateWithFallback(ai, {
@@ -564,7 +580,7 @@ Use the behavioral profile above to personalize this report. Reference their pat
         return (result.text || '').trim();
     } catch (err) {
         console.error('AI summary failed:', err);
-        return buildFallbackSummary(date, stats);
+        return buildFallbackSummary(date, stats, personalization);
     }
 }
 
@@ -576,12 +592,20 @@ export async function generateMorningBrief(date: string, data: {
     yesterdayDistractionMinutes: number;
 }): Promise<string> {
     const ai = getGenAI();
+    let personalization: PersonalizationSnapshot | null = null;
 
     try {
-        const userContext = getIntelligenceContext({ maxInsights: 3, includeToday: true });
-        const prompt = `Generate a brief, energizing morning briefing. Use emojis. Keep it under 150 words. Be motivating!
+        const { buildPersonalizationSnapshot, formatPersonalizationContext } = await import('./personalization-context');
+        personalization = buildPersonalizationSnapshot({
+            surface: 'summary',
+            maxInsights: 3,
+            includeMemoryFacts: 5,
+        });
+        const personalizationContext = formatPersonalizationContext(personalization);
+        const prompt = `Generate a brief morning briefing under 150 words.
+Do not use a generic energizing script. Not every day is the same: adapt the action plan, pressure, tone, and cognitive load to this exact user and today's state.
 
-${userContext}
+${personalizationContext}
 
 Date: ${date}
 Calendar events today:
@@ -597,7 +621,12 @@ Yesterday's distraction time: ${data.yesterdayDistractionMinutes} minutes
 CRITICAL INSTRUCTION: Based on the "Pending tasks", identify the single most important "Open Loop" (Zeigarnik Effect). To help the user close it, you MUST generate an "Implementation Intention" (Peter Gollwitzer's framework) using this exact format:
 "🎯 **Action Plan:** If [specific time/calendar event], then I will [specific tiny action to start the task]."
 
-Use the behavioral profile to personalize this briefing. Reference their typical patterns and known strengths/weaknesses. Include a motivating message tailored to their motivation style.`;
+Instructions:
+- Use the personalization profile to choose whether today needs protection, deadline relief, recovery, planning, or normal execution.
+- The action plan must be specific to the current calendar/task context when possible.
+- If energy or mood is low, make the action tiny and compassionate.
+- If alert fatigue is high, keep the briefing terse and avoid multiple asks.
+- Reference typical patterns only if they are in the profile.`;
 
         // PRO: Strategic planning and motivation
         const result = await generateWithFallback(ai, {
@@ -607,8 +636,77 @@ Use the behavioral profile to personalize this briefing. Reference their typical
         return (result.text || '').trim();
     } catch (err) {
         console.error('AI morning brief failed:', err);
-        return buildFallbackMorningBrief(date, data);
+        return buildFallbackMorningBrief(date, data, personalization);
     }
+}
+
+function computeAdaptiveNudgeThreshold(
+    baseThreshold: number,
+    snapshot: PersonalizationSnapshot,
+    focusGoal?: string,
+): { threshold: number; reason: string } {
+    let threshold = baseThreshold;
+    const reasons: string[] = [`base ${baseThreshold}m`];
+
+    if (focusGoal) {
+        threshold = Math.max(3, threshold - 5);
+        reasons.push('focus session active');
+    }
+
+    if (snapshot.moment.mode === 'deadline_pressure') {
+        threshold = Math.max(4, threshold - 4);
+        reasons.push('deadline pressure');
+    } else if (snapshot.moment.mode === 'recovery') {
+        threshold += 5;
+        reasons.push('recovery mode');
+    } else if (snapshot.moment.mode === 'protect_focus') {
+        threshold += 4;
+        reasons.push('protect focus');
+    }
+
+    if (snapshot.feedback.alertFatigueLevel === 'high') {
+        threshold += 5;
+        reasons.push('alert fatigue high');
+    }
+
+    if (snapshot.today.recentDistractionMinutes >= 30 && snapshot.moment.mode !== 'recovery') {
+        threshold = Math.max(4, threshold - 3);
+        reasons.push('recent distraction high');
+    }
+
+    return {
+        threshold: Math.max(3, Math.round(threshold)),
+        reason: reasons.join('; '),
+    };
+}
+
+function buildAdaptiveNudgeMessage(input: {
+    domain: string;
+    minutesOnSite: number;
+    snapshot: PersonalizationSnapshot | null;
+    reason?: string;
+    anomaly?: boolean;
+}): string {
+    const elapsed = `${input.minutesOnSite}min elapsed`;
+    const reason = input.reason || `You've been on ${input.domain}`;
+    const mode = input.snapshot?.moment.mode;
+    const standupGoal = input.snapshot?.userState.standupGoal;
+    const doing = input.snapshot?.today.doingTasks[0];
+    const returnTarget = standupGoal || doing || 'the smallest useful next action';
+
+    if (mode === 'recovery') {
+        return `⚠️ ${reason}. Recovery mode: step away from ${input.domain}, then do 10 minutes on "${returnTarget}". (${elapsed})`;
+    }
+    if (mode === 'deadline_pressure') {
+        return `⚠️ ${reason}. Deadline pressure is active; return to "${returnTarget}" before this expands. (${elapsed})`;
+    }
+    if (mode === 'protect_focus') {
+        return `⚠️ ${reason}. Protect this focus window and close ${input.domain} now. (${elapsed})`;
+    }
+    if (input.anomaly) {
+        return `⚠️ Focus anomaly: your recent productivity dropped below today's baseline. Reset with one concrete next action: "${returnTarget}". (${elapsed})`;
+    }
+    return `⚠️ ${reason}. Return to "${returnTarget}" or intentionally choose a short reset. (${elapsed})`;
 }
 
 export async function shouldNudge(url: string, currentDomain: string, minutesOnSite: number, currentTitle: string, videoId?: string | null, focusGoal?: string, thresholdOverride?: number): Promise<{ shouldNudge: boolean; message: string }> {
@@ -619,7 +717,23 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         if (getActiveGuardianSession()) return { shouldNudge: false, message: '' };
     } catch { /* non-fatal */ }
 
-    const threshold = thresholdOverride || parseInt(getSetting('nudge_threshold_minutes') || '15');
+    let personalization: PersonalizationSnapshot | null = null;
+    let personalizationContext = '';
+    try {
+        const { buildPersonalizationSnapshot, formatPersonalizationContext } = await import('./personalization-context');
+        personalization = buildPersonalizationSnapshot({
+            surface: 'nudge',
+            maxInsights: 2,
+            includeMemoryFacts: 4,
+        });
+        personalizationContext = formatPersonalizationContext(personalization);
+    } catch { /* personalization should never block basic nudge behavior */ }
+
+    const baseThreshold = thresholdOverride || parseInt(getSetting('nudge_threshold_minutes') || '15');
+    const thresholdDecision = personalization
+        ? computeAdaptiveNudgeThreshold(baseThreshold, personalization, focusGoal)
+        : { threshold: baseThreshold, reason: `base ${baseThreshold}m` };
+    const threshold = thresholdDecision.threshold;
 
     if (minutesOnSite < threshold) {
         return { shouldNudge: false, message: '' };
@@ -690,7 +804,12 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
             if (recent < baseline - 0.2 && minutesOnSite >= 5) {
                 return {
                     shouldNudge: true,
-                    message: `⚠️ Focus Anomaly Detected: Your productivity ratio just dropped sharply below your daily baseline. Overstimulated? Try a 5-minute Pomodoro break.`,
+                    message: buildAdaptiveNudgeMessage({
+                        domain: currentDomain,
+                        minutesOnSite,
+                        snapshot: personalization,
+                        anomaly: true,
+                    }),
                 };
             }
         } catch (e) {
@@ -701,7 +820,12 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         if (minutesOnSite >= threshold) {
             return {
                 shouldNudge: true,
-                message: `⚠️ ${cachedResult?.reasoning || `You've been distracted on ${currentDomain}`}. (${minutesOnSite}min elapsed)`,
+                message: buildAdaptiveNudgeMessage({
+                    domain: currentDomain,
+                    minutesOnSite,
+                    snapshot: personalization,
+                    reason: cachedResult?.reasoning || `You've been distracted on ${currentDomain}`,
+                }),
             };
         }
         return { shouldNudge: false, message: '' };
@@ -712,7 +836,6 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
     try {
         // FLASH: Fast context processing for real-time nudge
         const nudgeContext = getSmartNudgeContext();
-        const userContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
 
         // Phase 9: Inject active tasks into nudge prompt
         let taskContext = '';
@@ -745,14 +868,17 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
         const prompt = `A user has been on ${currentDomain} for ${minutesOnSite} minutes. Page title: "${currentTitle}". 
 Should they be nudged to get back to work? Consider if this could be productive (tutorials, research, learning) or a distraction.
 
-${userContext}
+${personalizationContext || getIntelligenceContext({ maxInsights: 2, includeToday: true })}
 ${taskContext}
 ${intentionsContext}
 ${nudgeContext}
 ${focusContext}
 
+Adaptive threshold decision: ${threshold} minutes (${thresholdDecision.reason}).
+
 CRITICAL: If the page title or domain is clearly related to one of the user's ACTIVE TASKS, do NOT nudge — they are doing their work.
-Use their behavioral profile to decide. If this site matches their known distraction patterns, be more assertive. If they're usually productive at this hour, a gentle reminder is enough.
+Use their personalization profile to decide. Not every day is the same: adapt tone, urgency, and ask size to current mode, energy, alert fatigue, and workload.
+If mode is recovery, use a minimum viable redirect instead of shame. If deadline pressure is active, be concrete and direct. If alert fatigue is high, only nudge when the reason is strong.
 If an Implementation Intention matches their current distraction (e.g., they are on social media and have an intention for that), use that intention's THEN action as the nudge reason and include the Intention ID.
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
@@ -782,24 +908,87 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
         }
     } catch (err) {
         console.error('AI nudge check failed:', err);
-        throw err;
     }
 
-    // Fallback: nudge if over threshold
+    // Fallback: nudge if over adaptive threshold
     if (minutesOnSite >= threshold) {
         return {
             shouldNudge: true,
-            message: `⚠️ You've been on ${currentDomain} for ${minutesOnSite} minutes. Time for a break?`,
+            message: buildAdaptiveNudgeMessage({
+                domain: currentDomain,
+                minutesOnSite,
+                snapshot: personalization,
+                reason: `You've been on ${currentDomain}`,
+            }),
         };
     }
 
     return { shouldNudge: false, message: '' };
 }
 
-function buildFallbackSummary(date: string, stats: { productiveMinutes: number; distractionMinutes: number; tasksCompleted: number; totalTasks: number; score: number; xp: number }): string {
-    return `📊 Daily Report — ${date}\n\n✅ Productive: ${Math.round(stats.productiveMinutes / 60)}h ${stats.productiveMinutes % 60}m\n❌ Distraction: ${Math.round(stats.distractionMinutes / 60)}h ${stats.distractionMinutes % 60}m\n📋 Tasks: ${stats.tasksCompleted}/${stats.totalTasks}\n🏆 Score: ${stats.score}/100 | XP: ${stats.xp}`;
+function getModeLabel(mode: PersonalizationSnapshot['moment']['mode']): string {
+    switch (mode) {
+        case 'protect_focus':
+            return 'Protect focus';
+        case 'deadline_pressure':
+            return 'Deadline pressure';
+        case 'recovery':
+            return 'Recovery';
+        case 'planning':
+            return 'Planning';
+        default:
+            return 'Balanced';
+    }
 }
 
-function buildFallbackMorningBrief(date: string, data: { pendingTasks: { title: string }[]; streak: number }): string {
-    return `🌅 Good morning! — ${date}\n\n📋 ${data.pendingTasks.length} tasks pending\n🔥 Streak: ${data.streak} days\n\nLet's make today count!`;
+function buildFallbackSummary(
+    date: string,
+    stats: { productiveMinutes: number; distractionMinutes: number; tasksCompleted: number; totalTasks: number; score: number; xp: number },
+    personalization: PersonalizationSnapshot | null,
+): string {
+    const productive = `${Math.floor(stats.productiveMinutes / 60)}h ${stats.productiveMinutes % 60}m`;
+    const distraction = `${Math.floor(stats.distractionMinutes / 60)}h ${stats.distractionMinutes % 60}m`;
+    const modeLine = personalization
+        ? `Mode: ${getModeLabel(personalization.moment.mode)} (${personalization.userState.energy} energy). ${personalization.moment.guidance}`
+        : 'Mode: learning from today.';
+    const nextAction = personalization?.moment.mode === 'recovery'
+        ? 'Next: choose one minimum viable reset, then stop adding pressure.'
+        : personalization?.moment.mode === 'deadline_pressure'
+            ? 'Next: clear the smallest deadline-moving action first.'
+            : personalization?.moment.mode === 'planning'
+                ? 'Next: close loops and set up the first block for tomorrow.'
+                : 'Next: protect one clear block and keep the ask specific.';
+
+    return [
+        `Daily Report - ${date}`,
+        '',
+        modeLine,
+        `Productive: ${productive} | Distraction: ${distraction}`,
+        `Tasks: ${stats.tasksCompleted}/${stats.totalTasks} | Score: ${stats.score}/100 | XP: ${stats.xp}`,
+        nextAction,
+    ].join('\n');
+}
+
+function buildFallbackMorningBrief(
+    date: string,
+    data: { pendingTasks: { title: string; status?: string }[]; streak: number; calendarEvents?: { title: string; start_time: string; end_time: string }[] },
+    personalization: PersonalizationSnapshot | null,
+): string {
+    const topTask = personalization?.today.doingTasks[0] || data.pendingTasks.find(task => task.status === 'doing')?.title || data.pendingTasks[0]?.title;
+    const nextWindow = personalization?.userState.nextBestFocusWindow;
+    const mode = personalization ? getModeLabel(personalization.moment.mode) : 'Learning';
+    const action = personalization?.moment.mode === 'recovery'
+        ? `If you start feeling resistance, then do 10 minutes on "${topTask || 'the smallest useful task'}" and reassess.`
+        : personalization?.moment.mode === 'deadline_pressure'
+            ? `If you open your work setup, then spend the first block reducing "${topTask || 'the most urgent open loop'}".`
+            : personalization?.moment.mode === 'planning'
+                ? `If the day feels scattered, then define tomorrow's first concrete block before adding new work.`
+                : `If you get a clear block${nextWindow ? ` around ${nextWindow}` : ''}, then start with "${topTask || 'one clear task'}".`;
+
+    return [
+        `Morning Brief - ${date}`,
+        `${mode} mode${personalization ? `, ${personalization.userState.energy} energy` : ''}. ${personalization?.moment.guidance || 'Use today to learn what timing works.'}`,
+        `Open tasks: ${data.pendingTasks.length} | Streak: ${data.streak} days`,
+        `Action Plan: ${action}`,
+    ].join('\n\n');
 }

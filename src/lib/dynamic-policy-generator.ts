@@ -4,6 +4,7 @@ import { MODEL_PRO } from './models';
 import { getIntelligenceProfile } from './intelligence';
 import { getActiveGuardianPolicyBundle, validatePolicyBundle } from './guardian-optimizer';
 import { queryRelevantFacts, searchFactsByText } from './memory';
+import { buildPersonalizationSnapshot, formatPersonalizationContext, PersonalizationSnapshot } from './personalization-context';
 import type { GuardianPolicyBundle, SessionIntentProfile } from './guardian-types';
 
 // ─── Session performance history ──────────────────────────────────────────────
@@ -97,6 +98,82 @@ function loadMemoryFacts(topic: string): string {
   }
 }
 
+function loadPolicyFeedbackSignals(): string {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT action_type, helpful, was_corrected, correction_text, created_at
+      FROM agent_action_outcomes
+      WHERE created_at >= datetime('now', '-30 days')
+        AND (
+          action_type LIKE '%guidance%'
+          OR action_type LIKE '%session%'
+          OR action_type LIKE '%voice%'
+          OR action_type LIKE '%response%'
+          OR action_type LIKE '%notification%'
+        )
+      ORDER BY created_at DESC
+      LIMIT 40
+    `).all() as Array<{
+      action_type: string;
+      helpful: number | null;
+      was_corrected: number;
+      correction_text: string | null;
+      created_at: string;
+    }>;
+
+    const feedbackRows = db.prepare(`
+      SELECT raw_text, prediction_error_energy, prediction_error_focus,
+             session_length_fit, system_intervention_count, system_override_count, created_at
+      FROM session_feedback
+      WHERE created_at >= datetime('now', '-30 days')
+      ORDER BY created_at DESC
+      LIMIT 8
+    `).all() as Array<{
+      raw_text: string;
+      prediction_error_energy: number | null;
+      prediction_error_focus: number | null;
+      session_length_fit: string | null;
+      system_intervention_count: number | null;
+      system_override_count: number | null;
+      created_at: string;
+    }>;
+
+    const parts: string[] = [];
+
+    if (rows.length > 0) {
+      const rated = rows.filter(r => r.helpful !== null);
+      const helpfulRate = rated.length > 0
+        ? Math.round((rated.reduce((sum, r) => sum + (r.helpful ? 1 : 0), 0) / rated.length) * 100)
+        : null;
+      const corrected = rows.filter(r => r.was_corrected === 1);
+      parts.push('--- Agent action outcomes (30d) ---');
+      parts.push(`Rated actions: ${rated.length}; helpful rate: ${helpfulRate === null ? 'unknown' : `${helpfulRate}%`}; corrected actions: ${corrected.length}`);
+      for (const row of corrected.slice(0, 5)) {
+        parts.push(`Correction on ${row.action_type}: ${row.correction_text || 'no text'}`);
+      }
+    }
+
+    if (feedbackRows.length > 0) {
+      parts.push('\n--- Recent session feedback ---');
+      for (const row of feedbackRows.slice(0, 5)) {
+        const deltas = [
+          row.prediction_error_energy !== null ? `energy_error=${row.prediction_error_energy}` : '',
+          row.prediction_error_focus !== null ? `focus_error=${row.prediction_error_focus}` : '',
+          row.session_length_fit ? `session_length=${row.session_length_fit}` : '',
+          row.system_intervention_count !== null ? `interventions=${row.system_intervention_count}` : '',
+          row.system_override_count !== null ? `overrides=${row.system_override_count}` : '',
+        ].filter(Boolean).join(', ');
+        parts.push(`"${row.raw_text.slice(0, 180)}"${deltas ? ` (${deltas})` : ''}`);
+      }
+    }
+
+    return parts.join('\n') || 'No explicit policy feedback yet.';
+  } catch {
+    return 'No explicit policy feedback available.';
+  }
+}
+
 // ─── Main policy generator ────────────────────────────────────────────────────
 
 export async function generateDynamicPolicy(
@@ -106,17 +183,25 @@ export async function generateDynamicPolicy(
   const uil = getIntelligenceProfile();
   const sessionHistory = loadSessionPerformanceHistory(intent);
   const memoryFacts = loadMemoryFacts(intent.topic);
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'scheduler',
+    maxInsights: 3,
+    includeThresholds: true,
+    includeMemoryFacts: 8,
+  });
+  const personalizationContext = formatPersonalizationContext(personalization);
+  const feedbackSignals = loadPolicyFeedbackSignals();
 
   const ai = getGenAI();
   if (!ai) {
     console.warn('[DynamicPolicy] No AI client (check GEMINI_API_KEY) — using data-driven fallback');
-    return applyDataDrivenFallback(base, intent, uil);
+    return applyDataDrivenFallback(base, intent, uil, personalization);
   }
 
   try {
     const result = await generateWithFallback(ai, {
       model: MODEL_PRO,
-      contents: buildPolicyPrompt(base, intent, uil, sessionHistory, memoryFacts),
+      contents: buildPolicyPrompt(base, intent, uil, sessionHistory, memoryFacts, personalizationContext, feedbackSignals),
       config: { responseMimeType: 'application/json', temperature: 0 },
     });
 
@@ -143,7 +228,7 @@ export async function generateDynamicPolicy(
     return validated;
   } catch (err) {
     console.error('[DynamicPolicy] LLM generation failed — using data-driven fallback:', (err as Error).message);
-    return applyDataDrivenFallback(base, intent, uil);
+    return applyDataDrivenFallback(base, intent, uil, personalization);
   }
 }
 
@@ -155,6 +240,8 @@ function buildPolicyPrompt(
   uil: ReturnType<typeof getIntelligenceProfile>,
   sessionHistory: string,
   memoryFacts: string,
+  personalizationContext: string,
+  feedbackSignals: string,
 ): string {
   const t = uil.adaptiveThresholds;
   return `You are a focus-policy optimizer for a specific person. Tune the GuardianPolicyBundle for this session based on what has ACTUALLY WORKED for them — not on generic work-mode rules.
@@ -174,6 +261,12 @@ ${sessionHistory}
 LONG-TERM MEMORY FACTS:
 ${memoryFacts}
 
+CURRENT PERSONALIZATION SNAPSHOT:
+${personalizationContext}
+
+RECENT FEEDBACK / OUTCOME SIGNALS:
+${feedbackSignals}
+
 UIL ADAPTIVE THRESHOLDS (learned from past sessions):
 - focusDropAlertScore: ${t.focusDropAlertScore}
 - distractionAlertMinutes: ${t.distractionAlertMinutes}
@@ -188,6 +281,10 @@ REASONING APPROACH (use the data, not generic rules):
 - Low focus + high distractions → thresholds too loose → tighten them
 - Good focus with minimal overrides → policy working → minimal changes
 - Low energy → raise idle thresholds, soften speech, extend cooldown
+- Moment mode protect_focus → avoid unnecessary speech and preserve flow unless drift is clear
+- Moment mode recovery → prefer leniency, fewer blocks, and slower speech cadence
+- Moment mode deadline_pressure → be specific and firmer, but only if feedback shows interventions help
+- Low helpful rate or many corrections → reduce confidence in intervention-heavy policies
 - Urgent deadline → tighten only if history shows user responds well to structure
 - Many approved overrides → user prefers negotiation → nudges over hard blocks
 - Work mode is a label only — let actual session data drive the numbers
@@ -216,6 +313,7 @@ function applyDataDrivenFallback(
   base: GuardianPolicyBundle,
   intent: SessionIntentProfile,
   uil: ReturnType<typeof getIntelligenceProfile>,
+  personalization: PersonalizationSnapshot,
 ): GuardianPolicyBundle {
   const policy = structuredClone(base);
 
@@ -232,6 +330,29 @@ function applyDataDrivenFallback(
   if (intent.energyAtStart === 'low') {
     policy.thresholds.idleConcernSeconds = Math.min(900, Math.round(policy.thresholds.idleConcernSeconds * 1.5));
     policy.thresholds.speechCooldownMs = Math.min(300000, Math.round(policy.thresholds.speechCooldownMs * 1.5));
+  }
+
+  if (personalization.moment.mode === 'protect_focus') {
+    policy.thresholds.speechCooldownMs = Math.min(300000, Math.round(policy.thresholds.speechCooldownMs * 1.6));
+    policy.thresholds.flowSilenceThreshold = Math.max(policy.thresholds.flowSilenceThreshold, 90);
+    policy.thresholds.highScatterSpeakThreshold = Math.min(10, policy.thresholds.highScatterSpeakThreshold + 2);
+  }
+
+  if (personalization.moment.mode === 'recovery') {
+    policy.thresholds.idleConcernSeconds = Math.min(900, Math.round(policy.thresholds.idleConcernSeconds * 1.4));
+    policy.thresholds.distractionRevisitBlockCount = Math.min(6, policy.thresholds.distractionRevisitBlockCount + 1);
+    policy.thresholds.distractionTabSwitchBlockCount = Math.min(8, policy.thresholds.distractionTabSwitchBlockCount + 1);
+    policy.thresholds.speechCooldownMs = Math.min(300000, Math.round(policy.thresholds.speechCooldownMs * 1.3));
+  }
+
+  if (personalization.moment.mode === 'deadline_pressure') {
+    policy.thresholds.speechCooldownMs = Math.max(30000, Math.round(policy.thresholds.speechCooldownMs * 0.75));
+    policy.thresholds.focusDropSpeakThreshold = Math.max(5, Math.round(policy.thresholds.focusDropSpeakThreshold * 0.8));
+  }
+
+  if (personalization.feedback.helpfulRate !== null && personalization.feedback.helpfulRate < 0.4) {
+    policy.thresholds.speechCooldownMs = Math.min(300000, Math.round(policy.thresholds.speechCooldownMs * 1.4));
+    policy.thresholds.distractionRevisitBlockCount = Math.min(6, policy.thresholds.distractionRevisitBlockCount + 1);
   }
 
   if (intent.deadlineUrgency === 'overdue' || intent.deadlineUrgency === 'today') {

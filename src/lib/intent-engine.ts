@@ -17,9 +17,9 @@ JSON Schema:
   "confidence": <number 0-1 that this is a lock-in request>,
   "action": "lock_in" | "casual_chat" | "system_command",
   "parameters": {
-     "topic": "<string, what to study/focus on>",
-     "durationMinutes": <number, how long to focus, default 60>,
-     "mood": "high" | "neutral" | "low"
+	     "topic": "<string, what to study/focus on>",
+	     "durationMinutes": <number, include only if the user explicitly gave a duration; otherwise omit and LifeOS will choose adaptively>,
+	     "mood": "high" | "neutral" | "low"
   },
   "clarificationNeeded": "<string, if topic or duration is ambiguous, what should Jarvis ask?>"
 }`;

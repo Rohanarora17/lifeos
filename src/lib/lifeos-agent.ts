@@ -4,10 +4,12 @@
 // Does NOT replace telegram-agent.ts — surfaces can call this directly
 // or continue using their own handlers that internally call it.
 
-import { getIntelligenceContext, touchIntelligence } from './intelligence';
+import { touchIntelligence } from './intelligence';
 import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
+import { getActiveGuardianSession } from './guardian-runtime';
 
 export type AgentSurface = 'telegram' | 'web' | 'voice' | 'scheduler';
 
@@ -31,12 +33,22 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // 1. Signal new data — keeps UIL profile fresh
   touchIntelligence(`agent_${surface}`);
 
-  // 2. Assemble UIL context
-  const uilContext = getIntelligenceContext({
+  // 2. Assemble personalization context: today's state + UIL + memory + feedback.
+  const activeSession = getActiveGuardianSession();
+  const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
+  const personalization = buildPersonalizationSnapshot({
+    surface: surface === 'voice' ? 'voice' : surface === 'scheduler' ? 'scheduler' : 'agent',
     maxInsights: 3,
-    includeToday: true,
     includeThresholds: false,
+    includeMemoryFacts: 6,
+    activeSession: activeSession ? {
+      sessionId: activeSession.sessionId,
+      targetTitle: activeSession.targetTitle,
+      focusScore: activeFocusScore,
+      elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60000)),
+    } : null,
   });
+  const personalizationContext = formatPersonalizationContext(personalization);
 
   // 3. Load recent conversation turns (Telegram or web chat)
   let turnHistory = '';
@@ -58,11 +70,12 @@ export async function runAgent(input: AgentInput): Promise<AgentOutput> {
   // 4. Build prompt and call LLM
   const prompt = `You are LifeOS — an intelligent personal agent. Your only job is to help this person become better at focused work and intentional living.
 
-${uilContext}${turnHistory}
+${personalizationContext}${turnHistory}
 
 User (via ${surface}): ${message}
 
-Respond helpfully and concisely. Draw from the profile above — don't give generic advice. If you need to take action, state what you're doing.`;
+Respond helpfully and concisely. Draw from the profile above — don't give generic advice.
+Before advising, adapt to the current moment mode. If the user is in recovery, reduce friction. If they are in deadline pressure, be concrete. If focus should be protected, keep it brief.`;
 
   const ai = getGenAI();
   if (!ai) {
@@ -88,7 +101,10 @@ Respond helpfully and concisely. Draw from the profile above — don't give gene
     db.prepare(`
       INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, helpful)
       VALUES (?, ?, NULL, NULL)
-    `).run(`${surface}_response`, message.slice(0, 200));
+    `).run(
+      `${surface}_response`,
+      message.slice(0, 200),
+    );
   } catch { /* non-critical — log failure shouldn't block response */ }
 
   return { message: responseText };

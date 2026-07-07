@@ -1,6 +1,9 @@
 import { getDb } from './db';
-import { classifyEnergy, classifyFocus, classifyCognitiveLoad, classifyGoalHealth, getAdaptiveBands } from './adaptive-bands';
+import { classifyEnergy, getAdaptiveBands } from './adaptive-bands';
 import type { DayBriefing, GuardianSemanticProfile, GuardianSessionReflection, GuardianSessionSummary, SoftWatchCommitment } from './guardian-types';
+import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { getAdaptiveTaskRecommendations } from './adaptive-task-recommendations';
+import { buildPersonalizationSnapshot } from './personalization-context';
 
 function parseJsonArray(value: string | null | undefined): string[] {
   if (!value) return [];
@@ -251,6 +254,12 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
   const profile = updateGuardianSemanticProfile(userId);
   const recentReflections = getRecentReflections(3);
   const upcomingCommitments = getUpcomingCommitments();
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'guidance',
+    maxInsights: 2,
+    includeMemoryFacts: 3,
+  });
+  const adaptiveTasks = getAdaptiveTaskRecommendations(personalization, 3);
   const activeGoals = db.prepare(`
     SELECT title
     FROM goals
@@ -270,12 +279,28 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
   const activeGoalTitles = activeGoals.map((goal) => goal.title);
   const activeTaskTitles = activeTasks.map((task) => task.title);
   const upcomingFocusTarget =
+    adaptiveTasks[0]?.title ||
+    personalization.userState.standupGoal ||
     activeTaskTitles[0] ||
     activeGoalTitles[0] ||
     recent[0]?.targetTitle ||
     profile.frictionTopics[0] ||
     profile.strongTopics[0] ||
     null;
+  const modeLabel: Record<NonNullable<DayBriefing['personalization']>['mode'], string> = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+  };
+  const adaptiveOpening = (() => {
+    const topTask = adaptiveTasks[0];
+    const prefix = `${modeLabel[personalization.moment.mode]} mode.`;
+    if (topTask) return `${prefix} Best next target: ${topTask.title} - ${topTask.reason}.`;
+    if (personalization.userState.standupGoal) return `${prefix} Anchor the next block on "${personalization.userState.standupGoal}".`;
+    return `${prefix} ${personalization.moment.guidance}`;
+  })();
 
   return {
     recentSessions: recent.length,
@@ -289,10 +314,19 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
     energyForecast: profile.typicalEnergyBand,
     recentReflections,
     upcomingCommitments,
-    openingMessage:
-      recent.length === 0
-        ? 'No recent guardian sessions yet. Start with one concrete target and a protected time block.'
-        : `Recent average focus is ${Math.round(avgFocusScore)}. ${upcomingFocusTarget ? `Best next target: ${upcomingFocusTarget}.` : 'Pick one clear target for the next session.'}`,
+    openingMessage: adaptiveOpening,
+    personalization: {
+      mode: personalization.moment.mode,
+      guidance: personalization.moment.guidance,
+      recommendedSessionMinutes: getAdaptiveSessionMinutes(),
+      energy: personalization.userState.energy,
+      mood: personalization.userState.mood,
+      standupGoal: personalization.userState.standupGoal,
+      alertFatigueLevel: personalization.feedback.alertFatigueLevel,
+      recentAlerts: personalization.feedback.recentAlerts,
+      nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+    },
+    adaptiveTasks,
   };
 }
 
@@ -334,8 +368,13 @@ export async function generateOpeningLine(
   intent: { durationMinutes?: number; topic?: string; mood?: 'high' | 'medium' | 'low' | null }
 ): Promise<string> {
   try {
-    const { getIntelligenceContext } = await import('./intelligence');
-    const context = getIntelligenceContext({ maxInsights: 2, includeToday: true });
+    const { buildPersonalizationSnapshot, formatPersonalizationContext } = await import('./personalization-context');
+    const personalization = buildPersonalizationSnapshot({
+      surface: 'guidance',
+      maxInsights: 2,
+      includeMemoryFacts: 4,
+    });
+    const context = formatPersonalizationContext(personalization);
 
     const { getDb } = await import('./db');
     const db = getDb();
@@ -349,7 +388,7 @@ export async function generateOpeningLine(
       ? `Today's commitment: "${morningCheckin.commitment}" (likelihood: ${morningCheckin.likelihood_score}/10)`
       : '';
 
-    const prompt = `Given this intelligence profile about this person:
+    const prompt = `Given this current personalization profile about this person:
 ${context}
 
 ${morningLine}

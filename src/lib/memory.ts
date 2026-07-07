@@ -15,7 +15,7 @@ import { getDb } from './db';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type EpisodeSource = 'guardian' | 'voice' | 'chat' | 'browse' | 'manual';
+export type EpisodeSource = 'guardian' | 'voice' | 'chat' | 'browse' | 'manual' | 'native_copilot';
 
 export interface MemEpisode {
     id: number;
