@@ -40,6 +40,14 @@ interface AnalyticsPolicy {
     productiveTargetMinutes: number;
     distractionBudgetMinutes: number;
     xpBaseline: number;
+    plannedFocus: {
+        plannedToday: number;
+        completedToday: number;
+        skippedToday: number;
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
     analysisWindowDays: number;
     days: AnalyticsPolicyDay[];
 }
@@ -118,7 +126,7 @@ export default function AnalyticsPage() {
                                 {analyticsPolicy.mode.replace('_', ' ')} · {analyticsPolicy.primaryMetric.replace('_', ' ')}
                             </p>
                         </div>
-                        <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
                             <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-secondary)' }}>
                                 <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>Target</div>
                                 <div className="text-sm font-bold">{formatMinutes(analyticsPolicy.productiveTargetMinutes)}</div>
@@ -131,8 +139,25 @@ export default function AnalyticsPage() {
                                 <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>XP base</div>
                                 <div className="text-sm font-bold">{analyticsPolicy.xpBaseline || 'learning'}</div>
                             </div>
+                            {analyticsPolicy.plannedFocus.plannedToday > 0 && (
+                                <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-secondary)' }}>
+                                    <div className="text-[10px] uppercase font-bold" style={{ color: 'var(--text-muted)' }}>Plan</div>
+                                    <div className="text-sm font-bold">
+                                        {analyticsPolicy.plannedFocus.completedToday}/{analyticsPolicy.plannedFocus.plannedToday}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
+                    {analyticsPolicy.plannedFocus.nextTitle && (
+                        <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+                            Next planned focus: {analyticsPolicy.plannedFocus.nextTitle}
+                            {analyticsPolicy.plannedFocus.nextMinutes ? ` · ${formatMinutes(analyticsPolicy.plannedFocus.nextMinutes)}` : ''}
+                            {analyticsPolicy.plannedFocus.recentFollowThroughRate !== null
+                                ? ` · ${Math.round(analyticsPolicy.plannedFocus.recentFollowThroughRate * 100)}% recent follow-through`
+                                : ''}
+                        </p>
+                    )}
                 </section>
             )}
 

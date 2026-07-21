@@ -27,6 +27,7 @@ export interface AdaptiveAnalyticsPolicy {
   productiveTargetMinutes: number;
   distractionBudgetMinutes: number;
   xpBaseline: number;
+  plannedFocus: PersonalizationSnapshot['today']['plannedFocus'];
   analysisWindowDays: number;
   days: AdaptiveAnalyticsDay[];
 }
@@ -145,6 +146,7 @@ export function buildAdaptiveAnalyticsPolicy(input: {
     productiveTargetMinutes,
     distractionBudgetMinutes,
     xpBaseline,
+    plannedFocus: snapshot.today.plannedFocus,
     analysisWindowDays: Math.max(1, input.weekTrend.length),
     days: input.weekTrend.map(day => {
       const productive = Number(day.productive_minutes ?? 0);
