@@ -150,17 +150,65 @@ function formatScreenHistory(
   return '';
 }
 
+function buildGuidanceFallback(input: GuidanceInput): GuidanceResponse {
+  const session = input.sessionId ? getGuardianSession(input.sessionId) : getActiveGuardianSession();
+  const focusScore = session?.focusScoreHistory?.at(-1) ?? null;
+  const elapsedMin = session ? Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)) : 0;
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'guidance',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+    activeSession: session ? {
+      sessionId: session.sessionId,
+      targetTitle: session.targetTitle,
+      focusScore,
+      elapsedMinutes: elapsedMin,
+    } : null,
+  });
+
+  const visibleContext = input.selectedText?.trim()
+    ? `I can still use the selected text: "${input.selectedText.trim().slice(0, 120)}".`
+    : input.windowTitle
+      ? `I can still use the current window: ${input.windowTitle}.`
+      : '';
+
+  let answer: string;
+  if (session) {
+    answer = `Cloud reasoning is unavailable, so I will stay local: keep ${session.targetTitle} moving with the smallest next step. ${visibleContext}`;
+  } else if (personalization.today.plannedFocus.nextTitle) {
+    answer = `Cloud reasoning is unavailable. Your next planned focus is ${personalization.today.plannedFocus.nextTitle}; use this request to prepare that block. ${visibleContext}`;
+  } else if (personalization.moment.mode === 'recovery' || personalization.userState.energy === 'low' || personalization.userState.mood === 'low') {
+    answer = `Cloud reasoning is unavailable. Treat this as a low-capacity moment: ask for one small clarification or start a short recovery-safe block. ${visibleContext}`;
+  } else if (personalization.moment.mode === 'deadline_pressure') {
+    answer = `Cloud reasoning is unavailable. Use the question only if it reduces the nearest deadline risk; otherwise return to the deadline block. ${visibleContext}`;
+  } else if (personalization.moment.mode === 'planning') {
+    answer = `Cloud reasoning is unavailable. Capture the question as a planning note for tomorrow's first block. ${visibleContext}`;
+  } else {
+    answer = `Cloud reasoning is unavailable. Use the current context to choose the next concrete step. ${visibleContext}`;
+  }
+
+  const normalized = answer.replace(/\s+/g, ' ').trim();
+  return {
+    answer: normalized,
+    spokenAnswer: normalized,
+    callouts: [],
+    contextUsed: {
+      hadScreenshot: !!input.base64Jpeg,
+      hadSelectedText: !!input.selectedText?.trim(),
+      hadScreenHistory: false,
+      hadContextNarrative: false,
+      hadCursorPoint: !!input.cursorPoint,
+      usedUilContext: true,
+    },
+  };
+}
+
 // ─── Main guidance assembler ──────────────────────────────────────────────────
 
 export async function assembleGuidanceResponse(input: GuidanceInput): Promise<GuidanceResponse> {
   const ai = getGenAI();
   if (!ai || !canUseCloudTextReasoning()) {
-    return {
-      answer: 'Guidance is ready, but cloud reasoning is unavailable right now.',
-      spokenAnswer: 'Cloud reasoning is unavailable right now.',
-      callouts: [],
-      contextUsed: { hadScreenshot: false, hadSelectedText: false, hadScreenHistory: false, hadContextNarrative: false, usedUilContext: false },
-    };
+    return buildGuidanceFallback(input);
   }
 
   // ── Resolve session ────────────────────────────────────────────────────────
