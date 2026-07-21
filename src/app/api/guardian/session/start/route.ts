@@ -8,6 +8,81 @@ import { MODEL_FLASH } from '@/lib/models';
 import { getAdaptiveSessionMinuteDecision } from '@/lib/adaptive-command-defaults';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
+interface PlannedSessionStartMatch {
+  id: string;
+  title: string;
+  durationMinutes: number;
+  sessionType: string;
+  ruleJson: string;
+  plannedStart: string;
+  rewardXp: number;
+  rewardCoins: number;
+}
+
+function todayIst(): string {
+  return new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
+}
+
+function tokenScore(candidate: string, query: string): number {
+  const queryTokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length >= 3);
+  if (queryTokens.length === 0) return 0;
+  const candidateText = candidate.toLowerCase();
+  return queryTokens.reduce((score, token) => score + (candidateText.includes(token) ? 1 : 0), 0);
+}
+
+function parseRulePreview(ruleJson: string): { guidance?: string; tools?: string[]; rewardReason?: string } {
+  try {
+    const parsed = JSON.parse(ruleJson);
+    return typeof parsed === 'object' && parsed ? parsed as { guidance?: string; tools?: string[]; rewardReason?: string } : {};
+  } catch {
+    return {};
+  }
+}
+
+function findPlannedSessionForStart(topic: string | undefined): PlannedSessionStartMatch | null {
+  const cleanTopic = topic?.trim();
+  if (!cleanTopic) return null;
+
+  try {
+    const rows = getDb().prepare(`
+      SELECT
+        pfs.id,
+        pfs.title,
+        pfs.duration_minutes as durationMinutes,
+        pfs.session_type as sessionType,
+        pfs.rule_json as ruleJson,
+        pfs.planned_start as plannedStart,
+        pfs.reward_xp as rewardXp,
+        pfs.reward_coins as rewardCoins
+      FROM planned_focus_sessions pfs
+      JOIN daily_plans dp ON dp.id = pfs.plan_id
+      WHERE dp.plan_date = ?
+        AND pfs.status IN ('planned', 'started')
+      ORDER BY ABS(strftime('%s', pfs.planned_start) - strftime('%s', 'now')) ASC
+      LIMIT 12
+    `).all(todayIst()) as PlannedSessionStartMatch[];
+
+    return rows
+      .map(row => ({ row, score: tokenScore(row.title, cleanTopic) }))
+      .filter(match => match.score > 0)
+      .sort((a, b) => b.score - a.score)[0]?.row ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function plannedSessionContext(match: PlannedSessionStartMatch): string {
+  const rule = parseRulePreview(match.ruleJson);
+  const pieces = [
+    `Matched today's planned ${match.sessionType.replaceAll('_', ' ')} block.`,
+    rule.guidance,
+    rule.tools?.length ? `Tools expected: ${rule.tools.slice(0, 4).join(', ')}.` : null,
+    `Planned reward: ${match.rewardXp} XP / ${match.rewardCoins} coins.`,
+    rule.rewardReason,
+  ].filter(Boolean);
+  return pieces.join(' ');
+}
+
 /**
  * Derives which domains to immediately block for this session.
  * Reads from the user's actual activity history + domain_categories knowledge,
@@ -121,6 +196,20 @@ export async function POST(req: Request) {
       };
     }
 
+    const durationWasExplicit = body.durationMinutes !== undefined || parsedIntent?.parameters?.durationMinutes !== undefined;
+    const plannedMatch = durationWasExplicit ? null : findPlannedSessionForStart(startInput.topic);
+    if (plannedMatch) {
+      startInput = {
+        ...startInput,
+        topic: startInput.topic || plannedMatch.title,
+        durationMinutes: plannedMatch.durationMinutes,
+        sessionContext: [
+          startInput.sessionContext,
+          plannedSessionContext(plannedMatch),
+        ].filter(Boolean).join('\n\n'),
+      };
+    }
+
     const startSnapshot = buildPersonalizationSnapshot({
       surface: 'intervention',
       maxInsights: 2,
@@ -147,6 +236,16 @@ export async function POST(req: Request) {
 
     const session = startGuardianSession(startInput);
 
+    if (plannedMatch) {
+      try {
+        getDb().prepare(`
+          UPDATE planned_focus_sessions
+          SET status = 'started', updated_at = datetime('now', 'localtime')
+          WHERE id = ? AND status = 'planned'
+        `).run(plannedMatch.id);
+      } catch { /* planned session status is best-effort */ }
+    }
+
     // Compute AI-derived block list — bounded to 2.5s so session start stays fast.
     // Extension uses this for instant local blocking before the first server round-trip.
     let immediateBlockDomains: string[] = [];
@@ -167,7 +266,19 @@ export async function POST(req: Request) {
       }
     } catch { /* non-fatal */ }
 
-    return NextResponse.json({ success: true, session: { ...session, immediateBlockDomains }, parsedIntent, calendarWarning, calendarConflicts });
+    return NextResponse.json({
+      success: true,
+      session: { ...session, immediateBlockDomains },
+      parsedIntent,
+      calendarWarning,
+      calendarConflicts,
+      plannedSession: plannedMatch ? {
+        id: plannedMatch.id,
+        title: plannedMatch.title,
+        durationMinutes: plannedMatch.durationMinutes,
+        sessionType: plannedMatch.sessionType,
+      } : null,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
