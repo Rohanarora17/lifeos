@@ -628,11 +628,38 @@ export function formatCalibrationStatus(data: {
   return lines.join('\n');
 }
 
-export function formatSoftWatchReminder(targetTitle: string, minutesUntil: number): string {
+export interface SoftWatchReminderContext {
+  tone?: 'gentle' | 'normal' | 'direct';
+  reason?: string;
+  plannedMinutes?: number;
+  followThroughRate?: number | null;
+}
+
+function formatFollowThrough(rate?: number | null): string | null {
+  if (rate === null || rate === undefined) return null;
+  if (rate < 0.45) return `Recent follow-through is ${Math.round(rate * 100)}%, so keep the start friction low.`;
+  if (rate > 0.75) return `Recent follow-through is ${Math.round(rate * 100)}%, so this can stay a clean lock-in cue.`;
+  return `Recent follow-through is ${Math.round(rate * 100)}%, so confirm the plan before the day drifts.`;
+}
+
+export function formatSoftWatchReminder(targetTitle: string, minutesUntil: number, context: SoftWatchReminderContext = {}): string {
+  const durationLine = context.plannedMinutes ? `\n\nPlanned block: <b>${context.plannedMinutes} min</b>` : '';
+  const followThroughLine = formatFollowThrough(context.followThroughRate);
+  const reasonLine = context.reason ? `\n\n<i>${context.reason}</i>` : '';
+  const learningLine = followThroughLine ? `\n${followThroughLine}` : '';
+
   if (minutesUntil <= 0) {
-    return `⏰ <b>Session time!</b>\n\nYou planned to study <b>${targetTitle}</b> right now.\n\nOpen LifeOS to lock in.`;
+    if (context.tone === 'gentle') {
+      return `⏰ <b>Soft start window</b>\n\n<b>${targetTitle}</b> is ready now.${durationLine}\n\nStart with the smallest version or adjust it before it becomes noise.${learningLine}${reasonLine}`;
+    }
+
+    if (context.tone === 'direct') {
+      return `⏰ <b>Lock in now</b>\n\nYou planned <b>${targetTitle}</b> for this window.${durationLine}\n\nStart, shrink, or reschedule it so the plan stays honest.${learningLine}${reasonLine}`;
+    }
+
+    return `⏰ <b>Session time!</b>\n\nYou planned to study <b>${targetTitle}</b> right now.${durationLine}\n\nOpen LifeOS to lock in.${learningLine}${reasonLine}`;
   }
-  return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}\n\nGet ready to focus.`;
+  return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}${durationLine}\n\nGet ready to focus.${learningLine}${reasonLine}`;
 }
 
 // ─── Task List Formatter ─────────────────────────────────────────────────────

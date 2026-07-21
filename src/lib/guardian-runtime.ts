@@ -2385,6 +2385,7 @@ interface SoftWatchPolicy {
   expireMs: number;
   tone: 'gentle' | 'normal' | 'direct';
   reason: string;
+  followThroughRate: number | null;
 }
 
 export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plannedMinutes' | 'targetTitle'>): SoftWatchPolicy {
@@ -2398,6 +2399,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
     const lowEnergy = snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low';
     const deadlinePressure = snapshot.moment.mode === 'deadline_pressure' || snapshot.today.overdueTasks > 0;
     const alertFatigue = snapshot.feedback.alertFatigueLevel;
+    const followThroughRate = snapshot.today.plannedFocus.recentFollowThroughRate;
 
     if (deadlinePressure) {
       return {
@@ -2406,6 +2408,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
         expireMs: Math.max(45, Math.round(plannedMinutes * 1.25)) * 60_000,
         tone: 'direct',
         reason: 'deadline pressure shortens the follow-up loop',
+        followThroughRate,
       };
     }
 
@@ -2416,6 +2419,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
         expireMs: Math.max(75, Math.round(plannedMinutes * 1.75)) * 60_000,
         tone: 'gentle',
         reason: 'recovery/low energy gives more ramp time',
+        followThroughRate,
       };
     }
 
@@ -2426,6 +2430,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
         expireMs: Math.max(70, Math.round(plannedMinutes * 1.5)) * 60_000,
         tone: 'gentle',
         reason: 'high alert fatigue reduces reminder pressure',
+        followThroughRate,
       };
     }
 
@@ -2435,6 +2440,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
       expireMs: Math.max(60, Math.round(plannedMinutes * 1.5)) * 60_000,
       tone: 'normal',
       reason: 'balanced timing from planned session length',
+      followThroughRate,
     };
   } catch {
     return {
@@ -2443,6 +2449,7 @@ export function buildSoftWatchPolicy(commitment: Pick<SoftWatchCommitment, 'plan
       expireMs: 60 * 60_000,
       tone: 'normal',
       reason: 'fallback soft-watch timing',
+      followThroughRate: null,
     };
   }
 }
@@ -2526,7 +2533,12 @@ function tickSoftWatchChecker() {
         policy.tone === 'direct' ? 'urgent' : 'normal',
         'midpoint_checkin'
       );
-      void sendTelegram(`${formatSoftWatchReminder(commitment.targetTitle, 0)}\n\n<i>${policy.reason}</i>`, 'HTML', SOFT_WATCH_KEYBOARD);
+      void sendTelegram(formatSoftWatchReminder(commitment.targetTitle, 0, {
+        tone: policy.tone,
+        reason: policy.reason,
+        plannedMinutes: commitment.plannedMinutes,
+        followThroughRate: policy.followThroughRate,
+      }), 'HTML', SOFT_WATCH_KEYBOARD);
       continue;
     }
 
