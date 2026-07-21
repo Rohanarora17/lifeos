@@ -55,6 +55,64 @@ const activityModeLabel: Record<NonNullable<StudyPlan['adaptiveContext']>['activ
     concept_study: 'Concept study',
 };
 
+function compactPrompt(text: string, maxLength = 58): string {
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function buildStudyTopicPlaceholder(defaults: StudyPlanDefaults | null): string {
+    if (!defaults) return 'e.g., Quantum Computing, Rust Ownership, React Hooks';
+
+    const context = defaults.adaptiveContext;
+    if (context.standupGoal) {
+        return `Study for today's goal: ${compactPrompt(context.standupGoal)}`;
+    }
+
+    if (context.mode === 'recovery' || context.energy === 'low' || context.mood === 'low') {
+        return 'e.g., light review, one unclear concept, flashcards';
+    }
+
+    if (context.mode === 'deadline_pressure') {
+        return 'e.g., exam weak areas, assignment blockers, due topic';
+    }
+
+    if (context.mode === 'planning') {
+        return 'e.g., tomorrow first block, research paper outline';
+    }
+
+    if (context.activityMode === 'research_reading') {
+        return 'e.g., ZK paper, protocol notes, concept map';
+    }
+
+    if (context.activityMode === 'problem_practice') {
+        return 'e.g., Math Academy, proof drills, missed problems';
+    }
+
+    return 'e.g., Quantum Computing, Rust Ownership, React Hooks';
+}
+
+function buildStudyTopicHint(defaults: StudyPlanDefaults | null): string | null {
+    if (!defaults) return null;
+
+    const context = defaults.adaptiveContext;
+    if (context.mode === 'recovery' || context.energy === 'low' || context.mood === 'low') {
+        return `Low-capacity study: use ${context.studyBlockMinutes}m blocks and pick something that can stop cleanly.`;
+    }
+
+    if (context.mode === 'deadline_pressure') {
+        return 'Deadline pressure: choose the topic that removes the nearest blocker first.';
+    }
+
+    if (context.mode === 'planning') {
+        return "Planning mode: choose what tomorrow's first focused block should be about.";
+    }
+
+    if (context.standupGoal) {
+        return `Today points at "${compactPrompt(context.standupGoal, 44)}"; generate a plan around that if it still matters.`;
+    }
+
+    return `${activityModeLabel[context.activityMode]} rhythm is active for ${modeLabel[context.mode].toLowerCase()} mode.`;
+}
+
 export default function StudyPlanPage() {
     const [topic, setTopic] = useState('');
     const [duration, setDuration] = useState<number | ''>('');
@@ -103,6 +161,8 @@ export default function StudyPlanPage() {
         }
     };
 
+    const studyTopicHint = buildStudyTopicHint(defaults);
+
     return (
         <div className="max-w-[1000px] mx-auto animate-fade-in p-6">
             {/* Header */}
@@ -125,10 +185,15 @@ export default function StudyPlanPage() {
                                 <input
                                     type="text"
                                     className="w-full input-field"
-                                    placeholder="e.g., Quantum Computing, Rust Ownership, React Hooks"
+                                    placeholder={buildStudyTopicPlaceholder(defaults)}
                                     value={topic}
                                     onChange={(e) => setTopic(e.target.value)}
                                 />
+                                {studyTopicHint && (
+                                    <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                                        {studyTopicHint}
+                                    </p>
+                                )}
                             </div>
                             <div>
                                 <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Time Available (min)</label>
