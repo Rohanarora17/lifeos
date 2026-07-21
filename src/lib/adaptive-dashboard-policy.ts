@@ -131,6 +131,25 @@ export function buildAdaptiveDashboardPolicy(input: DashboardPolicyInput): Adapt
     };
   }
 
+  if (snapshot.today.plannedFocus.nextTitle) {
+    emphasis.add('tasks');
+    const followThrough = snapshot.today.plannedFocus.recentFollowThroughRate;
+    return {
+      mode: snapshot.moment.mode,
+      headline: `Next planned block: ${snapshot.today.plannedFocus.nextTitle}`,
+      primaryAction: 'start_recommended_task',
+      primaryLabel: `Start ${snapshot.today.plannedFocus.nextMinutes ?? session.minutes}m planned block`,
+      primaryReason: followThrough !== null && followThrough < 0.5
+        ? `Recent planned-block follow-through is ${Math.round(followThrough * 100)}%, so the best move is to protect the block already scheduled.`
+        : 'This is already on today’s plan, so the dashboard should protect the schedule before adding new work.',
+      focusTarget: { type: 'session', id: null, title: snapshot.today.plannedFocus.nextTitle },
+      sessionMinutes: snapshot.today.plannedFocus.nextMinutes ?? session.minutes,
+      sessionReason: 'inherited from the next planned focus block',
+      ...notifications,
+      dashboardEmphasis: Array.from(emphasis),
+    };
+  }
+
   if (snapshot.moment.mode === 'deadline_pressure' && task) {
     emphasis.add('tasks');
     return {

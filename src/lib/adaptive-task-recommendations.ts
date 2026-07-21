@@ -214,6 +214,24 @@ export function getAdaptiveTaskRecommendations(
       reasons.push('matches active work thread');
     }
 
+    if (snapshot.today.plannedFocus.nextTitle && textMatches(taskText, snapshot.today.plannedFocus.nextTitle)) {
+      score += snapshot.today.plannedFocus.recentFollowThroughRate !== null && snapshot.today.plannedFocus.recentFollowThroughRate < 0.5
+        ? 10
+        : 24;
+      reasons.push('next planned focus block');
+    }
+
+    if (
+      snapshot.today.plannedFocus.plannedToday > 0 &&
+      snapshot.today.plannedFocus.recentFollowThroughRate !== null &&
+      snapshot.today.plannedFocus.recentFollowThroughRate < 0.45 &&
+      task.status !== 'doing' &&
+      !textMatches(taskText, snapshot.today.plannedFocus.nextTitle)
+    ) {
+      score -= 10;
+      reasons.push('protecting planned-block follow-through');
+    }
+
     if (snapshot.userState.nextBestFocusWindow && snapshot.moment.mode === 'protect_focus') {
       score += task.status === 'doing' ? 8 : 0;
     }
