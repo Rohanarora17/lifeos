@@ -17,6 +17,35 @@ interface RewardStoreRow {
     user_cost_override: number | null;
 }
 
+function priceStoreReward(row: RewardStoreRow, balance: number, snapshot: ReturnType<typeof buildPersonalizationSnapshot>) {
+    const hasManualPrice = Number(row.user_cost_override ?? 0) === 1;
+    if (hasManualPrice) {
+        return {
+            ...row,
+            stored_cost: row.cost,
+            adaptive_price_changed: false,
+        };
+    }
+
+    const pricing = priceAdaptiveReward({
+        title: row.title,
+        category: row.category ?? undefined,
+        balance,
+        snapshot,
+    });
+
+    return {
+        ...row,
+        cost: pricing.cost,
+        category: pricing.category,
+        pricing_json: pricing.pricingJson,
+        adaptive_reason: pricing.reason,
+        user_cost_override: 0,
+        stored_cost: row.cost,
+        adaptive_price_changed: pricing.cost !== row.cost,
+    };
+}
+
 export async function GET() {
     try {
         const db = getDb();
@@ -40,11 +69,14 @@ export async function GET() {
         const transactions = db.prepare('SELECT id, amount, reason, created_at FROM coin_ledger ORDER BY created_at DESC LIMIT 10').all();
 
         // Get store items
-        const store = db.prepare(`
+        const storeRows = db.prepare(`
             SELECT id, title, cost, icon, category, pricing_json, adaptive_reason, user_cost_override
             FROM rewards_store
             ORDER BY cost ASC
-        `).all();
+        `).all() as RewardStoreRow[];
+        const store = storeRows
+            .map((row) => priceStoreReward(row, balance, personalization))
+            .sort((a, b) => a.cost - b.cost);
 
         // Get badges (unlocked and locked)
         const badges = db.prepare(`
@@ -134,17 +166,23 @@ export async function POST(request: NextRequest) {
         if (!reward) return NextResponse.json({ error: 'Reward not found' }, { status: 404 });
 
         const balanceQuery = db.prepare('SELECT COALESCE(SUM(amount), 0) as balance FROM coin_ledger').get() as { balance: number };
+        const balance = balanceQuery?.balance || 0;
+        const pricedReward = priceStoreReward(reward, balance, personalization);
 
-        if ((balanceQuery?.balance || 0) < reward.cost) {
+        if (balance < pricedReward.cost) {
             return NextResponse.json({ error: 'Not enough coins' }, { status: 400 });
         }
 
         // Deduct coins
-        db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(-reward.cost, `Bought: ${reward.title} (${rewardPolicy.mode}: ${rewardPolicy.spendingGuidance})`);
+        db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(
+            -pricedReward.cost,
+            `Bought: ${pricedReward.title} (${rewardPolicy.mode}: ${rewardPolicy.spendingGuidance}; ${pricedReward.adaptive_reason ?? 'manual price'})`,
+        );
 
         return NextResponse.json({
             success: true,
-            message: `Purchased ${reward.title} for ${reward.cost} coins. ${rewardPolicy.spendingGuidance}`,
+            message: `Purchased ${pricedReward.title} for ${pricedReward.cost} coins. ${rewardPolicy.spendingGuidance}`,
+            pricing: pricedReward,
             rewardPolicy,
         });
     } catch (error) {
