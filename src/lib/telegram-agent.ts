@@ -195,14 +195,14 @@ function formatAdjustDurationPrompt(snapshot: ReturnType<typeof buildPersonaliza
     return 'What duration should I change the session to?';
 }
 
-function formatTelegramLookupPrompt(kind: 'task' | 'goal', action: 'update' | 'delete'): string {
+function formatTelegramLookupPrompt(kind: 'task' | 'goal' | 'habit' | 'session', action: 'update' | 'delete' | 'cancel' | 'log'): string {
     try {
         const snapshot = buildPersonalizationSnapshot({
             surface: 'telegram',
             maxInsights: 1,
             includeMemoryFacts: 2,
         });
-        const verb = action === 'delete' ? 'delete' : 'update';
+        const verb = action === 'delete' ? 'delete' : action === 'cancel' ? 'cancel' : action === 'log' ? 'log' : 'update';
         if (kind === 'task') {
             if (snapshot.today.plannedFocus.nextTitle) return `Which task should I ${verb}? Planned focus is on <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
             if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline-relief task should I ${verb}?`;
@@ -211,13 +211,54 @@ function formatTelegramLookupPrompt(kind: 'task' | 'goal', action: 'update' | 'd
             }
             return `Which task should I ${verb}? Give me a title or search term.`;
         }
+        if (kind === 'habit') {
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+                return `Which low-friction habit should I ${verb}?`;
+            }
+            if (snapshot.moment.mode === 'planning') return `Which tomorrow-supporting habit should I ${verb}?`;
+            if (snapshot.today.plannedFocus.nextTitle) return `Which habit should I ${verb} around <b>${snapshot.today.plannedFocus.nextTitle}</b>?`;
+            return `Which habit should I ${verb}? Give me the name.`;
+        }
+        if (kind === 'session') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Which planned focus session should I ${verb}? Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline session should I ${verb}?`;
+            if (snapshot.moment.mode === 'planning') return `Which tomorrow-planning session should I ${verb}?`;
+            if (snapshot.userState.nextBestFocusWindow) return `Which session should I ${verb}? Best learned window is <b>${snapshot.userState.nextBestFocusWindow}</b>.`;
+            return `Which session should I ${verb}? Give me a title or search term.`;
+        }
         if (snapshot.userState.standupGoal) return `Which goal should I ${verb}? Today's stated goal is <b>${snapshot.userState.standupGoal}</b>.`;
         if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline goal should I ${verb}?`;
         if (snapshot.moment.mode === 'planning') return `Which tomorrow-facing goal should I ${verb}?`;
     } catch { /* keep fallback */ }
-    return kind === 'task'
-        ? `Which task should I ${action === 'delete' ? 'delete' : 'update'}? Give me a search term.`
-        : `Which goal should I ${action === 'delete' ? 'delete' : 'update'}?`;
+    if (kind === 'task') return `Which task should I ${action === 'delete' ? 'delete' : 'update'}? Give me a search term.`;
+    if (kind === 'habit') return `Which habit should I ${action === 'delete' ? 'delete' : action === 'log' ? 'log' : 'update'}? Give me the name.`;
+    if (kind === 'session') return `Which session should I ${action === 'cancel' ? 'cancel' : 'update'}? Give me a search term.`;
+    return `Which goal should I ${action === 'delete' ? 'delete' : 'update'}?`;
+}
+
+function formatTelegramLookupMiss(kind: 'task' | 'goal' | 'habit' | 'session', search: string): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        const label = kind === 'session' ? 'scheduled session' : kind;
+        if (snapshot.today.plannedFocus.nextTitle) {
+            return `${label[0].toUpperCase()}${label.slice(1)} matching "<i>${search}</i>" not found. Current planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; try that title or a narrower search term.`;
+        }
+        if (snapshot.moment.mode === 'deadline_pressure') {
+            return `${label[0].toUpperCase()}${label.slice(1)} matching "<i>${search}</i>" not found. Try the deadline, course, or deliverable name so I can protect the pressure path.`;
+        }
+        if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+            return `${label[0].toUpperCase()}${label.slice(1)} matching "<i>${search}</i>" not found. Use the smallest exact name you remember; keep this lookup low-friction.`;
+        }
+        if (kind === 'goal' && snapshot.userState.standupGoal) {
+            return `Goal matching "<i>${search}</i>" not found. Today's stated goal is <b>${snapshot.userState.standupGoal}</b>; try that wording.`;
+        }
+    } catch { /* keep fallback */ }
+    const label = kind === 'session' ? 'Scheduled session' : kind[0].toUpperCase() + kind.slice(1);
+    return `${label} matching "<i>${search}</i>" not found.`;
 }
 
 // Single-user system — one confirmation slot
@@ -932,7 +973,7 @@ export async function executeAction(
             const comms = listSoftWatchCommitments();
             const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
             if (!match) {
-                await sendTelegram(`Scheduled session matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD);
+                await sendTelegram(formatTelegramLookupMiss('session', search), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             rescheduleSoftWatchCommitment(match.id, startAt, payload.durationMinutes as number | undefined);
@@ -945,13 +986,13 @@ export async function executeAction(
 
         case 'CANCEL_SCHEDULED_SESSION': {
             const search = (payload.searchTitle as string | undefined)?.trim()?.toLowerCase();
-            if (!search) { await sendTelegram('Which session to cancel?', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('session', 'cancel'), 'HTML', FULL_MENU_KEYBOARD); break; }
             
             const { listSoftWatchCommitments, dismissSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const comms = listSoftWatchCommitments();
             const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
             if (!match) {
-                await sendTelegram(`Scheduled session matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD);
+                await sendTelegram(formatTelegramLookupMiss('session', search), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             dismissSoftWatchCommitment(match.id);
@@ -963,10 +1004,10 @@ export async function executeAction(
 
         case 'UPDATE_GOAL': {
             const search = (payload.searchTitle as string | undefined)?.trim();
-            if (!search) { await sendTelegram('Which goal to update?', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('goal', 'update'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const goal = db.prepare(`SELECT id, title, deadline, active FROM goals WHERE LOWER(title) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string; deadline: string | null; active: number } | undefined;
-            if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!goal) { await sendTelegram(formatTelegramLookupMiss('goal', search), 'HTML', FULL_MENU_KEYBOARD); break; }
 
             const sets: string[] = [];
             const vals: (string | number)[] = [];
@@ -1061,12 +1102,12 @@ export async function executeAction(
 
         case 'LOG_HABIT': {
             const title = payload.habitTitle as string | undefined;
-            if (!title) { await sendTelegram('Which habit? Tell me the name.', ''); break; }
+            if (!title) { await sendTelegram(formatTelegramLookupPrompt('habit', 'log'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
             try {
                 const habit = db.prepare(`SELECT id FROM habits WHERE archived = 0 AND LOWER(name) LIKE ? LIMIT 1`).get(`%${title.toLowerCase()}%`) as { id: number } | undefined;
-                if (!habit) { await sendTelegram(`Habit "${title}" not found.`, ''); break; }
+                if (!habit) { await sendTelegram(formatTelegramLookupMiss('habit', title), 'HTML', FULL_MENU_KEYBOARD); break; }
                 const checkin = recordAdaptiveHabitCheckin({
                     habitId: habit.id,
                     date: today,
@@ -1282,7 +1323,7 @@ export async function executeAction(
             if (!search) { await sendTelegram(formatTelegramLookupPrompt('task', 'update'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? AND status != 'done' LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
-            if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!task) { await sendTelegram(formatTelegramLookupMiss('task', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             const sets: string[] = [];
             const vals: (string | number)[] = [];
             if (payload.title) { sets.push('title = ?'); vals.push(payload.title as string); }
@@ -1319,7 +1360,7 @@ export async function executeAction(
             if (!search) { await sendTelegram(formatTelegramLookupPrompt('task', 'delete'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
-            if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!task) { await sendTelegram(formatTelegramLookupMiss('task', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM tasks WHERE id = ?`).run(task.id);
             await sendTelegram(`🗑️ Deleted task: <b>${task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
@@ -1349,7 +1390,7 @@ export async function executeAction(
             if (!search) { await sendTelegram(formatTelegramLookupPrompt('goal', 'delete'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
-            if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!goal) { await sendTelegram(formatTelegramLookupMiss('goal', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM goals WHERE id = ?`).run(goal.id);
             await sendTelegram(`🗑️ Deleted goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
@@ -1392,7 +1433,7 @@ export async function executeAction(
             if (!search || !newName) { await sendTelegram('Provide both the current habit name and the new name.', ''); break; }
             const db = getDb();
             const habit = db.prepare(`SELECT id, name FROM habits WHERE LOWER(name) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; name: string } | undefined;
-            if (!habit) { await sendTelegram(`Habit matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!habit) { await sendTelegram(formatTelegramLookupMiss('habit', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`UPDATE habits SET name = ? WHERE id = ?`).run(newName, habit.id);
             await sendTelegram(`✅ Renamed: <b>${habit.name}</b> → <b>${newName}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
@@ -1400,10 +1441,10 @@ export async function executeAction(
 
         case 'DELETE_HABIT': {
             const search = (payload.searchName as string | undefined)?.trim();
-            if (!search) { await sendTelegram('Which habit should I delete?', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('habit', 'delete'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const habit = db.prepare(`SELECT id, name FROM habits WHERE LOWER(name) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; name: string } | undefined;
-            if (!habit) { await sendTelegram(`Habit matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
+            if (!habit) { await sendTelegram(formatTelegramLookupMiss('habit', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`UPDATE habits SET archived = 1 WHERE id = ?`).run(habit.id);
             await sendTelegram(`🗑️ Archived habit: <b>${habit.name}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
