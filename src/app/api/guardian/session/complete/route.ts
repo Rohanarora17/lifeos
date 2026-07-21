@@ -38,7 +38,14 @@ export async function POST(req: NextRequest) {
     }
     if (mark_task_done && completion.task_id && action === 'done') {
       const progress = getTaskTimeProgress(completion.task_id);
-      if (progress.targetMinutes !== null && progress.creditedMinutes < progress.targetMinutes) {
+      if (progress.targetMinutes === null) {
+        return NextResponse.json({
+          error: 'time_target_required',
+          message: 'Task needs a time target before it can complete from a review.',
+          progress,
+        }, { status: 409 });
+      }
+      if (progress.creditedMinutes < progress.targetMinutes) {
         return NextResponse.json({
           error: 'time_target_not_reached',
           message: `Task needs ${progress.remainingMinutes} more linked focus minute${progress.remainingMinutes === 1 ? '' : 's'} before completion.`,
