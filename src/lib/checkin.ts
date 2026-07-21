@@ -166,6 +166,43 @@ function buildEveningReflectionMessage(input: {
   ].filter(line => line !== '').join('\n');
 }
 
+function buildMorningFallbackMessage(input: {
+  snapshot: PersonalizationSnapshot;
+  adaptiveQuestion: SelfModelGapQuestion | null;
+}): string {
+  const { snapshot, adaptiveQuestion } = input;
+  const question = adaptiveQuestion?.question
+    ?? `What's your one commitment today, and how likely are you to actually do it, 1-10?`;
+  const pressure = snapshot.today.overdueTasks > 0
+    ? `${snapshot.today.overdueTasks} overdue task${snapshot.today.overdueTasks === 1 ? '' : 's'}`
+    : snapshot.today.openTasks > 0
+      ? `${snapshot.today.openTasks} open task${snapshot.today.openTasks === 1 ? '' : 's'}`
+      : null;
+  const focusWindow = snapshot.userState.nextBestFocusWindow
+    ? `Best focus window: ${escapeTelegramHtml(snapshot.userState.nextBestFocusWindow)}.`
+    : null;
+  const modeLine: Record<PersonalizationSnapshot['moment']['mode'], string> = {
+    recovery: `Good morning. Today looks lower-capacity, so make the first promise smaller than your ambition.`,
+    deadline_pressure: `Good morning. There is deadline pressure today; pick the one move that actually reduces it.`,
+    protect_focus: `Good morning. Your focus signal is worth protecting today; choose the block that deserves the quiet window.`,
+    planning: `Good morning. Use today to turn the plan into one concrete first block.`,
+    normal: `Good morning. Choose the commitment that fits today's actual shape.`,
+  };
+  const context = [
+    `${snapshot.userState.energy} energy`,
+    snapshot.userState.mood ? `${snapshot.userState.mood} mood` : null,
+    pressure,
+    focusWindow,
+  ].filter(Boolean).join(' · ');
+
+  return [
+    modeLine[snapshot.moment.mode],
+    context ? `<i>${context}</i>` : '',
+    '',
+    escapeTelegramHtml(question),
+  ].filter(Boolean).join('\n');
+}
+
 // ─── Send Functions ──────────────────────────────────────────────────────────
 
 export async function sendMorningCheckin(): Promise<void> {
@@ -191,10 +228,14 @@ export async function sendMorningCheckin(): Promise<void> {
   // Claim the slot BEFORE the async LLM call — prevents concurrent restarts from both firing
   setSetting(PENDING_CHECKIN_DATE_KEY, today);
 
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'checkin',
+    maxInsights: 3,
+    includeThresholds: true,
+    includeMemoryFacts: 6,
+  });
   const adaptiveQuestion = getAdaptiveCheckinQuestion('morning_checkin');
-  let message = adaptiveQuestion
-    ? `Good morning. ${adaptiveQuestion.question}`
-    : `Good morning. What's your one commitment today?\n\nAnd honestly — how likely are you to actually do it, 1–10?`;
+  let message = buildMorningFallbackMessage({ snapshot, adaptiveQuestion });
 
   try {
     const intelligenceContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
@@ -202,10 +243,18 @@ export async function sendMorningCheckin(): Promise<void> {
     if (ai) {
       const result = await generateWithFallback(ai, {
         model: MODEL_FLASH,
-        contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 45 words. End with the adaptive question below, preserving its intent.
+        contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 45 words. End with the adaptive question below, preserving its intent. Do not use a fixed good-morning template; adapt to today's mode, energy, workload, and likely focus window.
 
 Adaptive question to ask because ${adaptiveQuestion?.reason ?? 'the model needs a fresh daily anchor'}:
 ${adaptiveQuestion?.question ?? 'What is your one commitment today, and how likely are you to do it from 1-10?'}
+
+Today context:
+Mode: ${snapshot.moment.mode}
+Energy: ${snapshot.userState.energy}
+Mood: ${snapshot.userState.mood ?? 'unknown'}
+Open tasks: ${snapshot.today.openTasks}
+Overdue tasks: ${snapshot.today.overdueTasks}
+Best focus window: ${snapshot.userState.nextBestFocusWindow}
 
 User context:
 ${intelligenceContext}
