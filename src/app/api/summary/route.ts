@@ -69,7 +69,8 @@ function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
                    session_type as sessionType,
                    reward_xp as rewardXp,
                    reward_coins as rewardCoins,
-                   status
+                   status,
+                   soft_watch_id as softWatchId
             FROM planned_focus_sessions
             WHERE plan_id = ?
             ORDER BY planned_start ASC
@@ -82,7 +83,33 @@ function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
             rewardXp: number;
             rewardCoins: number;
             status: string;
+            softWatchId: string | null;
         }>;
+        const plannedMinutes = sessions.reduce((sum, session) => sum + session.durationMinutes, 0);
+        const completed = sessions.filter(session => session.status === 'completed');
+        const skipped = sessions.filter(session => session.status === 'skipped');
+        const softWatchIds = sessions.map(session => session.softWatchId).filter((id): id is string => Boolean(id));
+        const actualRows = softWatchIds.length > 0 ? db.prepare(`
+            SELECT
+              sw.id as softWatchId,
+              gss.elapsed_minutes as elapsedMinutes,
+              gss.average_focus_score as averageFocusScore
+            FROM soft_watch_commitments sw
+            LEFT JOIN guardian_session_summaries gss ON gss.session_id = sw.locked_in_session_id
+            WHERE sw.id IN (${softWatchIds.map(() => '?').join(',')})
+        `).all(...softWatchIds) as Array<{
+            softWatchId: string;
+            elapsedMinutes: number | null;
+            averageFocusScore: number | null;
+        }> : [];
+        const actualBySoftWatch = new Map(actualRows.map(row => [row.softWatchId, row]));
+        const actualMinutes = actualRows.reduce((sum, row) => sum + Math.max(0, Math.round(row.elapsedMinutes ?? 0)), 0);
+        const focusScores = actualRows
+            .map(row => Number(row.averageFocusScore))
+            .filter(score => Number.isFinite(score));
+        const avgFocusScore = focusScores.length
+            ? Math.round(focusScores.reduce((sum, score) => sum + score, 0) / focusScores.length)
+            : null;
 
         const lines = [
             plan.tomorrowIntention ? `Main intention: ${plan.tomorrowIntention}` : null,
@@ -91,9 +118,14 @@ function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
             plan.eveningNotes ? `What changed: ${plan.eveningNotes.slice(0, 300)}` : null,
             plan.generatedSummary ? `Planner summary: ${plan.generatedSummary}` : null,
             sessions.length > 0
+                ? `Planned focus follow-through: ${completed.length}/${sessions.length} completed, ${skipped.length} skipped, ${actualMinutes}/${plannedMinutes} actual minutes${avgFocusScore !== null ? `, avg focus ${avgFocusScore}` : ''}`
+                : null,
+            sessions.length > 0
                 ? `Planned focus blocks:\n${sessions.map(session => {
                     const time = new Date(session.plannedStart).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-                    return `- ${time} ${session.title} (${session.durationMinutes}m, ${session.sessionType}, ${session.status}, ${session.rewardXp} XP/${session.rewardCoins} coins)`;
+                    const actual = session.softWatchId ? actualBySoftWatch.get(session.softWatchId) : null;
+                    const actualText = actual?.elapsedMinutes ? `, actual ${Math.round(actual.elapsedMinutes)}m` : '';
+                    return `- ${time} ${session.title} (${session.durationMinutes}m planned${actualText}, ${session.sessionType}, ${session.status}, ${session.rewardXp} XP/${session.rewardCoins} coins)`;
                 }).join('\n')}`
                 : null,
         ].filter(Boolean);
