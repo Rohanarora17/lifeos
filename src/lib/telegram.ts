@@ -673,6 +673,26 @@ function formatFollowThrough(rate?: number | null): string | null {
   return `Recent follow-through is ${Math.round(rate * 100)}%, so confirm the plan before the day drifts.`;
 }
 
+function upcomingSessionCue(minutesUntil: number, context: SoftWatchReminderContext): string {
+  if (context.tone === 'gentle') {
+    return minutesUntil <= 5
+      ? 'Start with the smallest useful version, or adjust the plan before it becomes noise.'
+      : 'Keep the ramp light: clear the first tab, then start small.';
+  }
+  if (context.tone === 'direct') {
+    return minutesUntil <= 5
+      ? 'Be decisive: start, shrink, or reschedule so the plan stays honest.'
+      : 'Use the remaining minutes to close distractions and make the first action obvious.';
+  }
+  if (context.followThroughRate !== null && context.followThroughRate !== undefined && context.followThroughRate < 0.45) {
+    return 'Lower the start friction now: open the material and commit to the first tiny step.';
+  }
+  if (context.plannedMinutes && context.plannedMinutes >= 60) {
+    return 'Set up the workspace now so the long block starts cleanly.';
+  }
+  return 'Use this window to make the first action specific.';
+}
+
 export function formatSoftWatchReminder(targetTitle: string, minutesUntil: number, context: SoftWatchReminderContext = {}): string {
   const durationLine = context.plannedMinutes ? `\n\nPlanned block: <b>${context.plannedMinutes} min</b>` : '';
   const followThroughLine = formatFollowThrough(context.followThroughRate);
@@ -690,7 +710,7 @@ export function formatSoftWatchReminder(targetTitle: string, minutesUntil: numbe
 
     return `⏰ <b>Session time!</b>\n\nYou planned to study <b>${targetTitle}</b> right now.${durationLine}\n\nOpen LifeOS to lock in.${learningLine}${reasonLine}`;
   }
-  return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}${durationLine}\n\nGet ready to focus.${learningLine}${reasonLine}`;
+  return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}${durationLine}\n\n${upcomingSessionCue(minutesUntil, context)}${learningLine}${reasonLine}`;
 }
 
 // ─── Task List Formatter ─────────────────────────────────────────────────────
