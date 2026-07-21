@@ -32,12 +32,18 @@ interface TaskRow {
   due_date: string | null;
   created_at: string;
   goal_id: number | null;
+  task_type: string | null;
+  course: string | null;
   estimated_minutes: number | null;
   energy_required: 'low' | 'medium' | 'high' | null;
   complexity: string | null;
   goal_title: string | null;
   goal_deadline: string | null;
   priority_rank: number | null;
+  credited_minutes: number;
+  linked_sessions: number;
+  avg_focus_score: number | null;
+  last_credited_at: string | null;
 }
 
 interface FeedbackStats {
@@ -144,11 +150,17 @@ export function getAdaptiveTaskRecommendations(
 
   const tasks = db.prepare(`
     SELECT t.id, t.title, t.status, t.priority, t.due_date, t.goal_id, t.created_at,
-           t.estimated_minutes, t.energy_required, t.complexity, t.priority_rank,
-           g.title as goal_title, g.deadline as goal_deadline
+           t.task_type, t.course, t.estimated_minutes, t.energy_required, t.complexity, t.priority_rank,
+           g.title as goal_title, g.deadline as goal_deadline,
+           COALESCE(SUM(l.credited_minutes), 0) as credited_minutes,
+           COUNT(l.id) as linked_sessions,
+           AVG(l.focus_score) as avg_focus_score,
+           MAX(l.credited_at) as last_credited_at
     FROM tasks t
     LEFT JOIN goals g ON t.goal_id = g.id
+    LEFT JOIN task_session_logs l ON l.task_id = t.id
     WHERE t.status IN ('todo', 'doing')
+    GROUP BY t.id
     ORDER BY t.position ASC, t.created_at DESC
   `).all() as TaskRow[];
 
@@ -158,7 +170,8 @@ export function getAdaptiveTaskRecommendations(
     const dueDays = daysUntil(task.due_date);
     const goalDueDays = daysUntil(task.goal_deadline);
     const estimate = task.estimated_minutes;
-    const taskText = `${task.title} ${task.goal_title ?? ''}`;
+    const taskText = `${task.title} ${task.goal_title ?? ''} ${task.task_type ?? ''} ${task.course ?? ''}`;
+    const remainingMinutes = estimate !== null ? Math.max(0, estimate - Number(task.credited_minutes ?? 0)) : null;
 
     if (task.priority_rank !== null) {
       score += Math.max(0, 16 - Math.min(16, task.priority_rank));
@@ -196,6 +209,11 @@ export function getAdaptiveTaskRecommendations(
       reasons.push('matches today goal');
     }
 
+    if (snapshot.today.doingTasks.some(title => textMatches(taskText, title))) {
+      score += 14;
+      reasons.push('matches active work thread');
+    }
+
     if (snapshot.userState.nextBestFocusWindow && snapshot.moment.mode === 'protect_focus') {
       score += task.status === 'doing' ? 8 : 0;
     }
@@ -210,6 +228,10 @@ export function getAdaptiveTaskRecommendations(
       if (estimate !== null && estimate <= Math.max(20, learnedSprint / 2)) {
         score += 18;
         reasons.push('small enough for low-energy mode');
+      }
+      if (remainingMinutes !== null && remainingMinutes <= learnedSprint) {
+        score += 12;
+        reasons.push('finishable without overreaching');
       }
       if (task.energy_required === 'low') {
         score += 14;
@@ -235,6 +257,26 @@ export function getAdaptiveTaskRecommendations(
       reasons.push('uses high-energy window');
     }
 
+    if (task.avg_focus_score !== null && task.avg_focus_score >= 75) {
+      score += snapshot.userState.energy === 'low' ? 6 : 12;
+      reasons.push(`historically ${Math.round(task.avg_focus_score)} focus`);
+    }
+
+    if (task.avg_focus_score !== null && task.avg_focus_score < 55) {
+      score += snapshot.moment.mode === 'recovery' ? -12 : -4;
+      reasons.push(`past sessions were hard (${Math.round(task.avg_focus_score)} focus)`);
+    }
+
+    if (task.linked_sessions > 0 && remainingMinutes !== null && remainingMinutes <= Math.max(learnedSprint, Math.round((estimate ?? learnedSprint) * 0.35))) {
+      score += 14;
+      reasons.push(`${task.linked_sessions} linked session${task.linked_sessions === 1 ? '' : 's'}; close to done`);
+    }
+
+    if (task.course && standupGoal && textMatches(task.course, standupGoal)) {
+      score += 8;
+      reasons.push(`course fit: ${task.course}`);
+    }
+
     if (estimate !== null) {
       if (estimate <= learnedSprint) {
         score += 8;
@@ -248,6 +290,14 @@ export function getAdaptiveTaskRecommendations(
     if (ageDays > 14) {
       score += 8;
       reasons.push(`${ageDays}d old`);
+    }
+
+    if (task.last_credited_at) {
+      const daysSinceCredit = Math.round((Date.now() - new Date(task.last_credited_at).getTime()) / 86_400_000);
+      if (daysSinceCredit >= 3) {
+        score += 6;
+        reasons.push(`not touched for ${daysSinceCredit}d`);
+      }
     }
 
     const feedbackSignal = feedbackAdjustment(feedback.get(task.id));
