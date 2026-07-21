@@ -111,6 +111,26 @@ function formatActiveSessionConflict(session: NonNullable<ReturnType<typeof getA
     return `Session already active: <b>${session.targetTitle}</b> (${elapsed}m elapsed, ${remaining}m left).\n\n${suffix}`;
 }
 
+function formatScheduleFitLine(snapshot: ReturnType<typeof buildPersonalizationSnapshot>, plannedMinutes: number): string {
+    const mode = snapshot.moment.mode.replace(/_/g, ' ');
+    if (snapshot.today.plannedFocus.nextTitle) {
+        return `\n<i>Fit: ${mode}; next planned focus is ${snapshot.today.plannedFocus.nextTitle}.</i>`;
+    }
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+        return `\n<i>Fit: low-capacity day; ${plannedMinutes}m is treated as a smaller usable block.</i>`;
+    }
+    if (snapshot.moment.mode === 'deadline_pressure') {
+        return `\n<i>Fit: deadline-pressure mode; this block should reduce the nearest risk before optional work.</i>`;
+    }
+    if (snapshot.moment.mode === 'planning') {
+        return `\n<i>Fit: planning mode; this gives tomorrow a concrete anchor.</i>`;
+    }
+    if (snapshot.userState.nextBestFocusWindow) {
+        return `\n<i>Fit: ${mode}; learned best window is ${snapshot.userState.nextBestFocusWindow}.</i>`;
+    }
+    return `\n<i>Fit: ${mode}; reminders will follow today's adaptive cadence.</i>`;
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -804,7 +824,7 @@ export async function executeAction(
 
             if (replyText) {
                 await sendTelegram(
-                    `📅 <b>Scheduled: ${title}</b>\n🕐 ${startStr} – ${endStr} (${plannedMinutes}m)${conflictMsg}`,
+                    `📅 <b>Scheduled: ${title}</b>\n🕐 ${startStr} – ${endStr} (${plannedMinutes}m)${formatScheduleFitLine(schedulerSnapshot, plannedMinutes)}${conflictMsg}`,
                     'HTML', FULL_MENU_KEYBOARD
                 );
             }
