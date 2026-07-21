@@ -200,6 +200,20 @@ export const FULL_MENU_KEYBOARD: InlineKeyboard = [
   ],
 ];
 
+export function formatTelegramSetupConfirmation(): string {
+  const snapshot = getTelegramSnapshot();
+  const mode = snapshot ? MODE_LABEL[snapshot.moment.mode] : 'Adaptive';
+  const focusLine = snapshot?.today.plannedFocus.nextTitle
+    ? `\n\nNext planned focus: <b>${snapshot.today.plannedFocus.nextTitle}</b>`
+    : '';
+  const fatigueLine = snapshot?.feedback.alertFatigueLevel === 'high'
+    ? '\n\nAlert volume is high, so routine reminders will stay quieter unless something urgent needs attention.'
+    : '';
+  const guidanceLine = snapshot ? `\n\n<i>${snapshot.moment.guidance}</i>` : '';
+
+  return `✅ <b>LifeOS connected</b>\n\nTelegram reminders will use your current day context instead of one fixed cadence.\n\nMode: <b>${mode}</b> · Energy: <b>${snapshot?.userState.energy ?? 'learning'}</b>${focusLine}${fatigueLine}${guidanceLine}`;
+}
+
 /** Build a dynamic per-completion review keyboard. IDs limited to stay under 64B. */
 export function buildReviewKeyboard(completionId: number): InlineKeyboard {
   return [
