@@ -6,6 +6,7 @@ import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { buildAdaptiveHabitPlans, buildAdaptiveNewHabitDefaults, type AdaptiveHabitInput } from '@/lib/adaptive-habit-plan';
 import { getAdaptiveRewardDecision } from '@/lib/adaptive-rewards';
 import { buildAdaptiveHabitHistory } from '@/lib/adaptive-habit-history';
+import { recordAdaptiveHabitCheckin } from '@/lib/adaptive-habit-checkin';
 
 type HabitRow = AdaptiveHabitInput & {
     frequency: string;
@@ -246,16 +247,27 @@ export async function POST(request: NextRequest) {
 
             if (existing) {
                 if (value !== undefined) {
-                    const isCompleted = completed !== undefined ? completed : 1;
-                    db.prepare('UPDATE habit_checkins SET value = ?, completed = ? WHERE habit_id = ? AND date = ?').run(value, isCompleted ? 1 : 0, habit_id, checkinDate);
-                    return NextResponse.json({ checked: !!isCompleted, value });
+                    const checkin = recordAdaptiveHabitCheckin({
+                        habitId: Number(habit_id),
+                        date: checkinDate,
+                        source: 'manual',
+                        value: Number(value),
+                        forceComplete: completed !== undefined ? Boolean(completed) : undefined,
+                    });
+                    return NextResponse.json({
+                        checked: checkin.completed,
+                        value: checkin.value,
+                        adaptiveTarget: checkin.adaptiveTarget,
+                        adaptiveReason: checkin.adaptiveReason,
+                        adaptiveIntensity: checkin.adaptiveIntensity,
+                    });
                 } else {
                     db.prepare('DELETE FROM habit_checkins WHERE habit_id = ? AND date = ?').run(habit_id, checkinDate);
                     // Only deduct coins if balance would remain >= 0
                     const reward = getAdaptiveRewardDecision({
                         action: 'habit_uncheck',
                         baseCoins: 20,
-                        subject: `ID: ${habit_id}`,
+                        subject: `Habit ${habit_id}`,
                         snapshot: rewardSnapshot,
                     });
                     let applied = false;
@@ -269,20 +281,36 @@ export async function POST(request: NextRequest) {
                     return NextResponse.json({ checked: false, reward: { ...reward, applied } });
                 }
             } else {
-                const isCompleted = completed !== undefined ? completed : 1;
-                const finalValue = value !== undefined ? value : 1;
-                db.prepare('INSERT INTO habit_checkins (habit_id, date, completed, value) VALUES (?, ?, ?, ?)').run(habit_id, checkinDate, isCompleted ? 1 : 0, finalValue);
+                const checkin = recordAdaptiveHabitCheckin({
+                    habitId: Number(habit_id),
+                    date: checkinDate,
+                    source: 'manual',
+                    value: value !== undefined ? Number(value) : undefined,
+                    forceComplete: completed !== undefined ? Boolean(completed) : undefined,
+                });
                 let reward = null;
-                if (isCompleted) {
+                if (checkin.completed) {
+                    const baseCoins = checkin.adaptiveIntensity === 'stretch'
+                        ? 28
+                        : checkin.adaptiveIntensity === 'minimum'
+                            ? 14
+                            : 20;
                     reward = getAdaptiveRewardDecision({
                         action: 'habit_checkin',
-                        baseCoins: 20,
-                        subject: `ID: ${habit_id}`,
+                        baseCoins,
+                        subject: `${checkin.habitName} (${checkin.value}/${checkin.adaptiveTarget}${checkin.goalMetric === 'time' ? 'm' : ''}; ${checkin.adaptiveReason ?? 'adaptive habit target'})`,
                         snapshot: rewardSnapshot,
                     });
                     try { db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason); } catch { }
                 }
-                return NextResponse.json({ checked: !!isCompleted, value: finalValue, reward });
+                return NextResponse.json({
+                    checked: checkin.completed,
+                    value: checkin.value,
+                    reward,
+                    adaptiveTarget: checkin.adaptiveTarget,
+                    adaptiveReason: checkin.adaptiveReason,
+                    adaptiveIntensity: checkin.adaptiveIntensity,
+                });
             }
         }
 
