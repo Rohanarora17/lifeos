@@ -334,6 +334,40 @@ function buildSessionFeedbackPlaceholder(
   return 'How did the session feel? Mention energy, distractions, length, and what should change next time.';
 }
 
+function buildCalibrationEmptyMessage(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'No calibration yet. Submit session feedback to tune timing, energy, and intervention strength.';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No calibration yet. The next useful feedback is whether session length matched today’s lower energy.';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'No calibration yet. The next useful feedback is whether a session reduced deadline pressure.';
+  }
+  if (personalization.mode === 'planning') {
+    return 'No calibration yet. The next useful feedback is what tomorrow’s plan should inherit or avoid.';
+  }
+  if (personalization.plannedFocus?.nextTitle) {
+    return `No calibration yet. After "${personalization.plannedFocus.nextTitle}", report length, energy, and follow-through.`;
+  }
+  return 'No calibration yet. Submit session feedback to tune timing, energy, and intervention strength.';
+}
+
+function buildOptimizerEmptyMessage(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'No active policy yet. Run the optimizer after a few reviewed sessions to generate a baseline.';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No active policy yet. Generate a baseline that stays gentle on low-capacity days.';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'No active policy yet. Generate a baseline that escalates only when deadline work is at risk.';
+  }
+  if (personalization.mode === 'protect_focus') {
+    return 'No active policy yet. Generate a baseline that protects strong focus and quiets low-value nudges.';
+  }
+  if (personalization.alertFatigueLevel === 'high') {
+    return 'No active policy yet. Generate a baseline with stricter alert fatigue limits.';
+  }
+  return `No active policy yet. Generate a ${MODE_LABEL[personalization.mode].toLowerCase()} baseline from recent sessions.`;
+}
+
 export default function GuardianPage() {
   const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
@@ -1566,7 +1600,7 @@ export default function GuardianPage() {
             </div>
           ) : (
             <div style={{ fontSize: '12px', color: '#555570' }}>
-              No calibration yet. Submit session feedback to tune your model.
+              {buildCalibrationEmptyMessage(adaptivePersonalization)}
             </div>
           )}
         </div>
@@ -1611,7 +1645,7 @@ export default function GuardianPage() {
               )}
             </div>
           ) : (
-            <div style={{ fontSize: '12px', color: '#555570' }}>No active policy yet — run the optimizer to generate a baseline.</div>
+            <div style={{ fontSize: '12px', color: '#555570' }}>{buildOptimizerEmptyMessage(adaptivePersonalization)}</div>
           )}
         </div>
 
