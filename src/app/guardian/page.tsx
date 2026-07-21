@@ -81,6 +81,68 @@ function formatDuration(mins: number) {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
+type AdaptiveTask = NonNullable<GuardianInsights['recommendedTasks']>[number];
+
+interface DurationOption {
+  minutes: number;
+  label: string;
+}
+
+function addDurationOption(options: DurationOption[], minutes: number | null | undefined, label: string) {
+  if (!minutes || minutes <= 0) return;
+  const rounded = Math.max(5, Math.round(minutes / 5) * 5);
+  if (options.some(option => option.minutes === rounded)) return;
+  options.push({ minutes: rounded, label });
+}
+
+function buildGuardianDurationOptions(input: {
+  adaptiveDuration: number;
+  personalization?: GuardianInsights['personalization'];
+  selectedTask?: AdaptiveTask | null;
+  topTask?: AdaptiveTask | null;
+}): DurationOption[] {
+  const options: DurationOption[] = [];
+  const mode = input.personalization?.mode ?? 'normal';
+  const base = Math.round(input.adaptiveDuration);
+
+  addDurationOption(options, input.selectedTask?.estimatedMinutes, 'This task');
+  addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
+
+  if (mode === 'recovery' || input.personalization?.energy === 'low' || input.personalization?.mood === 'low') {
+    addDurationOption(options, Math.min(base, 20), 'Small start');
+    addDurationOption(options, Math.min(Math.max(base, 25), 35), 'Manageable');
+  } else if (mode === 'deadline_pressure') {
+    addDurationOption(options, Math.max(base, 45), 'Serious sprint');
+    addDurationOption(options, Math.max(base, 75), 'Deep push');
+  } else if (mode === 'planning') {
+    addDurationOption(options, Math.min(base, 30), 'Planning pass');
+    addDurationOption(options, Math.max(base, 45), 'Setup block');
+  } else {
+    addDurationOption(options, Math.max(25, base - 15), 'Shorter');
+    addDurationOption(options, Math.min(120, base + 15), 'Deeper');
+  }
+
+  addDurationOption(options, input.topTask?.estimatedMinutes, 'Top recommendation');
+  return options.slice(0, 5);
+}
+
+function guardianTopicPlaceholder(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'What are you working on?';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'What is the smallest useful session?';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'What deadline are we relieving right now?';
+  }
+  if (personalization.mode === 'planning') {
+    return 'What should be set up or reviewed?';
+  }
+  if (personalization.mode === 'protect_focus') {
+    return 'What focus thread are we protecting?';
+  }
+  return 'What should move forward now?';
+}
+
 export default function GuardianPage() {
   const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
@@ -176,8 +238,16 @@ export default function GuardianPage() {
   const topicRef = useRef<HTMLInputElement>(null);
   const adaptivePersonalization = insights?.personalization ?? briefing?.personalization;
   const adaptiveDuration = adaptivePersonalization?.recommendedSessionMinutes ?? adaptiveDefaults.recommendedSessionMinutes;
-  const durationOptions = Array.from(new Set([adaptiveDuration, 25, 45, 60, 90, 120].map(m => Math.round(m)).filter(m => m > 0)));
   const adaptiveTasks = insights?.recommendedTasks ?? briefing?.adaptiveTasks ?? [];
+  const selectedAdaptiveTask = selectedRecommendationId
+    ? adaptiveTasks.find(task => task.id === selectedRecommendationId) ?? null
+    : null;
+  const durationOptions = buildGuardianDurationOptions({
+    adaptiveDuration,
+    personalization: adaptivePersonalization,
+    selectedTask: selectedAdaptiveTask,
+    topTask: adaptiveTasks[0] ?? null,
+  });
 
   const fetchBriefing = useCallback(async () => {
     try {
@@ -629,7 +699,7 @@ export default function GuardianPage() {
           <input
             ref={topicRef}
             type="text"
-            placeholder="What are you working on?"
+            placeholder={guardianTopicPlaceholder(adaptivePersonalization)}
             value={topic}
             onChange={e => { setTopic(e.target.value); setSelectedRecommendationId(null); }}
             onKeyDown={e => e.key === 'Enter' && !scheduleMode && !showContext && void startSession()}
@@ -671,8 +741,8 @@ export default function GuardianPage() {
               }}
             >
               {durationOptions.map(m => (
-                <option key={m} value={m}>
-                  {m === Math.round(adaptiveDuration) ? `Adaptive (${formatDuration(m)})` : formatDuration(m)}
+                <option key={`${m.minutes}-${m.label}`} value={m.minutes}>
+                  {m.label} ({formatDuration(m.minutes)})
                 </option>
               ))}
             </select>
