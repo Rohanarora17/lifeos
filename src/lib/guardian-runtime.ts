@@ -1513,6 +1513,8 @@ export function endGuardianSession(sessionId: string) {
 
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
 
+  syncPlannedFocusSessionOutcome(sessionId, session.targetTitle, elapsedMinutes);
+
   // Credit time to the linked goal
   if (session.goalId) {
     logGoalTime(parseInt(session.goalId, 10) || null, sessionId, elapsedMinutes);
@@ -1740,6 +1742,57 @@ export function endGuardianSession(sessionId: string) {
     explainability: 'Guardian session completed and heartbeat ownership was released.',
   });
   return cloneSession(session);
+}
+
+function syncPlannedFocusSessionOutcome(sessionId: string, targetTitle: string, elapsedMinutes: number) {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT
+        pfs.id,
+        pfs.duration_minutes as durationMinutes,
+        pfs.status,
+        sw.id as softWatchId
+      FROM planned_focus_sessions pfs
+      LEFT JOIN soft_watch_commitments sw ON sw.id = pfs.soft_watch_id
+      WHERE sw.locked_in_session_id = ?
+         OR (
+          date(pfs.planned_start, 'localtime') = date('now', 'localtime')
+          AND pfs.status = 'started'
+          AND lower(pfs.title) = lower(?)
+        )
+      ORDER BY CASE WHEN sw.locked_in_session_id = ? THEN 0 ELSE 1 END,
+               pfs.planned_start ASC
+      LIMIT 1
+    `).get(sessionId, targetTitle, sessionId) as {
+      id: string;
+      durationMinutes: number;
+      status: string;
+      softWatchId: string | null;
+    } | undefined;
+
+    if (!row || row.status === 'completed' || row.status === 'cancelled') return;
+
+    const completionThreshold = Math.max(5, Math.round(row.durationMinutes * 0.8));
+    const nextStatus = elapsedMinutes >= completionThreshold ? 'completed' : 'skipped';
+    db.prepare(`
+      UPDATE planned_focus_sessions
+      SET status = ?, updated_at = datetime('now', 'localtime')
+      WHERE id = ?
+    `).run(nextStatus, row.id);
+
+    if (row.softWatchId) {
+      db.prepare(`
+        UPDATE soft_watch_commitments
+        SET locked_in_session_id = COALESCE(locked_in_session_id, ?)
+        WHERE id = ?
+      `).run(sessionId, row.softWatchId);
+    }
+
+    console.log(`[guardian] planned session ${row.id} marked ${nextStatus} from ${elapsedMinutes}/${row.durationMinutes}m actual time`);
+  } catch (err) {
+    console.warn('[guardian] planned session outcome sync failed:', err);
+  }
 }
 
 // ─── Post-session classification review ───────────────────────────────────────
