@@ -143,6 +143,7 @@ interface AlertCenterPolicy {
   emptyState: string;
   visibleSeverities: string[];
   quietedCount: number;
+  learnedQuietedCount: number;
   summary: string;
   rawUnreadCount: number;
   mode: PersonalizationMode;
@@ -603,7 +604,11 @@ export default function DashboardPage() {
                 {alertPolicy && alertPolicy.quietedCount > 0 && (
                   <div className="px-3 py-2 border-b" style={{ borderColor: 'var(--border)', background: 'rgba(255,255,255,0.03)' }}>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {alertPolicy.quietedCount} lower-priority alert{alertPolicy.quietedCount === 1 ? '' : 's'} quieted: {alertPolicy.reason}
+                      {alertPolicy.learnedQuietedCount > 0
+                        ? `${alertPolicy.learnedQuietedCount} alert${alertPolicy.learnedQuietedCount === 1 ? '' : 's'} hidden because your feedback said this kind is not useful right now.`
+                        : `${alertPolicy.quietedCount} lower-priority alert${alertPolicy.quietedCount === 1 ? '' : 's'} quieted.`}
+                      {' '}
+                      {alertPolicy.reason}
                     </p>
                   </div>
                 )}
