@@ -20,6 +20,16 @@ type TaskRow = Record<string, unknown> & {
     estimated_minutes?: number | null;
 };
 
+type ExistingTaskForPatch = {
+    id: number;
+    title: string;
+    task_type: string | null;
+    due_date: string | null;
+    priority: string | null;
+    estimated_minutes: number | null;
+    energy_required: string | null;
+};
+
 // GET: Fetch all tasks, optionally filtered by status, or get daily history
 export async function GET(request: NextRequest) {
     try {
@@ -228,15 +238,24 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
     try {
         const body = await request.json();
-        const { id, title, description, status, due_date, due_time, course, task_type, position, goal_id, priority, priority_rank } = body;
+        const { id, title, description, status, due_date, due_time, course, task_type, position, goal_id, priority, priority_rank, energy_required } = body;
 
         if (!id) {
             return NextResponse.json({ error: 'id is required' }, { status: 400 });
         }
 
         const db = getDb();
+        const existingTask = db.prepare(`
+            SELECT id, title, task_type, due_date, priority, estimated_minutes, energy_required
+            FROM tasks
+            WHERE id = ?
+        `).get(id) as ExistingTaskForPatch | undefined;
+        if (!existingTask) {
+            return NextResponse.json({ error: 'task not found' }, { status: 404 });
+        }
         const updates: string[] = [];
         const params: (string | number | null)[] = [];
+        const explicitEstimate = body.estimated_minutes !== undefined || body.target_minutes !== undefined;
 
         // Track whether we need a re-rank
         let needsRerank = false;
@@ -306,8 +325,9 @@ export async function PATCH(request: NextRequest) {
         if (position !== undefined) { updates.push('position = ?'); params.push(position); }
         if (goal_id !== undefined) { updates.push('goal_id = ?'); params.push(goal_id); }
         if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
+        if (energy_required !== undefined) { updates.push('energy_required = ?'); params.push(energy_required); }
         if (priority_rank !== undefined) { updates.push('priority_rank = ?'); params.push(priority_rank); }
-        if (body.estimated_minutes !== undefined || body.target_minutes !== undefined) {
+        if (explicitEstimate) {
             const rawEstimatedMinutes = Number.parseInt(String(body.estimated_minutes ?? body.target_minutes), 10);
             if (!Number.isFinite(rawEstimatedMinutes) || rawEstimatedMinutes <= 0) {
                 return NextResponse.json({ error: 'estimated_minutes must be a positive number' }, { status: 400 });
@@ -315,6 +335,48 @@ export async function PATCH(request: NextRequest) {
             updates.push('estimated_minutes = ?');
             params.push(Math.min(720, rawEstimatedMinutes));
             needsRerank = true;
+        }
+        if (
+            needsRerank &&
+            status === undefined &&
+            (title !== undefined || task_type !== undefined || due_date !== undefined) &&
+            (priority === undefined || energy_required === undefined || !explicitEstimate)
+        ) {
+            const nextTitle = title !== undefined ? sanitizeText(title, 500) : existingTask.title;
+            const nextType = task_type !== undefined && ['task', 'assignment', 'exam'].includes(task_type)
+                ? task_type
+                : existingTask.task_type;
+            const nextDueDate = due_date !== undefined ? due_date || null : existingTask.due_date;
+            const personalization = buildPersonalizationSnapshot({
+                surface: 'tasks',
+                maxInsights: 2,
+                includeMemoryFacts: 4,
+            });
+            const defaults = buildAdaptiveTaskDefaults({
+                title: nextTitle,
+                taskType: nextType,
+                dueDate: nextDueDate,
+                explicitPriority: priority,
+                explicitEstimateMinutes: explicitEstimate ? body.estimated_minutes ?? body.target_minutes : undefined,
+                explicitEnergyRequired: energy_required,
+                snapshot: personalization,
+            });
+
+            if (priority === undefined) {
+                updates.push('priority = ?');
+                params.push(defaults.priority);
+            }
+            if (energy_required === undefined) {
+                updates.push('energy_required = ?');
+                params.push(defaults.energyRequired);
+            }
+            if (!explicitEstimate) {
+                const progress = getTaskTimeProgress(Number(id));
+                if (progress.creditedMinutes === 0) {
+                    updates.push('estimated_minutes = ?');
+                    params.push(defaults.estimatedMinutes);
+                }
+            }
         }
 
         if (updates.length === 0) {
