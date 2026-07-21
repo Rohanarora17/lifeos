@@ -141,6 +141,41 @@ function buildRewardPricePreview(input: {
     };
 }
 
+function buildRewardTitlePlaceholder(policy: RewardPolicy | null): string {
+    if (!policy) return 'Reward Title...';
+    if (policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low') {
+        return 'e.g., slow walk, early sleep, guilt-free rest';
+    }
+    if (policy.mode === 'deadline_pressure') {
+        return 'e.g., movie after deadline block, coffee after submit';
+    }
+    if (policy.mode === 'protect_focus') {
+        return 'e.g., tea break after deep block, call a friend';
+    }
+    if (policy.mode === 'planning') {
+        return 'e.g., clean desk after tomorrow plan';
+    }
+    return 'e.g., game time, book, coffee, walk';
+}
+
+function buildRewardFormHint(policy: RewardPolicy | null, preview: ReturnType<typeof buildRewardPricePreview>) {
+    if (!policy) {
+        return `Price preview: ${preview.cost} coins · ${preview.category} · ${preview.reason}`;
+    }
+
+    const posture = policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low'
+        ? 'Prefer restorative rewards today; escape rewards should stay expensive.'
+        : policy.mode === 'deadline_pressure'
+            ? 'Rewards should unlock after pressure relief, not before the hard block.'
+            : policy.mode === 'protect_focus'
+                ? 'Use rewards to protect momentum after a completed focus window.'
+                : policy.mode === 'planning'
+                    ? 'Price rewards around tomorrow setup and evening shutdown.'
+                    : policy.spendingGuidance;
+
+    return `${posture} Preview: ${preview.cost} coins · ${preview.category} · ${preview.reason}`;
+}
+
 export default function StorePage() {
     const [balance, setBalance] = useState(0);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -210,6 +245,7 @@ export default function StorePage() {
         balance,
         policy: rewardPolicy,
     });
+    const rewardFormHint = buildRewardFormHint(rewardPolicy, rewardPricePreview);
 
     return (
         <div className="max-w-5xl mx-auto space-y-8 pb-12">
@@ -316,7 +352,7 @@ export default function StorePage() {
                                     required
                                     name="title"
                                     type="text"
-                                    placeholder="Reward Title..."
+                                    placeholder={buildRewardTitlePlaceholder(rewardPolicy)}
                                     className="input flex-1"
                                     value={draftRewardTitle}
                                     onChange={e => setDraftRewardTitle(e.target.value)}
@@ -349,9 +385,9 @@ export default function StorePage() {
                                 <button type="submit" className="btn btn-primary" style={{ background: 'var(--accent-orange)' }}>Add</button>
                             </div>
                             <div className="rounded-md px-3 py-2 text-xs" style={{ background: 'rgba(255,165,0,0.08)', border: '1px solid rgba(255,165,0,0.16)', color: 'var(--text-secondary)' }}>
-                                <strong style={{ color: 'var(--accent-orange)' }}>Price preview:</strong>
+                                <strong style={{ color: 'var(--accent-orange)' }}>Adaptive reward:</strong>
                                 {' '}
-                                {rewardPricePreview.cost} coins · {rewardPricePreview.category} · {rewardPricePreview.reason}
+                                {rewardFormHint}
                             </div>
                         </form>
                     </section>
