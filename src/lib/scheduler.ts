@@ -135,6 +135,30 @@ function minutesToTime(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function todayIst(): string {
+  return new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+}
+
+function currentLocalMinutes(now: Date = new Date()): number {
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function isInsideMinuteWindow(nowMinutes: number, targetTime: string, windowMinutes: number): boolean {
+  if (!/^\d{2}:\d{2}$/.test(targetTime)) return false;
+  const target = timeToMinutes(targetTime);
+  const delta = (nowMinutes - target + 1440) % 1440;
+  return delta >= 0 && delta < windowMinutes;
+}
+
+function nextRunIsoForLocalTime(time: string): string {
+  const now = new Date();
+  const [h, m] = time.split(':').map(Number);
+  const next = new Date(now);
+  next.setHours(h, m, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  return next.toISOString();
+}
+
 function inferEveningTimeFromSleep(): { time: string; reason: string } | null {
   try {
     const rows = getDb().prepare(`
@@ -178,14 +202,48 @@ function configuredOrInferredTime(settingKey: string, seededDefault: string, inf
 }
 
 function resolveEveningReflectionTime(): string {
+  return resolveEveningReflectionTimeDetailed().time;
+}
+
+function resolveEveningReflectionTimeDetailed(): { time: string; reason: string } {
   const envTime = (process.env.EVENING_REFLECTION_TIME || '').trim();
-  if (envTime) return envTime;
+  if (envTime) return { time: envTime, reason: 'using EVENING_REFLECTION_TIME override' };
+
   const sleepBased = inferEveningTimeFromSleep();
   if (sleepBased) {
     console.log(`[Scheduler] Evening reflection time ${sleepBased.time}: ${sleepBased.reason}`);
-    return sleepBased.time;
+    return sleepBased;
   }
-  return configuredOrInferredTime('evening_reflection_time', '21:30', inferEveningTime);
+
+  const configured = getSetting('evening_reflection_time').trim();
+  if (configured && configured !== '21:30') {
+    return { time: configured, reason: 'using configured evening reflection time' };
+  }
+
+  const inferred = inferEveningTime();
+  return {
+    time: inferred,
+    reason: inferred === '21:30'
+      ? 'using adaptive baseline evening time'
+      : 'using recent evening session endings',
+  };
+}
+
+function resolveEveningReminderTime(): { time: string; reason: string } {
+  const reflection = resolveEveningReflectionTimeDetailed();
+  const snapshot = buildSchedulerSnapshot();
+  const leadMinutes = snapshot.feedback.alertFatigueLevel === 'high'
+    ? 8
+    : snapshot.moment.mode === 'planning' || snapshot.today.openTasks > 0
+      ? 25
+      : snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low'
+        ? 12
+        : 15;
+
+  return {
+    time: minutesToTime(timeToMinutes(reflection.time, true) - leadMinutes),
+    reason: `${leadMinutes}m before evening reflection; ${reflection.reason}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
 }
 
 /**
@@ -468,14 +526,9 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     });
 
     // Evening reflection — user override or learned evening time from recent session endings.
-    // Also fires a 15-minute advance reminder to prompt the user to start thinking
+    // Reminder timing is re-resolved every minute so late nights and new sleep plans affect today.
     const eveningTime = resolveEveningReflectionTime();
-    const [eveningHour, eveningMin] = eveningTime.split(':').map(Number);
-    const reminderMin = eveningMin - 15 < 0 ? eveningMin + 45 : eveningMin - 15;
-    const reminderHour = eveningMin - 15 < 0 ? eveningHour - 1 : eveningHour;
-    const reminderTime = `${String(reminderHour).padStart(2, '0')}:${String(reminderMin).padStart(2, '0')}`;
-
-    registerDailyJob('evening_reminder', reminderTime, async () => {
+    registerAdaptiveEveningReminderJob(async () => {
         await runAdaptiveSchedulerJob('evening_reminder', async () => {
             const reminder = composeEveningPlanningReminder();
             if (!reminder.shouldSend) {
@@ -711,6 +764,53 @@ function registerDailyJob(name: string, time: string, fn: () => Promise<void>) {
             job.running = false;
         }
     }, 60 * 1000); // Check every minute
+
+    timers.set(name, timer);
+}
+
+/**
+ * Register the evening planning reminder as a dynamic daily window.
+ * Unlike fixed daily jobs, this recalculates against latest sleep/reflection signals
+ * every minute so same-day changes can move the reminder.
+ */
+function registerAdaptiveEveningReminderJob(fn: () => Promise<void>) {
+    const name = 'evening_reminder';
+    const initial = resolveEveningReminderTime();
+    const sentKey = 'scheduler_evening_reminder_last_sent_date';
+    const job: ScheduledJob = {
+        name,
+        schedule: `adaptive daily near ${initial.time}`,
+        lastRun: null,
+        nextRun: nextRunIsoForLocalTime(initial.time),
+        enabled: true,
+        running: false,
+    };
+    jobs.set(name, job);
+
+    const timer = setInterval(async () => {
+        if (job.running) return;
+        const target = resolveEveningReminderTime();
+        job.schedule = `adaptive daily near ${target.time}`;
+        job.nextRun = nextRunIsoForLocalTime(target.time);
+
+        if (!isInsideMinuteWindow(currentLocalMinutes(), target.time, 2)) return;
+
+        const today = todayIst();
+        if (getSetting(sentKey) === today) return;
+
+        job.running = true;
+        console.log(`[Scheduler] Running ${name} at adaptive target ${target.time}: ${target.reason}`);
+        try {
+            await fn();
+            setSetting(sentKey, today);
+            job.lastRun = new Date(Date.now() + 19800000).toISOString();
+            job.nextRun = nextRunIsoForLocalTime(target.time);
+            console.log(`[Scheduler] ${name} completed`);
+        } catch (err) {
+            console.error(`[Scheduler] ${name} failed:`, err);
+        }
+        job.running = false;
+    }, 60 * 1000);
 
     timers.set(name, timer);
 }
