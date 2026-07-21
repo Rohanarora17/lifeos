@@ -435,6 +435,104 @@ function taskReminderAlreadyPlanned(
     return match ? { planned: true, label: formatPlannedSession(match) } : { planned: false, label: null };
 }
 
+interface DeadlineTaskRow {
+    id: number;
+    title: string;
+    due_date: string;
+    due_time: string | null;
+    task_type: string;
+    course: string | null;
+    priority: string | null;
+    estimated_minutes: number | null;
+    energy_required: string | null;
+}
+
+function buildAdaptiveDeadlineAlert(input: {
+    task: DeadlineTaskRow;
+    daysLeft: number;
+    today: ReturnType<typeof getTodayMicroContext>;
+    uil: ReturnType<typeof getIntelligenceProfile>;
+}): {
+    alertType: AlertType;
+    key: string;
+    severity: Severity;
+    message: string;
+    reason: string;
+} | null {
+    const { task, daysLeft, today, uil } = input;
+    const type = task.task_type || 'task';
+    const priority = task.priority || 'medium';
+    const isExam = type === 'exam';
+    const isAssignment = type === 'assignment';
+    const highPriority = priority === 'critical' || priority === 'high';
+    const highEffort = (task.estimated_minutes ?? 0) >= 90 || task.energy_required === 'high';
+    const lowEnergy = uil.currentEnergyEstimate === 'low' || uil.moodToday === 'low';
+    const alertFatigueHigh = getRecentAlertCount(2) >= 5;
+    const deadlinePressure = today.overdueTasks > 0 || today.openTasks >= uil.adaptiveThresholds.cognitiveLoadThreshold;
+    const plannedToday = taskReminderAlreadyPlanned(
+        { context: { taskId: task.id, title: task.title } },
+        today.plannedSessionsToday
+    );
+    const plannedTomorrow = taskReminderAlreadyPlanned(
+        { context: { taskId: task.id, title: task.title } },
+        today.plannedSessionsTomorrow
+    );
+
+    let shouldSend = false;
+    let severity: Severity = 'info';
+    const reasons: string[] = [];
+
+    if (daysLeft < 0) {
+        shouldSend = true;
+        severity = 'urgent';
+        reasons.push('task is overdue');
+    } else if (daysLeft === 0) {
+        shouldSend = true;
+        severity = plannedToday.planned ? 'warning' : 'urgent';
+        reasons.push(plannedToday.planned ? 'due today but already planned' : 'due today with no matching plan detected');
+    } else if (daysLeft === 1) {
+        shouldSend = true;
+        severity = lowEnergy || plannedTomorrow.planned ? 'info' : 'warning';
+        reasons.push(lowEnergy ? 'tomorrow deadline softened for low energy' : 'tomorrow deadline needs a plan');
+    } else if (daysLeft <= 3 && (isExam || isAssignment || highPriority || highEffort || deadlinePressure)) {
+        shouldSend = true;
+        severity = alertFatigueHigh && !highPriority && !isExam ? 'info' : 'warning';
+        reasons.push('near deadline matches task type, priority, effort, or workload pressure');
+    } else if (daysLeft <= 7 && (isExam || highPriority || highEffort) && !alertFatigueHigh) {
+        shouldSend = true;
+        severity = isExam || priority === 'critical' ? 'warning' : 'info';
+        reasons.push('early warning reserved for high-stakes or high-effort work');
+    } else if (daysLeft <= 14 && isExam && !alertFatigueHigh && !lowEnergy) {
+        shouldSend = true;
+        severity = 'info';
+        reasons.push('exam gets a longer runway when alert fatigue and recovery signals are clear');
+    }
+
+    if (!shouldSend) return null;
+
+    const courseLabel = task.course ? `[${task.course}] ` : '';
+    const timeLabel = task.due_time ? ` ${task.due_time}` : '';
+    const effortLabel = task.estimated_minutes ? `; about ${task.estimated_minutes}m target` : '';
+    const planLabel = plannedToday.label || plannedTomorrow.label;
+    const leadLabel = daysLeft < 0
+        ? `was due ${Math.abs(daysLeft)}d ago`
+        : daysLeft === 0
+            ? `due today${timeLabel}`
+            : daysLeft === 1
+                ? `due tomorrow${timeLabel}`
+                : `due in ${daysLeft} days${timeLabel}`;
+    const planSuffix = planLabel ? ` Planned block: ${planLabel}.` : '';
+    const recoverySuffix = lowEnergy && daysLeft > 0 ? ' Keep the next move smaller than usual.' : '';
+
+    return {
+        alertType: daysLeft < 0 ? 'task_overdue' : 'task_reminder',
+        key: `task_deadline_${task.id}_${daysLeft < 0 ? 'overdue' : `${daysLeft}d`}`,
+        severity,
+        message: `${courseLabel}${task.title} ${leadLabel}${effortLabel}.${planSuffix}${recoverySuffix}`,
+        reason: reasons.join('; '),
+    };
+}
+
 function deterministicAlertDecision(
     type: AlertType,
     message: string,
@@ -1230,71 +1328,50 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             }
         }
 
-        // 7. Multi-tier deadline alerts — per task, per tier
-        type Severity = 'info' | 'warning' | 'urgent';
+        // 7. Adaptive deadline alerts — per task, shaped by day state and task stakes
         const tasksDue = db.prepare(`
-            SELECT id, title, due_date, due_time, task_type, course
+            SELECT id,
+                   title,
+                   due_date,
+                   due_time,
+                   task_type,
+                   course,
+                   priority,
+                   estimated_minutes,
+                   energy_required
             FROM tasks
             WHERE due_date IS NOT NULL AND status NOT IN ('done','cancelled')
-        `).all() as { id: number; title: string; due_date: string; due_time: string | null; task_type: string; course: string | null }[];
+        `).all() as DeadlineTaskRow[];
 
         const ist = Date.now() + 19800000;
         const today2 = new Date(ist).toISOString().slice(0, 10);
+        const todayContext = getTodayMicroContext();
 
         for (const t of tasksDue) {
             const todayDate = new Date(today2 + 'T00:00:00');
             const dueDate = new Date(t.due_date + 'T00:00:00');
             const daysLeft = Math.round((dueDate.getTime() - todayDate.getTime()) / 86400000);
-            const courseLabel = t.course ? `[${t.course}] ` : '';
-            const timeLabel = t.due_time ? ` ${t.due_time}` : '';
+            const alert = buildAdaptiveDeadlineAlert({ task: t, daysLeft, today: todayContext, uil });
+            if (!alert) continue;
 
-            interface AlertTier { key: string; condition: boolean; severity: Severity; msg: string; }
-            const tiers: AlertTier[] = [
-                {
-                    key: `task_overdue_${t.id}`, condition: daysLeft < 0, severity: 'urgent',
-                    msg: `Overdue: ${courseLabel}${t.title} (was due ${Math.abs(daysLeft)}d ago)`
+            const sent = await sendAlert(alert.alertType, alert.message, alert.severity, {
+                key: alert.key,
+                context: {
+                    taskId: t.id,
+                    title: t.title,
+                    dueDate: t.due_date,
+                    dueTime: t.due_time,
+                    taskType: t.task_type,
+                    course: t.course,
+                    priority: t.priority,
+                    estimatedMinutes: t.estimated_minutes,
+                    energyRequired: t.energy_required,
+                    daysLeft,
+                    deadlineReason: alert.reason,
                 },
-                {
-                    key: `task_due_today_${t.id}`, condition: daysLeft === 0, severity: 'urgent',
-                    msg: `Due TODAY: ${courseLabel}${t.title}${timeLabel}`
-                },
-                {
-                    key: `task_1d_${t.id}`, condition: daysLeft === 1, severity: 'warning',
-                    msg: `Due tomorrow: ${courseLabel}${t.title}${timeLabel}`
-                },
-                {
-                    key: `task_3d_${t.id}`, condition: daysLeft === 3, severity: 'warning',
-                    msg: `${courseLabel}${t.title} due in 3 days${timeLabel}`
-                },
-                {
-                    key: `task_7d_${t.id}`, condition: daysLeft === 7 && (t.task_type === 'assignment' || t.task_type === 'exam'), severity: 'info',
-                    msg: `${courseLabel}${t.title} due in 7 days${timeLabel}`
-                },
-                {
-                    key: `task_14d_${t.id}`, condition: daysLeft === 14 && t.task_type === 'exam', severity: 'info',
-                    msg: `Exam in 14 days: ${courseLabel}${t.title}${timeLabel}`
-                },
-            ];
-
-            for (const tier of tiers) {
-                if (!tier.condition) continue;
-                const alertType: AlertType = daysLeft < 0 ? 'task_overdue' : 'task_reminder';
-                const sent = await sendAlert(alertType, tier.msg, tier.severity, {
-                    key: tier.key,
-                    context: {
-                        taskId: t.id,
-                        title: t.title,
-                        dueDate: t.due_date,
-                        dueTime: t.due_time,
-                        taskType: t.task_type,
-                        course: t.course,
-                        daysLeft,
-                    },
-                });
-                if (sent) {
-                    triggered.push(tier.key);
-                }
-                break; // Only fire the highest matching tier per task
+            });
+            if (sent) {
+                triggered.push(alert.key);
             }
         }
 
