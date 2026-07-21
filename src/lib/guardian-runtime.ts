@@ -19,6 +19,7 @@ import {
   formatSessionStart,
   formatSessionEnd,
   formatSoftWatchReminder,
+  formatSoftWatchCheckIn,
   SESSION_START_KEYBOARD,
   SESSION_END_KEYBOARD,
   SOFT_WATCH_KEYBOARD,
@@ -2621,7 +2622,12 @@ function tickSoftWatchChecker() {
         policy.tone === 'direct' ? 'urgent' : 'normal',
         'direct_push'
       );
-      void sendTelegram(`⏰ <b>Still pending</b>\n\nYou committed to <b>${commitment.targetTitle}</b> about ${delayMinutes} min ago and haven't started. Lock in, shrink it, or reschedule?\n\n<i>${policy.reason}</i>`, 'HTML', SOFT_WATCH_KEYBOARD);
+      void sendTelegram(formatSoftWatchCheckIn(commitment.targetTitle, delayMinutes, {
+        tone: policy.tone,
+        reason: policy.reason,
+        plannedMinutes: commitment.plannedMinutes,
+        followThroughRate: policy.followThroughRate,
+      }), 'HTML', SOFT_WATCH_KEYBOARD);
     }
   }
 }

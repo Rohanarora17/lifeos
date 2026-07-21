@@ -713,6 +713,24 @@ export function formatSoftWatchReminder(targetTitle: string, minutesUntil: numbe
   return `⏰ <b>Upcoming session in ${minutesUntil} min</b>\n\n📚 ${targetTitle}${durationLine}\n\n${upcomingSessionCue(minutesUntil, context)}${learningLine}${reasonLine}`;
 }
 
+export function formatSoftWatchCheckIn(targetTitle: string, delayMinutes: number, context: SoftWatchReminderContext = {}): string {
+  const durationLine = context.plannedMinutes ? `\n\nPlanned block: <b>${context.plannedMinutes} min</b>` : '';
+  const followThroughLine = formatFollowThrough(context.followThroughRate);
+  const learningLine = followThroughLine ? `\n${followThroughLine}` : '';
+  const reasonLine = context.reason ? `\n\n<i>${context.reason}</i>` : '';
+
+  if (context.tone === 'gentle') {
+    return `⏰ <b>Still holding this softly</b>\n\n<b>${targetTitle}</b> has been waiting about ${delayMinutes} min.${durationLine}\n\nShrink it, move it, or let it go without adding guilt.${learningLine}${reasonLine}`;
+  }
+  if (context.tone === 'direct') {
+    return `⏰ <b>Decision needed</b>\n\n<b>${targetTitle}</b> has been pending about ${delayMinutes} min.${durationLine}\n\nStart the deadline block now, shrink it, or reschedule before this window leaks away.${learningLine}${reasonLine}`;
+  }
+  if (context.followThroughRate !== null && context.followThroughRate !== undefined && context.followThroughRate < 0.45) {
+    return `⏰ <b>Make the plan real</b>\n\n<b>${targetTitle}</b> has been waiting about ${delayMinutes} min.${durationLine}\n\nPick the lowest-friction version you will actually start, or reschedule honestly.${learningLine}${reasonLine}`;
+  }
+  return `⏰ <b>Still pending</b>\n\nYou committed to <b>${targetTitle}</b> about ${delayMinutes} min ago.${durationLine}\n\nLock in, shrink it, or reschedule?${learningLine}${reasonLine}`;
+}
+
 // ─── Task List Formatter ─────────────────────────────────────────────────────
 
 export function formatTasksList(
