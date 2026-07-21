@@ -25,6 +25,7 @@ import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
 import { downloadTelegramVoice, transcribeAudio } from '@/lib/stt';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
+import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -412,9 +413,18 @@ async function handleReviewCallback(rest: string) {
     if (subAction === 'done') {
         db.prepare(`UPDATE session_completions SET status = 'done', actioned_at = datetime('now') WHERE id = ?`).run(id);
         if (row.task_id) {
-            db.prepare(`UPDATE tasks SET status = 'done' WHERE id = ?`).run(row.task_id);
+            const progress = getTaskTimeProgress(row.task_id);
+            if (progress.targetMinutes !== null && progress.creditedMinutes >= progress.targetMinutes) {
+                db.prepare(`UPDATE tasks SET status = 'done', completed_at = COALESCE(completed_at, datetime('now')), updated_at = datetime('now') WHERE id = ? AND status != 'done'`).run(row.task_id);
+                msg = `✅ Review done. Linked task completed by focus time (${progress.creditedMinutes}/${progress.targetMinutes}m).`;
+            } else if (progress.targetMinutes !== null) {
+                msg = `✅ Review done. Task stays active: ${progress.remainingMinutes}m more linked focus time needed (${progress.creditedMinutes}/${progress.targetMinutes}m).`;
+            } else {
+                msg = '✅ Review done. Task stays active until it has a time target and linked focus minutes.';
+            }
+        } else {
+            msg = '✅ Marked as done!';
         }
-        msg = '✅ Marked as done!';
     } else if (subAction === 'blocked') {
         db.prepare(`UPDATE session_completions SET status = 'blocked', actioned_at = datetime('now') WHERE id = ?`).run(id);
         if (row.task_id) {
