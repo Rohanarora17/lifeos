@@ -422,6 +422,23 @@ function buildOptimizerEmptyMessage(personalization?: GuardianInsights['personal
   return `No active policy yet. Generate a ${MODE_LABEL[personalization.mode].toLowerCase()} baseline from recent sessions.`;
 }
 
+function completionActionFailureMessage(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'Could not update this review right now. Try again from the current review queue.';
+  if (personalization.plannedFocus?.nextTitle) {
+    return `Could not update this review right now. Current planned focus is "${personalization.plannedFocus.nextTitle}", so keep the queue aligned with that block.`;
+  }
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'Could not update this review right now. Keep the next review lightweight and come back after a small recovery-safe block.';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'Could not update this review right now. Protect the deadline block first, then retry the review queue.';
+  }
+  if (personalization.mode === 'planning') {
+    return 'Could not update this review right now. Use the pending review as input for tomorrow planning.';
+  }
+  return 'Could not update this review right now. Try again from the current review queue.';
+}
+
 export default function GuardianPage() {
   const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
@@ -723,7 +740,7 @@ export default function GuardianPage() {
       }
       await fetchHistoryData();
     } catch {
-      setCompletionActionNotice(prev => ({ ...prev, [id]: 'Could not update this review right now.' }));
+      setCompletionActionNotice(prev => ({ ...prev, [id]: completionActionFailureMessage(adaptivePersonalization) }));
     }
   };
 
