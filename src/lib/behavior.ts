@@ -1025,6 +1025,86 @@ const bands = getAdaptiveBands();
   return parts.join('\n');
 }
 
+function getRecentDayStateContext(days: number = 7): {
+  todayLine: string;
+  historyLine: string;
+  latest: {
+    mood: string | null;
+    energy: string | null;
+    sleep_time: string | null;
+    wake_estimate: string | null;
+    day_events: string | null;
+    tomorrow_intention: string | null;
+  } | null;
+} {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT
+        d.day,
+        COALESCE(p.mood, c.mood) as mood,
+        COALESCE(p.energy, c.energy) as energy,
+        COALESCE(p.sleep_time, c.sleep_time) as sleep_time,
+        COALESCE(p.wake_estimate, c.wake_estimate) as wake_estimate,
+        COALESCE(p.evening_notes, c.day_events) as day_events,
+        COALESCE(p.tomorrow_intention, c.tomorrow_intention) as tomorrow_intention
+      FROM (
+        WITH RECURSIVE days(value) AS (
+          SELECT 0
+          UNION ALL
+          SELECT value + 1 FROM days WHERE value < ?
+        )
+        SELECT date('now', '-' || value || ' days', 'localtime') as day
+        FROM days
+      ) d
+      LEFT JOIN daily_plans p ON p.plan_date = d.day
+      LEFT JOIN daily_checkins c ON c.checkin_date = d.day AND c.checkin_type = 'evening'
+      ORDER BY d.day DESC
+    `).all(Math.max(0, days - 1)) as Array<{
+      day: string;
+      mood: string | null;
+      energy: string | null;
+      sleep_time: string | null;
+      wake_estimate: string | null;
+      day_events: string | null;
+      tomorrow_intention: string | null;
+    }>;
+
+    const latest = rows.find(row =>
+      row.mood || row.energy || row.sleep_time || row.wake_estimate || row.day_events || row.tomorrow_intention
+    ) ?? null;
+    const history = rows
+      .filter(row => row.mood || row.energy || row.sleep_time || row.wake_estimate || row.day_events || row.tomorrow_intention)
+      .slice(0, days)
+      .map(row => {
+        const bits = [
+          row.mood ? `mood=${row.mood}` : null,
+          row.energy ? `energy=${row.energy}` : null,
+          row.sleep_time || row.wake_estimate ? `sleep/wake=${row.sleep_time ?? '?'}->${row.wake_estimate ?? '?'}` : null,
+          row.day_events ? `events=${row.day_events.slice(0, 90)}` : null,
+          row.tomorrow_intention ? `intent=${row.tomorrow_intention.slice(0, 80)}` : null,
+        ].filter(Boolean);
+        return `  ${row.day}: ${bits.join('; ')}`;
+      });
+
+    return {
+      todayLine: latest
+        ? `Latest day state: mood=${latest.mood ?? 'unknown'}, energy=${latest.energy ?? 'unknown'}, sleep/wake=${latest.sleep_time ?? '?'}->${latest.wake_estimate ?? '?'}, intention=${latest.tomorrow_intention ?? 'none'}, events=${latest.day_events ?? 'none'}`
+        : 'Latest day state: no mood/sleep/evening state captured yet.',
+      historyLine: history.length
+        ? `RECENT DAY STATE (use when judging performance capacity):\n${history.join('\n')}`
+        : 'RECENT DAY STATE: no captured mood/sleep/day-event history yet.',
+      latest,
+    };
+  } catch {
+    return {
+      todayLine: 'Latest day state unavailable.',
+      historyLine: 'RECENT DAY STATE unavailable.',
+      latest: null,
+    };
+  }
+}
+
 
 // ============================================================
 //  7. DEEP ANALYSIS — Full behavioral analysis + AI synthesis
@@ -1049,6 +1129,7 @@ export async function runDeepAnalysis(): Promise<{
   const consistency = computeConsistencyIndex(30);
   const archetype = classifyArchetype(30);
   const goalAlignment = computeGoalAlignment();
+  const dayStateContext = getRecentDayStateContext(7);
 
   // Time patterns
   const hourly = db.prepare(`
@@ -1183,13 +1264,17 @@ TODAY'S ANALYSIS DATA:
 - Nudge Response: ${Math.round(nudgeEffectiveness * 100)}%
 - Archetype Strengths: ${archetype.strengths.join('; ')}
 - Archetype Challenges: ${archetype.challenges.join('; ')}
+- ${dayStateContext.todayLine}
 ${calendarContext}${historicalComparison}${pastInsightsContext}${memoriesContext}
+
+${dayStateContext.historyLine}
 
 IMPORTANT RULES:
 1. DO NOT repeat previous insights. Build on them — note changes, improvements, or regressions.
 2. If user marked insights as "not_helpful", avoid that style. If "helpful", do more like those.
 3. Compare today's data to historical data and highlight trends.
-4. Include "behavioral_memories" — durable patterns you're confident about.
+4. When sleep, mood, energy, or day events are present, judge output against capacity instead of generic productivity expectations.
+5. Include "behavioral_memories" — durable patterns you're confident about.
 
 Respond with:
 {
@@ -1243,6 +1328,12 @@ Generate 3-5 behavioral_memories — these are durable patterns you want to reme
           top_productive_domains: topProductive.map(d => d.domain),
           top_distraction_domains: topDistraction.map(d => d.domain),
           productive_trend: consistency.trend,
+          latest_mood: dayStateContext.latest?.mood ?? null,
+          latest_energy: dayStateContext.latest?.energy ?? null,
+          latest_sleep_time: dayStateContext.latest?.sleep_time ?? null,
+          latest_wake_estimate: dayStateContext.latest?.wake_estimate ?? null,
+          latest_day_events: dayStateContext.latest?.day_events ?? null,
+          latest_tomorrow_intention: dayStateContext.latest?.tomorrow_intention ?? null,
           last_deep_analysis: new Date(Date.now() + 19800000).toISOString(),
         };
 
