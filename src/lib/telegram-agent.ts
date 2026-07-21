@@ -195,6 +195,31 @@ function formatAdjustDurationPrompt(snapshot: ReturnType<typeof buildPersonaliza
     return 'What duration should I change the session to?';
 }
 
+function formatTelegramLookupPrompt(kind: 'task' | 'goal', action: 'update' | 'delete'): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        const verb = action === 'delete' ? 'delete' : 'update';
+        if (kind === 'task') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Which task should I ${verb}? Planned focus is on <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline-relief task should I ${verb}?`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+                return `Which small or recovery-safe task should I ${verb}?`;
+            }
+            return `Which task should I ${verb}? Give me a title or search term.`;
+        }
+        if (snapshot.userState.standupGoal) return `Which goal should I ${verb}? Today's stated goal is <b>${snapshot.userState.standupGoal}</b>.`;
+        if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline goal should I ${verb}?`;
+        if (snapshot.moment.mode === 'planning') return `Which tomorrow-facing goal should I ${verb}?`;
+    } catch { /* keep fallback */ }
+    return kind === 'task'
+        ? `Which task should I ${action === 'delete' ? 'delete' : 'update'}? Give me a search term.`
+        : `Which goal should I ${action === 'delete' ? 'delete' : 'update'}?`;
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -1254,7 +1279,7 @@ export async function executeAction(
 
         case 'UPDATE_TASK': {
             const search = (payload.searchTitle as string | undefined)?.trim();
-            if (!search) { await sendTelegram('Which task? Give me a search term.', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('task', 'update'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? AND status != 'done' LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
@@ -1291,7 +1316,7 @@ export async function executeAction(
 
         case 'DELETE_TASK': {
             const search = (payload.searchTitle as string | undefined)?.trim();
-            if (!search) { await sendTelegram('Which task should I delete?', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('task', 'delete'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!task) { await sendTelegram(`Task matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
@@ -1321,7 +1346,7 @@ export async function executeAction(
 
         case 'DELETE_GOAL': {
             const search = (payload.searchTitle as string | undefined)?.trim();
-            if (!search) { await sendTelegram('Which goal should I delete?', ''); break; }
+            if (!search) { await sendTelegram(formatTelegramLookupPrompt('goal', 'delete'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!goal) { await sendTelegram(`Goal matching "<i>${search}</i>" not found.`, 'HTML', FULL_MENU_KEYBOARD); break; }
