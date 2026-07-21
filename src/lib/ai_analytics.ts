@@ -26,6 +26,16 @@ interface FocusAggregateRow {
     focus_minutes: number;
 }
 
+interface DayContextRow {
+    day: string;
+    sleep_time: string | null;
+    wake_estimate: string | null;
+    mood: string | null;
+    energy: string | null;
+    day_events: string | null;
+    tomorrow_intention: string | null;
+}
+
 interface DayMatrix {
     productive_mins: number;
     distraction_mins: number;
@@ -33,6 +43,12 @@ interface DayMatrix {
     tasks_done: number;
     focus_mins: number;
     habits: string[];
+    sleep_time: string | null;
+    wake_estimate: string | null;
+    mood: string | null;
+    energy: string | null;
+    day_events: string | null;
+    tomorrow_intention: string | null;
 }
 
 interface AiInsightRow {
@@ -116,6 +132,30 @@ export async function generateDeepCorrelations(): Promise<void> {
             GROUP BY day
         `).all() as FocusAggregateRow[];
 
+        // 5. Gather day-state context from evening check-ins and generated plans.
+        const dayContext = db.prepare(`
+            WITH RECURSIVE days(value) AS (
+                SELECT 0
+                UNION ALL
+                SELECT value + 1 FROM days WHERE value < 29
+            )
+            SELECT
+                d.day,
+                COALESCE(p.sleep_time, c.sleep_time) as sleep_time,
+                COALESCE(p.wake_estimate, c.wake_estimate) as wake_estimate,
+                COALESCE(p.mood, c.mood) as mood,
+                COALESCE(p.energy, c.energy) as energy,
+                COALESCE(p.evening_notes, c.day_events) as day_events,
+                COALESCE(p.tomorrow_intention, c.tomorrow_intention) as tomorrow_intention
+            FROM (
+                SELECT date('now', '-' || value || ' days', 'localtime') as day
+                FROM days
+            ) d
+            LEFT JOIN daily_plans p ON p.plan_date = d.day
+            LEFT JOIN daily_checkins c ON c.checkin_date = d.day AND c.checkin_type = 'evening'
+            ORDER BY d.day ASC
+        `).all() as DayContextRow[];
+
         const personalization = buildPersonalizationSnapshot({
             surface: 'analytics',
             maxInsights: 4,
@@ -138,6 +178,12 @@ export async function generateDeepCorrelations(): Promise<void> {
                 tasks_done: 0,
                 focus_mins: 0,
                 habits: [],
+                sleep_time: null,
+                wake_estimate: null,
+                mood: null,
+                energy: null,
+                day_events: null,
+                tomorrow_intention: null,
             };
         }
 
@@ -156,11 +202,20 @@ export async function generateDeepCorrelations(): Promise<void> {
         tasks.forEach(t => { if (matrixMap[t.day]) matrixMap[t.day].tasks_done = t.tasks_done; });
         focus.forEach(f => { if (matrixMap[f.day]) matrixMap[f.day].focus_mins = f.focus_minutes; });
         habitCheckins.forEach(h => { if (matrixMap[h.checkin_date]) matrixMap[h.checkin_date].habits.push(h.habit_name); });
+        dayContext.forEach(day => {
+            if (!matrixMap[day.day]) return;
+            matrixMap[day.day].sleep_time = day.sleep_time;
+            matrixMap[day.day].wake_estimate = day.wake_estimate;
+            matrixMap[day.day].mood = day.mood;
+            matrixMap[day.day].energy = day.energy;
+            matrixMap[day.day].day_events = day.day_events;
+            matrixMap[day.day].tomorrow_intention = day.tomorrow_intention;
+        });
 
         // Convert matrix to CSV-ish string to save tokens
-        let matrixString = 'Date | ActiveProdMins | ActiveDistractMins | IdleMins | Tasks | FocusMins | HabitsFinished\n';
+        let matrixString = 'Date | ActiveProdMins | ActiveDistractMins | IdleMins | Tasks | FocusMins | Mood | Energy | Sleep | Wake | DayEvents | TomorrowIntention | HabitsFinished\n';
         for (const [day, stats] of Object.entries(matrixMap).sort((a, b) => a[0].localeCompare(b[0]))) {
-            matrixString += `${day} | ${stats.productive_mins} | ${stats.distraction_mins} | ${stats.idle_mins} | ${stats.tasks_done} | ${stats.focus_mins} | [${stats.habits.join(', ')}]\n`;
+            matrixString += `${day} | ${stats.productive_mins} | ${stats.distraction_mins} | ${stats.idle_mins} | ${stats.tasks_done} | ${stats.focus_mins} | ${stats.mood ?? ''} | ${stats.energy ?? ''} | ${stats.sleep_time ?? ''} | ${stats.wake_estimate ?? ''} | ${(stats.day_events ?? '').slice(0, 160)} | ${(stats.tomorrow_intention ?? '').slice(0, 120)} | [${stats.habits.join(', ')}]\n`;
         }
 
         const prompt = `You are LifeOS analyzing one specific person, not a generic productivity user.
@@ -191,7 +246,7 @@ Analyze the data and return EXACTLY 3 powerful insights in JSON array format:
 
 Rules:
 - Use only patterns supported by the matrix or personalization context.
-- Reference actual habits, task pressure, focus windows, energy, goals, or feedback signals when present.
+- Reference actual habits, task pressure, focus windows, sleep, mood, energy, day events, goals, or feedback signals when present.
 - Adapt the wording to the analytics lens and tone above.
 - Avoid universal productivity advice and format-only examples.
 - Keep insights specific, data-driven, and actionable.
