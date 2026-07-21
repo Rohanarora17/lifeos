@@ -829,7 +829,7 @@ export async function sendAlert(
 
     // Notify via Telegram + email for warning/urgent alerts
     if (decision.severity !== 'info') {
-        void sendTelegram(formatAlert(type, decision.message, decision.severity), 'HTML', ALERT_KEYBOARD);
+        void sendTelegram(formatAlert(type, decision.message, decision.severity, { adaptiveReason: decision.reason }), 'HTML', ALERT_KEYBOARD);
         await trySendEmail(type, decision.message, decision.severity, decision.typeKey);
     }
 

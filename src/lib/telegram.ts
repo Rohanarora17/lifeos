@@ -468,10 +468,13 @@ export function formatMorningBrief(data: {
   return lines.join('\n');
 }
 
-export function formatAlert(type: string, message: string, severity: string): string {
+export function formatAlert(type: string, message: string, severity: string, context: { adaptiveReason?: string | null } = {}): string {
   const emoji = severity === 'urgent' ? '🚨' : '⚠️';
   const label = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  return `${emoji} <b>${label}</b>\n\n${message}`;
+  const snapshot = getTelegramSnapshot();
+  const reasonLine = context.adaptiveReason ? `\n\n<i>Why now: ${context.adaptiveReason}</i>` : '';
+  const mode = snapshot ? `\n<i>${MODE_LABEL[snapshot.moment.mode]} · ${snapshot.userState.energy} energy</i>` : '';
+  return `${emoji} <b>${label}</b>${mode}\n\n${message}${reasonLine}`;
 }
 
 export function formatStandupBrief(data: {
