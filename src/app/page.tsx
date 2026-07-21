@@ -116,6 +116,8 @@ interface DashboardData {
   personalization?: DashboardPersonalization;
 }
 
+type DashboardPolicy = NonNullable<DashboardData['intelligence']>['dashboardPolicy'];
+
 interface InsightsData {
   profile: {
     coachingInsights: string[];
@@ -248,6 +250,30 @@ function formatActivityEmpty(personalization?: DashboardPersonalization, surface
   return surface === 'timeline'
     ? `No activity captured yet. Your learned default is ${formatDurationLabel(personalization.recommendedSessionMinutes)}.`
     : 'No activity captured yet. Start the next useful block to seed today.';
+}
+
+function focusTargetLabel(personalization?: DashboardPersonalization, policy?: DashboardPolicy) {
+  if (policy?.focusTarget.title) return `Next: ${policy.focusTarget.title}`;
+  if (!personalization) return 'What are you working on?';
+  if (personalization.plannedFocus.nextTitle) return `Planned next: ${personalization.plannedFocus.nextTitle}`;
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'Smallest useful focus now';
+  }
+  if (personalization.mode === 'deadline_pressure') return 'Deadline relief target';
+  if (personalization.mode === 'planning') return 'Tomorrow setup target';
+  return 'What should move forward now?';
+}
+
+function generalFocusOptionLabel(personalization?: DashboardPersonalization, policy?: DashboardPolicy) {
+  if (policy?.focusTarget.type === 'planning') return 'Planning block';
+  if (policy?.focusTarget.type === 'review') return 'Review block';
+  if (policy?.focusTarget.type === 'habit') return 'Minimum habit block';
+  if (!personalization) return 'General focus session';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') return 'Small recovery-safe session';
+  if (personalization.mode === 'deadline_pressure') return 'Deadline relief session';
+  if (personalization.mode === 'protect_focus') return 'Protect current focus thread';
+  if (personalization.mode === 'planning') return 'Tomorrow planning session';
+  return 'General focus session';
 }
 
 function taskFitColor(fit?: 'high' | 'medium' | 'low') {
@@ -437,6 +463,8 @@ export default function DashboardPage() {
   const dashboardPolicy = data?.intelligence?.dashboardPolicy;
   const adaptiveFocusMinutes = dashboardPolicy?.sessionMinutes ?? personalization?.recommendedSessionMinutes ?? null;
   const adaptiveFocusMinutesRounded = adaptiveFocusMinutes ? Math.max(5, Math.round(adaptiveFocusMinutes)) : null;
+  const focusTargetPrompt = focusTargetLabel(personalization, dashboardPolicy);
+  const generalFocusLabel = generalFocusOptionLabel(personalization, dashboardPolicy);
   const selectedPolicyTarget = dashboardPolicy?.focusTarget.type === 'task' && dashboardPolicy.focusTarget.id
     ? `task-${dashboardPolicy.focusTarget.id}`
     : '';
@@ -526,7 +554,7 @@ export default function DashboardPage() {
           <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
             {/* Goal/Task selector */}
             <div style={{ flex: 1 }}>
-              <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>What are you working on?</label>
+              <label className="text-[11px]" style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>{focusTargetPrompt}</label>
 	              <select
 	                id="dashboard-focus-target"
 	                defaultValue={selectedPolicyTarget}
@@ -536,7 +564,7 @@ export default function DashboardPage() {
                   color: 'var(--text-primary)', fontSize: '13px',
                 }}
               >
-                <option value="">General focus session</option>
+                <option value="">{generalFocusLabel}</option>
                 {data?.intelligence?.topGoals?.map(g => (
                   <option key={`goal-${g.id}`} value={`goal-${g.id}`} data-title={g.title}>🎯 {g.title}</option>
                 ))}
