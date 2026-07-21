@@ -579,16 +579,56 @@ function fallbackSpeechText(
   site: string,
 ): string {
   const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
+  const snapshot = getFallbackSpeechSnapshot(session, score, elapsed);
+  const mode = snapshot?.moment.mode;
+  const lowCapacity = session.intentProfile?.energyAtStart === 'low' || mode === 'recovery' || snapshot?.userState.energy === 'low' || snapshot?.userState.mood === 'low';
+  const deadlinePressure = session.intentProfile?.workMode === 'urgent_sprint' || mode === 'deadline_pressure';
+  const protectFocus = session.intentProfile?.workMode === 'deep_work' || mode === 'protect_focus';
+  const alertFatigueHigh = snapshot?.feedback.alertFatigueLevel === 'high';
+
   switch (kind) {
     case 'block':
+      if (lowCapacity) return `${site} is pulling you away. Take the smallest step back to ${session.targetTitle}.`;
+      if (deadlinePressure) return `${site} can wait. Back to the deadline path: ${session.targetTitle}.`;
+      if (protectFocus) return `Protect the thread. Close ${site} and return to ${session.targetTitle}.`;
       return `You are drifting to ${site}. Back to ${session.targetTitle}.`;
     case 'nudge':
+      if (alertFatigueHigh) return `One quiet check: choose the tab that directly serves ${session.targetTitle}.`;
+      if (lowCapacity) return `No extra pressure. Pick one small action for ${session.targetTitle}; ${remaining} minutes left.`;
+      if (deadlinePressure) return `${remaining} minutes left. Do the part that reduces deadline risk first.`;
       return `You are scattered. One thing. ${remaining} minutes left.`;
     case 'speak':
     default:
-      if (score > policy.thresholds.flowConfirmationScore) return `Locked in. ${elapsed} clean minutes. Keep this pace.`;
-      if (elapsed >= Math.floor(session.durationMinutes * 0.8)) return `${remaining} minutes left. Finish what you started.`;
+      if (score > policy.thresholds.flowConfirmationScore) {
+        if (alertFatigueHigh || protectFocus) return `${elapsed} clean minutes. Staying quiet so you can keep the thread.`;
+        return `Locked in. ${elapsed} clean minutes. Keep this pace.`;
+      }
+      if (elapsed >= Math.floor(session.durationMinutes * 0.8)) {
+        if (lowCapacity) return `${remaining} minutes left. Finish the smallest useful version.`;
+        if (deadlinePressure) return `${remaining} minutes left. Ship the deadline-relief piece.`;
+        return `${remaining} minutes left. Finish what you started.`;
+      }
+      if (lowCapacity) return `Check-in: score ${score}. Keep ${session.targetTitle} small and usable.`;
+      if (deadlinePressure) return `Check-in: score ${score}. Stay on the deadline-relief path.`;
       return `Halfway check. Score ${score}. Stay with ${session.targetTitle}.`;
+  }
+}
+
+function getFallbackSpeechSnapshot(session: GuardianState, focusScore: number, elapsed: number) {
+  try {
+    return buildPersonalizationSnapshot({
+      surface: 'intervention',
+      maxInsights: 1,
+      includeMemoryFacts: 2,
+      activeSession: {
+        sessionId: session.sessionId,
+        targetTitle: session.targetTitle,
+        focusScore,
+        elapsedMinutes: elapsed,
+      },
+    });
+  } catch {
+    return null;
   }
 }
 
