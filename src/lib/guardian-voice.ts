@@ -318,6 +318,37 @@ function voiceSessionNudge(snapshot: PersonalizationSnapshot): string {
   return snapshot.moment.guidance;
 }
 
+function voiceScheduleClarification(snapshot: PersonalizationSnapshot, missing: 'topic' | 'time' | 'both'): string {
+  const ask = missing === 'topic'
+    ? 'What should I schedule?'
+    : missing === 'time'
+      ? 'What time should I move it to?'
+      : 'What should I schedule, and when should it start?';
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `${ask} You already have planned focus on ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` for ${snapshot.today.plannedFocus.nextMinutes} minutes` : ''}.`;
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return `${ask} Keep the block small enough for today's energy.`;
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') return `${ask} Pick the slot that relieves the nearest deadline first.`;
+  if (snapshot.moment.mode === 'planning') return `${ask} Prefer a concrete anchor for tomorrow's plan.`;
+  if (snapshot.userState.nextBestFocusWindow) return `${ask} Your learned best focus window is ${snapshot.userState.nextBestFocusWindow}.`;
+  return ask;
+}
+
+function voiceNoActiveSessionLine(snapshot: PersonalizationSnapshot, action: 'adjust' | 'pause' | 'resume' | 'override' | 'status'): string {
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `No active session right now. Next planned focus is ${snapshot.today.plannedFocus.nextTitle}; start that or schedule a different block.`;
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return 'No active session right now. If you start one, keep it small and low-friction.';
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') return 'No active session right now. Start the deadline-relief block before optional work.';
+  if (snapshot.moment.mode === 'planning') return 'No active session right now. Use this moment to lock tomorrow\'s first block.';
+  if (action === 'resume') return 'No paused session found. Start the next useful block when you are ready.';
+  return 'No active session right now. Start the next useful block when you are ready.';
+}
+
 function voiceCompletionLine(snapshot: PersonalizationSnapshot, elapsed: number): string {
   if (snapshot.moment.mode === 'recovery') return `Session ended after ${elapsed} minutes. That counts as a recovery-sized win.`;
   if (snapshot.moment.mode === 'deadline_pressure') return `Session ended after ${elapsed} minutes. Capture the next deadline step while it is still fresh.`;
@@ -867,7 +898,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'schedule_session') {
     if (!intent.topic) {
-      const response = 'What topic should I schedule the session for?';
+      const response = voiceScheduleClarification(personalization, 'topic');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -939,7 +970,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'reschedule_session') {
     if (!intent.topic || !intent.intendedStartAt) {
-      const resp = 'I need the name of the session and the new time to reschedule it.';
+      const resp = voiceScheduleClarification(personalization, !intent.topic && !intent.intendedStartAt ? 'both' : !intent.topic ? 'topic' : 'time');
       addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
@@ -965,7 +996,9 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'cancel_scheduled_session') {
     if (!intent.topic) {
-      const resp = 'Which upcoming session do you want to cancel?';
+      const resp = personalization.today.plannedFocus.nextTitle
+        ? `Which upcoming session do you want to cancel? Planned focus currently points at ${personalization.today.plannedFocus.nextTitle}.`
+        : voiceScheduleClarification(personalization, 'topic');
       addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
@@ -990,14 +1023,18 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'adjust_session') {
     if (!activeSessionId) {
-      const response = 'There is no active session to adjust right now.';
+      const response = voiceNoActiveSessionLine(personalization, 'adjust');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
 
     const newDuration = intent.durationMinutes;
     if (!newDuration || newDuration < 1) {
-      const response = 'What duration should I change the session to?';
+      const response = personalization.moment.mode === 'recovery' || personalization.userState.energy === 'low' || personalization.userState.mood === 'low'
+        ? 'What smaller duration should I use for this low-capacity window?'
+        : personalization.moment.mode === 'deadline_pressure'
+          ? 'What duration gives enough deadline relief without drifting?'
+          : 'What duration should I change the session to?';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -1037,7 +1074,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'pause_session') {
     if (!activeSessionId) {
-      const response = 'No active session to pause.';
+      const response = voiceNoActiveSessionLine(personalization, 'pause');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -1054,7 +1091,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (intent.action === 'resume_session') {
     if (!activeSessionId) {
-      const response = 'No paused session found. Want to start a new one?';
+      const response = voiceNoActiveSessionLine(personalization, 'resume');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
