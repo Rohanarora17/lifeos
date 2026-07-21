@@ -153,10 +153,12 @@ function getAlertFeedbackStats(type: AlertType): {
 function getTodayMicroContext(): {
     hour: number;
     date: string;
+    tomorrowDate: string;
     openTasks: number;
     overdueTasks: number;
     uncheckedHabitCount: number;
     todayEvents: string[];
+    tomorrowEvents: string[];
     plannedSessionsToday: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }>;
     plannedSessionsTomorrow: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }>;
     recentDistractionMinutes: number;
@@ -165,11 +167,15 @@ function getTodayMicroContext(): {
     const nowIst = getIstNow();
     const date = nowIst.toISOString().slice(0, 10);
     const hour = nowIst.getHours();
+    const tomorrow = new Date(nowIst);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const tomorrowDate = tomorrow.toISOString().slice(0, 10);
 
     let openTasks = 0;
     let overdueTasks = 0;
     let uncheckedHabitCount = 0;
     let todayEvents: string[] = [];
+    let tomorrowEvents: string[] = [];
     let plannedSessionsToday: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }> = [];
     let plannedSessionsTomorrow: Array<{ id: string; taskId: number | null; title: string; start: string; durationMinutes: number; status: string }> = [];
     let recentDistractionMinutes = 0;
@@ -203,12 +209,14 @@ function getTodayMicroContext(): {
             WHERE date(start_time, 'localtime') = ?
             ORDER BY start_time ASC LIMIT 3
         `).all(date) as { title: string }[]).map(r => r.title);
+        tomorrowEvents = (db.prepare(`
+            SELECT title FROM calendar_events
+            WHERE date(start_time, 'localtime') = ?
+            ORDER BY start_time ASC LIMIT 4
+        `).all(tomorrowDate) as { title: string }[]).map(r => r.title);
     } catch { /* calendar is optional */ }
 
     try {
-        const tomorrow = new Date(nowIst);
-        tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-        const tomorrowDate = tomorrow.toISOString().slice(0, 10);
         const rows = db.prepare(`
             SELECT pfs.id,
                    pfs.task_id as taskId,
@@ -267,13 +275,145 @@ function getTodayMicroContext(): {
     return {
         hour,
         date,
+        tomorrowDate,
         openTasks,
         overdueTasks,
         uncheckedHabitCount,
         todayEvents,
+        tomorrowEvents,
         plannedSessionsToday,
         plannedSessionsTomorrow,
         recentDistractionMinutes,
+    };
+}
+
+function getTomorrowPlanContext(planDate: string): {
+    exists: boolean;
+    sleepTime: string | null;
+    wakeEstimate: string | null;
+    mood: string | null;
+    energy: string | null;
+    eveningNotes: string | null;
+    tomorrowIntention: string | null;
+    generatedSummary: string | null;
+} {
+    try {
+        const plan = getDb().prepare(`
+            SELECT sleep_time as sleepTime,
+                   wake_estimate as wakeEstimate,
+                   mood,
+                   energy,
+                   evening_notes as eveningNotes,
+                   tomorrow_intention as tomorrowIntention,
+                   generated_summary as generatedSummary
+            FROM daily_plans
+            WHERE plan_date = ?
+            LIMIT 1
+        `).get(planDate) as {
+            sleepTime: string | null;
+            wakeEstimate: string | null;
+            mood: string | null;
+            energy: string | null;
+            eveningNotes: string | null;
+            tomorrowIntention: string | null;
+            generatedSummary: string | null;
+        } | undefined;
+
+        return {
+            exists: Boolean(plan),
+            sleepTime: plan?.sleepTime ?? null,
+            wakeEstimate: plan?.wakeEstimate ?? null,
+            mood: plan?.mood ?? null,
+            energy: plan?.energy ?? null,
+            eveningNotes: plan?.eveningNotes ?? null,
+            tomorrowIntention: plan?.tomorrowIntention ?? null,
+            generatedSummary: plan?.generatedSummary ?? null,
+        };
+    } catch {
+        return {
+            exists: false,
+            sleepTime: null,
+            wakeEstimate: null,
+            mood: null,
+            energy: null,
+            eveningNotes: null,
+            tomorrowIntention: null,
+            generatedSummary: null,
+        };
+    }
+}
+
+function formatMissingPlanFields(plan: ReturnType<typeof getTomorrowPlanContext>): string {
+    const missing = [
+        !plan.sleepTime ? 'sleep time' : null,
+        !plan.wakeEstimate ? 'wake estimate' : null,
+        !plan.tomorrowIntention ? "tomorrow's main target" : null,
+        !plan.mood ? 'mood' : null,
+        !plan.energy ? 'energy' : null,
+        !plan.eveningNotes ? 'what changed today' : null,
+    ].filter(Boolean) as string[];
+
+    if (missing.length === 0) return '';
+    if (missing.length === 1) return missing[0];
+    return `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
+}
+
+function composeAdaptiveEveningPlannerMessage(input: {
+    today: ReturnType<typeof getTodayMicroContext>;
+    lowEnergy: boolean;
+    overloadedDay: boolean;
+}): { message: string; reason: string } {
+    const plan = getTomorrowPlanContext(input.today.tomorrowDate);
+    const missingFields = formatMissingPlanFields(plan);
+    const tomorrowCalendar = input.today.tomorrowEvents.length
+        ? ` Tomorrow calendar: ${compactList(input.today.tomorrowEvents, 3)}.`
+        : '';
+    const planSummary = plan.generatedSummary || plan.tomorrowIntention;
+
+    if (input.today.plannedSessionsTomorrow.length > 0) {
+        const first = formatPlannedSession(input.today.plannedSessionsTomorrow[0]);
+        const adjustmentAsk = missingFields
+            ? ` Add ${missingFields}, then adjust any block that no longer fits.`
+            : ' If sleep or energy changed, tell me what to move.';
+        return {
+            message: `Tomorrow has ${input.today.plannedSessionsTomorrow.length} planned focus block${input.today.plannedSessionsTomorrow.length === 1 ? '' : 's'}. First: ${first}.${tomorrowCalendar}${adjustmentAsk}`,
+            reason: missingFields
+                ? `evening reminder anchored to existing next-day plan; missing ${missingFields}`
+                : 'evening reminder anchored to existing next-day plan and asks only for changes',
+        };
+    }
+
+    if (plan.exists && missingFields) {
+        return {
+            message: `Tomorrow has a draft, but it is missing ${missingFields}.${tomorrowCalendar} Send just those and I will schedule the blocks.`,
+            reason: `evening reminder asks for missing next-day plan fields: ${missingFields}`,
+        };
+    }
+
+    if (plan.exists && !missingFields) {
+        return {
+            message: `Tomorrow's inputs are in. Review whether the schedule still fits tonight: ${planSummary || 'no summary yet'}.${tomorrowCalendar}`,
+            reason: 'evening reminder switched from intake to review because next-day inputs already exist',
+        };
+    }
+
+    if (input.lowEnergy) {
+        return {
+            message: `Evening planning check: energy looks low, so tomorrow should start lighter.${tomorrowCalendar} Send sleep time, wake estimate, mood, and one protected task.`,
+            reason: 'low energy changed evening reminder to recovery planning',
+        };
+    }
+
+    if (input.overloadedDay) {
+        return {
+            message: `Evening planning check: ${input.today.openTasks} open task${input.today.openTasks === 1 ? '' : 's'} are still in the system.${tomorrowCalendar} Send sleep/wake plus tomorrow's top time target.`,
+            reason: 'open-task pressure changed evening reminder',
+        };
+    }
+
+    return {
+        message: `Evening planning check:${tomorrowCalendar} Send sleep time, wake estimate, mood, what changed today, and what you want protected tomorrow.`,
+        reason: 'evening reminder asks for next-day planning inputs because no draft exists',
     };
 }
 
@@ -396,16 +536,9 @@ function deterministicAlertDecision(
     }
 
     if (type === 'evening_planner') {
-        if (today.plannedSessionsTomorrow.length > 0) {
-            nextMessage = `Tomorrow already has ${today.plannedSessionsTomorrow.length} planned focus block${today.plannedSessionsTomorrow.length === 1 ? '' : 's'}. Review sleep/wake and adjust if tonight changed. First: ${formatPlannedSession(today.plannedSessionsTomorrow[0])}.`;
-            reasons.push('evening reminder anchored to existing next-day plan');
-        } else if (lowEnergy) {
-            nextMessage = 'Evening planning check: energy looks low, so tomorrow should start lighter. Send sleep time, wake estimate, mood, and the one thing worth protecting.';
-            reasons.push('low energy changed evening reminder to recovery planning');
-        } else if (overloadedDay) {
-            nextMessage = `Evening planning check: ${today.openTasks} open task${today.openTasks === 1 ? '' : 's'} are still in the system. Send sleep/wake plus tomorrow's top time target so I can schedule blocks.`;
-            reasons.push('open-task pressure changed evening reminder');
-        }
+        const plannerMessage = composeAdaptiveEveningPlannerMessage({ today, lowEnergy, overloadedDay });
+        nextMessage = plannerMessage.message;
+        reasons.push(plannerMessage.reason);
     }
 
     const dedupMinutes = computeAdaptiveDedupMinutes(type, nextSeverity, recentAlertCount);
