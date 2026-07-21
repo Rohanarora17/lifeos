@@ -42,7 +42,10 @@ export async function GET(request: NextRequest) {
                 SELECT 
                     dates.d as date,
                     COALESCE(completed.count, 0) as habits_completed,
-                    ${totalHabits} as total_habits
+                    ${totalHabits} as total_habits,
+                    dp.mood,
+                    dp.energy,
+                    COALESCE(dp.generated_summary, dp.tomorrow_intention, dp.evening_notes) as day_context
                 FROM dates
                 LEFT JOIN (
                     SELECT hc.date as d, COUNT(DISTINCT hc.habit_id) as count
@@ -51,8 +54,16 @@ export async function GET(request: NextRequest) {
                     WHERE hc.completed = 1
                     GROUP BY hc.date
                 ) completed ON completed.d = dates.d
+                LEFT JOIN daily_plans dp ON dp.plan_date = dates.d
                 ORDER BY dates.d ASC
-            `).all() as { date: string; habits_completed: number; total_habits: number }[];
+            `).all() as {
+                date: string;
+                habits_completed: number;
+                total_habits: number;
+                mood: string | null;
+                energy: string | null;
+                day_context: string | null;
+            }[];
 
             // Calculate daily habit score and add adaptive interpretation.
             const historyWithScores = dailyHistory.map(day => {
@@ -81,9 +92,13 @@ export async function GET(request: NextRequest) {
 
             let query = `
         SELECT hc.date, COUNT(hc.id) as checkins, COUNT(DISTINCT hc.habit_id) as habits_done,
-               (SELECT COUNT(*) FROM habits WHERE archived = 0) as total_habits
+               (SELECT COUNT(*) FROM habits WHERE archived = 0) as total_habits,
+               dp.mood,
+               dp.energy,
+               COALESCE(dp.generated_summary, dp.tomorrow_intention, dp.evening_notes) as day_context
         FROM habit_checkins hc
         JOIN habits h ON h.id = hc.habit_id AND h.archived = 0
+        LEFT JOIN daily_plans dp ON dp.plan_date = hc.date
         WHERE hc.date >= ? AND hc.completed = 1
       `;
             const params: (string | number)[] = [startStr];
@@ -100,11 +115,17 @@ export async function GET(request: NextRequest) {
                 checkins: number;
                 habits_done: number;
                 total_habits: number;
+                mood: string | null;
+                energy: string | null;
+                day_context: string | null;
             }>;
             const adaptiveHeatmap = buildAdaptiveHabitHistory(data.map(day => ({
                 date: day.date,
                 habits_completed: day.habits_done,
                 total_habits: day.total_habits,
+                mood: day.mood,
+                energy: day.energy,
+                day_context: day.day_context,
             })), personalization).map((day, index) => ({
                 ...data[index],
                 adaptive_target_habits: day.adaptive_target_habits,

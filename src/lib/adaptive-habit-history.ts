@@ -5,6 +5,9 @@ export interface HabitHistoryInputDay {
   habits_completed: number;
   total_habits: number;
   habit_score?: number | null;
+  mood?: 'high' | 'medium' | 'low' | string | null;
+  energy?: 'high' | 'medium' | 'low' | string | null;
+  day_context?: string | null;
 }
 
 export interface AdaptiveHabitHistoryDay {
@@ -39,8 +42,20 @@ function targetForDay(day: HabitHistoryInputDay, baseline: number, snapshot: Per
   let target = clamp(baseline, 1, total);
   const isToday = day.date === isoToday();
   const reasons = ['personal recent baseline'];
+  const lowEnergyDay = day.energy === 'low' || day.mood === 'low';
+  const highEnergyDay = day.energy === 'high' && day.mood !== 'low';
+  const deadlineDay = typeof day.day_context === 'string' && /deadline|overdue|pressure|due today|due tomorrow/i.test(day.day_context);
 
-  if (isToday && (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low')) {
+  if (lowEnergyDay) {
+    target = clamp(Math.ceil(target * 0.7), 1, total);
+    reasons.push('lowered for logged low mood/energy that day');
+  } else if (deadlineDay) {
+    target = clamp(Math.ceil(target * 0.8), 1, total);
+    reasons.push('trimmed because that day had deadline pressure');
+  } else if (highEnergyDay) {
+    target = clamp(Math.ceil(target * 1.1), 1, total);
+    reasons.push('raised because logged energy was high');
+  } else if (isToday && (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low')) {
     target = clamp(Math.ceil(target * 0.7), 1, total);
     reasons.push('lowered for recovery/low energy today');
   } else if (isToday && snapshot.moment.mode === 'deadline_pressure') {
