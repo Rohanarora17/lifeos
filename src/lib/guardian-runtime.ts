@@ -621,6 +621,99 @@ function buildSpeechContext(
   return lines.join('\n');
 }
 
+function buildSessionMilestonePolicy(input: {
+  session: GuardianState;
+  focusScore: number;
+  lowEnergy: boolean;
+  inFlow: boolean;
+}): {
+  midpointRatio: number;
+  finalRatio: number;
+  shouldEmitMidpoint: boolean;
+  shouldEmitFinalPush: boolean;
+  tone: GuardianDecision['tone'];
+  reason: string;
+} {
+  const reasons: string[] = [];
+  let midpointRatio = 0.5;
+  let finalRatio = 0.8;
+  let shouldEmitMidpoint = true;
+  let shouldEmitFinalPush = true;
+  let tone: GuardianDecision['tone'] = 'midpoint_checkin';
+
+  const workMode = input.session.intentProfile?.workMode;
+  if (input.lowEnergy || workMode === 'recovery') {
+    midpointRatio = 0.65;
+    finalRatio = 0.88;
+    tone = 'grounding_nudge';
+    reasons.push('recovery/low-energy session gets fewer, later checks');
+  }
+
+  if (workMode === 'urgent_sprint') {
+    midpointRatio = 0.45;
+    finalRatio = 0.75;
+    tone = 'direct_push';
+    reasons.push('urgent sprint gets earlier accountability');
+  }
+
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'intervention',
+      maxInsights: 1,
+      includeThresholds: true,
+      includeMemoryFacts: 2,
+      activeSession: {
+        sessionId: input.session.sessionId,
+        targetTitle: input.session.targetTitle,
+        focusScore: input.focusScore,
+        elapsedMinutes: Math.max(0, Math.round((Date.now() - input.session.startedAt) / 60_000)),
+      },
+    });
+
+    if (snapshot.moment.mode === 'protect_focus' || input.inFlow) {
+      shouldEmitMidpoint = false;
+      finalRatio = Math.max(finalRatio, 0.9);
+      reasons.push('protect-focus/flow mode suppresses routine midpoint interruption');
+    } else if (snapshot.moment.mode === 'deadline_pressure') {
+      midpointRatio = Math.min(midpointRatio, 0.45);
+      finalRatio = Math.min(finalRatio, 0.75);
+      tone = 'direct_push';
+      reasons.push('deadline pressure moves checks earlier');
+    } else if (snapshot.moment.mode === 'recovery') {
+      midpointRatio = Math.max(midpointRatio, 0.65);
+      finalRatio = Math.max(finalRatio, 0.88);
+      tone = 'grounding_nudge';
+      reasons.push('current recovery mode makes checks gentler');
+    }
+
+    if (snapshot.feedback.alertFatigueLevel === 'high') {
+      shouldEmitMidpoint = false;
+      finalRatio = Math.max(finalRatio, 0.9);
+      reasons.push('high alert fatigue removes routine midpoint');
+    }
+  } catch {
+    reasons.push('fallback milestone policy');
+  }
+
+  if (input.focusScore >= 90) {
+    shouldEmitMidpoint = false;
+    shouldEmitFinalPush = false;
+    reasons.push('high focus score avoids milestone interruptions');
+  } else if (input.focusScore < 60) {
+    midpointRatio = Math.min(midpointRatio, 0.45);
+    reasons.push('low focus score allows earlier grounding');
+  }
+
+  return {
+    midpointRatio,
+    finalRatio,
+    shouldEmitMidpoint,
+    shouldEmitFinalPush,
+    tone,
+    reason: reasons.join('; ') || 'balanced adaptive milestone timing',
+  };
+}
+
 async function generateLLMSpeech(
   session: GuardianState,
   context: string,
@@ -1042,25 +1135,28 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   }
 
   const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
+  const milestonePolicy = buildSessionMilestonePolicy({ session, focusScore, lowEnergy, inFlow });
   if (
+    milestonePolicy.shouldEmitMidpoint &&
     !session.emittedMilestones.includes('midpoint') &&
-    elapsed >= Math.floor(session.durationMinutes * 0.5) &&
+    elapsed >= Math.floor(session.durationMinutes * milestonePolicy.midpointRatio) &&
     cooldownPassed &&
     attentionCategory === 'productive_support'
   ) {
     session.emittedMilestones.push('midpoint');
     return {
       type: 'speak',
-      tone: 'midpoint_checkin',
+      tone: milestonePolicy.tone,
       text: buildSpeechText(session, 'speak'),
       reason: 'Midpoint check-in',
-      explainability: `${explainabilityBase}; midpoint milestone reached`,
+      explainability: `${explainabilityBase}; adaptive midpoint ratio=${milestonePolicy.midpointRatio}; ${milestonePolicy.reason}`,
     };
   }
 
   if (
+    milestonePolicy.shouldEmitFinalPush &&
     !session.emittedMilestones.includes('final_push') &&
-    elapsed >= Math.floor(session.durationMinutes * 0.8) &&
+    elapsed >= Math.floor(session.durationMinutes * milestonePolicy.finalRatio) &&
     cooldownPassed &&
     attentionCategory === 'productive_support'
   ) {
@@ -1070,7 +1166,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
       tone: 'final_push',
       text: buildSpeechText(session, 'speak'),
       reason: 'Final push milestone',
-      explainability: `${explainabilityBase}; final push milestone reached`,
+      explainability: `${explainabilityBase}; adaptive final ratio=${milestonePolicy.finalRatio}; ${milestonePolicy.reason}`,
     };
   }
 
