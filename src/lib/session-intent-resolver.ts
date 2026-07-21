@@ -3,6 +3,7 @@ import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
 import { getIntelligenceProfile } from './intelligence';
 import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
 import type { GuardianStartRequest, SessionIntentProfile, WorkMode } from './guardian-types';
 
 // ─── Session history for similar topics ──────────────────────────────────────
@@ -64,6 +65,11 @@ export async function resolveSessionIntent(
   const optimalSprintMinutes = uil.optimalSessionMinutes || durationMinutes;
   const deadlineUrgency = resolveDeadlineUrgency(request.goalId, topic);
   const sessionHistory = loadSimilarSessionHistory(topic);
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'intervention',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+  });
 
   const workMode = await resolveWorkMode({
     topic,
@@ -73,6 +79,7 @@ export async function resolveSessionIntent(
     goalTitle: request.goalTitle,
     sessionHistory,
     uil,
+    personalization,
   });
 
   return {
@@ -135,6 +142,7 @@ interface ResolveWorkModeInput {
   goalTitle?: string | null;
   sessionHistory: string;
   uil: ReturnType<typeof getIntelligenceProfile>;
+  personalization: PersonalizationSnapshot;
 }
 
 async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
@@ -142,7 +150,7 @@ async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
   if (!ai) return fallbackWorkMode(input);
 
   const {
-    topic, energyAtStart, deadlineUrgency, sessionContext, goalTitle, sessionHistory, uil,
+    topic, energyAtStart, deadlineUrgency, sessionContext, goalTitle, sessionHistory, uil, personalization,
   } = input;
 
   const contextLine = sessionContext?.trim()
@@ -171,6 +179,9 @@ ${contextLine}
 USER PROFILE:
 ${uilLine || 'No profile data yet.'}
 
+TODAY PERSONALIZATION:
+${formatPersonalizationContext(personalization)}
+
 PAST SESSIONS ON SIMILAR TOPICS:
 ${sessionHistory}
 
@@ -185,6 +196,9 @@ REASON FROM THE DATA:
 - If past sessions on this topic had many overrides/blocks, the mode was probably too tight — consider more lenient.
 - If past sessions had low focus scores with many distractions, tighter mode may help.
 - If user context mentions switching tabs or referencing materials, lean toward research or learning.
+- If today's planned focus already names this target, respect its planned duration and intent.
+- If moment mode is recovery, prefer recovery or learning unless a real deadline is active.
+- If moment mode is planning, classify setup/review/calendar work as planning-friendly learning or research instead of deep_work by default.
 - Energy and deadline urgency are inputs to consider, not hard gates — a low-energy user might still need deep_work if the deadline is today.
 
 Return ONLY valid JSON:
@@ -207,7 +221,7 @@ Return ONLY valid JSON:
   return fallbackWorkMode(input);
 }
 
-function fallbackWorkMode(input: Pick<ResolveWorkModeInput, 'topic' | 'deadlineUrgency' | 'energyAtStart' | 'sessionContext'>): WorkMode {
+function fallbackWorkMode(input: Pick<ResolveWorkModeInput, 'topic' | 'deadlineUrgency' | 'energyAtStart' | 'sessionContext' | 'personalization'>): WorkMode {
   const text = `${input.topic} ${input.sessionContext ?? ''}`.toLowerCase();
   const scores: Record<WorkMode, number> = {
     deep_work: 0,
@@ -220,6 +234,19 @@ function fallbackWorkMode(input: Pick<ResolveWorkModeInput, 'topic' | 'deadlineU
   if (input.deadlineUrgency === 'overdue') scores.urgent_sprint += 5;
   if (input.deadlineUrgency === 'today') scores.urgent_sprint += 4;
   if (input.deadlineUrgency === 'this_week') scores.urgent_sprint += 2;
+
+  if (input.personalization.moment.mode === 'deadline_pressure') scores.urgent_sprint += 3;
+  if (input.personalization.moment.mode === 'recovery') scores.recovery += 3;
+  if (input.personalization.moment.mode === 'planning') {
+    scores.research += 2;
+    scores.learning += 1;
+  }
+  if (input.personalization.moment.mode === 'protect_focus') scores.deep_work += 2;
+  if (input.personalization.today.plannedFocus.nextTitle) {
+    const planned = input.personalization.today.plannedFocus.nextTitle.toLowerCase();
+    const overlaps = planned.split(/\s+/).some(word => word.length > 3 && text.includes(word));
+    if (overlaps) scores.learning += 2;
+  }
 
   if (input.energyAtStart === 'low') {
     scores.recovery += 3;
