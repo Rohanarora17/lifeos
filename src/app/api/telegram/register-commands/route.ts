@@ -7,7 +7,7 @@ const COMMANDS = [
   { command: 'tasks', description: "Today's ranked tasks" },
   { command: 'habits', description: "Today's habit check-ins" },
   { command: 'goals', description: 'Goal health status' },
-  { command: 'plan', description: 'This week\'s plan' },
+  { command: 'plan', description: 'Tomorrow adaptive plan' },
   { command: 'standup', description: 'Morning standup brief' },
   { command: 'review', description: 'Pending session reviews' },
   { command: 'report', description: 'Daily productivity report' },
