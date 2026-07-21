@@ -131,6 +131,36 @@ function formatScheduleFitLine(snapshot: ReturnType<typeof buildPersonalizationS
     return `\n<i>Fit: ${mode}; reminders will follow today's adaptive cadence.</i>`;
 }
 
+function formatScheduleClarification(missing: 'title' | 'time' | 'both'): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        const titleAsk = missing === 'time' ? 'Which time should I move it to?' : 'Which focus block should I schedule?';
+        const timeAsk = missing === 'title' ? 'When should it start?' : 'What should I schedule, and when should it start?';
+        const ask = missing === 'both' ? timeAsk : titleAsk;
+        if (snapshot.today.plannedFocus.nextTitle) {
+            return `${ask} Existing planned focus: <b>${snapshot.today.plannedFocus.nextTitle}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`;
+        }
+        if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+            return `${ask} Keep it small enough for a low-capacity day.`;
+        }
+        if (snapshot.moment.mode === 'deadline_pressure') {
+            return `${ask} Use the window that reduces the nearest deadline risk first.`;
+        }
+        if (snapshot.moment.mode === 'planning') {
+            return `${ask} Prefer a concrete anchor for tomorrow.`;
+        }
+        if (snapshot.userState.nextBestFocusWindow) {
+            return `${ask} Your learned best window is ${snapshot.userState.nextBestFocusWindow}.`;
+        }
+    } catch { /* keep fallback */ }
+    if (missing === 'both') return 'What should I schedule, and when should it start?';
+    return missing === 'title' ? 'Which focus block should I schedule?' : 'When should it start?';
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -834,7 +864,10 @@ export async function executeAction(
         case 'RESCHEDULE_SESSION': {
             const search = (payload.searchTitle as string | undefined)?.trim()?.toLowerCase();
             const startAt = payload.intendedStartAt as number | undefined;
-            if (!search || !startAt) { await sendTelegram('Missing title or new start time.', ''); break; }
+            if (!search || !startAt) {
+                await sendTelegram(formatScheduleClarification(!search && !startAt ? 'both' : !search ? 'title' : 'time'), 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
             
             const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const comms = listSoftWatchCommitments();
