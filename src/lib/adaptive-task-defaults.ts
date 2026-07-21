@@ -42,6 +42,17 @@ function daysUntil(date: string | null | undefined): number | null {
   return Math.ceil((time - Date.now()) / 86_400_000);
 }
 
+function normalizedText(value: string | null | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function textMatchesPlannedFocus(title: string, snapshot: PersonalizationSnapshot): boolean {
+  const plannedTitle = normalizedText(snapshot.today.plannedFocus.nextTitle);
+  const taskTitle = normalizedText(title);
+  if (!plannedTitle || !taskTitle) return false;
+  return taskTitle.includes(plannedTitle.slice(0, 24)) || plannedTitle.includes(taskTitle.slice(0, 24));
+}
+
 function inferEnergy(title: string, taskType: string | null | undefined, snapshot: PersonalizationSnapshot): { energy: TaskEnergy; reason: string } {
   const text = `${title} ${taskType ?? ''}`.toLowerCase();
   if (/(exam|proof|research|paper|debug|implement|math|problem|architecture|deep|hard)/.test(text)) {
@@ -65,6 +76,9 @@ function inferPriority(input: AdaptiveTaskDefaultsInput): { priority: TaskPriori
   if (due !== null && due <= 2) return { priority: 'high', reason: `due in ${due}d` };
   if (input.snapshot.userState.standupGoal && text.includes(input.snapshot.userState.standupGoal.toLowerCase().slice(0, 16))) {
     return { priority: 'high', reason: 'matches today stated goal' };
+  }
+  if (textMatchesPlannedFocus(input.title, input.snapshot)) {
+    return { priority: 'high', reason: 'matches the next planned focus block' };
   }
   if (input.snapshot.moment.mode === 'planning' && !input.dueDate) {
     return { priority: 'low', reason: 'planning mode keeps unscheduled new tasks out of the urgent lane' };
@@ -133,8 +147,14 @@ function inferEstimateMinutes(input: AdaptiveTaskDefaultsInput): { minutes: numb
   const similar = loadSimilarTaskMinutes(input);
   const text = `${input.title} ${input.taskType ?? ''} ${input.course ?? ''}`.toLowerCase();
   const due = daysUntil(input.dueDate);
-  let minutes = similar?.minutes ?? learnedSession;
-  const reasons: string[] = [similar?.reason ?? getAdaptiveSessionMinutesLabel()];
+  const plannedMinutes = input.snapshot.today.plannedFocus.nextMinutes;
+  const matchesPlannedFocus = textMatchesPlannedFocus(input.title, input.snapshot);
+  let minutes = matchesPlannedFocus && plannedMinutes ? plannedMinutes : similar?.minutes ?? learnedSession;
+  const reasons: string[] = [
+    matchesPlannedFocus && plannedMinutes
+      ? `next planned focus block is ${plannedMinutes}m`
+      : similar?.reason ?? getAdaptiveSessionMinutesLabel(),
+  ];
 
   if (/(exam|assignment|project|paper|research|proof|implementation|build|thesis)/.test(text)) {
     minutes = Math.max(minutes, learnedSession * 2);
@@ -150,6 +170,14 @@ function inferEstimateMinutes(input: AdaptiveTaskDefaultsInput): { minutes: numb
   if (input.snapshot.moment.mode === 'recovery' || input.snapshot.userState.energy === 'low') {
     minutes = Math.min(minutes, Math.max(learnedSession, Math.round(minutes * 0.85)));
     reasons.push('low-capacity day keeps initial target conservative');
+  }
+  if (
+    input.snapshot.today.plannedFocus.recentFollowThroughRate !== null &&
+    input.snapshot.today.plannedFocus.recentFollowThroughRate < 0.5 &&
+    !matchesPlannedFocus
+  ) {
+    minutes = Math.min(minutes, Math.max(learnedSession, Math.round(minutes * 0.75)));
+    reasons.push('weak planned-focus follow-through keeps unrelated new tasks smaller');
   }
   if (input.snapshot.moment.mode === 'deadline_pressure' || due === 0 || due === 1) {
     minutes = Math.max(minutes, learnedSession * 2);
