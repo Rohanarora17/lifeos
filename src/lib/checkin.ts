@@ -9,7 +9,7 @@ import { MODEL_FLASH } from './models';
 import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { generateNextDayPlan } from './next-day-planner';
 import { getFeedbackLearningSummary } from './feedback-learning';
-import { buildPersonalizationSnapshot } from './personalization-context';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { buildSelfModel, selectSelfModelQuestion, type SelfModelGapQuestion } from './self-model';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
@@ -64,6 +64,106 @@ function getAdaptiveCheckinQuestion(surface: 'morning_checkin' | 'evening_checki
     console.warn('[Checkin] adaptive question unavailable:', err);
     return null;
   }
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatInlineList(items: string[], limit = 3): string {
+  const visible = items.map(item => escapeTelegramHtml(item.trim())).filter(Boolean).slice(0, limit);
+  if (visible.length === 0) return '';
+  const suffix = items.length > visible.length ? ` +${items.length - visible.length} more` : '';
+  return `${visible.join(', ')}${suffix}`;
+}
+
+function buildEveningReflectionMessage(input: {
+  snapshot: PersonalizationSnapshot;
+  adaptiveQuestion: SelfModelGapQuestion | null;
+}): string {
+  const { snapshot, adaptiveQuestion } = input;
+  const questions: string[] = [];
+  const modeLabel: Record<PersonalizationSnapshot['moment']['mode'], string> = {
+    protect_focus: 'protected focus',
+    deadline_pressure: 'deadline pressure',
+    recovery: 'recovery',
+    planning: 'planning',
+    normal: 'balanced',
+  };
+
+  questions.push(
+    `1. <b>What actually moved today?</b> Mention wins, avoided work, and the real reason for any avoidance.`,
+  );
+
+  if (snapshot.moment.mode === 'deadline_pressure' || snapshot.today.overdueTasks > 0) {
+    questions.push(
+      `2. <b>What deadline or overdue item changed today?</b> What is the smallest next move for tomorrow?`,
+    );
+  } else if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    questions.push(
+      `2. <b>What affected your body, mood, or energy today?</b> Be specific so tomorrow can be lighter or later if needed.`,
+    );
+  } else if (snapshot.today.recentDistractionMinutes >= 30) {
+    questions.push(
+      `2. <b>What pulled attention away tonight?</b> Name the trigger, not just the app.`,
+    );
+  } else {
+    questions.push(
+      `2. <b>What happened today that affected your mood, energy, or focus?</b>`,
+    );
+  }
+
+  questions.push(
+    `3. <b>What time are you actually sleeping tonight, and what wake time should I assume?</b> If midnight became 2am, say that.`,
+  );
+
+  const planned = formatInlineList(snapshot.today.doingTasks);
+  questions.push(
+    planned
+      ? `4. <b>Tomorrow, should I protect time for ${planned}, or is there something higher priority?</b> Include rough hours/minutes.`
+      : `4. <b>What do you want to do tomorrow, and how much time should each thing get?</b>`,
+  );
+
+  if (snapshot.today.calendarEvents.length > 0) {
+    questions.push(
+      `5. <b>Any calendar constraint tomorrow or tonight that should change the plan?</b> Also mention travel, errands, or fixed calls.`,
+    );
+  } else if (snapshot.userState.nextBestFocusWindow) {
+    questions.push(
+      `5. <b>Does ${escapeTelegramHtml(snapshot.userState.nextBestFocusWindow)} still look like your best focus window tomorrow?</b> If not, give the better window.`,
+    );
+  } else {
+    questions.push(
+      `5. <b>When should the first focus block happen tomorrow?</b>`,
+    );
+  }
+
+  if (adaptiveQuestion) {
+    questions.push(`6. <b>${escapeTelegramHtml(adaptiveQuestion.question)}</b>`);
+  } else {
+    questions.push(`6. <b>How likely are you to show up tomorrow, 1-10?</b> Why that number?`);
+  }
+
+  const contextBits = [
+    `${modeLabel[snapshot.moment.mode]} mode`,
+    `${snapshot.userState.energy} energy`,
+    snapshot.userState.mood ? `${snapshot.userState.mood} mood` : null,
+    snapshot.feedback.alertFatigueLevel !== 'low' ? `${snapshot.feedback.alertFatigueLevel} alert fatigue` : null,
+    snapshot.today.openTasks > 0 ? `${snapshot.today.openTasks} open tasks` : null,
+  ].filter(Boolean);
+
+  return [
+    `End-of-day check-in — ${contextBits.join(' · ')}.`,
+    snapshot.moment.guidance ? `<i>${escapeTelegramHtml(snapshot.moment.guidance)}</i>` : '',
+    '',
+    ...questions,
+    '',
+    adaptiveQuestion ? `<i>Asking #6 because ${escapeTelegramHtml(adaptiveQuestion.reason)}</i>` : '',
+    `Voice note or text is fine.`,
+  ].filter(line => line !== '').join('\n');
 }
 
 // ─── Send Functions ──────────────────────────────────────────────────────────
@@ -142,17 +242,14 @@ export async function sendEveningReflection(): Promise<void> {
     return;
   }
 
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'checkin',
+    maxInsights: 3,
+    includeThresholds: true,
+    includeMemoryFacts: 6,
+  });
   const adaptiveQuestion = getAdaptiveCheckinQuestion('evening_checkin');
-  const message = [
-    `End-of-day check-in. Answer honestly.\n`,
-    `1. <b>What did you avoid today</b>, and what's the honest reason — not the reason you'd tell someone else, the actual reason?`,
-    `2. <b>What happened today</b> that affected your mood, energy, or focus?`,
-    `3. <b>What time are you sleeping tonight</b>, and what time should I assume you'll wake up?`,
-    `4. <b>What do you want to do tomorrow</b>, and how much time should it get?`,
-    `5. <b>${adaptiveQuestion?.question ?? 'How do you feel about showing up tomorrow, 1–10?'}</b>`,
-    `6. <b>How do you feel about showing up tomorrow, 1–10?</b> Why that number?`,
-    `\nVoice note or text — doesn't matter.`,
-  ].join('\n');
+  const message = buildEveningReflectionMessage({ snapshot, adaptiveQuestion });
 
   const sent = await sendTelegram(message, 'HTML');
   if (sent) {
