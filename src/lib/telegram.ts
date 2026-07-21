@@ -117,7 +117,7 @@ export const MORNING_BRIEF_KEYBOARD: InlineKeyboard = [
     { text: '🧠 Standup', callback_data: 'action:standup' },
   ],
   [
-    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '🗓 Tomorrow Plan', callback_data: 'action:next_day_plan' },
     { text: '🎯 Goals', callback_data: 'action:goals' },
   ],
 ];
@@ -145,7 +145,7 @@ export const DAILY_REPORT_KEYBOARD: InlineKeyboard = [
     { text: '🔁 New Session', callback_data: 'action:new_session' },
   ],
   [
-    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '🗓 Tomorrow Plan', callback_data: 'action:next_day_plan' },
     { text: '✅ Review Queue', callback_data: 'action:review' },
   ],
 ];
@@ -160,7 +160,7 @@ export const FULL_MENU_KEYBOARD: InlineKeyboard = [
     { text: '✅ Habits', callback_data: 'action:habits' },
   ],
   [
-    { text: '🗓 Weekly Plan', callback_data: 'action:weekly_plan' },
+    { text: '🗓 Tomorrow Plan', callback_data: 'action:next_day_plan' },
     { text: '🎯 Goals', callback_data: 'action:goals' },
   ],
   [
@@ -512,6 +512,37 @@ export function formatWeeklyPlanSummary(plan: {
       lines.push(`  • ${t.title}`);
     }
     if (day.tasks.length > 3) lines.push(`  <i>+${day.tasks.length - 3} more</i>`);
+  }
+  return lines.join('\n');
+}
+
+export function formatNextDayPlanSummary(plan: {
+  plan: { plan_date: string; generated_summary: string | null; sleep_time: string | null; wake_estimate: string | null; energy: string | null; mood: string | null } | null;
+  sessions: Array<{ title: string; planned_start: string; duration_minutes: number; reward_xp: number; reward_coins: number; calendar_status: string; status: string }>;
+  suggestedInputs?: { reason?: string };
+  calendarConfigured?: boolean;
+}): string {
+  const date = plan.plan?.plan_date ?? 'tomorrow';
+  const summary = plan.plan?.generated_summary ?? plan.suggestedInputs?.reason ?? 'No plan summary yet';
+  const lines = [`🗓 <b>Tomorrow Plan</b>`, `<i>${date} · ${summary}</i>`, ``];
+  if (plan.plan?.sleep_time || plan.plan?.wake_estimate || plan.plan?.energy || plan.plan?.mood) {
+    lines.push([
+      plan.plan.wake_estimate ? `wake ${plan.plan.wake_estimate}` : null,
+      plan.plan.sleep_time ? `sleep ${plan.plan.sleep_time}` : null,
+      plan.plan.energy ? `${plan.plan.energy} energy` : null,
+      plan.plan.mood ? `${plan.plan.mood} mood` : null,
+    ].filter(Boolean).join(' · '));
+    lines.push('');
+  }
+  if (plan.sessions.length === 0) {
+    lines.push('No focus blocks scheduled yet. Send sleep/wake, mood, and what you want protected tomorrow.');
+  } else {
+    for (const session of plan.sessions.slice(0, 6)) {
+      const time = new Date(session.planned_start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const calendar = plan.calendarConfigured ? ` · calendar ${session.calendar_status}` : '';
+      lines.push(`• <b>${time}</b> ${session.title} — ${session.duration_minutes}m, ${session.reward_xp} XP / ${session.reward_coins} coins${calendar}`);
+    }
+    if (plan.sessions.length > 6) lines.push(`<i>+${plan.sessions.length - 6} more focus block${plan.sessions.length - 6 === 1 ? '' : 's'}</i>`);
   }
   return lines.join('\n');
 }

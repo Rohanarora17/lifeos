@@ -7,6 +7,7 @@ import {
     buildReviewKeyboard,
     buildClassifyKeyboard,
     formatPendingReviews,
+    formatNextDayPlanSummary,
     formatWeeklyPlanSummary,
 } from '@/lib/telegram';
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
@@ -26,6 +27,10 @@ import { downloadTelegramVoice, transcribeAudio } from '@/lib/stt';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
+
+function tomorrowIsoDate(): string {
+    return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
+}
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
@@ -255,6 +260,21 @@ async function handleActionCallback(payload: string) {
             let plan = loadActiveWeeklyPlan();
             if (!plan) { plan = generateWeeklyPlan(); saveWeeklyPlan(plan); }
             await sendTelegram(formatWeeklyPlanSummary(plan), 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'next_day_plan': {
+            const { generateNextDayPlan, getNextDayPlan } = await import('@/lib/next-day-planner');
+            const planDate = tomorrowIsoDate();
+            let plan = getNextDayPlan(planDate);
+            if (!plan.plan || plan.sessions.length === 0) {
+                plan = await generateNextDayPlan({
+                    planDate,
+                    syncCalendar: false,
+                    regenerate: true,
+                });
+            }
+            await sendTelegram(formatNextDayPlanSummary(plan), 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 

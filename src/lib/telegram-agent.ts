@@ -7,6 +7,7 @@ import {
     formatStandupBrief,
     formatTasksList,
     formatHabitStatus,
+    formatNextDayPlanSummary,
     formatWeeklyPlanSummary,
     formatGoalHealthStatus,
     formatPendingReviews,
@@ -71,7 +72,7 @@ function normalizeTelegramTime(value: unknown): string | null {
 }
 
 function nextIsoDate(): string {
-    const tomorrow = new Date(Date.now() + 86_400_000);
+    const tomorrow = new Date(Date.now() + 19_800_000 + 86_400_000);
     return tomorrow.toISOString().slice(0, 10);
 }
 
@@ -113,7 +114,8 @@ AVAILABLE ACTIONS:
 - "SUBMIT_FEEDBACK": Post-session reflection/feedback. Payload: feedback (string), sessionId (if inferable).
 - "SHOW_TASKS": Show ranked tasks for today.
 - "SHOW_HABITS": Show today's habit status.
-- "WEEKLY_PLAN": Show this week's plan.
+- "NEXT_DAY_PLAN": Show tomorrow's adaptive plan and planned focus sessions. Prefer this for "plan".
+- "WEEKLY_PLAN": Show this week's retrospective plan only if the user explicitly asks for the week.
 - "GOAL_STATUS": Show goal health status.
 - "SESSION_REVIEW": Show pending session completions.
 - "CALIBRATION": Show model calibration accuracy.
@@ -384,7 +386,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         return;
     }
     if (cmdLower === '/plan') {
-        await executeAction('WEEKLY_PLAN', '', {});
+        await executeAction('NEXT_DAY_PLAN', '', {});
         return;
     }
     if (cmdLower === '/standup') {
@@ -542,7 +544,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await sendTelegram(
             `🛡️ <b>LifeOS Commands</b>\n\n` +
             `<b>Sessions</b>\n/session &lt;topic&gt; — Start focus session\n/endsession — End current session\n/status — Current session status\n\n` +
-            `<b>View</b>\n/tasks — Today's ranked tasks\n/habits — Habit check-ins\n/goals — Goal health status\n/plan — Weekly plan\n/standup — Standup brief\n/review — Pending reviews\n/report — Daily report\n/calibration — Model accuracy\n\n` +
+            `<b>View</b>\n/tasks — Today's ranked tasks\n/habits — Habit check-ins\n/goals — Goal health status\n/plan — Tomorrow plan\n/standup — Standup brief\n/review — Pending reviews\n/report — Daily report\n/calibration — Model accuracy\n\n` +
             `<b>Create</b>\n/addtask &lt;title&gt;\n/addgoal &lt;title&gt;\n/addhabit &lt;name&gt;\n\n` +
             `<b>Delete</b>\n/deletetask &lt;search&gt;\n/deletehabit &lt;search&gt;\n\n` +
             `Or just send a natural language message — Jarvis understands context.`,
@@ -982,6 +984,20 @@ export async function executeAction(
             let plan = loadActiveWeeklyPlan();
             if (!plan) { plan = generateWeeklyPlan(); saveWeeklyPlan(plan); }
             await sendTelegram(formatWeeklyPlanSummary(plan), 'HTML', FULL_MENU_KEYBOARD);
+            break;
+        }
+
+        case 'NEXT_DAY_PLAN': {
+            const { getNextDayPlan } = require('./next-day-planner') as typeof import('./next-day-planner');
+            let plan = getNextDayPlan(nextIsoDate());
+            if (!plan.plan || plan.sessions.length === 0) {
+                plan = await generateNextDayPlan({
+                    planDate: nextIsoDate(),
+                    syncCalendar: false,
+                    regenerate: true,
+                });
+            }
+            await sendTelegram(formatNextDayPlanSummary(plan), 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
