@@ -58,6 +58,79 @@ interface GuardianInsights {
   }>;
 }
 
+interface GuardianCandidateTask {
+  id: number;
+  title: string;
+  priority: string;
+  status: string;
+  task_type: string;
+  course: string | null;
+  goal_title: string | null;
+  energy_required: string;
+  estimated_minutes: number;
+  credited_minutes: number;
+  remaining_minutes: number;
+  score: number;
+  reason: string;
+}
+
+interface GuardianPlannedSession {
+  id: string;
+  task_id: number | null;
+  title: string;
+  planned_start: string;
+  planned_end: string;
+  duration_minutes: number;
+  session_type: string;
+  rule_json: string;
+  reward_xp: number;
+  reward_coins: number;
+  calendar_status: 'not_configured' | 'created' | 'synced' | 'failed' | 'deleted';
+  status: 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
+}
+
+interface GuardianNextDayPlan {
+  success: boolean;
+  plan: {
+    id: number;
+    plan_date: string;
+    sleep_time: string | null;
+    wake_estimate: string | null;
+    mood: string | null;
+    energy: string | null;
+    evening_notes: string | null;
+    tomorrow_intention: string | null;
+    generated_summary: string | null;
+    status: 'draft' | 'active' | 'archived';
+  } | null;
+  sessions: GuardianPlannedSession[];
+  candidateTasks: GuardianCandidateTask[];
+  personalization: {
+    mode: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    learnedSprintMinutes: number;
+    bestFocusWindow: string;
+  };
+  suggestedInputs: {
+    sleepTime: string;
+    wakeEstimate: string;
+    mood: 'high' | 'medium' | 'low';
+    energy: 'high' | 'medium' | 'low';
+    source: 'existing_plan' | 'latest_evening_checkin' | 'sleep_history' | 'adaptive_baseline';
+    reason: string;
+  };
+  calendarConfigured: boolean;
+}
+
+interface SessionRulePreview {
+  mode?: string;
+  guidance?: string;
+  tools?: string[];
+  breakMinutes?: number;
+  rewardReason?: string;
+}
+
 const QUALITY_COLOR: Record<string, string> = {
   excellent: '#22c55e',
   good: '#3b82f6',
@@ -79,6 +152,25 @@ function formatDuration(mins: number) {
   const hours = Math.floor(rounded / 60);
   const minutes = rounded % 60;
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+function tomorrowIso() {
+  const d = new Date(Date.now() + 19800000);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function formatPlanClock(iso: string) {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function parseSessionRule(ruleJson: string): SessionRulePreview {
+  try {
+    const parsed = JSON.parse(ruleJson);
+    return typeof parsed === 'object' && parsed ? parsed as SessionRulePreview : {};
+  } catch {
+    return {};
+  }
 }
 
 type AdaptiveTask = NonNullable<GuardianInsights['recommendedTasks']>[number];
@@ -199,28 +291,8 @@ export default function GuardianPage() {
   const [weakConcepts, setWeakConcepts] = useState<Array<{
     id: number; title: string; mastery: number; goalTitle: string | null;
   }>>([]);
-  const [weeklyPlan, setWeeklyPlan] = useState<{
-    week_start: string;
-    days: Array<{
-      date: string;
-      day_name: string;
-      energy_forecast: 'high' | 'medium' | 'low';
-      tasks: Array<{
-        task_id: number;
-        title: string;
-        estimated_minutes: number;
-        goal_id: number | null;
-        goal_title: string | null;
-        energy_required: string;
-        reason: string;
-      }>;
-      total_minutes: number;
-    }>;
-    unscheduled: Array<{ task_id: number; title: string; reason: string }>;
-    summary: string;
-    generated_at: string;
-  } | null>(null);
-  const [weeklyPlanLoading, setWeeklyPlanLoading] = useState(false);
+  const [nextDayPlan, setNextDayPlan] = useState<GuardianNextDayPlan | null>(null);
+  const [nextDayPlanLoading, setNextDayPlanLoading] = useState(false);
   const [feedbackText, setFeedbackText] = useState<Record<string, string>>({});
   const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({});
   const [feedbackDone, setFeedbackDone] = useState<Record<string, boolean>>({});
@@ -294,26 +366,30 @@ export default function GuardianPage() {
     } catch { }
   }, []);
 
-  const fetchWeeklyPlan = useCallback(async () => {
+  const fetchNextDayPlan = useCallback(async () => {
     try {
-      const res = await fetch('/api/guardian/weekly-plan');
+      const res = await fetch(`/api/next-day-plan?date=${tomorrowIso()}`);
       if (res.ok) {
-        const data = await res.json();
-        setWeeklyPlan(data.plan ?? null);
+        const data = await res.json() as GuardianNextDayPlan;
+        setNextDayPlan(data);
       }
     } catch { }
   }, []);
 
-  const regenerateWeeklyPlan = async () => {
-    setWeeklyPlanLoading(true);
+  const regenerateNextDayPlan = async () => {
+    setNextDayPlanLoading(true);
     try {
-      const res = await fetch('/api/guardian/weekly-plan', { method: 'POST' });
+      const res = await fetch('/api/next-day-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planDate: tomorrowIso(), syncCalendar: true, regenerate: true }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        setWeeklyPlan(data.plan ?? null);
+        const data = await res.json() as GuardianNextDayPlan;
+        setNextDayPlan(data);
       }
     } catch { }
-    setWeeklyPlanLoading(false);
+    setNextDayPlanLoading(false);
   };
 
   const fetchHistoryData = useCallback(async () => {
@@ -346,14 +422,14 @@ export default function GuardianPage() {
   }, []);
 
   useEffect(() => {
-    Promise.all([fetchBriefing(), fetchInsights(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchWeeklyPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
+    Promise.all([fetchBriefing(), fetchInsights(), fetchOptimizerData(), fetchHistoryData(), fetchSuggestedTasks(), fetchNextDayPlan(), fetchCalibrationStatus()]).finally(() => setLoading(false));
     const briefingInterval = setInterval(fetchBriefing, 60_000);
     const insightsInterval = setInterval(fetchInsights, 60_000);
     return () => {
       clearInterval(briefingInterval);
       clearInterval(insightsInterval);
     };
-  }, [fetchBriefing, fetchInsights, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
+  }, [fetchBriefing, fetchInsights, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchNextDayPlan, fetchCalibrationStatus]);
 
   useEffect(() => {
     if (!activeSession.active && !adaptivePersonalization?.recommendedSessionMinutes) {
@@ -932,115 +1008,165 @@ export default function GuardianPage() {
         </div>
       )}
 
-      {/* Weekly Plan */}
+      {/* Next-Day Plan */}
       <div style={{ background: '#111118', border: '1px solid #2a2a40', borderRadius: '14px', padding: '18px', marginBottom: '28px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
           <div>
             <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-              This Week
+              Tomorrow Plan
             </div>
-            {weeklyPlan && (
-              <div style={{ fontSize: '10px', color: '#444460', marginTop: '2px' }}>{weeklyPlan.summary}</div>
+            {nextDayPlan && (
+              <div style={{ fontSize: '10px', color: '#444460', marginTop: '2px' }}>
+                {nextDayPlan.plan?.generated_summary ?? nextDayPlan.suggestedInputs.reason}
+              </div>
             )}
           </div>
           <button
-            onClick={regenerateWeeklyPlan}
-            disabled={weeklyPlanLoading}
+            onClick={regenerateNextDayPlan}
+            disabled={nextDayPlanLoading}
             style={{
               padding: '6px 13px', borderRadius: '7px', border: '1px solid #2a2a40',
-              background: '#0a0a12', color: weeklyPlanLoading ? '#444460' : '#8888a0',
-              fontSize: '11px', cursor: weeklyPlanLoading ? 'default' : 'pointer', fontWeight: 600,
+              background: '#0a0a12', color: nextDayPlanLoading ? '#444460' : '#8888a0',
+              fontSize: '11px', cursor: nextDayPlanLoading ? 'default' : 'pointer', fontWeight: 600,
             }}
           >
-            {weeklyPlanLoading ? 'Generating…' : 'Regenerate'}
+            {nextDayPlanLoading ? 'Generating...' : 'Regenerate'}
           </button>
         </div>
 
-        {!weeklyPlan ? (
+        {!nextDayPlan?.plan ? (
           <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '20px 0' }}>
-            No plan yet. Click Regenerate to build this week&apos;s schedule.
+            No tomorrow plan yet. Add evening context or regenerate to schedule adaptive focus sessions.
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '6px' }}>
-            {weeklyPlan.days.map(day => {
-              const isToday = day.date === new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-              const energyColor = day.energy_forecast === 'high' ? '#22c55e' : day.energy_forecast === 'medium' ? '#f59e0b' : '#8888a0';
-              return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginBottom: '14px' }}>
+              {[
+                ['Date', nextDayPlan.plan.plan_date],
+                ['Sleep', nextDayPlan.plan.sleep_time ?? nextDayPlan.suggestedInputs.sleepTime],
+                ['Wake', nextDayPlan.plan.wake_estimate ?? nextDayPlan.suggestedInputs.wakeEstimate],
+                ['Energy', nextDayPlan.plan.energy ?? nextDayPlan.personalization.energy],
+                ['Mood', nextDayPlan.plan.mood ?? nextDayPlan.personalization.mood ?? 'unknown'],
+                ['Best window', nextDayPlan.personalization.bestFocusWindow],
+                ['Sprint', formatDuration(nextDayPlan.personalization.learnedSprintMinutes)],
+                ['Calendar', nextDayPlan.calendarConfigured ? 'connected' : 'not connected'],
+              ].map(([label, value]) => (
                 <div
-                  key={day.date}
+                  key={label}
                   style={{
-                    background: isToday ? 'rgba(99,102,241,0.08)' : '#0a0a12',
-                    border: `1px solid ${isToday ? 'rgba(99,102,241,0.3)' : '#1a1a2e'}`,
-                    borderRadius: '9px',
-                    padding: '8px 6px',
-                    minHeight: '80px',
+                    background: '#0a0a12',
+                    border: '1px solid #1a1a2e',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '10px', fontWeight: 700, color: isToday ? '#a5b4fc' : '#666680' }}>
-                      {day.day_name.slice(0, 3).toUpperCase()}
-                    </span>
-                    <span style={{
-                      width: '7px', height: '7px', borderRadius: '50%',
-                      background: energyColor, flexShrink: 0,
-                    }} title={`${day.energy_forecast} energy`} />
+                  <div style={{ fontSize: '9px', color: '#555570', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>
+                    {label}
                   </div>
-                  {day.tasks.length === 0 ? (
-                    <div style={{ fontSize: '9px', color: '#333350', textAlign: 'center', paddingTop: '8px' }}>—</div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                      {day.tasks.slice(0, 4).map(t => (
-                        <div
-                          key={t.task_id}
-                          onClick={() => setTopic(t.title)}
-                          title={`${t.title} · ${t.estimated_minutes}m${t.goal_title ? ` · ${t.goal_title}` : ''}${t.reason ? ` · ${t.reason}` : ''}`}
+                  <div style={{ fontSize: '12px', color: '#d4d4e8', marginTop: '4px', overflowWrap: 'anywhere' }}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {nextDayPlan.sessions.length === 0 ? (
+              <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>
+                Plan exists, but no focus blocks were scheduled. Regenerate after adding what matters tomorrow.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {nextDayPlan.sessions.map(session => {
+                  const rule = parseSessionRule(session.rule_json);
+                  const calendarColor = session.calendar_status === 'failed' ? '#ef4444' : session.calendar_status === 'not_configured' ? '#8888a0' : '#22c55e';
+                  const statusColor = session.status === 'completed' ? '#22c55e' : session.status === 'skipped' || session.status === 'cancelled' ? '#ef4444' : '#a5b4fc';
+                  const timeRange = `${formatPlanClock(session.planned_start)}-${formatPlanClock(session.planned_end)}`;
+                  return (
+                    <div
+                      key={session.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '92px minmax(0, 1fr) auto',
+                        gap: '10px',
+                        alignItems: 'center',
+                        background: '#0a0a12',
+                        border: '1px solid #1a1a2e',
+                        borderRadius: '9px',
+                        padding: '10px',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: '13px', color: '#e5e7eb', fontWeight: 800 }}>{timeRange}</div>
+                        <div style={{ fontSize: '10px', color: '#555570', marginTop: '3px' }}>{formatDuration(session.duration_minutes)}</div>
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <button
+                          onClick={() => setTopic(session.title)}
                           style={{
-                            fontSize: '9px', color: '#8888a0', lineHeight: 1.3,
-                            padding: '2px 4px', background: '#151525', borderRadius: '4px',
-                            cursor: 'pointer', overflow: 'hidden',
-                            textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            border: 0,
+                            background: 'transparent',
+                            color: '#d4d4e8',
+                            padding: 0,
+                            fontSize: '13px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            overflowWrap: 'anywhere',
                           }}
                         >
-                          {t.title}
+                          {session.title}
+                        </button>
+                        <div style={{ fontSize: '10px', color: '#666680', marginTop: '4px', lineHeight: 1.4 }}>
+                          {rule.guidance ?? `${session.session_type.replaceAll('_', ' ')} session`}
+                          {rule.breakMinutes ? ` · ${rule.breakMinutes}m break planned` : ''}
+                          {rule.tools?.length ? ` · ${rule.tools.slice(0, 3).join(', ')}` : ''}
                         </div>
-                      ))}
-                      {day.tasks.length > 4 && (
-                        <div style={{ fontSize: '9px', color: '#444460', paddingLeft: '4px' }}>
-                          +{day.tasks.length - 4} more
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-end' }}>
+                        <div style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 700 }}>
+                          {session.reward_xp} XP · {session.reward_coins}c
                         </div>
-                      )}
+                        <div style={{ fontSize: '9px', color: statusColor, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>
+                          {session.status}
+                        </div>
+                        <div style={{ fontSize: '9px', color: calendarColor }}>
+                          {session.calendar_status.replaceAll('_', ' ')}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  {day.total_minutes > 0 && (
-                    <div style={{ fontSize: '9px', color: '#444460', marginTop: '4px', textAlign: 'right' }}>
-                      {day.total_minutes}m
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                  );
+                })}
+              </div>
+            )}
 
-        {weeklyPlan && weeklyPlan.unscheduled.length > 0 && (
-          <div style={{ marginTop: '10px', padding: '8px 10px', background: '#0a0a12', borderRadius: '8px', border: '1px solid #1a1a2e' }}>
-            <div style={{ fontSize: '9px', color: '#555570', fontWeight: 600, marginBottom: '5px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Unscheduled ({weeklyPlan.unscheduled.length})
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-              {weeklyPlan.unscheduled.slice(0, 8).map(t => (
-                <span
-                  key={t.task_id}
-                  style={{ fontSize: '10px', color: '#666680', padding: '2px 6px', background: '#151525', borderRadius: '4px' }}
-                >
-                  {t.title}
-                </span>
-              ))}
-              {weeklyPlan.unscheduled.length > 8 && (
-                <span style={{ fontSize: '10px', color: '#444460' }}>+{weeklyPlan.unscheduled.length - 8} more</span>
-              )}
-            </div>
-          </div>
+            {nextDayPlan.candidateTasks.length > 0 && (
+              <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #1a1a2e' }}>
+                <div style={{ fontSize: '9px', color: '#555570', fontWeight: 700, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  Candidate Pool
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {nextDayPlan.candidateTasks.slice(0, 6).map(task => (
+                    <button
+                      key={task.id}
+                      onClick={() => setTopic(task.title)}
+                      title={`${task.reason} · ${task.remaining_minutes}m remaining`}
+                      style={{
+                        border: '1px solid #1a1a2e',
+                        background: '#0a0a12',
+                        color: '#8888a0',
+                        borderRadius: '7px',
+                        padding: '5px 8px',
+                        fontSize: '10px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {task.title} · {formatDuration(task.remaining_minutes)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
