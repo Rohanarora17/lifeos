@@ -123,18 +123,56 @@ export function getAccountabilityScore(stats: {
     habitsCompleted: number;
     totalHabits: number;
     knowledgeMasteryBonus?: number;
+    adaptiveContext?: {
+        mode?: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+        energy?: 'high' | 'medium' | 'low';
+        mood?: 'high' | 'medium' | 'low' | null;
+        overdueTasks?: number;
+        recentDistractionMinutes?: number;
+    };
 }): number {
-    const { productiveMinutes, distractionMinutes, tasksCompleted, totalTasks, habitsCompleted, totalHabits, knowledgeMasteryBonus = 0 } = stats;
+    const { productiveMinutes, distractionMinutes, tasksCompleted, totalTasks, habitsCompleted, totalHabits, knowledgeMasteryBonus = 0, adaptiveContext } = stats;
     const bands = getAdaptiveBands();
-    const focusWeight = bands.focusDeepWeight / 100;
-    const taskWeight = bands.focusFlowWeight / 100;
-    const habitWeight = bands.focusFragWeight / 100;
-    const masteryMaxPct = bands.focusSwitchWeight / 100;
+    const mode = adaptiveContext?.mode ?? 'normal';
+    const lowCapacity = adaptiveContext?.energy === 'low' || adaptiveContext?.mood === 'low' || mode === 'recovery';
+    const deadlinePressure = mode === 'deadline_pressure' || Number(adaptiveContext?.overdueTasks ?? 0) > 0;
+    const protectFocus = mode === 'protect_focus';
 
-    const totalActive = productiveMinutes + distractionMinutes;
+    let focusWeight = bands.focusDeepWeight / 100;
+    let taskWeight = bands.focusFlowWeight / 100;
+    let habitWeight = bands.focusFragWeight / 100;
+    if (lowCapacity) {
+        focusWeight *= 1.1;
+        taskWeight *= 0.85;
+        habitWeight *= 0.85;
+    } else if (deadlinePressure) {
+        focusWeight *= 0.9;
+        taskWeight *= 1.2;
+        habitWeight *= 0.8;
+    } else if (protectFocus) {
+        focusWeight *= 1.2;
+        taskWeight *= 0.9;
+    } else if (mode === 'planning') {
+        focusWeight *= 0.9;
+        taskWeight *= 0.85;
+        habitWeight *= 1.15;
+    }
+    const weightTotal = focusWeight + taskWeight + habitWeight || 1;
+    const scoreWeightTotal = (bands.focusDeepWeight + bands.focusFlowWeight + bands.focusFragWeight) / 100 || 1;
+    focusWeight = (focusWeight / weightTotal) * scoreWeightTotal;
+    taskWeight = (taskWeight / weightTotal) * scoreWeightTotal;
+    habitWeight = (habitWeight / weightTotal) * scoreWeightTotal;
+    const masteryMaxPct = bands.focusSwitchWeight / 100;
+    const effectiveTotalTasks = lowCapacity ? Math.max(tasksCompleted, Math.ceil(totalTasks * 0.7), 1) : totalTasks;
+    const effectiveTotalHabits = lowCapacity || deadlinePressure ? Math.max(habitsCompleted, Math.ceil(totalHabits * 0.75), 1) : totalHabits;
+    const effectiveDistractionMinutes = protectFocus
+        ? distractionMinutes + Math.round(Number(adaptiveContext?.recentDistractionMinutes ?? 0) * 0.5)
+        : distractionMinutes;
+
+    const totalActive = productiveMinutes + effectiveDistractionMinutes;
     const focusScore = totalActive > 0 ? (productiveMinutes / totalActive) * focusWeight * 100 : focusWeight * 50;
-    const taskScore = totalTasks > 0 ? (tasksCompleted / totalTasks) * taskWeight * 100 : taskWeight * 50;
-    const habitScore = totalHabits > 0 ? (habitsCompleted / totalHabits) * habitWeight * 100 : habitWeight * 50;
+    const taskScore = effectiveTotalTasks > 0 ? (tasksCompleted / effectiveTotalTasks) * taskWeight * 100 : taskWeight * 50;
+    const habitScore = effectiveTotalHabits > 0 ? (habitsCompleted / effectiveTotalHabits) * habitWeight * 100 : habitWeight * 50;
     const masteryBonus = Math.min(masteryMaxPct * 100, knowledgeMasteryBonus);
 
     return Math.min(100, Math.round(focusScore + taskScore + habitScore + masteryBonus));

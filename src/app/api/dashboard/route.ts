@@ -64,6 +64,19 @@ export async function GET() {
       "SELECT COUNT(*) as count FROM github_activity WHERE date(created_at) = ?"
     ).get(today) as { count: number }).count;
 
+    const activeSession = getActiveGuardianSession();
+    const personalization = buildPersonalizationSnapshot({
+      surface: 'dashboard',
+      maxInsights: 2,
+      includeMemoryFacts: 3,
+      activeSession: activeSession ? {
+        sessionId: activeSession.sessionId,
+        targetTitle: activeSession.targetTitle,
+        focusScore: activeSession.focusScoreHistory?.at(-1) ?? null,
+        elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000)),
+      } : null,
+    });
+
     // Accountability score with knowledge graph mastery bonus
     const knowledgeMasteryBonus = getKnowledgeMasteryBonus();
     const score = getAccountabilityScore({
@@ -74,6 +87,13 @@ export async function GET() {
       habitsCompleted: habitStats.completed_today || 0,
       totalHabits: Math.max(habitStats.total_habits || 1, 1),
       knowledgeMasteryBonus,
+      adaptiveContext: {
+        mode: personalization.moment.mode,
+        energy: personalization.userState.energy,
+        mood: personalization.userState.mood,
+        overdueTasks: personalization.today.overdueTasks,
+        recentDistractionMinutes: personalization.today.recentDistractionMinutes,
+      },
     });
 
     // Latest morning brief
@@ -108,19 +128,6 @@ export async function GET() {
       tasks_assigned: number;
       tasks_pending: number;
     }>;
-
-    const activeSession = getActiveGuardianSession();
-    const personalization = buildPersonalizationSnapshot({
-      surface: 'dashboard',
-      maxInsights: 2,
-      includeMemoryFacts: 3,
-      activeSession: activeSession ? {
-        sessionId: activeSession.sessionId,
-        targetTitle: activeSession.targetTitle,
-        focusScore: activeSession.focusScoreHistory?.at(-1) ?? null,
-        elapsedMinutes: Math.max(0, Math.round((Date.now() - activeSession.startedAt) / 60_000)),
-      } : null,
-    });
 
     // Phase 12: Intelligence layer
     const cognitiveLoad = getCognitiveLoadAudit();
