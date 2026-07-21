@@ -25,6 +25,15 @@ interface Task {
     adaptive_moment_fit: 'high' | 'medium' | 'low' | null;
     adaptive_estimated_minutes: number | null;
     adaptive_energy_required: 'low' | 'medium' | 'high' | null;
+    estimated_minutes: number | null;
+    energy_required: 'low' | 'medium' | 'high' | null;
+    time_progress?: {
+        targetMinutes: number | null;
+        creditedMinutes: number;
+        remainingMinutes: number | null;
+        percent: number | null;
+        linkedSessions: number;
+    };
 }
 
 interface TaskPersonalization {
@@ -35,6 +44,7 @@ interface TaskPersonalization {
     standupGoal: string | null;
     alertFatigueLevel: 'low' | 'medium' | 'high';
     nextBestFocusWindow: string;
+    recommendedSessionMinutes?: number;
 }
 
 interface DayHistory {
@@ -143,12 +153,44 @@ function TypeBadge({ task_type }: { task_type: string }) {
     );
 }
 
+function suggestedTaskTargetMinutes(personalization: TaskPersonalization | null): number {
+    const learned = personalization?.recommendedSessionMinutes ?? 45;
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return Math.max(15, Math.min(learned, 30));
+    }
+    if (personalization?.mode === 'deadline_pressure') {
+        return Math.max(learned, 60);
+    }
+    if (personalization?.mode === 'planning') {
+        return Math.min(learned, 45);
+    }
+    return learned;
+}
+
+function taskTitlePlaceholder(personalization: TaskPersonalization | null): string {
+    if (!personalization) return 'Task title...';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Small useful time target...';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Deadline-relief task...';
+    }
+    if (personalization.mode === 'planning') {
+        return 'Task to schedule tomorrow...';
+    }
+    if (personalization.standupGoal) {
+        return `Move today forward: ${personalization.standupGoal.slice(0, 48)}`;
+    }
+    return 'Task title...';
+}
+
 export default function TasksPage() {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [personalization, setPersonalization] = useState<TaskPersonalization | null>(null);
     const [newTaskCol, setNewTaskCol] = useState<string | null>(null);
     const [newTaskTitle, setNewTaskTitle] = useState('');
-    const [newTaskPriority, setNewTaskPriority] = useState('medium');
+    const [newTaskPriority, setNewTaskPriority] = useState('');
+    const [newTaskTargetMinutes, setNewTaskTargetMinutes] = useState('');
     const [newTaskType, setNewTaskType] = useState('task');
     const [newTaskCourse, setNewTaskCourse] = useState('');
     const [newTaskDue, setNewTaskDue] = useState('');
@@ -216,14 +258,16 @@ export default function TasksPage() {
             body: JSON.stringify({
                 title: newTaskTitle.trim(),
                 status,
-                priority: newTaskPriority,
+                priority: newTaskPriority || undefined,
+                target_minutes: newTaskTargetMinutes ? Number(newTaskTargetMinutes) : undefined,
                 task_type: newTaskType,
                 course: newTaskCourse.trim() || null,
                 due_date: newTaskDue || null,
             }),
         });
         setNewTaskTitle('');
-        setNewTaskPriority('medium');
+        setNewTaskPriority('');
+        setNewTaskTargetMinutes('');
         setNewTaskType('task');
         setNewTaskCourse('');
         setNewTaskDue('');
@@ -570,6 +614,22 @@ export default function TasksPage() {
                                                 </div>
                                             )}
 
+                                            {task.time_progress?.targetMinutes && (
+                                                <div className="mt-1.5" title={`${task.time_progress.creditedMinutes}/${task.time_progress.targetMinutes} linked focus minutes across ${task.time_progress.linkedSessions} session${task.time_progress.linkedSessions === 1 ? '' : 's'}`}>
+                                                    <div className="flex justify-between text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
+                                                        <span>{task.time_progress.creditedMinutes}/{task.time_progress.targetMinutes}m focus time</span>
+                                                        <span>{task.time_progress.remainingMinutes && task.time_progress.remainingMinutes > 0 ? `${task.time_progress.remainingMinutes}m left` : 'complete'}</span>
+                                                    </div>
+                                                    <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+                                                        <div style={{
+                                                            width: `${task.time_progress.percent ?? 0}%`,
+                                                            height: '100%',
+                                                            background: task.adaptive_moment_fit ? FIT_COLOR[task.adaptive_moment_fit] : 'var(--accent-blue)',
+                                                        }} />
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Deadline badge */}
                                             {task.due_date && (
                                                 <div className="mt-1.5">
@@ -611,12 +671,12 @@ export default function TasksPage() {
                                                 ref={inputRef}
                                                 type="text"
                                                 className="input"
-                                                placeholder="Task title..."
+                                                placeholder={taskTitlePlaceholder(personalization)}
                                                 value={newTaskTitle}
                                                 onChange={e => setNewTaskTitle(e.target.value)}
                                                 onKeyDown={e => {
                                                     if (e.key === 'Enter') addTask(col.id);
-                                                    if (e.key === 'Escape') { setNewTaskCol(null); setNewTaskTitle(''); }
+                                                    if (e.key === 'Escape') { setNewTaskCol(null); setNewTaskTitle(''); setNewTaskTargetMinutes(''); }
                                                 }}
                                             />
                                             {/* Type + Course row */}
@@ -640,6 +700,27 @@ export default function TasksPage() {
                                                     style={{ flex: 1 }}
                                                 />
                                             </div>
+                                            {/* Time target row */}
+                                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                                <input
+                                                    type="number"
+                                                    min={5}
+                                                    step={5}
+                                                    className="input text-xs"
+                                                    placeholder={`${suggestedTaskTargetMinutes(personalization)} min target`}
+                                                    value={newTaskTargetMinutes}
+                                                    onChange={e => setNewTaskTargetMinutes(e.target.value)}
+                                                    style={{ flex: 1 }}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm"
+                                                    onClick={() => setNewTaskTargetMinutes(String(suggestedTaskTargetMinutes(personalization)))}
+                                                    title="Use today's learned focus target"
+                                                >
+                                                    Use adaptive
+                                                </button>
+                                            </div>
                                             {/* Priority + Due date row */}
                                             <div style={{ display: 'flex', gap: '6px' }}>
                                                 <select
@@ -648,6 +729,7 @@ export default function TasksPage() {
                                                     value={newTaskPriority}
                                                     onChange={e => setNewTaskPriority(e.target.value)}
                                                 >
+                                                    <option value="">Adaptive</option>
                                                     <option value="low">Low</option>
                                                     <option value="medium">Medium</option>
                                                     <option value="high">High</option>
@@ -664,14 +746,18 @@ export default function TasksPage() {
                                             {/* Action buttons */}
                                             <div className="flex gap-2">
                                                 <button className="btn btn-primary btn-sm flex-1" onClick={() => addTask(col.id)}>Add</button>
-                                                <button className="btn btn-ghost btn-sm" onClick={() => { setNewTaskCol(null); setNewTaskTitle(''); }}>Cancel</button>
+                                                <button className="btn btn-ghost btn-sm" onClick={() => { setNewTaskCol(null); setNewTaskTitle(''); setNewTaskTargetMinutes(''); }}>Cancel</button>
                                             </div>
                                         </div>
                                     ) : (
                                         <button
                                             className="w-full text-sm py-2 rounded-lg transition-colors"
                                             style={{ color: 'var(--text-muted)' }}
-                                            onClick={() => setNewTaskCol(col.id)}
+                                            onClick={() => {
+                                                setNewTaskCol(col.id);
+                                                setNewTaskPriority('');
+                                                setNewTaskTargetMinutes(String(suggestedTaskTargetMinutes(personalization)));
+                                            }}
                                             onMouseOver={e => (e.target as HTMLElement).style.color = 'var(--text-primary)'}
                                             onMouseOut={e => (e.target as HTMLElement).style.color = 'var(--text-muted)'}
                                         >
