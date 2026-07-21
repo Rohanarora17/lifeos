@@ -372,6 +372,36 @@ function voiceGoalsEmptyLine(snapshot: PersonalizationSnapshot): string {
   return 'No active goals to archive. Add one durable anchor when you know what the system should optimize for.';
 }
 
+function voiceEntityLookupPrompt(
+  snapshot: PersonalizationSnapshot,
+  kind: 'habit' | 'task' | 'goal',
+  action: 'log' | 'update',
+): string {
+  const verb = action === 'log' ? 'log' : 'update';
+  const lowCapacity = snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low';
+
+  if (kind === 'habit') {
+    if (lowCapacity) return 'Which low-friction habit should I log?';
+    if (snapshot.moment.mode === 'planning') return 'Which habit should I log for tomorrow setup?';
+    if (snapshot.today.plannedFocus.nextTitle) return `Which habit should I log around ${snapshot.today.plannedFocus.nextTitle}?`;
+    return 'Which habit should I log? Tell me the name.';
+  }
+
+  if (kind === 'task') {
+    if (snapshot.today.plannedFocus.nextTitle) return `Which task should I ${verb}? Planned focus is ${snapshot.today.plannedFocus.nextTitle}.`;
+    if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline-relief task should I ${verb}?`;
+    if (lowCapacity) return `Which small or recovery-safe task should I ${verb}?`;
+    if (snapshot.userState.nextBestFocusWindow) return `Which task should I ${verb}? Your learned best focus window is ${snapshot.userState.nextBestFocusWindow}.`;
+    return `Which task should I ${verb}?`;
+  }
+
+  if (snapshot.userState.standupGoal) return `Which goal should I ${verb}? Today's stated goal is ${snapshot.userState.standupGoal}.`;
+  if (snapshot.moment.mode === 'deadline_pressure') return `Which deadline goal should I ${verb}?`;
+  if (snapshot.moment.mode === 'planning') return `Which tomorrow-facing goal should I ${verb}?`;
+  if (lowCapacity) return `Which low-pressure goal should I ${verb}?`;
+  return `Which goal should I ${verb}?`;
+}
+
 function voiceCompletionLine(snapshot: PersonalizationSnapshot, elapsed: number): string {
   if (snapshot.moment.mode === 'recovery') return `Session ended after ${elapsed} minutes. That counts as a recovery-sized win.`;
   if (snapshot.moment.mode === 'deadline_pressure') return `Session ended after ${elapsed} minutes. Capture the next deadline step while it is still fresh.`;
@@ -1132,7 +1162,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'log_habit') {
     const habitName = intent.habitName?.trim();
     if (!habitName) {
-      const response = 'Which habit should I log? Tell me the name.';
+      const response = voiceEntityLookupPrompt(personalization, 'habit', 'log');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -1174,7 +1204,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'update_task') {
     const taskTitle = intent.taskTitle?.trim();
     if (!taskTitle) {
-      const response = 'Which task should I update?';
+      const response = voiceEntityLookupPrompt(personalization, 'task', 'update');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
@@ -1422,7 +1452,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   if (intent.action === 'update_goal') {
     const goalTitle = intent.goalTitle?.trim();
     if (!goalTitle) {
-      const response = 'Which goal should I update?';
+      const response = voiceEntityLookupPrompt(personalization, 'goal', 'update');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
