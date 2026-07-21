@@ -629,6 +629,11 @@ export default function DashboardPage() {
                         <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
                           {new Date(a.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                         </p>
+                        {a.adaptive_reason && (
+                          <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.35 }}>
+                            Why now: {a.adaptive_reason}
+                          </p>
+                        )}
                         <div className="flex items-center gap-1 mt-2">
                           {a.feedback ? (
                             <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
