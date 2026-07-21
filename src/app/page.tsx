@@ -276,6 +276,32 @@ function generalFocusOptionLabel(personalization?: DashboardPersonalization, pol
   return 'General focus session';
 }
 
+function dashboardTasksEmpty(personalization?: DashboardPersonalization, policy?: DashboardPolicy) {
+  if (policy?.focusTarget.title) return `No ranked tasks here. Start with "${policy.focusTarget.title}" from today's policy.`;
+  if (!personalization) return 'No active tasks yet. Add a time target so sessions can complete it.';
+  if (personalization.plannedFocus.plannedToday > personalization.plannedFocus.completedToday) {
+    return `No ranked tasks here. Protect the ${personalization.plannedFocus.plannedToday - personalization.plannedFocus.completedToday} planned focus block(s) still open.`;
+  }
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No active tasks here. Add one small recovery-safe time target if today still needs a win.';
+  }
+  if (personalization.mode === 'deadline_pressure') return 'No active tasks here. Add the nearest deadline-relief target before optional work.';
+  if (personalization.mode === 'planning') return 'No active tasks here. Turn tomorrow\'s intention into scheduled time blocks.';
+  if (personalization.standupGoal) return `No active tasks here. Add one measurable block for: ${personalization.standupGoal}`;
+  return 'No active tasks here. Add the next concrete time target.';
+}
+
+function dashboardGoalsEmpty(personalization?: DashboardPersonalization, policy?: DashboardPolicy) {
+  if (policy?.focusTarget.type === 'planning') return 'No active goals here. Use planning mode to choose what tomorrow should optimize for.';
+  if (!personalization) return 'No active goals yet. Add the goal that should anchor tasks, sessions, and rewards.';
+  if (personalization.mode === 'deadline_pressure') return 'No active goals here. Add the deadline goal so ranking can protect it.';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No active goals here. Add only goals that can shrink on rough days.';
+  }
+  if (personalization.standupGoal) return `No active goals here. Anchor today's stated goal: ${personalization.standupGoal}`;
+  return 'No active goals here. Add one goal so the agent has a durable anchor.';
+}
+
 function taskFitColor(fit?: 'high' | 'medium' | 'low') {
   if (fit === 'high') return '#22c55e';
   if (fit === 'low') return '#f59e0b';
@@ -465,6 +491,8 @@ export default function DashboardPage() {
   const adaptiveFocusMinutesRounded = adaptiveFocusMinutes ? Math.max(5, Math.round(adaptiveFocusMinutes)) : null;
   const focusTargetPrompt = focusTargetLabel(personalization, dashboardPolicy);
   const generalFocusLabel = generalFocusOptionLabel(personalization, dashboardPolicy);
+  const emptyTasksText = dashboardTasksEmpty(personalization, dashboardPolicy);
+  const emptyGoalsText = dashboardGoalsEmpty(personalization, dashboardPolicy);
   const selectedPolicyTarget = dashboardPolicy?.focusTarget.type === 'task' && dashboardPolicy.focusTarget.id
     ? `task-${dashboardPolicy.focusTarget.id}`
     : '';
@@ -1157,7 +1185,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )) : (
-                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active tasks. Add some! 📝</p>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{emptyTasksText}</p>
               )}
             </div>
             {data.intelligence.efficacyMode.isRecoveryMode && (
@@ -1192,7 +1220,7 @@ export default function DashboardPage() {
                   </p>
                 </div>
               )) : (
-                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active goals. Set one! 🎯</p>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{emptyGoalsText}</p>
               )}
             </div>
           </div>
