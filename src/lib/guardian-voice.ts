@@ -349,6 +349,29 @@ function voiceNoActiveSessionLine(snapshot: PersonalizationSnapshot, action: 'ad
   return 'No active session right now. Start the next useful block when you are ready.';
 }
 
+function voiceTasksEmptyLine(snapshot: PersonalizationSnapshot, scope: string): string {
+  const label = scope.replace('_', ' ');
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `No ${label} tasks in the voice queue. The current planned focus is ${snapshot.today.plannedFocus.nextTitle}.`;
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return `No ${label} tasks right now. Add one small time target only if today still needs a minimum win.`;
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') return `No ${label} tasks right now. Add the nearest deadline-relief task first.`;
+  if (snapshot.moment.mode === 'planning') return `No ${label} tasks right now. Turn tomorrow's intention into a scheduled block.`;
+  return `No ${label} tasks right now. Add the next measurable time target when ready.`;
+}
+
+function voiceGoalsEmptyLine(snapshot: PersonalizationSnapshot): string {
+  if (snapshot.userState.standupGoal) return `No active goals to archive. Today's stated goal is still ${snapshot.userState.standupGoal}.`;
+  if (snapshot.moment.mode === 'deadline_pressure') return 'No active goals to archive. Add the deadline goal first so tasks can rank around it.';
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return 'No active goals to archive. Keep any new goal shrinkable for low-capacity days.';
+  }
+  if (snapshot.moment.mode === 'planning') return 'No active goals to archive. Planning mode needs a goal only if it clarifies tomorrow.';
+  return 'No active goals to archive. Add one durable anchor when you know what the system should optimize for.';
+}
+
 function voiceCompletionLine(snapshot: PersonalizationSnapshot, elapsed: number): string {
   if (snapshot.moment.mode === 'recovery') return `Session ended after ${elapsed} minutes. That counts as a recovery-sized win.`;
   if (snapshot.moment.mode === 'deadline_pressure') return `Session ended after ${elapsed} minutes. Capture the next deadline step while it is still fresh.`;
@@ -1275,7 +1298,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
       let response: string;
       if (tasks.length === 0) {
-        response = scope === 'today' ? 'No active tasks right now.' : `No ${scope.replace('_', ' ')} tasks.`;
+        response = voiceTasksEmptyLine(personalization, scope);
       } else {
         const taskLines = tasks.map((t, i) => {
           const dueStr = t.dueDate ? `, due ${t.dueDate}` : '';
@@ -1443,7 +1466,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       const db = getDb();
       const count = (db.prepare(`SELECT COUNT(*) as n FROM goals WHERE archived = 0`).get() as { n: number }).n;
       if (count === 0) {
-        const response = 'No active goals to archive.';
+        const response = voiceGoalsEmptyLine(personalization);
         await maybeSpeakVoiceResponse(activeSessionId, response);
         addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now() });
         return { type: 'intent_only', transcript, intent, responseText: response };
