@@ -1452,6 +1452,7 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
         startTime,
         endTime,
         colorId: '9', // blueberry
+        reminderSnapshot: startSnapshot,
       });
       if (eventId) calendarEventIds.set(sessionId, eventId);
     }

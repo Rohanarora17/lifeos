@@ -720,6 +720,11 @@ export async function executeAction(
             if (!title) { await sendTelegram('What topic should I schedule?', ''); break; }
             const intendedStartAt = Number(payload.intendedStartAt) || Date.now() + 60 * 60_000;
             const plannedMinutes = getAdaptiveSessionMinutes(payload.durationMinutes);
+            const schedulerSnapshot = buildPersonalizationSnapshot({
+                surface: 'scheduler',
+                maxInsights: 2,
+                includeMemoryFacts: 3,
+            });
 
             const { createSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const commitment = createSoftWatchCommitment({
@@ -748,6 +753,7 @@ export async function executeAction(
                             startTime,
                             endTime,
                             colorId: '9',
+                            reminderSnapshot: schedulerSnapshot,
                         });
                         if (eventId) {
                             const { attachCalendarEventId } = require('./guardian-runtime') as typeof import('./guardian-runtime');

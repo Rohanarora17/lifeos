@@ -607,7 +607,7 @@ function insertSoftWatch(input: {
   );
 }
 
-async function syncSessionCalendar(session: PlannedFocusSession, rule: SessionRule) {
+async function syncSessionCalendar(session: PlannedFocusSession, rule: SessionRule, snapshot: PersonalizationSnapshot) {
   if (!isCalendarConfigured()) return { eventId: null, status: 'not_configured' as const };
   const eventId = await createCalendarEvent({
     summary: `Focus: ${session.title}`,
@@ -615,6 +615,7 @@ async function syncSessionCalendar(session: PlannedFocusSession, rule: SessionRu
     startTime: new Date(session.planned_start),
     endTime: new Date(session.planned_end),
     colorId: '9',
+    reminderSnapshot: snapshot,
   });
   return eventId
     ? { eventId, status: 'created' as const }
@@ -851,7 +852,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         });
 
         if (input.syncCalendar) {
-          const calendar = await syncSessionCalendar(row, pricedRule);
+          const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
           db.prepare(`
             UPDATE planned_focus_sessions
             SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
