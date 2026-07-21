@@ -229,6 +229,7 @@ function executeTool(name: string, args: ToolArgs, personalization: Personalizat
                 energy: personalization.userState.energy,
                 mood: personalization.userState.mood,
                 nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+                plannedFocus: personalization.today.plannedFocus,
                 alertFatigueLevel: personalization.feedback.alertFatigueLevel,
             },
         };
@@ -334,6 +335,7 @@ export async function POST(request: NextRequest) {
             personalizationContext + "\\n\\n" +
             (knowledgeContext ? "Knowledge Graph:\\n" + knowledgeContext + "\\n\\n" : "") +
             "When users ask questions about their data or what to do next, use getDashboardSnapshot; it includes the adaptive dashboard policy and ranked tasks.\\n" +
+            "If plannedFocus shows an upcoming planned block or weak follow-through, prioritize protecting or adjusting that schedule before suggesting unrelated new work.\\n" +
             "When users ask to create a task, check a habit, or start a guardian session, use the respective tool. If the user did not name a session length, omit duration_minutes and let LifeOS pick the learned adaptive length.\\n" +
             "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain the adaptive reason naturally.";
