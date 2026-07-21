@@ -130,15 +130,16 @@ function composeOverrideFollowUpMessage(input: {
   return `<b>Override check-in</b>\n\nThe override for <code>${escapedDomain}</code> has had time to play out.\nReason you gave: "${escapedReason}"\n\nWas it worth it? Reply yes/no or what actually happened.`;
 }
 
-async function runAdaptiveSchedulerJob(name: string, fn: () => Promise<void>): Promise<void> {
+async function runAdaptiveSchedulerJob(name: string, fn: () => Promise<void>): Promise<boolean> {
   const snapshot = buildSchedulerSnapshot();
   const decision = decideAdaptiveJobRun(name, snapshot);
   if (!decision.run) {
     console.log(`[Scheduler] ${name} adaptive skip: ${decision.reason}`);
-    return;
+    return false;
   }
   console.log(`[Scheduler] ${name} adaptive run: ${decision.reason}`);
   await fn();
+  return true;
 }
 
 function inferMorningTime(): string {
@@ -195,6 +196,10 @@ function minutesToTime(minutes: number): string {
 
 function todayIst(): string {
   return new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+}
+
+function tomorrowIst(): string {
+  return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
 }
 
 function currentLocalMinutes(now: Date = new Date()): number {
@@ -301,6 +306,23 @@ function resolveEveningReminderTime(): { time: string; reason: string } {
   return {
     time: minutesToTime(timeToMinutes(reflection.time, true) - leadMinutes),
     reason: `${leadMinutes}m before evening reflection; ${reflection.reason}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
+}
+
+function resolveNextDayPlanRefreshTime(): { time: string; reason: string } {
+  const reflection = resolveEveningReflectionTimeDetailed();
+  const snapshot = buildSchedulerSnapshot();
+  const delayMinutes = snapshot.moment.mode === 'planning'
+    ? 8
+    : snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low'
+      ? 20
+      : snapshot.feedback.alertFatigueLevel === 'high'
+        ? 25
+        : 12;
+
+  return {
+    time: minutesToTime(timeToMinutes(reflection.time, true) + delayMinutes),
+    reason: `${delayMinutes}m after evening reflection; ${reflection.reason}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, alerts=${snapshot.feedback.alertFatigueLevel}`,
   };
 }
 
@@ -594,17 +616,18 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
-    // Weekly plan refresh — regenerate every Monday at 00:05 using latest weights and goal health
-    registerDailyJob('weekly_plan_refresh', '00:05', async () => {
-        const day = new Date().getDay(); // 0=Sun, 1=Mon
-        if (day !== 1) return; // only on Mondays
-        try {
-            const { generateWeeklyPlan, saveWeeklyPlan } = await import('./weekly-planner');
-            saveWeeklyPlan(generateWeeklyPlan());
-            console.log('[Scheduler] weekly_plan_refresh: plan generated for new week');
-        } catch (err) {
-            console.error('[Scheduler] weekly_plan_refresh failed:', err);
-        }
+    // Next-day plan refresh — regenerates tomorrow's focus blocks after the adaptive evening reflection window.
+    registerAdaptiveNextDayPlanRefreshJob(async () => {
+        return runAdaptiveSchedulerJob('next_day_plan_refresh', async () => {
+            const { generateNextDayPlan } = await import('./next-day-planner');
+            const planDate = tomorrowIst();
+            const plan = await generateNextDayPlan({
+                planDate,
+                syncCalendar: true,
+                regenerate: true,
+            });
+            console.log(`[Scheduler] next_day_plan_refresh: generated ${plan.sessions.length} focus block(s) for ${planDate}`);
+        });
     });
 
     // Memory consolidation — runs nightly at 02:30 (merge duplicates, purge stale)
@@ -949,6 +972,54 @@ function registerAdaptiveEveningReminderJob(fn: () => Promise<void>) {
             job.lastRun = new Date(Date.now() + 19800000).toISOString();
             job.nextRun = nextRunIsoForLocalTime(target.time);
             console.log(`[Scheduler] ${name} completed`);
+        } catch (err) {
+            console.error(`[Scheduler] ${name} failed:`, err);
+        }
+        job.running = false;
+    }, 60 * 1000);
+
+    timers.set(name, timer);
+}
+
+/**
+ * Refresh tomorrow's plan after evening reflection using the latest sleep, mood,
+ * intention, calendar, feedback, and task-time state.
+ */
+function registerAdaptiveNextDayPlanRefreshJob(fn: () => Promise<boolean>) {
+    const name = 'next_day_plan_refresh';
+    const initial = resolveNextDayPlanRefreshTime();
+    const sentKey = 'scheduler_next_day_plan_refresh_last_sent_date';
+    const job: ScheduledJob = {
+        name,
+        schedule: `adaptive daily near ${initial.time}`,
+        lastRun: null,
+        nextRun: nextRunIsoForLocalTime(initial.time),
+        enabled: true,
+        running: false,
+    };
+    jobs.set(name, job);
+
+    const timer = setInterval(async () => {
+        if (job.running) return;
+        const target = resolveNextDayPlanRefreshTime();
+        job.schedule = `adaptive daily near ${target.time}`;
+        job.nextRun = nextRunIsoForLocalTime(target.time);
+
+        if (!isInsideMinuteWindow(currentLocalMinutes(), target.time, 2)) return;
+
+        const today = todayIst();
+        if (getSetting(sentKey) === today) return;
+
+        job.running = true;
+        console.log(`[Scheduler] Running ${name} at adaptive target ${target.time}: ${target.reason}`);
+        try {
+            const didRun = await fn();
+            if (didRun) {
+                setSetting(sentKey, today);
+                job.lastRun = new Date(Date.now() + 19800000).toISOString();
+                job.nextRun = nextRunIsoForLocalTime(target.time);
+                console.log(`[Scheduler] ${name} completed`);
+            }
         } catch (err) {
             console.error(`[Scheduler] ${name} failed:`, err);
         }

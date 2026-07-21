@@ -6,6 +6,7 @@ export type AdaptiveJobName =
   | 'continuity_guardian'
   | 'morning_checkin'
   | 'evening_reminder'
+  | 'next_day_plan_refresh'
   | 'deep_analysis'
   | 'weekly_reckoning'
   | string;
@@ -64,6 +65,13 @@ export function decideAdaptiveJobRun(
       return { run: false, reason: 'evening reminder skipped because alert fatigue is high and there is no open-task pressure' };
     }
     return { run: true, reason: `evening reminder allowed in ${snapshot.moment.mode}` };
+  }
+
+  if (jobName === 'next_day_plan_refresh') {
+    if (inFocusSession && snapshot.moment.mode === 'protect_focus') {
+      return { run: false, reason: 'next-day plan refresh deferred while active focus is protected' };
+    }
+    return { run: true, reason: `next-day plan refresh allowed in ${snapshot.moment.mode}` };
   }
 
   if (jobName === 'deep_analysis') {
