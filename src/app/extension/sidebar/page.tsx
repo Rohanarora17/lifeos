@@ -17,7 +17,15 @@ const GuardianVoiceRoom = dynamic(() => import('@/components/GuardianVoiceRoom')
 interface Task {
     id: number;
     title: string;
+    goal_id?: number | null;
     priority: string;
+    time_progress?: {
+        targetMinutes: number | null;
+        creditedMinutes: number;
+        remainingMinutes: number | null;
+        percent: number | null;
+        linkedSessions: number;
+    };
 }
 
 interface Goal {
@@ -149,7 +157,6 @@ export default function ExtensionSidebar() {
     const [stats, setStats] = useState<DashStats | null>(null);
     const [insights, setInsights] = useState<InsightsData | null>(null);
     const [focusTarget, setFocusTarget] = useState('');
-    const [taskCompletionNotice, setTaskCompletionNotice] = useState<string | null>(null);
     const topRecommendedTask = insights?.recommendedTasks?.[0] ?? null;
     const selectedRecommendedTask = focusTarget.startsWith('task-')
         ? insights?.recommendedTasks?.find(task => task.id === Number(focusTarget.replace('task-', ''))) ?? null
@@ -271,23 +278,26 @@ export default function ExtensionSidebar() {
         return formatDuration(mins);
     };
 
-    const markTaskDone = async (id: number) => {
-        try {
-            setTaskCompletionNotice(null);
-            const res = await fetch('/api/tasks', {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id, status: 'done' })
-            });
-            if (!res.ok) {
-                const payload = await res.json().catch(() => null);
-                setTaskCompletionNotice(payload?.message || 'Task still needs linked focus time before it can complete.');
-                return;
-            }
-            sendRecommendationFeedback(id, 'completed', 'completed from extension sidebar');
+    const startTaskTimeSession = async (task: Task) => {
+        const remaining = task.time_progress?.remainingMinutes;
+        const duration = Math.max(5, Math.round(
+            remaining && remaining > 0
+                ? Math.min(remaining, effectiveFocusDuration ?? remaining)
+                : effectiveFocusDuration ?? adaptiveDefaults.recommendedSessionMinutes
+        ));
+        const sessionId = await startGuardianSession({
+            goalId: task.goal_id ? String(task.goal_id) : null,
+            goalTitle: null,
+            conceptNodeName: task.title,
+            durationMinutes: duration,
+            source: 'extension',
+        });
+        if (sessionId && window.parent !== window) {
+            window.parent.postMessage({ type: 'START_GUARDIAN', context: { sessionId, targetTitle: task.title, durationMinutes: duration } }, '*');
+        }
+        if (sessionId) {
+            sendRecommendationFeedback(task.id, 'started', 'started task time session from extension sidebar');
             fetchContext();
-        } catch {
-            setTaskCompletionNotice('Could not update the task right now.');
         }
     };
 
@@ -606,19 +616,6 @@ export default function ExtensionSidebar() {
                 }}>
                     Today&apos;s Tasks
                 </div>
-                {taskCompletionNotice && (
-                    <div style={{
-                        fontSize: '11px',
-                        color: '#f59e0b',
-                        background: 'rgba(245,158,11,0.08)',
-                        border: '1px solid rgba(245,158,11,0.16)',
-                        borderRadius: '6px',
-                        padding: '6px 8px',
-                        marginBottom: '6px',
-                    }}>
-                        {taskCompletionNotice}
-                    </div>
-                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {tasks.length === 0 ? (
                         <p style={{ fontSize: '11px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>
@@ -632,26 +629,62 @@ export default function ExtensionSidebar() {
                                 background: '#1a1a2e', border: '1px solid #2a2a40',
                                 transition: 'border-color 0.15s',
                             }}>
-                                <input
-                                    type="checkbox"
-                                    onChange={() => markTaskDone(t.id)}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                    }}>
+                                        <span style={{
+                                            fontSize: '12px', flex: 1, overflow: 'hidden',
+                                            textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+                                        }}>
+                                            {t.title}
+                                        </span>
+                                        {t.priority === 'critical' && (
+                                            <span style={{ color: '#ef4444', fontSize: '8px' }}>●</span>
+                                        )}
+                                        {t.priority === 'high' && (
+                                            <span style={{ color: '#f97316', fontSize: '8px' }}>●</span>
+                                        )}
+                                    </div>
+                                    {t.time_progress?.targetMinutes ? (
+                                        <div style={{ marginTop: '5px' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#8888a0' }}>
+                                                <span>{t.time_progress.creditedMinutes}/{t.time_progress.targetMinutes}m</span>
+                                                <span>{t.time_progress.remainingMinutes ?? 0}m left</span>
+                                            </div>
+                                            <div style={{ height: '3px', borderRadius: '999px', overflow: 'hidden', background: '#2a2a40', marginTop: '3px' }}>
+                                                <div style={{
+                                                    width: `${t.time_progress.percent ?? 0}%`,
+                                                    height: '100%',
+                                                    background: '#667eea',
+                                                }} />
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div style={{ marginTop: '4px', fontSize: '10px', color: '#8888a0' }}>
+                                            Start a session to set the time target.
+                                        </div>
+                                    )}
+                                </div>
+                                <button
+                                    onClick={() => startTaskTimeSession(t)}
+                                    disabled={session.active}
                                     style={{
-                                        width: '14px', height: '14px', borderRadius: '4px',
-                                        cursor: 'pointer', accentColor: '#667eea', flexShrink: 0,
+                                        border: '1px solid rgba(102,126,234,0.35)',
+                                        background: session.active ? '#1f1f31' : 'rgba(102,126,234,0.16)',
+                                        color: session.active ? '#555570' : '#a5b4fc',
+                                        borderRadius: '6px',
+                                        padding: '5px 7px',
+                                        fontSize: '10px',
+                                        fontWeight: 700,
+                                        cursor: session.active ? 'default' : 'pointer',
+                                        flexShrink: 0,
                                     }}
-                                />
-                                <span style={{
-                                    fontSize: '12px', flex: 1, overflow: 'hidden',
-                                    textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
-                                }}>
-                                    {t.title}
-                                </span>
-                                {t.priority === 'critical' && (
-                                    <span style={{ color: '#ef4444', fontSize: '8px' }}>●</span>
-                                )}
-                                {t.priority === 'high' && (
-                                    <span style={{ color: '#f97316', fontSize: '8px' }}>●</span>
-                                )}
+                                >
+                                    Focus
+                                </button>
                             </div>
                         ))
                     )}

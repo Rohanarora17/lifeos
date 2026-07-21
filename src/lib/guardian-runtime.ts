@@ -44,6 +44,7 @@ import { buildAdaptiveHabitPlans, type AdaptiveHabitInput } from './adaptive-hab
 import { getAutomaticityScore, getStreakCount } from './scoring';
 import { getAdaptiveSessionMinuteDecision, getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import { getAdaptiveBands } from './adaptive-bands';
+import { getTaskTimeProgress } from './task-time-sessions';
 
 // guardian-runtime is the single owner of live session state.
 // Routes ingest input and render output, but do not mutate session state directly.
@@ -2284,11 +2285,15 @@ export function getGuardianContext() {
     FROM goals
     WHERE active = 1
   `).all();
-  const activeTasks = db.prepare(`
-    SELECT id, title, description, goal_id
+  const activeTaskRows = db.prepare(`
+    SELECT id, title, description, goal_id, priority, estimated_minutes
     FROM tasks
     WHERE status IN ('doing', 'todo')
-  `).all();
+  `).all() as Array<{ id: number; title: string; description: string | null; goal_id: number | null; priority: string | null; estimated_minutes: number | null }>;
+  const activeTasks = activeTaskRows.map(task => ({
+    ...task,
+    time_progress: getTaskTimeProgress(task.id),
+  }));
   const activeSession = listGuardianSessions().find((session) => session.state === 'ACTIVE') || null;
   // Consume pending speech (read-once) so the dashboard can speak it via Web Speech API.
   const pendingSpeech = activeSession ? consumePendingSpeech(activeSession.sessionId) : null;
