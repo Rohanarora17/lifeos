@@ -45,6 +45,14 @@ interface GuardianInsights {
     alertFatigueLevel: 'low' | 'medium' | 'high';
     recentAlerts: number;
     nextBestFocusWindow: string;
+    plannedFocus?: {
+      plannedToday: number;
+      completedToday: number;
+      skippedToday: number;
+      nextTitle: string | null;
+      nextMinutes: number | null;
+      recentFollowThroughRate: number | null;
+    };
   };
   recommendedTasks?: Array<{
     id: number;
@@ -187,6 +195,11 @@ function addDurationOption(options: DurationOption[], minutes: number | null | u
   options.push({ minutes: rounded, label });
 }
 
+function formatPlannedFocusLabel(plannedFocus: NonNullable<GuardianInsights['personalization']>['plannedFocus']) {
+  if (!plannedFocus?.nextTitle) return null;
+  return `${plannedFocus.nextTitle}${plannedFocus.nextMinutes ? ` (${formatDuration(plannedFocus.nextMinutes)})` : ''}`;
+}
+
 function buildGuardianDurationOptions(input: {
   adaptiveDuration: number;
   personalization?: GuardianInsights['personalization'];
@@ -198,6 +211,7 @@ function buildGuardianDurationOptions(input: {
   const base = Math.round(input.adaptiveDuration);
 
   addDurationOption(options, input.selectedTask?.estimatedMinutes, 'This task');
+  addDurationOption(options, input.personalization?.plannedFocus?.nextMinutes, 'Next planned');
   addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
 
   if (mode === 'recovery' || input.personalization?.energy === 'low' || input.personalization?.mood === 'low') {
@@ -220,6 +234,10 @@ function buildGuardianDurationOptions(input: {
 
 function guardianTopicPlaceholder(personalization?: GuardianInsights['personalization']) {
   if (!personalization) return 'What are you working on?';
+  const planned = formatPlannedFocusLabel(personalization.plannedFocus);
+  if (planned) {
+    return `Start planned focus: ${planned}`;
+  }
   if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
     return 'What is the smallest useful session?';
   }
@@ -310,7 +328,9 @@ export default function GuardianPage() {
   } | null>(null);
   const topicRef = useRef<HTMLInputElement>(null);
   const adaptivePersonalization = insights?.personalization ?? briefing?.personalization;
-  const adaptiveDuration = adaptivePersonalization?.recommendedSessionMinutes ?? adaptiveDefaults.recommendedSessionMinutes;
+  const plannedFocus = adaptivePersonalization?.plannedFocus;
+  const plannedFocusLabel = formatPlannedFocusLabel(plannedFocus);
+  const adaptiveDuration = plannedFocus?.nextMinutes ?? adaptivePersonalization?.recommendedSessionMinutes ?? adaptiveDefaults.recommendedSessionMinutes;
   const adaptiveTasks = insights?.recommendedTasks ?? briefing?.adaptiveTasks ?? [];
   const selectedAdaptiveTask = selectedRecommendationId
     ? adaptiveTasks.find(task => task.id === selectedRecommendationId) ?? null
@@ -338,8 +358,9 @@ export default function GuardianPage() {
       if (res.ok) {
         const data = await res.json() as GuardianInsights;
         setInsights(data);
-        if (!activeSession.active && data.personalization?.recommendedSessionMinutes) {
-          setDuration(Math.round(data.personalization.recommendedSessionMinutes));
+        const nextDuration = data.personalization?.plannedFocus?.nextMinutes ?? data.personalization?.recommendedSessionMinutes;
+        if (!activeSession.active && nextDuration) {
+          setDuration(Math.round(nextDuration));
         }
       }
     } catch { }
@@ -437,12 +458,16 @@ export default function GuardianPage() {
     }
   }, [activeSession.active, adaptiveDefaults.recommendedSessionMinutes, adaptivePersonalization?.recommendedSessionMinutes]);
 
-  // Pre-fill topic from briefing
+  // Pre-fill topic from the highest-signal planned focus before falling back to briefing.
   useEffect(() => {
+    if (plannedFocus?.nextTitle && !topic) {
+      setTopic(plannedFocus.nextTitle);
+      return;
+    }
     if (briefing?.upcomingFocusTarget && !topic) {
       setTopic(briefing.upcomingFocusTarget);
     }
-  }, [briefing, topic]);
+  }, [briefing, plannedFocus?.nextTitle, topic]);
 
   const sendRecommendationFeedback = async (
     taskId: number,
@@ -800,6 +825,19 @@ export default function GuardianPage() {
               borderRadius: '8px', color: '#f0f0f5', fontSize: '14px', marginBottom: '6px', boxSizing: 'border-box',
             }}
           />
+          {plannedFocusLabel && (
+            <div style={{
+              fontSize: '11px',
+              color: '#93c5fd',
+              background: 'rgba(59,130,246,0.08)',
+              border: '1px solid rgba(59,130,246,0.18)',
+              borderRadius: '8px',
+              padding: '7px 9px',
+              marginBottom: '8px',
+            }}>
+              Next planned focus: {plannedFocusLabel}
+            </div>
+          )}
           <button
             onClick={() => setShowContext(v => !v)}
             style={{
