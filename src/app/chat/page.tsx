@@ -8,22 +8,88 @@ interface ChatMessage {
     content: string;
 }
 
+interface ChatContext {
+    personalization?: {
+        mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+        guidance: string;
+        energy: 'high' | 'medium' | 'low';
+        mood: 'high' | 'medium' | 'low' | null;
+        plannedFocus?: {
+            plannedToday: number;
+            completedToday: number;
+            skippedToday: number;
+            nextTitle: string | null;
+            nextMinutes: number | null;
+            recentFollowThroughRate: number | null;
+        };
+        nextBestFocusWindow: string;
+    };
+}
+
+const modeLabel: Record<NonNullable<ChatContext['personalization']>['mode'], string> = {
+    protect_focus: 'protect focus',
+    deadline_pressure: 'deadline pressure',
+    recovery: 'recovery',
+    planning: 'planning',
+    normal: 'balanced',
+};
+
+function buildGreeting(context: ChatContext | null) {
+    const personalization = context?.personalization;
+    if (!personalization) {
+        return "Hello. I’m loading your LifeOS context so this chat can use your tasks, focus sessions, plans, and feedback.";
+    }
+
+    const planned = personalization.plannedFocus;
+    if (planned?.nextTitle) {
+        return `You’re in ${modeLabel[personalization.mode]} mode with ${personalization.energy} energy.\n\nNext planned focus: **${planned.nextTitle}**${planned.nextMinutes ? ` for ${planned.nextMinutes}m` : ''}. Ask me to protect it, resize it, or move it around today’s constraints.`;
+    }
+
+    if (planned && planned.plannedToday > 0 && planned.completedToday < planned.plannedToday) {
+        return `You’re in ${modeLabel[personalization.mode]} mode. Planned focus is at ${planned.completedToday}/${planned.plannedToday} blocks today.\n\nAsk me what to do next, or how to recover the remaining plan without adding noise.`;
+    }
+
+    return `You’re in ${modeLabel[personalization.mode]} mode with ${personalization.energy} energy.\n\n${personalization.guidance}`;
+}
+
+function buildPlaceholder(context: ChatContext | null) {
+    const personalization = context?.personalization;
+    if (!personalization) return 'Loading your current context...';
+    if (personalization.plannedFocus?.nextTitle) return `Ask about ${personalization.plannedFocus.nextTitle}...`;
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Ask for the smallest useful next step...';
+    }
+    if (personalization.mode === 'planning') return 'Ask how to shape tomorrow...';
+    if (personalization.mode === 'deadline_pressure') return 'Ask what relieves pressure next...';
+    return 'Ask from today’s actual context...';
+}
+
 export default function ChatPage() {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
+    const [context, setContext] = useState<ChatContext | null>(null);
+    const [contextLoaded, setContextLoaded] = useState(false);
     const endRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        fetch('/api/dashboard')
+            .then(r => r.json())
+            .then((data: ChatContext) => setContext(data))
+            .catch(() => setContext(null))
+            .finally(() => setContextLoaded(true));
+    }, []);
 
     // Initial greeting
     useEffect(() => {
-        if (messages.length === 0) {
+        if (contextLoaded && messages.length === 0) {
             setMessages([{
                 id: '0',
                 role: 'assistant',
-                content: "Hello! I'm your LifeOS Assistant. Ask me anything about your tasks, habits, or focus time.\n\nTry: *How many hours did I focus this week?*"
+                content: buildGreeting(context),
             }]);
         }
-    }, [messages.length]);
+    }, [context, contextLoaded, messages.length]);
 
     const scrollToBottom = () => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -91,7 +157,11 @@ export default function ChatPage() {
         <div className="max-w-4xl mx-auto h-[calc(100vh-6rem)] flex flex-col">
             <header className="mb-6">
                 <h1 className="text-2xl font-black mb-1">Jarvis Chat 💬</h1>
-                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Talk directly to your local database securely.</p>
+                <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                    {context?.personalization
+                        ? `${modeLabel[context.personalization.mode]} · ${context.personalization.energy} energy · ${context.personalization.guidance}`
+                        : 'Loading today’s LifeOS context...'}
+                </p>
             </header>
 
             <div className="flex-1 card flex flex-col overflow-hidden" style={{ border: '2px solid var(--border)' }}>
@@ -132,7 +202,7 @@ export default function ChatPage() {
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleSend()}
-                            placeholder="Ask me anything..."
+                            placeholder={buildPlaceholder(context)}
                             className="input flex-1"
                             disabled={loading}
                         />
