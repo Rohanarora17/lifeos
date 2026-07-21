@@ -1,5 +1,6 @@
 import type { Alert, Severity } from './notifications';
 import type { PersonalizationSnapshot } from './personalization-context';
+import { getDb } from './db';
 
 export interface AdaptiveAlertCenterPolicy {
   posture: 'normal' | 'quiet' | 'urgent_only';
@@ -7,13 +8,89 @@ export interface AdaptiveAlertCenterPolicy {
   emptyState: string;
   visibleSeverities: Severity[];
   quietedCount: number;
+  learnedQuietedCount: number;
   summary: string;
+}
+
+interface AlertFamilyLearning {
+  rated: number;
+  helpful: number;
+  notHelpful: number;
+  dismissed: number;
+  helpfulRate: number | null;
 }
 
 function severityRank(severity: string): number {
   if (severity === 'urgent') return 3;
   if (severity === 'warning') return 2;
   return 1;
+}
+
+function alertFamily(type: string): string {
+  if (type.startsWith('task_deadline_')) return 'task_deadline';
+  if (type.startsWith('task_reminder')) return 'task_reminder';
+  if (type.startsWith('task_overdue')) return 'task_overdue';
+  if (type.startsWith('evening_planner')) return 'evening_planner';
+  return type;
+}
+
+function getAlertFamilyLearning(alerts: Alert[]): Map<string, AlertFamilyLearning> {
+  const families = Array.from(new Set(alerts.map(alert => alertFamily(alert.type))));
+  if (families.length === 0) return new Map();
+
+  try {
+    const rows = getDb().prepare(`
+      SELECT type, feedback
+      FROM alerts
+      WHERE feedback IS NOT NULL
+        AND created_at >= datetime('now', '-30 days')
+      ORDER BY created_at DESC
+      LIMIT 200
+    `).all() as Array<{ type: string; feedback: Alert['feedback'] }>;
+
+    const learning = new Map<string, AlertFamilyLearning>();
+    for (const family of families) {
+      learning.set(family, { rated: 0, helpful: 0, notHelpful: 0, dismissed: 0, helpfulRate: null });
+    }
+
+    for (const row of rows) {
+      const family = alertFamily(row.type);
+      const stat = learning.get(family);
+      if (!stat || !row.feedback) continue;
+
+      if (row.feedback === 'helpful') stat.helpful += 1;
+      if (row.feedback === 'not_helpful') stat.notHelpful += 1;
+      if (row.feedback === 'dismissed') stat.dismissed += 1;
+      stat.rated += 1;
+    }
+
+    for (const stat of learning.values()) {
+      const explicitRated = stat.helpful + stat.notHelpful;
+      stat.helpfulRate = explicitRated > 0 ? stat.helpful / explicitRated : null;
+    }
+
+    return learning;
+  } catch {
+    return new Map();
+  }
+}
+
+function shouldQuietFromLearning(
+  alert: Alert,
+  posture: AdaptiveAlertCenterPolicy['posture'],
+  learning: Map<string, AlertFamilyLearning>
+): boolean {
+  if (alert.severity === 'urgent') return false;
+
+  const stat = learning.get(alertFamily(alert.type));
+  if (!stat || stat.rated < 3) return false;
+
+  const rejectedOften = stat.helpfulRate !== null && stat.helpfulRate < 0.35;
+  const dismissedOften = stat.dismissed >= 3 && stat.dismissed >= stat.helpful;
+
+  if (alert.severity === 'info') return rejectedOften || dismissedOften;
+  if (posture !== 'normal' && alert.severity === 'warning') return rejectedOften && stat.notHelpful >= 2;
+  return false;
 }
 
 function derivePosture(snapshot: PersonalizationSnapshot): Pick<AdaptiveAlertCenterPolicy, 'posture' | 'reason' | 'visibleSeverities' | 'emptyState'> {
@@ -78,16 +155,24 @@ export function buildAdaptiveAlertCenterPolicy(
   snapshot: PersonalizationSnapshot
 ): { visibleAlerts: Alert[]; policy: AdaptiveAlertCenterPolicy } {
   const posture = derivePosture(snapshot);
-  const visible = alerts
-    .filter(alert => posture.visibleSeverities.includes(alert.severity))
+  const learning = getAlertFamilyLearning(alerts);
+  const severityVisible = alerts.filter(alert => posture.visibleSeverities.includes(alert.severity));
+  const visible = severityVisible
+    .filter(alert => !shouldQuietFromLearning(alert, posture.posture, learning))
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
   const quietedCount = Math.max(0, alerts.length - visible.length);
+  const learnedQuietedCount = Math.max(0, severityVisible.length - visible.length);
+  const reason = learnedQuietedCount > 0
+    ? `${posture.reason}; ${learnedQuietedCount} alert${learnedQuietedCount === 1 ? '' : 's'} quieted from your feedback`
+    : posture.reason;
 
   return {
     visibleAlerts: visible,
     policy: {
       ...posture,
+      reason,
       quietedCount,
+      learnedQuietedCount,
       summary: summarize(snapshot, visible.length, quietedCount, posture.posture),
     },
   };
