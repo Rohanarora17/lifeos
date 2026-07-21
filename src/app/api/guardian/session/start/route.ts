@@ -5,6 +5,8 @@ import { getConflictingEvents, isCalendarConfigured } from '@/lib/google-calenda
 import { getDb } from '@/lib/db';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_FLASH } from '@/lib/models';
+import { getAdaptiveSessionMinuteDecision } from '@/lib/adaptive-command-defaults';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
 /**
  * Derives which domains to immediately block for this session.
@@ -119,18 +121,26 @@ export async function POST(req: Request) {
       };
     }
 
+    const startSnapshot = buildPersonalizationSnapshot({
+      surface: 'intervention',
+      maxInsights: 2,
+      includeThresholds: true,
+      includeMemoryFacts: 3,
+    });
+    const durationDecision = getAdaptiveSessionMinuteDecision(startInput.durationMinutes, startSnapshot);
+
     // Calendar conflict check
     let calendarWarning: string | null = null;
     let calendarConflicts: Array<{ title: string; start: string; end: string }> = [];
-    if (isCalendarConfigured() && startInput.durationMinutes) {
+    if (isCalendarConfigured()) {
       try {
         const sessionStart = new Date();
-        const sessionEnd = new Date(sessionStart.getTime() + startInput.durationMinutes * 60_000);
+        const sessionEnd = new Date(sessionStart.getTime() + durationDecision.minutes * 60_000);
         const conflicts = await getConflictingEvents(sessionStart, sessionEnd);
         if (conflicts.length > 0) {
           calendarConflicts = conflicts;
           const t = new Date(conflicts[0].start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-          calendarWarning = `Calendar conflict: "${conflicts[0].title}" starts at ${t}. Consider a shorter sprint.`;
+          calendarWarning = `Calendar conflict: "${conflicts[0].title}" starts at ${t}. ${durationDecision.reason}. Consider a shorter sprint.`;
         }
       } catch { /* non-fatal */ }
     }

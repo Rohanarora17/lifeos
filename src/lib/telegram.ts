@@ -289,7 +289,7 @@ export async function captureChatId(): Promise<string | null> {
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 
-export function formatSessionStart(targetTitle: string, durationMinutes: number, mood: string): string {
+export function formatSessionStart(targetTitle: string, durationMinutes: number, mood: string, durationReason?: string): string {
   const snapshot = getTelegramSnapshot();
   const moodEmoji = mood === 'high' ? '⚡' : mood === 'low' ? '😴' : '🎯';
   return [
@@ -297,6 +297,7 @@ export function formatSessionStart(targetTitle: string, durationMinutes: number,
     ``,
     `📚 <b>Topic:</b> ${targetTitle}`,
     `⏱️ <b>Duration:</b> ${durationMinutes} min`,
+    durationReason ? `🧠 <b>Why:</b> ${durationReason}` : null,
     `${moodEmoji} <b>Mood:</b> ${mood}`,
     modeLine(snapshot),
     ``,

@@ -11,7 +11,7 @@ import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian
 import { resolveSessionIntent } from './session-intent-resolver';
 import { generateDynamicPolicy } from './dynamic-policy-generator';
 import { emitGuardianRuntimeEvent, consumePendingSpeech } from './guardian-bus';
-import { touchIntelligence, getIntelligenceContext, getIntelligenceProfile } from './intelligence';
+import { touchIntelligence, getIntelligenceContext } from './intelligence';
 import { extractMemoryFromSession } from './memory-extractor';
 import { activateTasksForSession, evaluateSessionTaskCompletion } from './session-task-sync';
 import {
@@ -42,7 +42,7 @@ import {
 import { buildPersonalizationSnapshot } from './personalization-context';
 import { buildAdaptiveHabitPlans, type AdaptiveHabitInput } from './adaptive-habit-plan';
 import { getAutomaticityScore, getStreakCount } from './scoring';
-import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
+import { getAdaptiveSessionMinuteDecision, getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import { getAdaptiveBands } from './adaptive-bands';
 
 // guardian-runtime is the single owner of live session state.
@@ -1236,12 +1236,14 @@ export function getActiveGuardianSession(): GuardianState | null {
 
 export function startGuardianSession(input: GuardianStartRequest): GuardianState {
   const sessionId = randomId('session');
-  const profile = getIntelligenceProfile();
-  const learnedDuration =
-    profile.adaptiveThresholds?.sessionDurationSweetSpot ||
-    profile.optimalSessionMinutes ||
-    60;
-  const durationMinutes = input.durationMinutes || Math.max(15, Math.min(180, Math.round(learnedDuration)));
+  const startSnapshot = buildPersonalizationSnapshot({
+    surface: 'intervention',
+    maxInsights: 2,
+    includeThresholds: true,
+    includeMemoryFacts: 3,
+  });
+  const durationDecision = getAdaptiveSessionMinuteDecision(input.durationMinutes, startSnapshot);
+  const durationMinutes = durationDecision.minutes;
   const targetTitle = input.conceptNodeName || input.goalTitle || input.topic || 'Deep Work';
   const briefing = getDayBriefing('default');
 
@@ -1343,14 +1345,14 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
 
   // Fire-and-forget: Telegram notification + Google Calendar event
   void (async () => {
-    await sendTelegram(formatSessionStart(targetTitle, durationMinutes, input.mood || 'medium'), 'HTML', SESSION_START_KEYBOARD);
+    await sendTelegram(formatSessionStart(targetTitle, durationMinutes, input.mood || startSnapshot.userState.mood || 'medium', durationDecision.reason), 'HTML', SESSION_START_KEYBOARD);
 
     if (isCalendarConfigured()) {
       const startTime = new Date();
       const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
       const eventId = await createCalendarEvent({
         summary: `📚 ${targetTitle}`,
-        description: `LifeOS Guardian session — ${durationMinutes} min planned`,
+        description: `LifeOS Guardian session — ${durationMinutes} min planned\nAdaptive duration: ${durationDecision.reason}\nMode: ${startSnapshot.moment.mode}; energy: ${startSnapshot.userState.energy}; mood: ${startSnapshot.userState.mood ?? 'unknown'}`,
         startTime,
         endTime,
         colorId: '9', // blueberry

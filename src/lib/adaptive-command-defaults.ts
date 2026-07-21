@@ -24,9 +24,20 @@ function recentSessionMedianMinutes(): number | null {
 }
 
 export function getAdaptiveSessionMinutes(explicitMinutes?: unknown): number {
+  return getAdaptiveSessionMinuteDecision(explicitMinutes).minutes;
+}
+
+export function getAdaptiveSessionMinuteDecision(
+  explicitMinutes?: unknown,
+  snapshot?: PersonalizationSnapshot,
+): { minutes: number; reason: string; source: 'explicit' | 'adaptive' } {
   const explicit = Number(explicitMinutes);
   if (Number.isFinite(explicit) && explicit > 0) {
-    return Math.max(5, Math.min(240, Math.round(explicit)));
+    return {
+      minutes: Math.max(5, Math.min(240, Math.round(explicit))),
+      reason: 'using the duration you explicitly asked for',
+      source: 'explicit',
+    };
   }
 
   const profile = getIntelligenceProfile();
@@ -36,14 +47,38 @@ export function getAdaptiveSessionMinutes(explicitMinutes?: unknown): number {
     recentSessionMedianMinutes() ||
     45;
 
-  return Math.max(15, Math.min(180, Math.round(learned)));
+  let multiplier = 1;
+  const reasons = [`learned ${Math.round(learned)}m baseline`];
+
+  if (snapshot?.moment.mode === 'recovery' || snapshot?.userState.energy === 'low' || snapshot?.userState.mood === 'low') {
+    multiplier *= 0.75;
+    reasons.push('shortened for recovery/low energy');
+  } else if (snapshot?.moment.mode === 'deadline_pressure') {
+    multiplier *= 1.1;
+    reasons.push('slightly extended for deadline pressure');
+  } else if (snapshot?.moment.mode === 'protect_focus') {
+    multiplier *= 1.05;
+    reasons.push('preserved because this is a strong focus window');
+  }
+
+  if (snapshot?.feedback.alertFatigueLevel === 'high') {
+    multiplier *= 0.9;
+    reasons.push('kept tighter because alert fatigue is high');
+  }
+
+  const minutes = Math.max(15, Math.min(180, Math.round(learned * multiplier)));
+  return {
+    minutes,
+    reason: reasons.join('; '),
+    source: 'adaptive',
+  };
 }
 
 export function getAdaptiveSessionMinutesLabel(explicitMinutes?: unknown): string {
-  const minutes = getAdaptiveSessionMinutes(explicitMinutes);
+  const decision = getAdaptiveSessionMinuteDecision(explicitMinutes);
   return explicitMinutes === undefined || explicitMinutes === null || explicitMinutes === ''
-    ? `${minutes}m learned default`
-    : `${minutes}m`;
+    ? `${decision.minutes}m adaptive default`
+    : `${decision.minutes}m`;
 }
 
 export function formatCommandMomentLine(snapshot: PersonalizationSnapshot): string {
