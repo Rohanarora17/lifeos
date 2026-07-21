@@ -82,13 +82,13 @@ function formatDuration(mins: number) {
 }
 
 export default function GuardianPage() {
-  const { session: activeSession, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
+  const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
   const [insights, setInsights] = useState<GuardianInsights | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [topic, setTopic] = useState('');
-  const [duration, setDuration] = useState(60);
+  const [duration, setDuration] = useState(() => adaptiveDefaults.recommendedSessionMinutes);
   const [selectedRecommendationId, setSelectedRecommendationId] = useState<number | null>(null);
   const [mood, setMood] = useState<'high' | 'medium' | 'low' | ''>('');
   const [sessionContext, setSessionContext] = useState('');
@@ -175,7 +175,7 @@ export default function GuardianPage() {
   } | null>(null);
   const topicRef = useRef<HTMLInputElement>(null);
   const adaptivePersonalization = insights?.personalization ?? briefing?.personalization;
-  const adaptiveDuration = adaptivePersonalization?.recommendedSessionMinutes ?? 60;
+  const adaptiveDuration = adaptivePersonalization?.recommendedSessionMinutes ?? adaptiveDefaults.recommendedSessionMinutes;
   const durationOptions = Array.from(new Set([adaptiveDuration, 25, 45, 60, 90, 120].map(m => Math.round(m)).filter(m => m > 0)));
   const adaptiveTasks = insights?.recommendedTasks ?? briefing?.adaptiveTasks ?? [];
 
@@ -283,6 +283,12 @@ export default function GuardianPage() {
       clearInterval(insightsInterval);
     };
   }, [fetchBriefing, fetchInsights, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchWeeklyPlan, fetchCalibrationStatus]);
+
+  useEffect(() => {
+    if (!activeSession.active && !adaptivePersonalization?.recommendedSessionMinutes) {
+      setDuration(Math.round(adaptiveDefaults.recommendedSessionMinutes));
+    }
+  }, [activeSession.active, adaptiveDefaults.recommendedSessionMinutes, adaptivePersonalization?.recommendedSessionMinutes]);
 
   // Pre-fill topic from briefing
   useEffect(() => {

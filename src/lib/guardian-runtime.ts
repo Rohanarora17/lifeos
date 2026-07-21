@@ -2133,6 +2133,7 @@ JSON schema:
 
 export function getGuardianContext() {
   const db = getDb();
+  const recommendedSessionMinutes = getAdaptiveSessionMinutes();
   const activeGoals = db.prepare(`
     SELECT id, title, description
     FROM goals
@@ -2146,7 +2147,15 @@ export function getGuardianContext() {
   const activeSession = listGuardianSessions().find((session) => session.state === 'ACTIVE') || null;
   // Consume pending speech (read-once) so the dashboard can speak it via Web Speech API.
   const pendingSpeech = activeSession ? consumePendingSpeech(activeSession.sessionId) : null;
-  return { activeGoals, activeTasks, activeSession, pendingSpeech };
+  return {
+    activeGoals,
+    activeTasks,
+    activeSession,
+    pendingSpeech,
+    adaptiveDefaults: {
+      recommendedSessionMinutes,
+    },
+  };
 }
 
 export function recordGuardianCanary(score: number, notes: string) {

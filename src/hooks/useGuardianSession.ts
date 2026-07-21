@@ -13,6 +13,10 @@ export interface RawSession {
   focusScoreHistory?: number[];
 }
 
+export interface GuardianAdaptiveDefaults {
+  recommendedSessionMinutes: number;
+}
+
 export interface SessionView {
   /** True when a guardian session is active */
   active: boolean;
@@ -41,23 +45,36 @@ export interface StartOptions {
 
 // ─── Derived view ─────────────────────────────────────────────────────────────
 
-const IDLE: SessionView = {
-  active: false, sessionId: null, targetTitle: null,
-  durationMinutes: 60, startedAt: null,
-  timeLeftSeconds: 0, elapsedSeconds: 0, progressPct: 0, focusScore: null,
-};
+const INITIAL_DEFAULT_SESSION_MINUTES = 45;
 
-function derive(raw: RawSession | null, now: number): SessionView {
-  if (!raw) return IDLE;
+function normalizeDurationMinutes(value: unknown, fallback: number): number {
+  const minutes = Number(value);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    return Math.max(5, Math.min(240, Math.round(minutes)));
+  }
+  return fallback;
+}
+
+function idleView(defaultDurationMinutes: number): SessionView {
+  return {
+    active: false, sessionId: null, targetTitle: null,
+    durationMinutes: defaultDurationMinutes, startedAt: null,
+    timeLeftSeconds: 0, elapsedSeconds: 0, progressPct: 0, focusScore: null,
+  };
+}
+
+function derive(raw: RawSession | null, now: number, defaultDurationMinutes: number): SessionView {
+  if (!raw) return idleView(defaultDurationMinutes);
   const startedAt = raw.startedAt ?? now;
-  const durationMs = (raw.durationMinutes || 60) * 60_000;
+  const durationMinutes = normalizeDurationMinutes(raw.durationMinutes, defaultDurationMinutes);
+  const durationMs = durationMinutes * 60_000;
   const elapsedMs = Math.max(0, now - startedAt);
   const timeLeftMs = Math.max(0, durationMs - elapsedMs);
   return {
     active: true,
     sessionId: raw.sessionId,
     targetTitle: raw.targetTitle || 'Focus Session',
-    durationMinutes: raw.durationMinutes || 60,
+    durationMinutes,
     startedAt,
     timeLeftSeconds: Math.round(timeLeftMs / 1000),
     elapsedSeconds: Math.round(elapsedMs / 1000),
@@ -82,6 +99,9 @@ function derive(raw: RawSession | null, now: number): SessionView {
  */
 export function useGuardianSession() {
   const [raw, setRaw] = useState<RawSession | null>(null);
+  const [adaptiveDefaults, setAdaptiveDefaults] = useState<GuardianAdaptiveDefaults>({
+    recommendedSessionMinutes: INITIAL_DEFAULT_SESSION_MINUTES,
+  });
   const [tick, setTick] = useState(() => Date.now());
   const rawRef = useRef<RawSession | null>(null);
 
@@ -92,7 +112,20 @@ export function useGuardianSession() {
       try {
         const res = await fetch('/api/guardian/state');
         if (!res.ok || !mounted) return;
-        const data = await res.json() as { activeSession?: RawSession; pendingSpeech?: string | null };
+        const data = await res.json() as {
+          activeSession?: RawSession;
+          pendingSpeech?: string | null;
+          adaptiveDefaults?: Partial<GuardianAdaptiveDefaults>;
+        };
+        const recommendedSessionMinutes = normalizeDurationMinutes(
+          data.adaptiveDefaults?.recommendedSessionMinutes,
+          adaptiveDefaults.recommendedSessionMinutes,
+        );
+        setAdaptiveDefaults(prev =>
+          prev.recommendedSessionMinutes === recommendedSessionMinutes
+            ? prev
+            : { recommendedSessionMinutes }
+        );
         const next = data.activeSession?.state === 'ACTIVE' ? data.activeSession : null;
         setRaw(next);
         rawRef.current = next;
@@ -106,7 +139,7 @@ export function useGuardianSession() {
     poll();
     const timer = setInterval(poll, 5_000);
     return () => { mounted = false; clearInterval(timer); };
-  }, []);
+  }, [adaptiveDefaults.recommendedSessionMinutes]);
 
   // ── 1-second tick while session is active (drives timeLeftSeconds) ───────
   const isActive = !!raw;
@@ -148,5 +181,10 @@ export function useGuardianSession() {
     }
   }, []);
 
-  return { session: derive(raw, tick), start, end };
+  return {
+    session: derive(raw, tick, adaptiveDefaults.recommendedSessionMinutes),
+    adaptiveDefaults,
+    start,
+    end,
+  };
 }

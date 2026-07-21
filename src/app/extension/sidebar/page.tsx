@@ -96,7 +96,7 @@ function formatDuration(mins: number) {
 }
 
 export default function ExtensionSidebar() {
-    const { session, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
+    const { session, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
     const [tasks, setTasks] = useState<Task[]>([]);
     const [goals, setGoals] = useState<Goal[]>([]);
     const [stats, setStats] = useState<DashStats | null>(null);
@@ -106,11 +106,11 @@ export default function ExtensionSidebar() {
     const [focusDuration, setFocusDuration] = useState<number | null>(null);
     const adaptiveDuration = insights?.personalization?.recommendedSessionMinutes
         ?? topRecommendedTask?.estimatedMinutes
-        ?? null;
+        ?? adaptiveDefaults.recommendedSessionMinutes;
     const effectiveFocusDuration = focusDuration ?? (adaptiveDuration ? Math.round(adaptiveDuration) : null);
     const durationOptions = Array.from(new Set(
         [
-            adaptiveDuration ? Math.round(adaptiveDuration) : null,
+            Math.round(adaptiveDuration),
             topRecommendedTask?.estimatedMinutes ? Math.round(topRecommendedTask.estimatedMinutes) : null,
             25,
             45,
@@ -155,12 +155,14 @@ export default function ExtensionSidebar() {
             if (!insightsData.error) {
                 const nextInsights = insightsData as InsightsData;
                 setInsights(nextInsights);
-                if (!session.active && nextInsights.personalization?.recommendedSessionMinutes) {
-                    setFocusDuration(prev => prev ?? Math.round(nextInsights.personalization!.recommendedSessionMinutes));
+                if (!session.active) {
+                    const recommended = nextInsights.personalization?.recommendedSessionMinutes
+                        ?? adaptiveDefaults.recommendedSessionMinutes;
+                    setFocusDuration(prev => prev ?? Math.round(recommended));
                 }
             }
         } catch { }
-    }, [session.active]);
+    }, [session.active, adaptiveDefaults.recommendedSessionMinutes]);
 
     useEffect(() => {
         const initial = setTimeout(fetchContext, 0);
