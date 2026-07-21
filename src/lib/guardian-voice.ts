@@ -28,6 +28,7 @@ import { buildPersonalizationSnapshot, formatPersonalizationContext, type Person
 import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import { getTaskTimeProgress } from './task-time-sessions';
+import { generateNextDayPlan, getNextDayPlan, type NextDayPlanPayload } from './next-day-planner';
 import {
   computeFocusSessions,
   computeFocusScore,
@@ -53,6 +54,7 @@ type VoiceAction =
   // ── Task management ──
   | 'create_task'          // "add task X"
   | 'create_session_task'  // "schedule 25min session on X for today" → task with task_type='session'
+  | 'next_day_plan'        // "what is tomorrow's plan?"
   | 'update_task'          // "mark X done", "prioritize X", "move X to tomorrow"
   | 'delete_task'          // "delete task X" (requires confirm)
   | 'show_tasks'           // "what are my tasks today/this week/high priority"
@@ -324,6 +326,31 @@ function voiceCompletionLine(snapshot: PersonalizationSnapshot, elapsed: number)
   return `Session ended after ${elapsed} minutes. Good work.`;
 }
 
+function tomorrowIsoDate(): string {
+  return new Date(Date.now() + 19800000 + 86_400_000).toISOString().slice(0, 10);
+}
+
+function formatVoiceNextDayPlan(plan: NextDayPlanPayload): string {
+  const date = plan.plan?.plan_date ?? tomorrowIsoDate();
+  const context = [
+    plan.plan?.wake_estimate ? `wake ${plan.plan.wake_estimate}` : null,
+    plan.plan?.sleep_time ? `sleep ${plan.plan.sleep_time}` : null,
+    `${plan.personalization.energy} energy`,
+    plan.personalization.bestFocusWindow ? `best window ${plan.personalization.bestFocusWindow}` : null,
+  ].filter(Boolean).join(', ');
+
+  if (plan.sessions.length === 0) {
+    return `Tomorrow, ${date}, has no focus blocks yet. ${context}. Tell me sleep, wake, mood, and the one task to protect.`;
+  }
+
+  const firstBlocks = plan.sessions.slice(0, 3).map(session => {
+    const time = new Date(session.planned_start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return `${time}, ${session.title} for ${session.duration_minutes} minutes`;
+  });
+  const extra = plan.sessions.length > 3 ? `, plus ${plan.sessions.length - 3} more` : '';
+  return `Tomorrow, ${date}: ${firstBlocks.join('; ')}${extra}. ${context}.`;
+}
+
 // ─── Heuristic intent parser (offline fallback, session-aware) ──────────────
 
 function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
@@ -347,6 +374,10 @@ function heuristicParseVoiceIntent(transcript: string): ParsedVoiceIntent {
 
   if (/(day briefing|brief me|what's the plan today|today's plan|today plan)/.test(lower)) {
     return { action: 'day_briefing', durationMinutes };
+  }
+
+  if (/(tomorrow'?s plan|tomorrow plan|plan tomorrow|next day plan|what'?s planned tomorrow)/.test(lower)) {
+    return { action: 'next_day_plan' };
   }
 
   if (/(what are my tasks|show( me)? tasks|task list|tasks today|today'?s tasks|what should i work on)/.test(lower)) {
@@ -528,6 +559,7 @@ SESSION:
 TASK MANAGEMENT (full CRUD):
 - create_task: Plain task (not session-linked). taskTitle, taskPriority (low/medium/high), taskDueDate (YYYY-MM-DD).
 - create_session_task: "Schedule a 25min session on Polkadot for today" → creates a task with type=session and estimated_minutes. Fields: taskTitle (topic), durationMinutes (the session length), taskDueDate (when to do it, YYYY-MM-DD). This is the primary way to plan work.
+- next_day_plan: Show tomorrow's adaptive plan and planned focus sessions. Prefer this when the user asks for tomorrow's plan, next-day plan, or what is scheduled tomorrow.
 - update_task: Modify an existing task. taskTitle (name to search), taskStatus (todo/doing/done), taskPriority (low/medium/high), taskDueDate. Use when user says "mark X done", "move X to tomorrow", "prioritize X", "block X".
 - delete_task: Delete a specific task by name. taskTitle. Requires confirm — set responseText asking.
 - show_tasks: Read current tasks. taskFilterScope: "today" | "this_week" | "high_priority" | "blocked" | "all". Default "today".
@@ -562,7 +594,7 @@ KNOWLEDGE:
 
 ━━━ RULES ━━━
 1. DO NOT start_session unless explicitly asked. "I want to focus on X" = create_session_task.
-2. DO NOT schedule_session unless a future time is mentioned. Same day = create_session_task.
+2. DO NOT schedule_session unless a future time is mentioned. Same day = create_session_task. Tomorrow planning questions = next_day_plan.
 3. Destructive ops (delete_task, clear_done_tasks, archive_all_goals, delete_habit): set that action AND set responseText asking for confirmation. System queues it as pending.
 4. Resolve "that", "it", "same topic" from RECENT CONVERSATION context.
 5. "mark X done" = update_task with taskStatus=done, but completion only succeeds if linked focus minutes have reached the task target. "block X" = update_task with taskStatus=doing.
@@ -804,6 +836,31 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
   if (activeSessionId) {
     await emitVoiceEvent(activeSessionId, transcript);
+  }
+
+  // ── next_day_plan ────────────────────────────────────────────────────────
+
+  if (intent.action === 'next_day_plan') {
+    try {
+      const planDate = tomorrowIsoDate();
+      let plan = getNextDayPlan(planDate);
+      if (!plan.plan || plan.sessions.length === 0) {
+        plan = await generateNextDayPlan({
+          planDate,
+          syncCalendar: false,
+          regenerate: true,
+        });
+      }
+      const response = formatVoiceNextDayPlan(plan);
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch (err) {
+      console.error('[GuardianVoice] next_day_plan failed:', err);
+      const response = 'Could not load tomorrow’s plan right now.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
   }
 
   // ── schedule_session ─────────────────────────────────────────────────────
