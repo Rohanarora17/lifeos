@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { processSessionFeedback, getCalibrationStatus } from '@/lib/guardian-calibration';
 import { getDb } from '@/lib/db';
 
+function tomorrowIsoDate(): string {
+  return new Date(Date.now() + 19800000 + 86_400_000).toISOString().slice(0, 10);
+}
+
 /**
  * POST /api/guardian/session/feedback
  * Accepts free-text post-session reflection and calibrates per-user weights.
@@ -54,11 +58,19 @@ export async function POST(req: Request) {
 
     const result = await processSessionFeedback(sessionId, feedback, metrics);
 
-    // If weights changed, regenerate weekly plan with updated priorities
+    let refreshedPlan: { planDate: string; sessions: number } | null = null;
+
+    // If weights changed, refresh the next actionable plan with updated priorities.
     if (result.adjustments.length > 0) {
       try {
-        const { generateWeeklyPlan, saveWeeklyPlan } = await import('@/lib/weekly-planner');
-        saveWeeklyPlan(generateWeeklyPlan());
+        const { generateNextDayPlan } = await import('@/lib/next-day-planner');
+        const planDate = tomorrowIsoDate();
+        const plan = await generateNextDayPlan({
+          planDate,
+          syncCalendar: true,
+          regenerate: true,
+        });
+        refreshedPlan = { planDate, sessions: plan.sessions.length };
       } catch { /* non-fatal */ }
     }
 
@@ -68,6 +80,7 @@ export async function POST(req: Request) {
       signals: result.signals,
       adjustments: result.adjustments,
       newAccuracy: result.newAccuracy,
+      refreshedPlan,
     });
   } catch (err) {
     console.error('[session/feedback] POST error:', err);
