@@ -213,6 +213,24 @@ export async function updateCalendarEvent(
     if (patch.startTime) body.start = { dateTime: patch.startTime.toISOString(), timeZone: 'Asia/Kolkata' };
     if (patch.endTime) body.end = { dateTime: patch.endTime.toISOString(), timeZone: 'Asia/Kolkata' };
     if (patch.colorId) body.colorId = patch.colorId;
+    if (patch.startTime && patch.endTime) {
+      const snapshot = patch.reminderSnapshot ?? buildPersonalizationSnapshot({ surface: 'scheduler', maxInsights: 2, includeMemoryFacts: 2 });
+      const reminderDecision = buildAdaptiveCalendarReminders({
+        summary: patch.summary ?? 'Focus session',
+        startTime: patch.startTime,
+        endTime: patch.endTime,
+      }, snapshot);
+      body.reminders = {
+        useDefault: reminderDecision.useDefault,
+        overrides: reminderDecision.overrides,
+      };
+      if (patch.description !== undefined) {
+        body.description = [
+          patch.description,
+          `LifeOS adaptive reminders: ${reminderDecision.label} (${reminderDecision.reason}).`,
+        ].filter(Boolean).join('\n\n');
+      }
+    }
 
     await calendar.events.patch({
       calendarId: calendarId(),

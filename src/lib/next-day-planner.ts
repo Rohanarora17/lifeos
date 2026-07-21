@@ -980,14 +980,41 @@ export async function updatePlannedFocusSession(id: string, patch: {
     `).run(title, taskId, plannedStart.getTime(), durationMinutes, status, existing.soft_watch_id);
   }
 
-  if (patch.syncCalendar && existing.calendar_event_id) {
-    const ok = await updateCalendarEvent(existing.calendar_event_id, {
-      summary: `Focus: ${title}`,
-      description: `LifeOS next-day plan\n${pricedRule.guidance}\nReward: ${reward.xp} XP / ${reward.coins} coins\n${reward.reason}`,
-      startTime: plannedStart,
-      endTime: plannedEnd,
-    });
-    db.prepare('UPDATE planned_focus_sessions SET calendar_status = ? WHERE id = ?').run(ok ? 'synced' : 'failed', id);
+  if (patch.syncCalendar) {
+    const description = `LifeOS next-day plan\n${pricedRule.guidance}\nReward: ${reward.xp} XP / ${reward.coins} coins\n${reward.reason}`;
+    if (existing.calendar_event_id) {
+      const ok = await updateCalendarEvent(existing.calendar_event_id, {
+        summary: `Focus: ${title}`,
+        description,
+        startTime: plannedStart,
+        endTime: plannedEnd,
+        reminderSnapshot: snapshot,
+      });
+      db.prepare('UPDATE planned_focus_sessions SET calendar_status = ? WHERE id = ?').run(ok ? 'synced' : 'failed', id);
+    } else if (isCalendarConfigured()) {
+      const eventId = await createCalendarEvent({
+        summary: `Focus: ${title}`,
+        description,
+        startTime: plannedStart,
+        endTime: plannedEnd,
+        colorId: '9',
+        reminderSnapshot: snapshot,
+      });
+      db.prepare(`
+        UPDATE planned_focus_sessions
+        SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `).run(eventId, eventId ? 'created' : 'failed', id);
+      if (eventId && existing.soft_watch_id) {
+        db.prepare(`
+          UPDATE soft_watch_commitments
+          SET calendar_event_id = ?
+          WHERE id = ?
+        `).run(eventId, existing.soft_watch_id);
+      }
+    } else {
+      db.prepare('UPDATE planned_focus_sessions SET calendar_status = ? WHERE id = ?').run('not_configured', id);
+    }
   }
 
   return db.prepare('SELECT * FROM planned_focus_sessions WHERE id = ?').get(id) as PlannedFocusSession;
