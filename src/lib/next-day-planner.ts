@@ -40,6 +40,12 @@ interface CandidateTask {
   reason: string;
 }
 
+interface PlannedOutcomeBias {
+  completed: number;
+  skipped: number;
+  lastStatus: SessionStatus | null;
+}
+
 export interface NextDayPlanInput {
   planDate?: string;
   sleepTime?: string | null;
@@ -382,6 +388,7 @@ function loadCandidateTasks(
   const db = getDb();
   const selected = selectedTaskIds && selectedTaskIds.length > 0 ? new Set(selectedTaskIds) : null;
   const learnedEstimate = getAdaptiveSessionMinutes();
+  const plannedOutcomeBias = loadPlannedOutcomeBias(planDate);
   const rows = db.prepare(`
     SELECT
       t.id,
@@ -446,6 +453,17 @@ function loadCandidateTasks(
         score += 16;
         reasons.push(`${task.linked_sessions} linked session${task.linked_sessions === 1 ? '' : 's'}; finishable`);
       }
+      const outcome = plannedOutcomeBias.get(task.id);
+      if (outcome) {
+        if (outcome.completed > outcome.skipped) {
+          score += Math.min(18, outcome.completed * 6);
+          reasons.push(`${outcome.completed} recent planned block${outcome.completed === 1 ? '' : 's'} completed`);
+        }
+        if (outcome.skipped > outcome.completed && !selected?.has(task.id)) {
+          score -= Math.min(24, outcome.skipped * 8);
+          reasons.push(`${outcome.skipped} recent planned block${outcome.skipped === 1 ? '' : 's'} skipped`);
+        }
+      }
       if (task.last_credited_at) {
         const daysSinceCredit = Math.max(0, Math.round((new Date(`${planDate}T00:00:00+05:30`).getTime() - new Date(task.last_credited_at).getTime()) / 86400000));
         if (daysSinceCredit >= 3) {
@@ -468,6 +486,41 @@ function loadCandidateTasks(
     .filter(task => task.remaining_minutes > 0)
     .filter(task => !selected || selected.has(task.id))
     .sort((a, b) => b.score - a.score);
+}
+
+function loadPlannedOutcomeBias(planDate: string): Map<number, PlannedOutcomeBias> {
+  const bias = new Map<number, PlannedOutcomeBias>();
+  try {
+    const rows = getDb().prepare(`
+      SELECT
+        pfs.task_id as taskId,
+        pfs.status,
+        COUNT(*) as count,
+        MAX(pfs.updated_at) as lastUpdatedAt
+      FROM planned_focus_sessions pfs
+      JOIN daily_plans dp ON dp.id = pfs.plan_id
+      WHERE pfs.task_id IS NOT NULL
+        AND pfs.status IN ('completed', 'skipped')
+        AND dp.plan_date < ?
+        AND dp.plan_date >= date(?, '-21 days')
+      GROUP BY pfs.task_id, pfs.status
+      ORDER BY lastUpdatedAt DESC
+    `).all(planDate, planDate) as Array<{
+      taskId: number;
+      status: SessionStatus;
+      count: number;
+      lastUpdatedAt: string | null;
+    }>;
+
+    for (const row of rows) {
+      const current = bias.get(row.taskId) ?? { completed: 0, skipped: 0, lastStatus: null };
+      if (row.status === 'completed') current.completed += Number(row.count || 0);
+      if (row.status === 'skipped') current.skipped += Number(row.count || 0);
+      if (!current.lastStatus) current.lastStatus = row.status;
+      bias.set(row.taskId, current);
+    }
+  } catch { /* planned outcomes are optional during migration */ }
+  return bias;
 }
 
 function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapshot): SessionRule {
