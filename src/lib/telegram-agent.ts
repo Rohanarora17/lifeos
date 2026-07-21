@@ -1023,18 +1023,41 @@ export async function executeAction(
         }
 
         case 'STATUS': {
+            const focusScore = session?.focusScoreHistory?.at(-1) ?? null;
+            const personalization = buildPersonalizationSnapshot({
+                surface: 'telegram',
+                maxInsights: 2,
+                includeMemoryFacts: 4,
+                activeSession: session ? {
+                    sessionId: session.sessionId,
+                    targetTitle: session.targetTitle,
+                    focusScore,
+                    elapsedMinutes: Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)),
+                } : null,
+            });
+            const lines: string[] = [];
+
             if (session) {
                 const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
                 const remaining = Math.max(0, session.durationMinutes - elapsed);
-                await sendTelegram(
-                    `🛡️ <b>Session Active</b>\n📚 ${session.targetTitle}\n⏱️ ${elapsed}m elapsed · ${remaining}m left\n🔴 ${session.blockedCount} blocks`,
-                    'HTML', SESSION_START_KEYBOARD
-                );
+                const liveFocusScore = focusScore ?? 100;
+                lines.push(`${focusStatusIcon(liveFocusScore)} <b>Session active</b>`);
+                lines.push(`📚 ${session.targetTitle}`);
+                lines.push(`⏱️ ${elapsed}m elapsed · ${remaining}m left`);
+                lines.push(`🎯 Focus ${liveFocusScore}/100 · ${session.blockedCount} block${session.blockedCount === 1 ? '' : 's'}`);
+                lines.push(`<i>${formatCommandMomentLine(personalization)}</i>`);
             } else {
                 const standup = fetchStandupData();
                 const energyLine = standup?.energy ? `\n${standup.energy.band === 'high' ? '🟢' : standup.energy.band === 'medium' ? '🟡' : '🔴'} Energy: ${standup.energy.band} (${Math.round(standup.energy.composite)}/100)` : '';
-                await sendTelegram(`💤 <b>No active session.</b>${energyLine}`, 'HTML', FULL_MENU_KEYBOARD);
+                lines.push(`💤 <b>No active session.</b>${energyLine}`);
+                lines.push(`🧭 <b>${formatCommandMomentLine(personalization)}</b>`);
+                lines.push(`⏱️ Suggested session: <b>${getAdaptiveSessionMinutes()}m</b>`);
+                if (personalization.userState.nextBestFocusWindow) {
+                    lines.push(`⚡ Best window: <b>${personalization.userState.nextBestFocusWindow}</b>`);
+                }
             }
+            lines.push(`📈 Trend: ${personalization.userState.focusTrend} · Style: ${personalization.userState.coachingStyle}`);
+            await sendTelegram(lines.join('\n'), 'HTML', session ? SESSION_START_KEYBOARD : FULL_MENU_KEYBOARD);
             break;
         }
 
