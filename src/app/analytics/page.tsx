@@ -70,6 +70,38 @@ function formatMinutes(minutes: number): string {
     return minutes < 60 ? `${Math.round(minutes)}m` : `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`;
 }
 
+function buildInsightEmptyMessage(policy: AnalyticsPolicy | null): string {
+    if (!policy) return 'No deep insights yet. Run analysis after tracking a few sessions, habits, and reflections.';
+    if (policy.mode === 'recovery') return 'No recovery patterns yet. Run analysis after logging sleep, mood, and one low-pressure focus block.';
+    if (policy.mode === 'deadline_pressure') return 'No deadline-relief patterns yet. Run analysis after a pressure block and session feedback.';
+    if (policy.mode === 'planning') return 'No tomorrow-setup patterns yet. Run analysis after an evening check-in and next-day plan.';
+    if (policy.plannedFocus.nextTitle) return `No deep insights yet. Run analysis after planned focus on ${policy.plannedFocus.nextTitle} resolves.`;
+    return `No deep insights yet. Run analysis when ${policy.lensTitle.toLowerCase()} has enough recent signal.`;
+}
+
+function buildTrendEmptyMessage(policy: AnalyticsPolicy | null): string {
+    if (!policy) return 'No tracked activity yet. Start a focus session or enable activity tracking.';
+    if (policy.mode === 'recovery') return `No tracked activity yet. Even ${formatMinutes(policy.productiveTargetMinutes)} of recovery-safe work will calibrate today.`;
+    if (policy.mode === 'deadline_pressure') return `No tracked activity yet. Capture the first deadline-relief block against a ${formatMinutes(policy.productiveTargetMinutes)} target.`;
+    if (policy.mode === 'planning') return 'No tracked activity yet. Generate tomorrow blocks so analytics can compare plan vs follow-through.';
+    return `No tracked activity yet. The current learned target is ${formatMinutes(policy.productiveTargetMinutes)} productive.`;
+}
+
+function buildXpEmptyMessage(policy: AnalyticsPolicy | null): string {
+    if (!policy) return 'No XP signal yet. Complete a session, task, or habit to seed the baseline.';
+    if (policy.xpBaseline > 0) return `No XP in this window yet. Your recent baseline is ${policy.xpBaseline} XP.`;
+    if (policy.mode === 'recovery') return 'No XP signal yet. A minimum habit or short recovery-safe block is enough to seed today.';
+    return 'No XP signal yet. Complete one time-based task or planned focus block to establish the baseline.';
+}
+
+function buildDomainEmptyMessage(policy: AnalyticsPolicy | null): string {
+    if (!policy) return 'No site signal yet. Enable tracking or start a Guardian session.';
+    if (policy.mode === 'protect_focus') return 'No site signal yet. Start the protected focus block so interruptions can be measured.';
+    if (policy.mode === 'deadline_pressure') return 'No site signal yet. Track the deadline block so useful and drifting domains can be separated.';
+    if (policy.mode === 'planning') return 'No site signal yet. Tomorrow planning needs calendar, notes, or research activity to compare.';
+    return `No site signal yet. Analytics will compare domains against a ${formatMinutes(policy.distractionBudgetMinutes)} distraction budget.`;
+}
+
 export default function AnalyticsPage() {
     const [weekData, setWeekData] = useState<WeekTrendDay[]>([]);
     const [topDomains, setTopDomains] = useState<TopDomain[]>([]);
@@ -188,7 +220,7 @@ export default function AnalyticsPage() {
                     </div>
                 ) : (
                     <p className="text-sm text-center py-4 italic" style={{ color: 'var(--text-muted)' }}>
-                        No deep insights generated yet. Run the analysis to find correlations between your habits and deep work.
+                        {buildInsightEmptyMessage(analyticsPolicy)}
                     </p>
                 )}
             </div>
@@ -230,7 +262,7 @@ export default function AnalyticsPage() {
                         })}
                     </div>
                 ) : (
-                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>No data yet. Start tracking to see trends!</p>
+                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>{buildTrendEmptyMessage(analyticsPolicy)}</p>
                 )}
                 <div className="flex items-center gap-4 mt-4 justify-center">
                     <div className="flex items-center gap-2 text-xs">
@@ -279,7 +311,7 @@ export default function AnalyticsPage() {
                         })}
                     </div>
                 ) : (
-                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>No data yet</p>
+                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>{buildXpEmptyMessage(analyticsPolicy)}</p>
                 )}
             </div>
 
@@ -315,7 +347,7 @@ export default function AnalyticsPage() {
                         })}
                     </div>
                 ) : (
-                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>No data yet</p>
+                    <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>{buildDomainEmptyMessage(analyticsPolicy)}</p>
                 )}
             </div>
         </div>
