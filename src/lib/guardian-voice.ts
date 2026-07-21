@@ -770,17 +770,34 @@ async function runGuidanceMode(
 
 // ─── Tutor — multi-turn conversation with full history ────────────────────────
 
+function voiceTutorUnavailableLine(snapshot: PersonalizationSnapshot): string {
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `Tutor mode needs cloud reasoning right now. For ${snapshot.today.plannedFocus.nextTitle}, capture the exact concept you want explained and I will pick it back up when reasoning is available.`;
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return 'Tutor mode needs cloud reasoning right now. Keep the question small and write the confusing term down so this stays recovery-safe.';
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') {
+    return 'Tutor mode needs cloud reasoning right now. Save the blocker as the next deadline question instead of widening the search.';
+  }
+  if (snapshot.moment.mode === 'planning') {
+    return 'Tutor mode needs cloud reasoning right now. Put this question into tomorrow\'s first learning block.';
+  }
+  return 'Tutor mode needs cloud reasoning right now. Capture the question and continue with the next concrete step.';
+}
+
 async function runTutorMode(
   transcript: string,
   historyKey: string,
   activeSessionId: string | null,
   activeGoalTitles: string[],
   activeTaskTitles: string[],
-  sessionTarget: string | null
+  sessionTarget: string | null,
+  personalization: PersonalizationSnapshot,
 ): Promise<string> {
   const ai = getGenAI();
   if (!ai || !canUseCloudTextReasoning()) {
-    return 'Tutor mode is ready, but cloud reasoning is not available right now.';
+    return voiceTutorUnavailableLine(personalization);
   }
 
   try {
@@ -1839,7 +1856,8 @@ RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specif
       activeSessionId,
       goalTitles,
       taskTitles,
-      activeSession?.targetTitle ?? null
+      activeSession?.targetTitle ?? null,
+      personalization,
     );
 
     await maybeSpeakVoiceResponse(activeSessionId, responseText);
