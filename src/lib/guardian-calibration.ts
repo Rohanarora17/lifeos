@@ -5,6 +5,7 @@ import { insertFact } from '@/lib/memory';
 import type { GuardianPolicyBundle, LLMCalibrationSignal, SessionIntentProfile } from '@/lib/guardian-types';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
 import { recordExplicitFeedbackLearning, type ExplicitFeedback } from '@/lib/feedback-learning';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
 const LEARNING_RATE = 0.02;
 const MIN_WEIGHT = 0.05;
@@ -57,6 +58,34 @@ const WEIGHT_KEY_MAP: Record<string, string> = {
   distractionPenalty: 'focus_weight_distraction_revisit',
   idlePenalty: 'focus_weight_idle',
 };
+
+function fallbackCalibrationPolicySection(topic: string, workMode: string): string {
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'intervention',
+      maxInsights: 2,
+      includeMemoryFacts: 3,
+    });
+    const planned = snapshot.today.plannedFocus.nextTitle
+      ? `\n- Current planned focus: ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}`
+      : '';
+    const standup = snapshot.userState.standupGoal
+      ? `\n- Today's stated goal: ${snapshot.userState.standupGoal}`
+      : '';
+
+    return `NO SESSION-SPECIFIC POLICY BUNDLE WAS ATTACHED.
+Use the current personalization context instead of a fixed default:
+- Moment mode: ${snapshot.moment.mode}
+- Energy: ${snapshot.userState.energy}
+- Mood: ${snapshot.userState.mood ?? 'unknown'}
+- Guidance: ${snapshot.moment.guidance}
+- Feedback posture: ${snapshot.feedback.alertFatigueLevel} alert fatigue
+- Learned focus window: ${snapshot.userState.nextBestFocusWindow || 'unknown'}${planned}${standup}
+- Session topic/work mode under review: ${topic} / ${workMode}`;
+  } catch {
+    return 'No session-specific policy was used; evaluate with the current user context and avoid assuming a fixed default policy.';
+  }
+}
 
 export function extractSignals(rawText: string, metrics: SessionMetrics): CalibrationSignals {
   const text = rawText.toLowerCase();
@@ -141,7 +170,7 @@ export async function extractLLMCalibrationSignals(
 - Idle concern threshold: ${sessionPolicy.thresholds.idleConcernSeconds}s
 - Block after N distraction revisits: ${sessionPolicy.thresholds.distractionRevisitBlockCount}
 - Dwell depth target: ${sessionPolicy.thresholds.dwellDepthTargetSeconds}s`
-    : 'No session-specific policy was used (default policy applied).';
+    : fallbackCalibrationPolicySection(topic, workMode);
 
   try {
     const result = await generateWithFallback(ai, {
