@@ -161,6 +161,40 @@ function formatScheduleClarification(missing: 'title' | 'time' | 'both'): string
     return missing === 'title' ? 'Which focus block should I schedule?' : 'When should it start?';
 }
 
+function formatNoActiveTelegramSession(snapshot: ReturnType<typeof buildPersonalizationSnapshot>, action: 'status' | 'adjust' | 'end'): string {
+    if (snapshot.today.plannedFocus.nextTitle) {
+        return `💤 <b>No active session.</b> Next planned focus: <b>${snapshot.today.plannedFocus.nextTitle}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`;
+    }
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+        return `💤 <b>No active session.</b> If you start one, keep it small and low-friction.`;
+    }
+    if (snapshot.moment.mode === 'deadline_pressure') {
+        return `💤 <b>No active session.</b> Start the deadline-relief block before optional work.`;
+    }
+    if (snapshot.moment.mode === 'planning') {
+        return `💤 <b>No active session.</b> Lock tomorrow's first block before adding more.`;
+    }
+    if (action === 'adjust') return `💤 <b>No active session to adjust.</b> Start the next useful block first.`;
+    if (action === 'end') return `💤 <b>No active session to end.</b>`;
+    if (snapshot.userState.nextBestFocusWindow) {
+        return `💤 <b>No active session.</b> Best learned window: <b>${snapshot.userState.nextBestFocusWindow}</b>.`;
+    }
+    return `💤 <b>No active session.</b> Start the next useful block when ready.`;
+}
+
+function formatAdjustDurationPrompt(snapshot: ReturnType<typeof buildPersonalizationSnapshot>): string {
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+        return 'What smaller duration should I use for this low-capacity window?';
+    }
+    if (snapshot.moment.mode === 'deadline_pressure') {
+        return 'What duration gives enough deadline relief without drifting?';
+    }
+    if (snapshot.today.plannedFocus.nextMinutes) {
+        return `Should I match the planned ${snapshot.today.plannedFocus.nextMinutes}m block, or use a different duration?`;
+    }
+    return 'What duration should I change the session to?';
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -527,7 +561,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             lines.push(`⏱ <b>Time:</b> ${elapsed}m elapsed · ${remaining}m remaining`);
             lines.push(`🎯 <b>Focus:</b> ${liveFocusScore}/100  |  <b>State:</b> ${session.state}`);
         } else {
-            lines.push(`💤 <b>No active session</b>`);
+            lines.push(formatNoActiveTelegramSession(personalization, 'status'));
             lines.push(`🧭 <b>${formatCommandMomentLine(personalization)}</b>`);
             lines.push(`⏱ <b>Suggested session:</b> ${getAdaptiveSessionMinutes()}m`);
             if (personalization.userState.nextBestFocusWindow) {
@@ -948,12 +982,25 @@ export async function executeAction(
 
         case 'ADJUST_SESSION': {
             if (!session) {
-                await sendTelegram('No active session to adjust.', 'HTML', FULL_MENU_KEYBOARD);
+                const snapshot = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
+                await sendTelegram(formatNoActiveTelegramSession(snapshot, 'adjust'), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             const newDuration = Number(payload.durationMinutes);
             if (!newDuration || newDuration < 1) {
-                await sendTelegram('What duration should I change the session to? (in minutes)', 'HTML');
+                const focusScore = session.focusScoreHistory.at(-1) ?? null;
+                const snapshot = buildPersonalizationSnapshot({
+                    surface: 'telegram',
+                    maxInsights: 2,
+                    includeMemoryFacts: 4,
+                    activeSession: {
+                        sessionId: session.sessionId,
+                        targetTitle: session.targetTitle,
+                        focusScore,
+                        elapsedMinutes: Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)),
+                    },
+                });
+                await sendTelegram(formatAdjustDurationPrompt(snapshot), 'HTML', SESSION_START_KEYBOARD);
                 break;
             }
             const { adjustGuardianSessionDuration } = require('./guardian-runtime') as typeof import('./guardian-runtime');
@@ -973,7 +1020,8 @@ export async function executeAction(
 
         case 'END_SESSION': {
             if (!session) {
-                await sendTelegram('💤 No active session to end.', 'HTML', FULL_MENU_KEYBOARD);
+                const snapshot = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
+                await sendTelegram(formatNoActiveTelegramSession(snapshot, 'end'), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             endGuardianSession(session.sessionId);
@@ -1151,7 +1199,7 @@ export async function executeAction(
             } else {
                 const standup = fetchStandupData();
                 const energyLine = standup?.energy ? `\n${standup.energy.band === 'high' ? '🟢' : standup.energy.band === 'medium' ? '🟡' : '🔴'} Energy: ${standup.energy.band} (${Math.round(standup.energy.composite)}/100)` : '';
-                lines.push(`💤 <b>No active session.</b>${energyLine}`);
+                lines.push(`${formatNoActiveTelegramSession(personalization, 'status')}${energyLine}`);
                 lines.push(`🧭 <b>${formatCommandMomentLine(personalization)}</b>`);
                 lines.push(`⏱️ Suggested session: <b>${getAdaptiveSessionMinutes()}m</b>`);
                 if (personalization.userState.nextBestFocusWindow) {
