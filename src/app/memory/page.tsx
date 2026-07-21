@@ -165,6 +165,26 @@ function memoryEmptyMessage(activeTab: 'all' | 'unverified' | FactCategory, sear
   return 'No facts in this category yet. Add a personal rule the agent should use later.';
 }
 
+function memorySearchPlaceholder(personalization: MemoryPersonalization | null): string {
+  if (!personalization) return 'Search memory...';
+  if (personalization.plannedFocus.nextTitle) {
+    return `Search facts for ${compactMemoryText(personalization.plannedFocus.nextTitle, 34)}...`;
+  }
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'Search energy, sleep, mood, or recovery facts...';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'Search deadline blockers, constraints, or pressure patterns...';
+  }
+  if (personalization.mode === 'planning') {
+    return 'Search tomorrow goals, calendar rules, or planning facts...';
+  }
+  if (personalization.standupGoal) {
+    return `Search facts for ${compactMemoryText(personalization.standupGoal, 34)}...`;
+  }
+  return 'Search memory by goal, habit, mood, or constraint...';
+}
+
 // ── Fact Card ──────────────────────────────────────────────────────────────────
 
 function FactCard({
@@ -542,7 +562,7 @@ export default function MemoryPage() {
         <input
           value={search}
           onChange={e => handleSearch(e.target.value)}
-          placeholder="Search memory... (full-text)"
+          placeholder={memorySearchPlaceholder(personalization)}
           style={{
             width: '100%',
             background: 'var(--bg-secondary)',
