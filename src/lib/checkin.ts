@@ -271,6 +271,49 @@ function buildFallbackCheckinResponse(likelihoodScore: number | null): string {
   return `Noted. I'll be watching.`;
 }
 
+type CheckinSignalLevel = 'low' | 'medium' | 'high';
+
+interface EveningCheckinSignals {
+  sleepTime: string | null;
+  wakeEstimate: string | null;
+  tomorrowIntention: string | null;
+  mood: CheckinSignalLevel | null;
+  energy: CheckinSignalLevel | null;
+  dayEvents: string | null;
+}
+
+function normalizeSignalLevel(value: unknown): CheckinSignalLevel | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') return normalized;
+  if (['bad', 'sad', 'down', 'drained', 'tired', 'exhausted', 'sick'].includes(normalized)) return 'low';
+  if (['ok', 'okay', 'fine', 'normal', 'average', 'neutral'].includes(normalized)) return 'medium';
+  if (['good', 'great', 'happy', 'energized', 'fresh', 'strong'].includes(normalized)) return 'high';
+  return null;
+}
+
+function normalizeExtractedTime(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function normalizeShortText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 500) : null;
+}
+
+function parseEveningCheckinSignals(raw: string): EveningCheckinSignals {
+  const parsed = JSON.parse(raw) as Partial<Record<keyof EveningCheckinSignals, unknown>>;
+  return {
+    sleepTime: normalizeExtractedTime(parsed.sleepTime),
+    wakeEstimate: normalizeExtractedTime(parsed.wakeEstimate),
+    tomorrowIntention: normalizeShortText(parsed.tomorrowIntention),
+    mood: normalizeSignalLevel(parsed.mood),
+    energy: normalizeSignalLevel(parsed.energy),
+    dayEvents: normalizeShortText(parsed.dayEvents),
+  };
+}
+
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
   const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
 
@@ -366,21 +409,24 @@ Return ONLY the response. No quotes.`,
   // Extract sleep/wake/intention non-blocking
   void (async () => {
     try {
-      const extractPrompt = `Extract from this evening check-in. Return JSON only, no markdown.
+      const extractPrompt = `Extract adaptive planning signals from this evening check-in. Return JSON only, no markdown.
 
 Response: "${text}"
 
 Return: {
   "sleepTime": "HH:MM in 24h format, or null if not mentioned",
   "wakeEstimate": "HH:MM in 24h format — derive as sleepTime + 8h if not stated, or null",
-  "tomorrowIntention": "what they plan to do tomorrow in one phrase, or null"
+  "tomorrowIntention": "what they plan to do tomorrow in one phrase, or null",
+  "mood": "low, medium, high, or null",
+  "energy": "low, medium, high, or null",
+  "dayEvents": "specific things that happened today that affected focus, mood, body, schedule, or work, or null"
 }
 
 Examples:
-- "sleeping at 1am" → sleepTime: "01:00", wakeEstimate: "09:00"
-- "bed by midnight" → sleepTime: "00:00", wakeEstimate: "08:00"
-- "want to finish module 3" → tomorrowIntention: "finish module 3"
-If nothing relevant, return nulls.`;
+- "sleeping at 1am, drained after family work" -> sleepTime: "01:00", wakeEstimate: "09:00", energy: "low", dayEvents: "family work drained energy"
+- "bed by midnight, mood was good" -> sleepTime: "00:00", wakeEstimate: "08:00", mood: "high"
+- "want to finish module 3" -> tomorrowIntention: "finish module 3"
+If nothing relevant for a field, return null for that field.`;
 
       const ai = getGenAI();
       if (!ai) throw new Error('No AI client');
@@ -391,19 +437,32 @@ If nothing relevant, return nulls.`;
       });
       const raw = result.text ?? '';
       const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-      const extracted = JSON.parse(cleaned) as { sleepTime: string | null; wakeEstimate: string | null; tomorrowIntention: string | null };
+      const extracted = parseEveningCheckinSignals(cleaned);
 
-      if (extracted.sleepTime || extracted.tomorrowIntention) {
+      if (
+        extracted.sleepTime ||
+        extracted.wakeEstimate ||
+        extracted.tomorrowIntention ||
+        extracted.mood ||
+        extracted.energy ||
+        extracted.dayEvents
+      ) {
         db.prepare(`
           UPDATE daily_checkins
           SET sleep_time = COALESCE(?, sleep_time),
               wake_estimate = COALESCE(?, wake_estimate),
-              tomorrow_intention = COALESCE(?, tomorrow_intention)
+              tomorrow_intention = COALESCE(?, tomorrow_intention),
+              mood = COALESCE(?, mood),
+              energy = COALESCE(?, energy),
+              day_events = COALESCE(?, day_events)
           WHERE checkin_date = ? AND checkin_type = 'evening'
         `).run(
           extracted.sleepTime ?? null,
           extracted.wakeEstimate ?? null,
           extracted.tomorrowIntention ?? null,
+          extracted.mood ?? null,
+          extracted.energy ?? null,
+          extracted.dayEvents ?? null,
           today
         );
         await generateNextDayPlan({
@@ -413,11 +472,13 @@ If nothing relevant, return nulls.`;
           }),
           sleepTime: extracted.sleepTime,
           wakeEstimate: extracted.wakeEstimate,
+          mood: extracted.mood,
+          energy: extracted.energy,
           tomorrowIntention: extracted.tomorrowIntention,
-          eveningNotes: text,
+          eveningNotes: extracted.dayEvents ? `${extracted.dayEvents}\n\n${text}` : text,
           syncCalendar: false,
         });
-        console.log(`[Checkin] Sleep/wake extracted — sleep: ${extracted.sleepTime}, wake: ${extracted.wakeEstimate}, intention: ${extracted.tomorrowIntention}`);
+        console.log(`[Checkin] Evening signals extracted — sleep: ${extracted.sleepTime}, wake: ${extracted.wakeEstimate}, mood: ${extracted.mood}, energy: ${extracted.energy}, intention: ${extracted.tomorrowIntention}`);
       }
     } catch (err) {
       console.error('[Checkin] sleep/wake extraction failed (non-blocking):', err);

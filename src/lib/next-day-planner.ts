@@ -202,7 +202,7 @@ function textMatches(text: string, query: string | null | undefined): boolean {
 
 function loadLatestEveningCheckin() {
   return getDb().prepare(`
-    SELECT id, sleep_time, wake_estimate, tomorrow_intention, raw_transcript
+    SELECT id, sleep_time, wake_estimate, mood, energy, day_events, tomorrow_intention, raw_transcript
     FROM daily_checkins
     WHERE checkin_type = 'evening'
     ORDER BY received_at DESC, id DESC
@@ -211,6 +211,9 @@ function loadLatestEveningCheckin() {
     id: number;
     sleep_time: string | null;
     wake_estimate: string | null;
+    mood: string | null;
+    energy: string | null;
+    day_events: string | null;
     tomorrow_intention: string | null;
     raw_transcript: string | null;
   } | undefined;
@@ -264,8 +267,8 @@ function buildPlanningSuggestedInputs(input: {
     return {
       sleepTime: normalizeTime(input.latestCheckin.sleep_time, shiftTime(wake, -8 * 60)),
       wakeEstimate: wake,
-      mood: input.snapshot.userState.mood || 'medium',
-      energy: input.snapshot.userState.energy,
+      mood: (input.latestCheckin.mood as PlanningSuggestedInputs['mood']) || input.snapshot.userState.mood || 'medium',
+      energy: (input.latestCheckin.energy as PlanningSuggestedInputs['energy']) || input.snapshot.userState.energy,
       source: 'latest_evening_checkin',
       reason: 'using your latest evening sleep/wake update',
     };
@@ -299,7 +302,7 @@ function buildPlanningSuggestedInputs(input: {
 }
 
 function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number | null {
-  const hasCheckinSignal = input.sleepTime || input.wakeEstimate || input.tomorrowIntention || input.eveningNotes;
+  const hasCheckinSignal = input.sleepTime || input.wakeEstimate || input.mood || input.energy || input.tomorrowIntention || input.eveningNotes;
   if (!hasCheckinSignal) return null;
 
   const db = getDb();
@@ -307,6 +310,8 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
   const raw = [
     input.eveningNotes?.trim(),
     input.tomorrowIntention ? `Tomorrow: ${input.tomorrowIntention.trim()}` : null,
+    input.mood ? `Mood: ${input.mood}` : null,
+    input.energy ? `Energy: ${input.energy}` : null,
     input.sleepTime ? `Sleep: ${input.sleepTime}` : null,
     input.wakeEstimate ? `Wake: ${input.wakeEstimate}` : null,
     `Planning date: ${planDate}`,
@@ -324,17 +329,42 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
       UPDATE daily_checkins
       SET sleep_time = COALESCE(?, sleep_time),
           wake_estimate = COALESCE(?, wake_estimate),
+          mood = COALESCE(?, mood),
+          energy = COALESCE(?, energy),
+          day_events = COALESCE(?, day_events),
           tomorrow_intention = COALESCE(?, tomorrow_intention),
           raw_transcript = CASE WHEN ? != '' THEN ? ELSE raw_transcript END
       WHERE id = ?
-    `).run(input.sleepTime ?? null, input.wakeEstimate ?? null, input.tomorrowIntention ?? null, raw, raw, existing.id);
+    `).run(
+      input.sleepTime ?? null,
+      input.wakeEstimate ?? null,
+      input.mood ?? null,
+      input.energy ?? null,
+      input.eveningNotes ?? null,
+      input.tomorrowIntention ?? null,
+      raw,
+      raw,
+      existing.id
+    );
     return existing.id;
   }
 
   const result = db.prepare(`
-    INSERT INTO daily_checkins (checkin_date, checkin_type, sleep_time, wake_estimate, tomorrow_intention, raw_transcript)
-    VALUES (?, 'evening', ?, ?, ?, ?)
-  `).run(today, input.sleepTime ?? null, input.wakeEstimate ?? null, input.tomorrowIntention ?? null, raw);
+    INSERT INTO daily_checkins (
+      checkin_date, checkin_type, sleep_time, wake_estimate, mood, energy,
+      day_events, tomorrow_intention, raw_transcript
+    )
+    VALUES (?, 'evening', ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    today,
+    input.sleepTime ?? null,
+    input.wakeEstimate ?? null,
+    input.mood ?? null,
+    input.energy ?? null,
+    input.eveningNotes ?? null,
+    input.tomorrowIntention ?? null,
+    raw
+  );
   return Number(result.lastInsertRowid);
 }
 
@@ -648,11 +678,16 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate);
   const windows = buildAvailability(planDate, wakeEstimate, sleepTime, calendarEvents);
 
+  const planMood = input.mood ?? latestCheckin?.mood ?? snapshot.userState.mood;
+  const planEnergy = input.energy ?? latestCheckin?.energy ?? snapshot.userState.energy;
+  const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
+
   const summaryParts = [
     intention ? `intention: ${intention}` : 'no stated intention',
     `${candidateTasks.length} candidate task${candidateTasks.length === 1 ? '' : 's'}`,
     `${windows.length} open calendar window${windows.length === 1 ? '' : 's'}`,
-    `${snapshot.userState.energy} energy`,
+    `${planEnergy} energy`,
+    planMood ? `${planMood} mood` : null,
   ];
 
   const planId = db.transaction(() => {
@@ -677,11 +712,11 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
       sourceCheckinId,
       sleepTime,
       wakeEstimate,
-      input.mood ?? snapshot.userState.mood,
-      input.energy ?? snapshot.userState.energy,
-      input.eveningNotes ?? null,
+      planMood,
+      planEnergy,
+      eveningNotes,
       intention,
-      summaryParts.join('; ')
+      summaryParts.filter(Boolean).join('; ')
     );
 
     const plan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(planDate) as { id: number };

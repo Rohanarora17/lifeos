@@ -84,6 +84,9 @@ function initSchema(db: Database.Database) {
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN sleep_time TEXT').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN wake_estimate TEXT').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN tomorrow_intention TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN mood TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN energy TEXT').run(); } catch (e) { }
+  try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN day_events TEXT').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN inferred_goal_id INTEGER').run(); } catch (e) { }
   try { db.prepare('ALTER TABLE daily_checkins ADD COLUMN inferred_goal_confidence REAL').run(); } catch (e) { }
 

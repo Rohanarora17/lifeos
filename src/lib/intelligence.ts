@@ -545,21 +545,41 @@ function aggregateSignals(): string {
   // Sleep pattern from recent evening check-ins
   try {
     const sleepRows = db.prepare(`
-      SELECT sleep_time, wake_estimate, tomorrow_intention
+      SELECT sleep_time, wake_estimate, mood, energy, day_events, tomorrow_intention
       FROM daily_checkins
-      WHERE checkin_type = 'evening' AND sleep_time IS NOT NULL
+      WHERE checkin_type = 'evening'
+        AND (sleep_time IS NOT NULL OR mood IS NOT NULL OR energy IS NOT NULL OR day_events IS NOT NULL)
       ORDER BY checkin_date DESC LIMIT 14
-    `).all() as Array<{ sleep_time: string; wake_estimate: string; tomorrow_intention: string | null }>;
+    `).all() as Array<{
+      sleep_time: string | null;
+      wake_estimate: string | null;
+      mood: string | null;
+      energy: string | null;
+      day_events: string | null;
+      tomorrow_intention: string | null;
+    }>;
 
     if (sleepRows.length > 0) {
-      const avgSleepHour = Math.round(
-        sleepRows.reduce((sum, r) => sum + parseInt(r.sleep_time.split(':')[0], 10), 0) / sleepRows.length
-      );
-      const avgWakeHour = sleepRows.filter(r => r.wake_estimate).length > 0
-        ? Math.round(sleepRows.filter(r => r.wake_estimate).reduce((sum, r) => sum + parseInt(r.wake_estimate.split(':')[0], 10), 0) / sleepRows.filter(r => r.wake_estimate).length)
+      const rowsWithSleep = sleepRows.filter(r => r.sleep_time);
+      const avgSleepHour = rowsWithSleep.length > 0
+        ? Math.round(rowsWithSleep.reduce((sum, r) => sum + parseInt(r.sleep_time!.split(':')[0], 10), 0) / rowsWithSleep.length)
         : null;
-      sections.push(`\n=== SLEEP PATTERN (last ${sleepRows.length} evenings) ===`);
-      sections.push(`Avg sleep hour: ${avgSleepHour}:00${avgWakeHour !== null ? `, avg wake: ${avgWakeHour}:00` : ''}`);
+      const avgWakeHour = sleepRows.filter(r => r.wake_estimate).length > 0
+        ? Math.round(sleepRows.filter(r => r.wake_estimate).reduce((sum, r) => sum + parseInt(r.wake_estimate!.split(':')[0], 10), 0) / sleepRows.filter(r => r.wake_estimate).length)
+        : null;
+      sections.push(`\n=== EVENING STATE (last ${sleepRows.length} evenings) ===`);
+      if (avgSleepHour !== null) {
+        sections.push(`Avg sleep hour: ${avgSleepHour}:00${avgWakeHour !== null ? `, avg wake: ${avgWakeHour}:00` : ''}`);
+      }
+      const moodEnergy = sleepRows
+        .filter(r => r.mood || r.energy)
+        .slice(0, 5)
+        .map(r => [r.mood ? `mood=${r.mood}` : null, r.energy ? `energy=${r.energy}` : null].filter(Boolean).join(', '));
+      if (moodEnergy.length > 0) sections.push('Recent mood/energy: ' + moodEnergy.join(' | '));
+      const recentEvents = sleepRows.filter(r => r.day_events).slice(0, 3);
+      if (recentEvents.length > 0) {
+        sections.push('Recent day factors: ' + recentEvents.map(r => `"${r.day_events}"`).join(', '));
+      }
       const recentIntentions = sleepRows.filter(r => r.tomorrow_intention).slice(0, 5);
       if (recentIntentions.length > 0) {
         sections.push('Recent stated intentions: ' + recentIntentions.map(r => `"${r.tomorrow_intention}"`).join(', '));
