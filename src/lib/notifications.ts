@@ -830,7 +830,7 @@ export async function sendAlert(
     // Notify via Telegram + email for warning/urgent alerts
     if (decision.severity !== 'info') {
         void sendTelegram(formatAlert(type, decision.message, decision.severity, { adaptiveReason: decision.reason }), 'HTML', ALERT_KEYBOARD);
-        await trySendEmail(type, decision.message, decision.severity, decision.typeKey);
+        await trySendEmail(type, decision.message, decision.severity, decision.typeKey, decision.reason);
     }
 
     return true;
@@ -945,7 +945,13 @@ export function clearOldAlerts(): void {
 /**
  * Send email via Resend if configured.
  */
-async function trySendEmail(type: AlertType, message: string, severity: Severity, typeKey: string = type): Promise<void> {
+async function trySendEmail(
+    type: AlertType,
+    message: string,
+    severity: Severity,
+    typeKey: string = type,
+    adaptiveReason?: string | null
+): Promise<void> {
     try {
         const apiKey = getSetting('resend_api_key');
         const email = getSetting('notification_email');
@@ -958,18 +964,35 @@ async function trySendEmail(type: AlertType, message: string, severity: Severity
 
         const emoji = severity === 'urgent' ? '🚨' : '⚠️';
         const typeLabel = type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'notification',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        const modeLabel = snapshot.moment.mode.replace(/_/g, ' ');
+        const focusLine = snapshot.today.plannedFocus.nextTitle
+            ? `<p style="margin: 12px 0 0 0; font-size: 13px; color: #c7d2fe;">Current planned focus: <strong>${snapshot.today.plannedFocus.nextTitle}</strong></p>`
+            : '';
+        const reasonLine = adaptiveReason
+            ? `<p style="margin: 12px 0 0 0; font-size: 13px; color: #aaa;"><strong>Why now:</strong> ${adaptiveReason}</p>`
+            : '';
 
         await resend.emails.send({
             from: 'LifeOS <onboarding@resend.dev>',
             to: email,
-            subject: `${emoji} LifeOS Alert: ${typeLabel}`,
+            subject: `${emoji} ${typeLabel} · ${modeLabel}`,
             html: `
         <div style="font-family: -apple-system, system-ui, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
           <div style="background: #1a1a2e; color: #e0e0e0; padding: 24px; border-radius: 12px; border-left: 4px solid ${severity === 'urgent' ? '#ff5555' : '#ffa500'};">
             <h2 style="margin: 0 0 12px 0; color: ${severity === 'urgent' ? '#ff5555' : '#ffa500'};">
               ${emoji} ${typeLabel}
             </h2>
+            <p style="margin: 0 0 12px 0; font-size: 13px; color: #aaa; text-transform: capitalize;">
+              ${modeLabel} mode · ${snapshot.userState.energy} energy · alert fatigue ${snapshot.feedback.alertFatigueLevel}
+            </p>
             <p style="margin: 0; font-size: 15px; line-height: 1.6;">${message}</p>
+            ${focusLine}
+            ${reasonLine}
             <hr style="border: none; border-top: 1px solid #333; margin: 16px 0;">
             <p style="margin: 0; font-size: 12px; color: #888;">
               Sent by LifeOS at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
