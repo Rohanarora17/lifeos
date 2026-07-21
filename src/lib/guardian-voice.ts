@@ -1735,7 +1735,7 @@ RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specif
     } else {
       const topInsight = profile.coachingInsights?.[0];
       const nextWindow = profile.nextBestFocusWindow;
-      responseText = 'No active session right now.' +
+      responseText = voiceNoActiveSessionLine(personalization, 'status') +
         (nextWindow ? ` Best focus window: ${nextWindow}.` : '') +
         (topInsight ? ` ${topInsight}` : '');
     }
@@ -1749,7 +1749,7 @@ RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specif
 
   if (intent.action === 'request_override') {
     if (!activeSessionId) {
-      const response = 'There is no active guardian session to override right now.';
+      const response = voiceNoActiveSessionLine(personalization, 'override');
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
