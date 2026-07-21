@@ -262,6 +262,33 @@ function guardianTopicPlaceholder(personalization?: GuardianInsights['personaliz
   return 'What should move forward now?';
 }
 
+function guardianSessionContextPlaceholder(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) {
+    return 'Add useful context: allowed tabs, resources, constraints, or what switching is intentional.';
+  }
+
+  const plannedTitle = personalization.plannedFocus?.nextTitle;
+  if (plannedTitle) {
+    return `Context for ${plannedTitle}: resources you expect to use, acceptable tab switches, blockers, or what done means.`;
+  }
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'Low-energy context: smallest acceptable outcome, friction to avoid, and anything that should not trigger a warning.';
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return 'Deadline context: deliverable, allowed research paths, risky distractions, and the next proof of progress.';
+  }
+  if (personalization.mode === 'planning') {
+    return 'Planning context: tomorrow constraints, calendar anchors, dependencies, and where the first block should begin.';
+  }
+  if (personalization.mode === 'protect_focus') {
+    return 'Focus context: current thread, allowed tools, and what would count as drift.';
+  }
+  if (personalization.nextBestFocusWindow) {
+    return `Context for your ${personalization.nextBestFocusWindow} focus window: materials, constraints, and success criteria.`;
+  }
+  return 'Add useful context: allowed tabs, resources, constraints, or what switching is intentional.';
+}
+
 function buildGuardianOpeningMessage(input: {
   active: boolean;
   briefing?: DayBriefing | null;
@@ -997,7 +1024,7 @@ export default function GuardianPage() {
           </button>
           {showContext && (
             <textarea
-              placeholder="e.g. Working on distributed systems assignment — will switch between code editor, course slides, and Stack Overflow. Tabs switching is intentional."
+              placeholder={guardianSessionContextPlaceholder(adaptivePersonalization)}
               value={sessionContext}
               onChange={e => setSessionContext(e.target.value)}
               rows={3}
