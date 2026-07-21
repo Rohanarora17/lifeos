@@ -41,6 +41,31 @@ interface LiveKitConfig {
   agentVoice: string;
 }
 
+function initialAgentEvent(targetTitle: string): string {
+  return targetTitle
+    ? `Waiting for guardian events about ${targetTitle}.`
+    : 'Waiting for guardian events from this session.';
+}
+
+function voiceSubtitle(config: LiveKitConfig | null, targetTitle: string): string {
+  if (!config) return `Loading voice transport for ${targetTitle || 'this session'}...`;
+  if (config.realtimeConversationReady) {
+    return `${config.agentName} is ready for ${targetTitle || 'this focus session'}.`;
+  }
+  if (!config.enabled) return `Realtime voice is not configured; push-to-talk remains active for ${targetTitle || 'this session'}.`;
+  if (config.voiceMode === 'google-live') {
+    return `Room transport is ready for ${targetTitle || 'this session'}, but the realtime worker is not fully configured yet.`;
+  }
+  return `Room transport is ready for ${targetTitle || 'this session'}, but local voice mode keeps realtime conversation disabled.`;
+}
+
+function cloudReasoningLine(config: LiveKitConfig | null, targetTitle: string): string {
+  if (config?.cloudReasoningPolicy) return config.cloudReasoningPolicy;
+  return targetTitle
+    ? `Cloud reasoning will use sanitized text from ${targetTitle} when available.`
+    : 'Cloud reasoning will use sanitized session text when available.';
+}
+
 export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVoiceRoomProps) {
   const [config, setConfig] = useState<LiveKitConfig | null>(null);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
@@ -48,9 +73,13 @@ export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVo
   const [micEnabled, setMicEnabled] = useState(false);
   const [remoteParticipants, setRemoteParticipants] = useState<string[]>([]);
   const [activeSpeakers, setActiveSpeakers] = useState<string[]>([]);
-  const [lastDataEvent, setLastDataEvent] = useState<string>('No agent events yet.');
+  const [lastDataEvent, setLastDataEvent] = useState<string>(() => initialAgentEvent(targetTitle));
   const roomRef = useRef<Room | null>(null);
   const audioContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setLastDataEvent(initialAgentEvent(targetTitle));
+  }, [sessionId, targetTitle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -222,15 +251,7 @@ export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVo
 
   const liveKitEnabled = config?.enabled;
   const realtimeReady = config?.realtimeConversationReady;
-  const subtitle = !config
-    ? 'Loading voice transport status…'
-    : realtimeReady
-      ? `Realtime 1:1 guardian voice is ready via ${config.agentName}.`
-      : liveKitEnabled
-        ? config.voiceMode === 'google-live'
-          ? 'LiveKit room transport is ready, but the Google realtime worker is not fully configured yet.'
-          : 'LiveKit room transport is ready, but realtime voice is disabled because VOICE_MODE is local.'
-        : 'LiveKit not configured. Push-to-talk remains active.';
+  const subtitle = voiceSubtitle(config, targetTitle);
 
   return (
     <div
@@ -303,7 +324,7 @@ export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVo
         <div>Wake word: {config?.features.wakeWord ? 'enabled' : 'later'}</div>
         <div>Push-to-talk STT: {config?.pushToTalkTranscriptionConfigured ? 'whisper.cpp ready' : 'fallback/stub'}</div>
         <div>{config?.voiceModeSummary || 'Local-first voice mode'}</div>
-        <div>{config?.cloudReasoningPolicy || 'Cloud reasoning is text-only by default.'}</div>
+        <div>{cloudReasoningLine(config, targetTitle)}</div>
       </div>
 
       <div style={{ marginTop: '10px', fontSize: '11px', color: '#d1d5db', lineHeight: 1.5 }}>
