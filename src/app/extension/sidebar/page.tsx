@@ -165,6 +165,44 @@ function buildDurationOptions(input: {
     return options.slice(0, 5);
 }
 
+function buildFocusTargetPrompt(insights: InsightsData | null): string {
+    const personalization = insights?.personalization;
+    if (personalization?.plannedFocus?.nextTitle) return `Next planned: ${personalization.plannedFocus.nextTitle}`;
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return 'Choose a small, finishable target...';
+    }
+    if (personalization?.mode === 'deadline_pressure') return 'Choose the deadline-relief target...';
+    if (personalization?.mode === 'planning') return 'Choose a planning or setup target...';
+    if (insights?.recommendedTasks?.[0]) return `Recommended: ${insights.recommendedTasks[0].title}`;
+    return 'Select a goal or task...';
+}
+
+function buildNoSidebarTasksMessage(insights: InsightsData | null): string {
+    const personalization = insights?.personalization;
+    if (personalization?.plannedFocus?.plannedToday) {
+        return `No active tasks here. You still have ${personalization.plannedFocus.plannedToday - personalization.plannedFocus.completedToday} planned focus block(s) to protect.`;
+    }
+    if (personalization?.mode === 'planning') return 'No active tasks here. Add tomorrow targets from the planner.';
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return 'No active tasks here. Keep today light or add one small recovery-safe task.';
+    }
+    return 'No active tasks here. Add the next concrete time target from the dashboard.';
+}
+
+function buildTaskTimeTargetHint(task: Task, insights: InsightsData | null): string {
+    const personalization = insights?.personalization;
+    if (personalization?.plannedFocus?.nextTitle && task.title.toLowerCase().includes(personalization.plannedFocus.nextTitle.toLowerCase())) {
+        return 'Matches the next planned focus block.';
+    }
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return 'Start a smaller session to create today’s time target.';
+    }
+    if (personalization?.mode === 'deadline_pressure') {
+        return 'Start now to turn pressure into credited minutes.';
+    }
+    return 'Start a session to set the time target.';
+}
+
 export default function ExtensionSidebar() {
     const { session, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
     const [tasks, setTasks] = useState<Task[]>([]);
@@ -518,7 +556,7 @@ export default function ExtensionSidebar() {
                                     marginBottom: '6px', cursor: 'pointer',
                                 }}
                             >
-                                <option value="">Select a goal or task...</option>
+                                <option value="">{buildFocusTargetPrompt(insights)}</option>
                                 {goals.length > 0 && (
                                     <optgroup label="Goals">
                                         {goals.map(g => (
@@ -646,7 +684,7 @@ export default function ExtensionSidebar() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {tasks.length === 0 ? (
                         <p style={{ fontSize: '11px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>
-                            No active tasks. Add some from the dashboard!
+                            {buildNoSidebarTasksMessage(insights)}
                         </p>
                     ) : (
                         tasks.map(t => (
@@ -691,7 +729,7 @@ export default function ExtensionSidebar() {
                                         </div>
                                     ) : (
                                         <div style={{ marginTop: '4px', fontSize: '10px', color: '#8888a0' }}>
-                                            Start a session to set the time target.
+                                            {buildTaskTimeTargetHint(t, insights)}
                                         </div>
                                     )}
                                 </div>
