@@ -131,6 +131,49 @@ const GOAL_METRICS = [
     { value: 'github_commits', label: 'GitHub Commits' },
 ];
 
+function buildNoSessionsCopy(context?: AdaptiveInsightsContext): string {
+    if (!context) return 'No sessions detected yet today.';
+    if (context.currentSignals.activeSession) return 'Active session is still being tracked; completed blocks will land here.';
+    if (context.mode === 'recovery' || context.energy === 'low' || context.mood === 'low') {
+        return `No completed sessions yet. Start with a lighter block around ${context.nextBestFocusWindow}.`;
+    }
+    if (context.mode === 'deadline_pressure') {
+        return `No completed sessions yet. Protect the next deadline-relief window: ${context.nextBestFocusWindow}.`;
+    }
+    if (context.mode === 'planning') {
+        return 'No completed sessions yet. Use this as a planning day signal, not a failure signal.';
+    }
+    return `No completed sessions yet. Best next window: ${context.nextBestFocusWindow}.`;
+}
+
+function buildGoalNamePlaceholder(context?: AdaptiveInsightsContext): string {
+    if (!context) return 'e.g., 4 hours deep work';
+    if (context.mode === 'recovery' || context.energy === 'low' || context.mood === 'low') return 'e.g., 90 minutes gentle study';
+    if (context.mode === 'deadline_pressure') return 'e.g., 2 deadline relief blocks';
+    if (context.mode === 'planning') return 'e.g., plan tomorrow before bed';
+    if (context.focusTrend === 'improving') return 'e.g., protect morning deep work';
+    return 'e.g., focused study before distractions';
+}
+
+function buildGoalTargetPlaceholder(metric: string, context?: AdaptiveInsightsContext): string {
+    if (metric === 'tasks_completed') return context?.mode === 'recovery' ? '1' : '3';
+    if (metric === 'habits_completed') return context?.energy === 'low' ? '2' : '4';
+    if (metric === 'github_commits') return context?.mode === 'deadline_pressure' ? '2' : '1';
+    if (metric === 'distraction_minutes') return context?.alertFatigueLevel === 'high' ? '45' : '30';
+    if (metric === 'deep_work_minutes') return context?.energy === 'low' || context?.mood === 'low' ? '90' : '180';
+    return context?.mode === 'recovery' || context?.energy === 'low' ? '120' : '240';
+}
+
+function buildDomainEmptyCopy(kind: 'productive' | 'distraction', context?: AdaptiveInsightsContext): string {
+    if (!context) return 'No data yet.';
+    if (kind === 'productive') {
+        if (context.mode === 'recovery' || context.energy === 'low') return 'No productive domains yet. A small restorative block still counts.';
+        return `No productive domains yet. ${context.recommendedAnalysis}`;
+    }
+    if (context.alertFatigueLevel === 'high') return 'No distraction domains yet. Keep alerts quiet while LifeOS learns.';
+    return 'No distraction domains yet. Keep tracking so patterns can separate breaks from avoidance.';
+}
+
 export default function InsightsPage() {
     const [data, setData] = useState<FullAnalysis | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -360,8 +403,18 @@ export default function InsightsPage() {
 
                     {/* Top domains side-by-side */}
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-                        <DomainList title="🟢 Top Productive" domains={data?.topProductive || []} color="#22c55e" />
-                        <DomainList title="🔴 Top Distractions" domains={data?.topDistraction || []} color="#ef4444" />
+                        <DomainList
+                            title="🟢 Top Productive"
+                            domains={data?.topProductive || []}
+                            color="#22c55e"
+                            emptyLabel={buildDomainEmptyCopy('productive', adaptiveContext)}
+                        />
+                        <DomainList
+                            title="🔴 Top Distractions"
+                            domains={data?.topDistraction || []}
+                            color="#ef4444"
+                            emptyLabel={buildDomainEmptyCopy('distraction', adaptiveContext)}
+                        />
                     </div>
                 </>
             )}
@@ -449,7 +502,9 @@ export default function InsightsPage() {
                                 ))}
                             </div>
                         ) : (
-                            <div style={{ textAlign: 'center', padding: 24, color: '#8888a0' }}>No sessions detected yet today</div>
+                            <div style={{ textAlign: 'center', padding: 24, color: '#8888a0' }}>
+                                {buildNoSessionsCopy(adaptiveContext)}
+                            </div>
                         )}
                     </div>
 
@@ -591,7 +646,7 @@ export default function InsightsPage() {
                                 <div>
                                     <label style={{ fontSize: 11, color: '#8888a0', display: 'block', marginBottom: 4 }}>Goal Name</label>
                                     <input value={newGoal.title} onChange={e => setNewGoal({ ...newGoal, title: e.target.value })}
-                                        placeholder="e.g., 4 hours deep work" className="input"
+                                        placeholder={buildGoalNamePlaceholder(adaptiveContext)} className="input"
                                         style={{ width: '100%', padding: 8, background: '#12121a', border: '1px solid #2a2a40', borderRadius: 6, color: '#f0f0f5', fontSize: 13 }} />
                                 </div>
                                 <div>
@@ -613,7 +668,7 @@ export default function InsightsPage() {
                                 <div>
                                     <label style={{ fontSize: 11, color: '#8888a0', display: 'block', marginBottom: 4 }}>Target</label>
                                     <input type="number" value={newGoal.target_value} onChange={e => setNewGoal({ ...newGoal, target_value: e.target.value })}
-                                        placeholder="240" style={{ width: '100%', padding: 8, background: '#12121a', border: '1px solid #2a2a40', borderRadius: 6, color: '#f0f0f5', fontSize: 13 }} />
+                                        placeholder={buildGoalTargetPlaceholder(newGoal.metric, adaptiveContext)} style={{ width: '100%', padding: 8, background: '#12121a', border: '1px solid #2a2a40', borderRadius: 6, color: '#f0f0f5', fontSize: 13 }} />
                                 </div>
                                 <button onClick={addGoal}
                                     style={{ padding: 8, background: '#22c55e', border: 'none', borderRadius: 6, color: 'white', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
@@ -761,7 +816,7 @@ function AdaptiveSignal({ label, value, urgent = false }: { label: string; value
     );
 }
 
-function DomainList({ title, domains, color }: { title: string; domains: { domain: string; mins: number }[]; color: string }) {
+function DomainList({ title, domains, color, emptyLabel = 'No data yet.' }: { title: string; domains: { domain: string; mins: number }[]; color: string; emptyLabel?: string }) {
     return (
         <div className="card" style={{ padding: 20 }}>
             <h3 style={{ margin: '0 0 16px', fontWeight: 700, fontSize: 16, color }}>{title}</h3>
@@ -771,7 +826,7 @@ function DomainList({ title, domains, color }: { title: string; domains: { domai
                     <span style={{ flex: 1, fontSize: 13 }}>{d.domain}</span>
                     <span style={{ fontSize: 12, color, fontWeight: 600 }}>{d.mins}m</span>
                 </div>
-            )) : <div style={{ color: '#8888a0', fontSize: 13 }}>No data yet</div>}
+            )) : <div style={{ color: '#8888a0', fontSize: 13 }}>{emptyLabel}</div>}
         </div>
     );
 }
