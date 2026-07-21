@@ -122,6 +122,17 @@ function buildGoalDescriptionPlaceholder(personalization: GoalPersonalization | 
     return 'Why this matters now, and what progress should look like';
 }
 
+function buildGoalDeadlineLabel(personalization: GoalPersonalization | null): string {
+    if (!personalization) return 'Deadline (optional)';
+    if (personalization.mode === 'deadline_pressure') return 'Deadline that creates today\'s pressure';
+    if (personalization.mode === 'planning') return 'Date tomorrow should plan around';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Soft deadline, only if it reduces ambiguity';
+    }
+    if (personalization.standupGoal) return 'Deadline for today\'s anchor, if any';
+    return 'Deadline (optional)';
+}
+
 function buildLinkedTasksEmpty(goal: Goal, personalization: GoalPersonalization | null): string {
     if (goal.adaptiveGoalStatus === 'deadline_risk' || personalization?.mode === 'deadline_pressure') {
         return 'No tasks linked yet. Add the smallest blocker-relief task before adding more goals.';
@@ -604,8 +615,12 @@ export default function GoalsPage() {
                                 className="input text-sm"
                                 value={deadline}
                                 onChange={e => setDeadline(e.target.value)}
-                                placeholder="Deadline (optional)"
+                                aria-label={buildGoalDeadlineLabel(personalization)}
+                                title={buildGoalDeadlineLabel(personalization)}
                             />
+                        </div>
+                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {buildGoalDeadlineLabel(personalization)}
                         </div>
                         <div className="flex justify-end gap-2 pt-2 border-t border-[#333]">
                             <button className="btn btn-ghost btn-sm" onClick={() => setShowNewGoal(false)}>Cancel</button>
