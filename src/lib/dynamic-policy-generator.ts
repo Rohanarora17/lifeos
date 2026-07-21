@@ -98,7 +98,24 @@ function loadMemoryFacts(topic: string): string {
   }
 }
 
-function loadPolicyFeedbackSignals(): string {
+function noExplicitFeedbackContext(snapshot: PersonalizationSnapshot): string {
+  const planned = snapshot.today.plannedFocus.nextTitle
+    ? `\n- Current planned focus: ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}`
+    : '';
+  const standup = snapshot.userState.standupGoal
+    ? `\n- Today's stated goal: ${snapshot.userState.standupGoal}`
+    : '';
+
+  return `No explicit policy feedback yet. Use current personalization as the fallback signal:
+- Moment mode: ${snapshot.moment.mode}
+- Energy: ${snapshot.userState.energy}
+- Mood: ${snapshot.userState.mood ?? 'unknown'}
+- Alert fatigue: ${snapshot.feedback.alertFatigueLevel}
+- Learned focus window: ${snapshot.userState.nextBestFocusWindow || 'unknown'}${planned}${standup}
+- Guidance: ${snapshot.moment.guidance}`;
+}
+
+function loadPolicyFeedbackSignals(snapshot: PersonalizationSnapshot): string {
   try {
     const db = getDb();
     const rows = db.prepare(`
@@ -168,9 +185,9 @@ function loadPolicyFeedbackSignals(): string {
       }
     }
 
-    return parts.join('\n') || 'No explicit policy feedback yet.';
+    return parts.join('\n') || noExplicitFeedbackContext(snapshot);
   } catch {
-    return 'No explicit policy feedback available.';
+    return noExplicitFeedbackContext(snapshot);
   }
 }
 
@@ -190,7 +207,7 @@ export async function generateDynamicPolicy(
     includeMemoryFacts: 8,
   });
   const personalizationContext = formatPersonalizationContext(personalization);
-  const feedbackSignals = loadPolicyFeedbackSignals();
+  const feedbackSignals = loadPolicyFeedbackSignals(personalization);
 
   const ai = getGenAI();
   if (!ai) {
