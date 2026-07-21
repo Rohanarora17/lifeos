@@ -262,6 +262,33 @@ function guardianTopicPlaceholder(personalization?: GuardianInsights['personaliz
   return 'What should move forward now?';
 }
 
+function buildGuardianOpeningMessage(input: {
+  active: boolean;
+  briefing?: DayBriefing | null;
+  personalization?: GuardianInsights['personalization'];
+}) {
+  if (input.active) return 'Session Active';
+  if (input.briefing?.openingMessage) return input.briefing.openingMessage;
+
+  const personalization = input.personalization;
+  const planned = formatPlannedFocusLabel(personalization?.plannedFocus);
+  if (planned) return `Next planned focus: ${planned}`;
+  if (!personalization) return 'Learning your day before suggesting the next move.';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return `Low-energy day. Start with ${formatDuration(personalization.recommendedSessionMinutes)} of useful progress.`;
+  }
+  if (personalization.mode === 'deadline_pressure') {
+    return `Deadline pressure. Use ${personalization.nextBestFocusWindow} for the highest-relief block.`;
+  }
+  if (personalization.mode === 'planning') {
+    return 'Planning mode. Shape tomorrow before adding more pressure.';
+  }
+  if (personalization.mode === 'protect_focus') {
+    return `Protect focus around ${personalization.nextBestFocusWindow}.`;
+  }
+  return `Best next focus window: ${personalization.nextBestFocusWindow}.`;
+}
+
 function formatNextDayMode(mode?: string) {
   if (mode === 'recovery') return 'recovery mode';
   if (mode === 'deadline_pressure') return 'deadline-pressure mode';
@@ -455,6 +482,11 @@ export default function GuardianPage() {
     personalization: adaptivePersonalization,
     selectedTask: selectedAdaptiveTask,
     topTask: adaptiveTasks[0] ?? null,
+  });
+  const guardianOpeningMessage = buildGuardianOpeningMessage({
+    active: activeSession.active,
+    briefing,
+    personalization: adaptivePersonalization,
   });
 
   const fetchBriefing = useCallback(async () => {
@@ -755,7 +787,7 @@ export default function GuardianPage() {
           Guardian
         </div>
         <h1 style={{ fontSize: '28px', fontWeight: 900, color: '#f0f0f5', margin: 0, letterSpacing: '-0.5px' }}>
-          {activeSession.active ? 'Session Active' : (briefing?.openingMessage ?? 'Ready when you are.')}
+          {guardianOpeningMessage}
         </h1>
       </div>
 
