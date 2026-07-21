@@ -326,6 +326,43 @@ function resolveNextDayPlanRefreshTime(): { time: string; reason: string } {
   };
 }
 
+function resolveMorningCheckinWindow(): {
+  wake: string;
+  startMinutes: number;
+  endMinutes: number;
+  reason: string;
+} {
+  const wake = getWakeEstimate() ?? inferMorningTime();
+  const snapshot = buildSchedulerSnapshot();
+  const wakeMinutes = timeToMinutes(wake);
+  const lowState = snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low';
+  const lateWake = wakeMinutes >= 10 * 60;
+  const afterNoonWake = wakeMinutes >= 12 * 60;
+  const windowLength = snapshot.feedback.alertFatigueLevel === 'high'
+    ? 10
+    : snapshot.moment.mode === 'recovery' || lowState
+      ? 45
+      : lateWake
+        ? 30
+        : 15;
+  const latestMinutes = afterNoonWake
+    ? 15 * 60
+    : snapshot.moment.mode === 'recovery' || lowState || lateWake
+      ? 14 * 60
+      : 12 * 60;
+  const endMinutes = Math.max(
+    wakeMinutes + 1,
+    Math.min(wakeMinutes + windowLength, latestMinutes),
+  );
+
+  return {
+    wake,
+    startMinutes: wakeMinutes,
+    endMinutes,
+    reason: `${windowLength}m morning window from wake ${wake}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, mood=${snapshot.userState.mood ?? 'unknown'}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
+}
+
 function clampMinutes(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -635,32 +672,19 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await consolidateFacts();
     });
 
-    // Daily morning check-in — fires within 15 minutes of the user's wake estimate
+    // Daily morning check-in — fires in an adaptive window after the user's wake estimate.
     // Wake estimate comes from yesterday's evening check-in. Fallback uses learned morning timing.
     // Uses a polling approach: every minute we check if we're in the wake window.
     registerIntervalJob('morning_checkin', 60 * 1000, async () => {
         const now = new Date();
         const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-        // Determine target window
-        const wakeEstimate = getWakeEstimate();
-        let windowStart: number;
-        if (wakeEstimate) {
-            const [wh, wm] = wakeEstimate.split(':').map(Number);
-            windowStart = wh * 60 + wm;
-        } else {
-            const [bh, bm] = inferMorningTime().split(':').map(Number);
-            windowStart = bh * 60 + bm;
-        }
-        const windowEnd = windowStart + 15;
-
-        // Hard guard: morning check-in must never fire after noon, regardless of wake estimate
-        if (nowMinutes >= 12 * 60) return;
+        const morningWindow = resolveMorningCheckinWindow();
 
         // Only fire inside the window
-        if (nowMinutes < windowStart || nowMinutes >= windowEnd) return;
+        if (nowMinutes < morningWindow.startMinutes || nowMinutes >= morningWindow.endMinutes) return;
 
         // Deduplicate: sendMorningCheckin() already checks if already sent today
+        console.log(`[Scheduler] morning_checkin window: ${morningWindow.reason}`);
         await runAdaptiveSchedulerJob('morning_checkin', async () => {
             await sendMorningCheckin();
         });
