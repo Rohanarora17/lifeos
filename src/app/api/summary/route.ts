@@ -1,7 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, getSetting } from '@/lib/db';
 import { generateDailySummary, generateMorningBrief } from '@/lib/ai';
-import { calculateDailyXp, getStreakCount, getAccountabilityScore, ScoreConfig } from '@/lib/scoring';
+import { calculateDailyXp, getStreakCount, getAccountabilityScore, getDailyActivityStats, ScoreConfig } from '@/lib/scoring';
+
+function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
+    try {
+        const plan = db.prepare(`
+            SELECT id,
+                   sleep_time as sleepTime,
+                   wake_estimate as wakeEstimate,
+                   mood,
+                   energy,
+                   evening_notes as eveningNotes,
+                   tomorrow_intention as tomorrowIntention,
+                   generated_summary as generatedSummary
+            FROM daily_plans
+            WHERE plan_date = ?
+            LIMIT 1
+        `).get(date) as {
+            id: number;
+            sleepTime: string | null;
+            wakeEstimate: string | null;
+            mood: string | null;
+            energy: string | null;
+            eveningNotes: string | null;
+            tomorrowIntention: string | null;
+            generatedSummary: string | null;
+        } | undefined;
+
+        if (!plan) return '';
+
+        const sessions = db.prepare(`
+            SELECT title,
+                   planned_start as plannedStart,
+                   duration_minutes as durationMinutes,
+                   session_type as sessionType,
+                   reward_xp as rewardXp,
+                   reward_coins as rewardCoins,
+                   status
+            FROM planned_focus_sessions
+            WHERE plan_id = ?
+            ORDER BY planned_start ASC
+            LIMIT 8
+        `).all(plan.id) as Array<{
+            title: string;
+            plannedStart: string;
+            durationMinutes: number;
+            sessionType: string;
+            rewardXp: number;
+            rewardCoins: number;
+            status: string;
+        }>;
+
+        const lines = [
+            plan.tomorrowIntention ? `Main intention: ${plan.tomorrowIntention}` : null,
+            plan.sleepTime || plan.wakeEstimate ? `Sleep/wake: ${plan.sleepTime ?? '?'} -> ${plan.wakeEstimate ?? '?'}` : null,
+            plan.mood || plan.energy ? `Evening state: ${plan.mood ?? 'unknown'} mood, ${plan.energy ?? 'unknown'} energy` : null,
+            plan.eveningNotes ? `What changed: ${plan.eveningNotes.slice(0, 300)}` : null,
+            plan.generatedSummary ? `Planner summary: ${plan.generatedSummary}` : null,
+            sessions.length > 0
+                ? `Planned focus blocks:\n${sessions.map(session => {
+                    const time = new Date(session.plannedStart).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+                    return `- ${time} ${session.title} (${session.durationMinutes}m, ${session.sessionType}, ${session.status}, ${session.rewardXp} XP/${session.rewardCoins} coins)`;
+                }).join('\n')}`
+                : null,
+        ].filter(Boolean);
+
+        return lines.join('\n');
+    } catch {
+        return '';
+    }
+}
 
 // GET: Get daily summary or morning brief
 export async function GET(request: NextRequest) {
@@ -54,6 +123,7 @@ export async function GET(request: NextRequest) {
                 }) : 0,
                 streak,
                 yesterdayDistractionMinutes: (yesterdayScore as { distraction_minutes: number })?.distraction_minutes || 0,
+                planningContext: formatPlanContext(db, date),
             });
 
             // Save
@@ -71,7 +141,6 @@ export async function GET(request: NextRequest) {
         }
 
         // Calculate stats
-        const { getDailyActivityStats } = require('@/lib/scoring');
         const activityStats = getDailyActivityStats(db, date);
 
         const tasksCompleted = (db.prepare(
@@ -137,6 +206,7 @@ export async function GET(request: NextRequest) {
             commits,
             score,
             xp,
+            planningContext: formatPlanContext(db, date),
         });
 
         // Calculate daily sub-scores

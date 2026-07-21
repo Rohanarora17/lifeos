@@ -513,6 +513,7 @@ export async function generateDailySummary(date: string, stats: {
     commits: number;
     score: number;
     xp: number;
+    planningContext?: string;
 }): Promise<string> {
     const ai = getGenAI();
     let personalization: PersonalizationSnapshot | null = null;
@@ -550,6 +551,7 @@ Do not use a fixed motivational template. Not every day is the same: adapt hones
 
 ${personalizationContext}
 ${habitContext}
+${stats.planningContext ? `\n\nDAY PLAN / CHECK-IN CONTEXT:\n${stats.planningContext}` : ''}
 
 Date: ${date}
 Productive time: ${Math.round(stats.productiveMinutes / 60)}h ${stats.productiveMinutes % 60}m
@@ -569,6 +571,7 @@ Instructions:
 - If deadline_pressure is active, name the concrete pressure and next action.
 - If protect_focus is active, keep it brief and avoid derailing flow.
 - If alert fatigue is high, do not pile on generic advice.
+- Correlate sleep, mood, energy, planned sessions, and actual activity when that context is present.
 - Reference actual tasks, habits, domains, or known triggers only when present in the context.
 - Format as a clean report with short sections.`;
 
@@ -590,6 +593,7 @@ export async function generateMorningBrief(date: string, data: {
     yesterdayScore: number;
     streak: number;
     yesterdayDistractionMinutes: number;
+    planningContext?: string;
 }): Promise<string> {
     const ai = getGenAI();
     let personalization: PersonalizationSnapshot | null = null;
@@ -606,6 +610,7 @@ export async function generateMorningBrief(date: string, data: {
 Do not use a generic energizing script. Not every day is the same: adapt the action plan, pressure, tone, and cognitive load to this exact user and today's state.
 
 ${personalizationContext}
+${data.planningContext ? `\n\nTODAY'S PLAN / LAST EVENING SIGNALS:\n${data.planningContext}` : ''}
 
 Date: ${date}
 Calendar events today:
@@ -626,6 +631,7 @@ Instructions:
 - The action plan must be specific to the current calendar/task context when possible.
 - If energy or mood is low, make the action tiny and compassionate.
 - If alert fatigue is high, keep the briefing terse and avoid multiple asks.
+- Use saved sleep/wake, mood/energy, and planned focus blocks when present instead of inventing a generic day plan.
 - Reference typical patterns only if they are in the profile.`;
 
         // PRO: Strategic planning and motivation
