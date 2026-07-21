@@ -217,6 +217,7 @@ export async function GET() {
         uncheckedHabits: personalization.today.uncheckedHabits,
         calendarEvents: personalization.today.calendarEvents,
         recentDistractionMinutes: personalization.today.recentDistractionMinutes,
+        plannedFocus: personalization.today.plannedFocus,
         standupGoal: personalization.userState.standupGoal,
         narrative: personalization.userState.narrative,
         energy: personalization.userState.energy,

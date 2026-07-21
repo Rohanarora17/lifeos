@@ -20,6 +20,14 @@ interface DashboardPersonalization {
   uncheckedHabits: string[];
   calendarEvents: string[];
   recentDistractionMinutes: number;
+  plannedFocus: {
+    plannedToday: number;
+    completedToday: number;
+    skippedToday: number;
+    nextTitle: string | null;
+    nextMinutes: number | null;
+    recentFollowThroughRate: number | null;
+  };
   standupGoal: string | null;
   narrative: string;
   energy: 'high' | 'medium' | 'low';
@@ -745,13 +753,20 @@ export default function DashboardPage() {
                 {personalization.overdueTasks > 0 && <span className="badge badge-red">{personalization.overdueTasks} overdue</span>}
                 {personalization.uncheckedHabits.length > 0 && <span className="badge badge-yellow">{personalization.uncheckedHabits.length} habits left</span>}
                 {personalization.calendarEvents.length > 0 && <span className="badge badge-green">{personalization.calendarEvents.length} calendar</span>}
+                {personalization.plannedFocus.plannedToday > 0 && (
+                  <span className="badge badge-blue">
+                    focus {personalization.plannedFocus.completedToday}/{personalization.plannedFocus.plannedToday}
+                  </span>
+                )}
                 <span className="badge" style={{
                   background: personalization.alertFatigueLevel === 'high' ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.05)',
                   color: personalization.alertFatigueLevel === 'high' ? '#ef4444' : 'var(--text-secondary)',
                 }}>alerts {personalization.alertFatigueLevel}</span>
               </div>
 	              <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
-	                {dashboardPolicy?.notificationReason ?? `Feedback loop: ${formatHelpfulRate(personalization.helpfulRate)} · ${personalization.corrections30d} corrections in 30d`}
+	                {personalization.plannedFocus.nextTitle
+                    ? `Next planned focus: ${personalization.plannedFocus.nextTitle}${personalization.plannedFocus.nextMinutes ? ` (${personalization.plannedFocus.nextMinutes}m)` : ''}. ${dashboardPolicy?.notificationReason ?? `Feedback loop: ${formatHelpfulRate(personalization.helpfulRate)} · ${personalization.corrections30d} corrections in 30d`}`
+                    : dashboardPolicy?.notificationReason ?? `Feedback loop: ${formatHelpfulRate(personalization.helpfulRate)} · ${personalization.corrections30d} corrections in 30d`}
 	              </p>
 	            </div>
           </div>

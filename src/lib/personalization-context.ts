@@ -40,6 +40,14 @@ export interface PersonalizationSnapshot {
     uncheckedHabits: string[];
     calendarEvents: string[];
     recentDistractionMinutes: number;
+    plannedFocus: {
+      plannedToday: number;
+      completedToday: number;
+      skippedToday: number;
+      nextTitle: string | null;
+      nextMinutes: number | null;
+      recentFollowThroughRate: number | null;
+    };
   };
   userState: {
     narrative: string;
@@ -122,6 +130,63 @@ function getRecentDistractionMinutes(): number {
     return Math.round(Number(row?.seconds ?? 0) / 60);
   } catch {
     return 0;
+  }
+}
+
+function getPlannedFocusContext(date: string): PersonalizationSnapshot['today']['plannedFocus'] {
+  try {
+    const today = getDb().prepare(`
+      SELECT
+        COUNT(*) as plannedToday,
+        SUM(CASE WHEN pfs.status = 'completed' THEN 1 ELSE 0 END) as completedToday,
+        SUM(CASE WHEN pfs.status = 'skipped' THEN 1 ELSE 0 END) as skippedToday
+      FROM planned_focus_sessions pfs
+      JOIN daily_plans dp ON dp.id = pfs.plan_id
+      WHERE dp.plan_date = ?
+    `).get(date) as {
+      plannedToday: number | null;
+      completedToday: number | null;
+      skippedToday: number | null;
+    } | undefined;
+
+    const next = getDb().prepare(`
+      SELECT pfs.title, pfs.duration_minutes as durationMinutes
+      FROM planned_focus_sessions pfs
+      JOIN daily_plans dp ON dp.id = pfs.plan_id
+      WHERE dp.plan_date = ?
+        AND pfs.status IN ('planned', 'started')
+      ORDER BY pfs.planned_start ASC
+      LIMIT 1
+    `).get(date) as { title: string; durationMinutes: number } | undefined;
+
+    const recent = getDb().prepare(`
+      SELECT
+        SUM(CASE WHEN pfs.status = 'completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN pfs.status IN ('completed', 'skipped') THEN 1 ELSE 0 END) as resolved
+      FROM planned_focus_sessions pfs
+      JOIN daily_plans dp ON dp.id = pfs.plan_id
+      WHERE dp.plan_date >= date(?, '-14 days')
+        AND dp.plan_date < ?
+    `).get(date, date) as { completed: number | null; resolved: number | null } | undefined;
+
+    const resolved = Number(recent?.resolved ?? 0);
+    return {
+      plannedToday: Number(today?.plannedToday ?? 0),
+      completedToday: Number(today?.completedToday ?? 0),
+      skippedToday: Number(today?.skippedToday ?? 0),
+      nextTitle: next?.title ?? null,
+      nextMinutes: next?.durationMinutes ?? null,
+      recentFollowThroughRate: resolved > 0 ? Number(recent?.completed ?? 0) / resolved : null,
+    };
+  } catch {
+    return {
+      plannedToday: 0,
+      completedToday: 0,
+      skippedToday: 0,
+      nextTitle: null,
+      nextMinutes: null,
+      recentFollowThroughRate: null,
+    };
   }
 }
 
@@ -236,6 +301,7 @@ export function buildPersonalizationSnapshot(opts?: {
       AND created_at >= datetime('now', '-30 days')
   `);
   const helpfulRate = getHelpfulRate();
+  const plannedFocus = getPlannedFocusContext(date);
 
   return {
     surface,
@@ -250,6 +316,7 @@ export function buildPersonalizationSnapshot(opts?: {
       uncheckedHabits,
       calendarEvents,
       recentDistractionMinutes: getRecentDistractionMinutes(),
+      plannedFocus,
     },
     userState: {
       narrative: profile.currentNarrative,
@@ -315,6 +382,10 @@ export function formatPersonalizationContext(snapshot: PersonalizationSnapshot):
     `Unchecked habits: ${joinList(snapshot.today.uncheckedHabits)}`,
     `Calendar: ${joinList(snapshot.today.calendarEvents)}`,
     `Recent distraction: ${snapshot.today.recentDistractionMinutes} min in last 2h`,
+    `Planned focus: ${snapshot.today.plannedFocus.completedToday}/${snapshot.today.plannedFocus.plannedToday} completed today; ${snapshot.today.plannedFocus.skippedToday} skipped; next ${snapshot.today.plannedFocus.nextTitle ? `${snapshot.today.plannedFocus.nextTitle} (${snapshot.today.plannedFocus.nextMinutes}m)` : 'none'}`,
+    snapshot.today.plannedFocus.recentFollowThroughRate === null
+      ? 'Planned focus follow-through: not enough resolved blocks yet'
+      : `Planned focus follow-through: ${Math.round(snapshot.today.plannedFocus.recentFollowThroughRate * 100)}% over recent resolved blocks`,
     '',
     '=== USER STATE ===',
     snapshot.userState.narrative ? `Narrative: ${snapshot.userState.narrative}` : 'Narrative: none yet',
