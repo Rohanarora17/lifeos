@@ -149,6 +149,7 @@ export default function ExtensionSidebar() {
     const [stats, setStats] = useState<DashStats | null>(null);
     const [insights, setInsights] = useState<InsightsData | null>(null);
     const [focusTarget, setFocusTarget] = useState('');
+    const [taskCompletionNotice, setTaskCompletionNotice] = useState<string | null>(null);
     const topRecommendedTask = insights?.recommendedTasks?.[0] ?? null;
     const selectedRecommendedTask = focusTarget.startsWith('task-')
         ? insights?.recommendedTasks?.find(task => task.id === Number(focusTarget.replace('task-', ''))) ?? null
@@ -272,14 +273,22 @@ export default function ExtensionSidebar() {
 
     const markTaskDone = async (id: number) => {
         try {
-            sendRecommendationFeedback(id, 'completed', 'completed from extension sidebar');
-            await fetch('/api/tasks', {
+            setTaskCompletionNotice(null);
+            const res = await fetch('/api/tasks', {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id, status: 'done' })
             });
+            if (!res.ok) {
+                const payload = await res.json().catch(() => null);
+                setTaskCompletionNotice(payload?.message || 'Task still needs linked focus time before it can complete.');
+                return;
+            }
+            sendRecommendationFeedback(id, 'completed', 'completed from extension sidebar');
             fetchContext();
-        } catch { }
+        } catch {
+            setTaskCompletionNotice('Could not update the task right now.');
+        }
     };
 
     const sendRecommendationFeedback = async (
@@ -597,6 +606,19 @@ export default function ExtensionSidebar() {
                 }}>
                     Today&apos;s Tasks
                 </div>
+                {taskCompletionNotice && (
+                    <div style={{
+                        fontSize: '11px',
+                        color: '#f59e0b',
+                        background: 'rgba(245,158,11,0.08)',
+                        border: '1px solid rgba(245,158,11,0.16)',
+                        borderRadius: '6px',
+                        padding: '6px 8px',
+                        marginBottom: '6px',
+                    }}>
+                        {taskCompletionNotice}
+                    </div>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {tasks.length === 0 ? (
                         <p style={{ fontSize: '11px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>

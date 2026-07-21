@@ -224,6 +224,7 @@ export default function GuardianPage() {
   const [feedbackText, setFeedbackText] = useState<Record<string, string>>({});
   const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({});
   const [feedbackDone, setFeedbackDone] = useState<Record<string, boolean>>({});
+  const [completionActionNotice, setCompletionActionNotice] = useState<Record<number, string>>({});
   const [calibrationStatus, setCalibrationStatus] = useState<{
     accuracy: number | null;
     sessions_count: number;
@@ -427,13 +428,28 @@ export default function GuardianPage() {
 
   const actionCompletion = async (id: number, action: 'done' | 'blocked' | 'skipped', markTaskDone = false) => {
     try {
-      await fetch('/api/guardian/session/complete', {
+      setCompletionActionNotice(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      const res = await fetch('/api/guardian/session/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, action, mark_task_done: markTaskDone }),
       });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        setCompletionActionNotice(prev => ({
+          ...prev,
+          [id]: payload?.message || 'This task still needs linked focus time before it can complete.',
+        }));
+        return;
+      }
       await fetchHistoryData();
-    } catch { }
+    } catch {
+      setCompletionActionNotice(prev => ({ ...prev, [id]: 'Could not update this review right now.' }));
+    }
   };
 
   const submitFeedback = async (sessionId: string) => {
@@ -1141,6 +1157,19 @@ export default function GuardianPage() {
                     Skip
                   </button>
                 </div>
+                {completionActionNotice[c.id] && (
+                  <div style={{
+                    marginTop: '8px',
+                    fontSize: '11px',
+                    color: '#f59e0b',
+                    background: 'rgba(245,158,11,0.08)',
+                    border: '1px solid rgba(245,158,11,0.16)',
+                    borderRadius: '6px',
+                    padding: '6px 8px',
+                  }}>
+                    {completionActionNotice[c.id]}
+                  </div>
+                )}
               </div>
             ))}
           </div>

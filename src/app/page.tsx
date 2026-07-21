@@ -225,6 +225,7 @@ export default function DashboardPage() {
   const { session, start: startSession, end: endSession } = useGuardianSession();
   const focusSessions: FocusSessionHistory[] = []; // Legacy section hidden — guardian history is at /guardian
   const [liveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
+  const [taskCompletionNotice, setTaskCompletionNotice] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -320,6 +321,32 @@ export default function DashboardPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskId, feedback, reason, surface: 'dashboard' }),
     }).catch(() => { });
+  };
+
+  const completeRecommendedTask = async (taskId: number) => {
+    setTaskCompletionNotice(null);
+    const res = await fetch('/api/tasks', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: taskId, status: 'done' })
+    }).catch(() => null);
+    if (!res?.ok) {
+      const payload = await res?.json().catch(() => null);
+      setTaskCompletionNotice(payload?.message || 'Task still needs linked focus time before it can complete.');
+      return;
+    }
+
+    setData(prev => {
+      if (!prev || !prev.intelligence) return prev;
+      return {
+        ...prev,
+        intelligence: {
+          ...prev.intelligence,
+          recommendedTasks: prev.intelligence.recommendedTasks.filter(rt => rt.id !== taskId)
+        }
+      };
+    });
+    sendRecommendationFeedback(taskId, 'completed', 'completed from daily plan');
   };
 
   if (loading) {
@@ -922,30 +949,16 @@ export default function DashboardPage() {
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
               <span>📋</span> Daily Plan (AI Curated)
             </h3>
+            {taskCompletionNotice && (
+              <div className="text-xs mb-2 px-2 py-1 rounded" style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.18)' }}>
+                {taskCompletionNotice}
+              </div>
+            )}
             <div className="space-y-2">
               {data.intelligence.recommendedTasks.length > 0 ? data.intelligence.recommendedTasks.slice(0, 3).map(t => (
                 <div key={t.id} className="flex items-start gap-3 py-2 group">
                   <button
-                    onClick={() => {
-                      // Optimistic remove
-                      setData(prev => {
-                        if (!prev || !prev.intelligence) return prev;
-                        return {
-                          ...prev,
-                          intelligence: {
-                            ...prev.intelligence,
-                            recommendedTasks: prev.intelligence.recommendedTasks.filter(rt => rt.id !== t.id)
-                          }
-                        };
-                      });
-                      sendRecommendationFeedback(t.id, 'completed', 'completed from daily plan');
-                      // API Call
-                      fetch('/api/tasks', {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ id: t.id, status: 'done' })
-                      }).catch(() => { });
-                    }}
+                    onClick={() => void completeRecommendedTask(t.id)}
                     title="Mark task as done"
                     className="w-5 h-5 rounded-full mt-0.5 border-2 flex-shrink-0 border-slate-500 hover:border-green-500 hover:bg-green-500/10 transition-colors"
                   />
