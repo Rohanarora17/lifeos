@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 
 /**
  * POST /api/guardian/session/complete
@@ -34,6 +35,16 @@ export async function POST(req: NextRequest) {
     }
     if (completion.status !== 'pending') {
       return NextResponse.json({ error: 'completion already actioned' }, { status: 409 });
+    }
+    if (mark_task_done && completion.task_id && action === 'done') {
+      const progress = getTaskTimeProgress(completion.task_id);
+      if (progress.targetMinutes !== null && progress.creditedMinutes < progress.targetMinutes) {
+        return NextResponse.json({
+          error: 'time_target_not_reached',
+          message: `Task needs ${progress.remainingMinutes} more linked focus minute${progress.remainingMinutes === 1 ? '' : 's'} before completion.`,
+          progress,
+        }, { status: 409 });
+      }
     }
 
     db.transaction(() => {

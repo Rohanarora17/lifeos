@@ -259,6 +259,18 @@ export async function PATCH(request: NextRequest) {
             updates.push('status = ?');
             params.push(safeStatus);
             if (safeStatus === 'done') {
+                const progress = getTaskTimeProgress(Number(id));
+                if (
+                    progress.targetMinutes !== null &&
+                    progress.creditedMinutes < progress.targetMinutes &&
+                    body.force_complete !== true
+                ) {
+                    return NextResponse.json({
+                        error: 'time_target_not_reached',
+                        message: `Task needs ${progress.remainingMinutes} more linked focus minute${progress.remainingMinutes === 1 ? '' : 's'} before completion.`,
+                        progress,
+                    }, { status: 409 });
+                }
                 updates.push("completed_at = datetime('now')");
                 try {
                     const task = db.prepare('SELECT title, status, priority, estimated_minutes FROM tasks WHERE id = ?').get(id) as { title: string; status: string; priority: string; estimated_minutes: number | null };
