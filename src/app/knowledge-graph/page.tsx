@@ -27,6 +27,19 @@ interface Goal {
     node_count: number;
 }
 
+interface KnowledgePersonalization {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    standupGoal: string | null;
+    plannedFocus: {
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
+}
+
 const MASTERY_COLOR = (m: number) => {
     const color = masteryColor(m);
     if (m >= 0.8) return { bg: `rgba(16, 185, 129, 0.15)`, border: color, text: color };
@@ -34,6 +47,53 @@ const MASTERY_COLOR = (m: number) => {
     if (m >= 0.2) return { bg: `rgba(239, 68, 68, 0.12)`, border: color, text: color };
     return { bg: 'rgba(100, 116, 139, 0.1)', border: color, text: '#94a3b8' };
 };
+
+function compactKnowledgeText(text: string, maxLength = 56): string {
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function buildKnowledgeHeaderText(personalization: KnowledgePersonalization | null): string {
+    if (!personalization) return 'AI-assessed concept mastery — your learning DNA mapped to goals, tasks & study sessions.';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Map only the minimum concepts worth touching on lower-capacity days.';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Map blockers and prerequisite gaps that reduce deadline pressure first.';
+    }
+    if (personalization.mode === 'planning') {
+        return 'Use concept maps to decide tomorrow’s first study or research block.';
+    }
+    if (personalization.plannedFocus.nextTitle) {
+        return `Concept map should support ${compactKnowledgeText(personalization.plannedFocus.nextTitle)}.`;
+    }
+    return personalization.guidance;
+}
+
+function buildGoalConceptCountLabel(goal: Goal, personalization: KnowledgePersonalization | null): string {
+    if (goal.node_count > 0) return `${goal.node_count} concept nodes`;
+    if (!personalization) return 'No concepts yet';
+    if (personalization.mode === 'deadline_pressure') return 'No blockers mapped yet';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') return 'No minimum map yet';
+    if (personalization.mode === 'planning') return 'No tomorrow map yet';
+    return 'No concepts yet';
+}
+
+function buildEmptyConceptMapMessage(goal: Goal, personalization: KnowledgePersonalization | null): string {
+    if (!personalization) return 'No concept nodes yet. Generate a knowledge map for this goal.';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return `No concept nodes yet. Generate a lighter map for ${goal.title} with only the concepts needed for a small session.`;
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return `No concept nodes yet. Generate blockers and prerequisites for ${goal.title} before scheduling deadline work.`;
+    }
+    if (personalization.mode === 'planning') {
+        return `No concept nodes yet. Generate a map so tomorrow can schedule the first useful learning block.`;
+    }
+    if (personalization.plannedFocus.nextTitle) {
+        return `No concept nodes yet. Generate concepts that support "${compactKnowledgeText(personalization.plannedFocus.nextTitle, 44)}".`;
+    }
+    return 'No concept nodes yet. Generate the knowledge map that should guide tasks and study sessions.';
+}
 
 export default function KnowledgeGraphPage() {
     const [goals, setGoals] = useState<Goal[]>([]);
@@ -45,11 +105,17 @@ export default function KnowledgeGraphPage() {
     const [loading, setLoading] = useState(false);
     const [generating, setGenerating] = useState(false);
     const [difficulty, setDifficulty] = useState('intermediate');
+    const [personalization, setPersonalization] = useState<KnowledgePersonalization | null>(null);
 
     useEffect(() => {
         fetch('/api/knowledge-graph')
             .then(r => r.json())
             .then(d => setGoals(d.goals || []));
+
+        fetch('/api/dashboard')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => setPersonalization(d?.personalization ?? null))
+            .catch(() => setPersonalization(null));
     }, []);
 
     const loadGraph = useCallback(async (goalId: number) => {
@@ -104,7 +170,7 @@ export default function KnowledgeGraphPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Knowledge Graph 🕸️</h1>
                     <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-                        AI-assessed concept mastery — your learning DNA mapped to goals, tasks & study sessions.
+                        {buildKnowledgeHeaderText(personalization)}
                     </p>
                 </div>
             </div>
@@ -123,7 +189,7 @@ export default function KnowledgeGraphPage() {
                     >
                         <p className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{goal.title}</p>
                         <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                            {goal.node_count === 0 ? 'No concepts yet' : `${goal.node_count} concept nodes`}
+                            {buildGoalConceptCountLabel(goal, personalization)}
                         </p>
                     </button>
                 ))}
@@ -167,7 +233,7 @@ export default function KnowledgeGraphPage() {
                             ) : nodes.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center h-64 gap-3">
                                     <span className="text-4xl">🧭</span>
-                                    <p className="text-center text-sm" style={{ color: 'var(--text-muted)' }}>No concept nodes yet. Use AI to generate the knowledge map for this goal.</p>
+                                    <p className="text-center text-sm" style={{ color: 'var(--text-muted)' }}>{buildEmptyConceptMapMessage(selectedGoal, personalization)}</p>
                                 </div>
                             ) : (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -335,7 +401,7 @@ export default function KnowledgeGraphPage() {
                 </div>
             )}
 
-            {goals.length === 0 && <p className="text-sm text-center mt-10" style={{ color: 'var(--text-muted)' }}>No active goals found. Create goals first to build your knowledge graph.</p>}
+            {goals.length === 0 && <p className="text-sm text-center mt-10" style={{ color: 'var(--text-muted)' }}>No active goals found. Create the goal that should anchor tasks, sessions, and concept learning.</p>}
         </div>
     );
 }
