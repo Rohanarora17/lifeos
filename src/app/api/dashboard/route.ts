@@ -11,6 +11,7 @@ import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
 import { buildAdaptiveDashboardPolicy } from '@/lib/adaptive-dashboard-policy';
 import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
+import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 
 // GET: Dashboard overview data
 export async function GET() {
@@ -131,7 +132,11 @@ export async function GET() {
 
     // Phase 12: Intelligence layer
     const cognitiveLoad = getCognitiveLoadAudit();
-    const recommendedTasks = getAdaptiveTaskRecommendations(personalization);
+    const recommendedTasks = getAdaptiveTaskRecommendations(personalization)
+      .map(task => ({
+        ...task,
+        timeProgress: getTaskTimeProgress(task.id),
+      }));
     const efficacyMode = getSelfEfficacyMode();
     const goalConflicts = detectGoalConflicts();
 

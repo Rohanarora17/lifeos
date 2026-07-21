@@ -75,6 +75,13 @@ interface DashboardData {
       estimatedMinutes?: number | null;
       energyRequired?: 'low' | 'medium' | 'high' | null;
       feedbackHint?: string | null;
+      timeProgress?: {
+        targetMinutes: number | null;
+        creditedMinutes: number;
+        remainingMinutes: number | null;
+        percent: number | null;
+        linkedSessions: number;
+      };
     }[];
     efficacyMode: { rate: number; isRecoveryMode: boolean; message: string; suggestedActions: string[] };
     goalConflicts: { goalA: string; goalB: string; message: string }[];
@@ -959,7 +966,9 @@ export default function DashboardPage() {
                 <div key={t.id} className="flex items-start gap-3 py-2 group">
                   <button
                     onClick={() => void completeRecommendedTask(t.id)}
-                    title="Mark task as done"
+                    title={t.timeProgress?.targetMinutes
+                      ? `Complete when linked focus reaches ${t.timeProgress.targetMinutes} minutes`
+                      : 'Add a time target before this task can complete'}
                     className="w-5 h-5 rounded-full mt-0.5 border-2 flex-shrink-0 border-slate-500 hover:border-green-500 hover:bg-green-500/10 transition-colors"
                   />
                   <div className="flex-1 min-w-0">
@@ -975,8 +984,12 @@ export default function DashboardPage() {
                     </div>
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{t.reason}</p>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      {t.estimatedMinutes ? (
-                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t.estimatedMinutes}m</span>
+                      {t.timeProgress?.targetMinutes ? (
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          {t.timeProgress.creditedMinutes}/{t.timeProgress.targetMinutes}m linked
+                        </span>
+                      ) : t.estimatedMinutes ? (
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t.estimatedMinutes}m target</span>
                       ) : null}
                       {t.energyRequired ? (
                         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t.energyRequired} energy</span>
@@ -985,6 +998,24 @@ export default function DashboardPage() {
                         <span className="text-[10px]" style={{ color: 'var(--accent-orange)' }}>{t.feedbackHint}</span>
                       ) : null}
                     </div>
+                    {t.timeProgress?.targetMinutes ? (
+                      <div className="mt-2">
+                        <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                          <div
+                            className="h-full"
+                            style={{
+                              width: `${t.timeProgress.percent ?? 0}%`,
+                              background: taskFitColor(t.momentFit ?? 'medium'),
+                            }}
+                          />
+                        </div>
+                        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                          {t.timeProgress.remainingMinutes === 0
+                            ? 'Time target reached. Completing will tick it off.'
+                            : `${t.timeProgress.remainingMinutes ?? t.timeProgress.targetMinutes}m more linked focus before it completes.`}
+                        </p>
+                      </div>
+                    ) : null}
                     <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => sendRecommendationFeedback(t.id, 'helpful', 'user marked daily plan task as a good pick')}
