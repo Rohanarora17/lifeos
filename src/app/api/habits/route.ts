@@ -231,6 +231,7 @@ export async function GET(request: NextRequest) {
                 standupGoal: personalization.userState.standupGoal,
                 alertFatigueLevel: personalization.feedback.alertFatigueLevel,
                 nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+                plannedFocus: personalization.today.plannedFocus,
             },
             habitDefaults,
         });

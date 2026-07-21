@@ -54,6 +54,14 @@ interface HabitPersonalization {
     standupGoal: string | null;
     alertFatigueLevel: 'low' | 'medium' | 'high';
     nextBestFocusWindow: string;
+    plannedFocus?: {
+        plannedToday: number;
+        completedToday: number;
+        skippedToday: number;
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
 }
 
 interface HabitDefaults {
@@ -102,6 +110,69 @@ const POSTURE_LABEL: Record<NonNullable<HeatmapDay['adaptive_posture']>, string>
     stretch: 'stretch',
     learning: 'learning',
 };
+
+function truncatePrompt(text: string, maxLength = 48): string {
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function buildHabitNamePlaceholder(personalization: HabitPersonalization | null): string {
+    const plannedTitle = personalization?.plannedFocus?.nextTitle;
+
+    if (plannedTitle) {
+        return `Support planned focus: ${truncatePrompt(plannedTitle)}`;
+    }
+
+    if (!personalization) return 'Habit name (e.g., Read, Study for 2 hours)...';
+
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Tiny recovery habit (e.g., 10 min walk, reset desk)...';
+    }
+
+    if (personalization.mode === 'planning') {
+        return 'Tomorrow setup habit (e.g., plan first block)...';
+    }
+
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Deadline support habit (e.g., review blockers)...';
+    }
+
+    if (personalization.standupGoal) {
+        return `Support today: ${truncatePrompt(personalization.standupGoal)}`;
+    }
+
+    return 'Habit name (e.g., Read, Study for 2 hours)...';
+}
+
+function buildHabitCreationHint(personalization: HabitPersonalization | null, defaults: HabitDefaults | null): string | null {
+    if (!personalization && !defaults) return null;
+
+    const defaultText = defaults
+        ? `${defaults.goalMetric === 'time' ? `${defaults.timeTargetMinutes} min` : 'simple checkbox'} · ${defaults.intensity}`
+        : null;
+    const plannedTitle = personalization?.plannedFocus?.nextTitle;
+    const followThrough = personalization?.plannedFocus?.recentFollowThroughRate;
+
+    if (plannedTitle) {
+        const followThroughText = followThrough === null || followThrough === undefined
+            ? 'no recent follow-through signal yet'
+            : `${Math.round(followThrough * 100)}% recent planned-focus follow-through`;
+        return `Create a habit that supports "${truncatePrompt(plannedTitle, 42)}" · ${followThroughText}${defaultText ? ` · ${defaultText}` : ''}`;
+    }
+
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return `Low-energy day: bias toward a habit you can keep even when the day slips${defaultText ? ` · ${defaultText}` : ''}`;
+    }
+
+    if (personalization?.mode === 'planning') {
+        return `Planning window: pick a habit that makes tomorrow easier to schedule${defaultText ? ` · ${defaultText}` : ''}`;
+    }
+
+    if (defaults) {
+        return `Suggested new habit: ${defaultText} · ${defaults.reason}`;
+    }
+
+    return personalization?.guidance ?? null;
+}
 
 export default function HabitsPage() {
     const [habits, setHabits] = useState<Habit[]>([]);
@@ -266,6 +337,8 @@ export default function HabitsPage() {
     };
 
     const streak = calculateStreak();
+    const newHabitNamePlaceholder = buildHabitNamePlaceholder(personalization);
+    const newHabitCreationHint = buildHabitCreationHint(personalization, habitDefaults);
 
     const triggerPhotoProof = (habitId: number) => {
         setProofHabitId(habitId);
@@ -615,7 +688,7 @@ export default function HabitsPage() {
                             <div className="flex-1 space-y-2">
                                 <input
                                     className="input w-full"
-                                    placeholder="Habit name (e.g., Read, Study for 2 hours)..."
+                                    placeholder={newHabitNamePlaceholder}
                                     value={newName}
                                     onChange={e => setNewName(e.target.value)}
                                     autoFocus
@@ -652,9 +725,9 @@ export default function HabitsPage() {
 	                                        </div>
 	                                    )}
 	                                </div>
-                                    {habitDefaults && (
+                                    {newHabitCreationHint && (
                                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                                            Suggested new habit: {habitDefaults.goalMetric === 'time' ? `${habitDefaults.timeTargetMinutes} min` : 'simple checkbox'} · {habitDefaults.intensity} · {habitDefaults.reason}
+                                            {newHabitCreationHint}
                                         </p>
                                     )}
 	                            </div>
