@@ -44,6 +44,20 @@ interface MemStats {
   workingSnapshots: number;
 }
 
+interface MemoryPersonalization {
+  mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+  guidance: string;
+  energy: 'high' | 'medium' | 'low';
+  mood: 'high' | 'medium' | 'low' | null;
+  standupGoal: string | null;
+  alertFatigueLevel: 'low' | 'medium' | 'high';
+  plannedFocus: {
+    nextTitle: string | null;
+    nextMinutes: number | null;
+    recentFollowThroughRate: number | null;
+  };
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const CATEGORIES: FactCategory[] = ['preference', 'pattern', 'habit', 'identity', 'goal', 'mood', 'constraint'];
@@ -93,6 +107,62 @@ function confidenceLabel(c: number): string {
   if (c >= 0.85) return 'high';
   if (c >= 0.65) return 'medium';
   return 'low';
+}
+
+function compactMemoryText(text: string, maxLength = 54): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function suggestedMemoryCategory(personalization: MemoryPersonalization | null): FactCategory {
+  if (!personalization) return 'preference';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') return 'mood';
+  if (personalization.mode === 'deadline_pressure') return 'constraint';
+  if (personalization.mode === 'planning') return 'goal';
+  if (personalization.plannedFocus.nextTitle) return 'pattern';
+  return 'preference';
+}
+
+function memoryTopicPlaceholder(personalization: MemoryPersonalization | null, category: FactCategory): string {
+  if (!personalization) return 'e.g. preferred_study_time';
+  if (category === 'mood') return 'e.g. low_energy_triggers';
+  if (category === 'constraint') return 'e.g. deadline_pressure_blockers';
+  if (category === 'goal' && personalization.standupGoal) return `e.g. ${compactMemoryText(personalization.standupGoal, 28).toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+  if (category === 'pattern' && personalization.plannedFocus.nextTitle) return 'e.g. planned_focus_follow_through';
+  if (category === 'habit') return 'e.g. habit_that_survives_bad_days';
+  return 'e.g. preferred_study_time';
+}
+
+function memoryContentPlaceholder(personalization: MemoryPersonalization | null, category: FactCategory): string {
+  if (!personalization) return 'Specific factual statement about you...';
+  if (category === 'mood' || personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'When my energy is low, what still helps me make progress is...';
+  }
+  if (category === 'constraint' || personalization.mode === 'deadline_pressure') {
+    return 'Under deadline pressure, the blocker or rule LifeOS should remember is...';
+  }
+  if (category === 'goal' || personalization.mode === 'planning') {
+    return 'For tomorrow planning, LifeOS should remember that...';
+  }
+  if (personalization.plannedFocus.nextTitle) {
+    return `For "${compactMemoryText(personalization.plannedFocus.nextTitle, 42)}", what LifeOS should remember is...`;
+  }
+  return 'Specific factual statement about you...';
+}
+
+function memoryEmptyMessage(activeTab: 'all' | 'unverified' | FactCategory, search: string, personalization: MemoryPersonalization | null): string {
+  if (search) return `No facts matching "${search}"`;
+  if (activeTab === 'unverified') return 'No unverified facts. The next useful signal is fresh feedback after a session.';
+  if (!personalization) return 'No facts in this category yet.';
+  if (activeTab === 'mood' || personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No mood facts here yet. Add what changes your energy, sleep, or capacity.';
+  }
+  if (activeTab === 'constraint' || personalization.mode === 'deadline_pressure') {
+    return 'No constraint facts here yet. Add deadline blockers, calendar limits, or rules that affect planning.';
+  }
+  if (activeTab === 'goal' || personalization.mode === 'planning') {
+    return 'No goal facts here yet. Add what tomorrow should optimize for or avoid.';
+  }
+  return 'No facts in this category yet. Add a personal rule the agent should use later.';
 }
 
 // ── Fact Card ──────────────────────────────────────────────────────────────────
@@ -278,8 +348,16 @@ function FactCard({
 
 // ── Add Fact Modal ─────────────────────────────────────────────────────────────
 
-function AddFactModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
-  const [category, setCategory] = useState<FactCategory>('preference');
+function AddFactModal({
+  onClose,
+  onAdded,
+  personalization,
+}: {
+  onClose: () => void;
+  onAdded: () => void;
+  personalization: MemoryPersonalization | null;
+}) {
+  const [category, setCategory] = useState<FactCategory>(() => suggestedMemoryCategory(personalization));
   const [topic, setTopic] = useState('');
   const [content, setContent] = useState('');
   const [saving, setSaving] = useState(false);
@@ -318,7 +396,7 @@ function AddFactModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
           <input
             value={topic}
             onChange={e => setTopic(e.target.value)}
-            placeholder="e.g. preferred_study_time"
+            placeholder={memoryTopicPlaceholder(personalization, category)}
             style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '7px', padding: '8px 10px', color: 'var(--text-primary)', fontSize: '13px' }}
           />
         </div>
@@ -328,7 +406,7 @@ function AddFactModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
           <textarea
             value={content}
             onChange={e => setContent(e.target.value)}
-            placeholder="Specific factual statement about you..."
+            placeholder={memoryContentPlaceholder(personalization, category)}
             rows={3}
             style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '7px', padding: '8px 10px', color: 'var(--text-primary)', fontSize: '13px', resize: 'vertical' }}
           />
@@ -362,6 +440,7 @@ export default function MemoryPage() {
   const [search, setSearch] = useState('');
   const [showEpisodes, setShowEpisodes] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [personalization, setPersonalization] = useState<MemoryPersonalization | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (searchQuery = '') => {
@@ -384,6 +463,13 @@ export default function MemoryPage() {
   }, [activeTab]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    fetch('/api/dashboard')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => setPersonalization(data?.personalization ?? null))
+      .catch(() => setPersonalization(null));
+  }, []);
 
   // Debounced search
   const handleSearch = (val: string) => {
@@ -532,7 +618,7 @@ export default function MemoryPage() {
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-muted)' }}>Loading memory...</div>
       ) : displayFacts.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-muted)' }}>
-          {search ? `No facts matching "${search}"` : activeTab === 'unverified' ? 'No unverified facts — all caught up.' : 'No facts in this category yet.'}
+          {memoryEmptyMessage(activeTab, search, personalization)}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -579,7 +665,7 @@ export default function MemoryPage() {
       </div>
 
       {showAddModal && (
-        <AddFactModal onClose={() => setShowAddModal(false)} onAdded={() => load()} />
+        <AddFactModal onClose={() => setShowAddModal(false)} onAdded={() => load()} personalization={personalization} />
       )}
     </div>
   );
