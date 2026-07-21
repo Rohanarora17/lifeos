@@ -33,7 +33,7 @@ function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
 }
 
-function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing'): string {
+function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing' | 'voice_download_failed' | 'voice_transcribe_failed' | 'screentime_parse_failed'): string {
     try {
         const snapshot = buildPersonalizationSnapshot({
             surface: 'telegram',
@@ -69,12 +69,30 @@ function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session'
             if (snapshot.moment.mode === 'deadline_pressure') return 'Task not found. Try the deadline, course, or deliverable name.';
             return 'Task not found. Refresh tasks and try the current item.';
         }
+        if (kind === 'voice_download_failed') {
+            if (snapshot.moment.mode === 'deadline_pressure') return 'Could not download the voice note. Send the deadline task as text so the window is not lost.';
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'Could not download the voice note. Send a short text version; keep it low-friction.';
+            return 'Could not download the voice note. Send text or try voice again.';
+        }
+        if (kind === 'voice_transcribe_failed') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Could not transcribe that voice note. Send text for <b>${snapshot.today.plannedFocus.nextTitle}</b> and I will use the current plan.`;
+            if (snapshot.moment.mode === 'planning') return 'Could not transcribe that voice note. Send tomorrow intention, sleep/wake, and fixed commitments as text.';
+            return 'Could not transcribe that voice note. Try sending text instead.';
+        }
+        if (kind === 'screentime_parse_failed') {
+            if (snapshot.moment.mode === 'recovery') return 'Could not parse the screen time report. Skip it for now unless today needs recovery evidence.';
+            if (snapshot.moment.mode === 'deadline_pressure') return 'Could not parse the screen time report. Keep the deadline block moving and retry the report later.';
+            return 'Could not parse the screen time report. Check the shortcut format and retry.';
+        }
     } catch { /* keep fallback */ }
     if (kind === 'alert_dismissed') return '✅ Alert dismissed.';
     if (kind === 'no_feedback_session') return 'No recent session to give feedback on.';
     if (kind === 'no_softwatch') return 'No pending soft watch right now.';
     if (kind === 'review_missing') return 'Review not found.';
     if (kind === 'task_missing') return 'Task not found.';
+    if (kind === 'voice_download_failed') return 'Could not download your voice note. Please try again.';
+    if (kind === 'voice_transcribe_failed') return 'Could not transcribe your voice note. Try sending text instead.';
+    if (kind === 'screentime_parse_failed') return 'Could not parse screen time report. Check format.';
     return 'Could not start session. Try again.';
 }
 
@@ -116,7 +134,7 @@ export async function POST(request: Request) {
                     const summary = formatPhoneScreenTimeSummary(report);
                     await sendTelegram(summary, 'HTML');
                 } else {
-                    await sendTelegram('Could not parse screen time report. Check format.', 'HTML');
+                    await sendTelegram(webhookPersonalizedLine('screentime_parse_failed'), 'HTML');
                 }
                 return NextResponse.json({ ok: true });
             }
@@ -167,13 +185,13 @@ export async function POST(request: Request) {
             // Download + transcribe
             const audioBlob = await downloadTelegramVoice(fileId);
             if (!audioBlob) {
-                await sendTelegram('Could not download your voice note. Please try again.', 'HTML');
+                await sendTelegram(webhookPersonalizedLine('voice_download_failed'), 'HTML');
                 return NextResponse.json({ ok: true });
             }
 
             const transcript = await transcribeAudio(audioBlob, 'voice.ogg');
             if (!transcript) {
-                await sendTelegram('Could not transcribe your voice note. Try sending text instead.', 'HTML');
+                await sendTelegram(webhookPersonalizedLine('voice_transcribe_failed'), 'HTML');
                 return NextResponse.json({ ok: true });
             }
 
