@@ -139,6 +139,15 @@ interface SessionRulePreview {
   rewardReason?: string;
 }
 
+interface PendingReviewSession {
+  session_id: string;
+  task_title: string | null;
+  target_title: string | null;
+  elapsed_minutes: number | null;
+  average_focus_score: number | null;
+  mood: string | null;
+}
+
 const QUALITY_COLOR: Record<string, string> = {
   excellent: '#22c55e',
   good: '#3b82f6',
@@ -289,6 +298,40 @@ function buildNoSessionsMessage(plan: GuardianNextDayPlan): string {
   }
 
   return `Plan exists, but no focus blocks were scheduled. Add what matters tomorrow; ${formatNextDayMode(plan.personalization.mode)} needs clearer targets.`;
+}
+
+function buildSessionFeedbackPlaceholder(
+  session: PendingReviewSession,
+  personalization?: GuardianInsights['personalization'],
+) {
+  const score = session.average_focus_score;
+  const duration = session.elapsed_minutes;
+
+  if (score !== null && score !== undefined && score < 55) {
+    return 'What pulled focus down: wrong time, wrong length, low energy, unclear task, or distracting tools?';
+  }
+
+  if (score !== null && score !== undefined && score >= 80) {
+    return 'What made this work well: time of day, session length, task type, mood, or environment?';
+  }
+
+  if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low' || session.mood === 'low') {
+    return 'Was this too much for your energy today, or did the smaller version fit?';
+  }
+
+  if (personalization?.mode === 'deadline_pressure') {
+    return 'Did this reduce deadline pressure? What exact next block should follow?';
+  }
+
+  if (personalization?.mode === 'planning') {
+    return 'Did this make tomorrow clearer? What should the next planned block inherit?';
+  }
+
+  if (duration !== null && duration !== undefined && personalization?.recommendedSessionMinutes) {
+    return `Did ${duration}m feel better or worse than your ${personalization.recommendedSessionMinutes}m learned default?`;
+  }
+
+  return 'How did the session feel? Mention energy, distractions, length, and what should change next time.';
 }
 
 export default function GuardianPage() {
@@ -1308,7 +1351,7 @@ export default function GuardianPage() {
                   <div style={{ marginBottom: '10px' }}>
                     <textarea
                       rows={2}
-                      placeholder="How did the session feel? (energy, distractions, length…)"
+                      placeholder={buildSessionFeedbackPlaceholder(c, adaptivePersonalization)}
                       value={feedbackText[c.session_id] ?? ''}
                       onChange={e => setFeedbackText(prev => ({ ...prev, [c.session_id]: e.target.value }))}
                       style={{
