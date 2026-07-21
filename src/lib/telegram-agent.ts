@@ -261,6 +261,66 @@ function formatTelegramLookupMiss(kind: 'task' | 'goal' | 'habit' | 'session', s
     return `${label} matching "<i>${search}</i>" not found.`;
 }
 
+function formatTelegramFailureFallback(): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        if (snapshot.today.plannedFocus.nextTitle) {
+            return `I could not process that cleanly. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; send a simpler command like "start ${snapshot.today.plannedFocus.nextTitle}" or use /menu.`;
+        }
+        if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+            return 'I could not process that cleanly. Keep the next command small: start, schedule, log habit, or /menu.';
+        }
+        if (snapshot.moment.mode === 'deadline_pressure') {
+            return 'I could not process that cleanly. Send the deadline task and one action, or use /menu to avoid losing the window.';
+        }
+        if (snapshot.moment.mode === 'planning') {
+            return 'I could not process that cleanly. Send tomorrow intention, sleep/wake, or /menu for planner actions.';
+        }
+    } catch { /* keep fallback */ }
+    return 'I could not process that cleanly. Use /menu for options.';
+}
+
+function formatTelegramTitlePrompt(kind: 'session_task' | 'scheduled_session' | 'task' | 'goal' | 'habit'): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        if (kind === 'scheduled_session') {
+            if (snapshot.today.plannedFocus.nextTitle) return `What topic should I schedule? Existing planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'What small focus block should I schedule for this low-capacity window?';
+            if (snapshot.moment.mode === 'deadline_pressure') return 'What deadline-relief topic should I schedule?';
+        }
+        if (kind === 'session_task') {
+            if (snapshot.today.plannedFocus.nextTitle) return `What should this session task be called? Planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'What small session task should I create for today?';
+            if (snapshot.moment.mode === 'deadline_pressure') return 'What deadline-relief session task should I create?';
+        }
+        if (kind === 'task') {
+            if (snapshot.userState.standupGoal) return `What should the task be called? Today's stated goal is <b>${snapshot.userState.standupGoal}</b>.`;
+            if (snapshot.moment.mode === 'planning') return 'What tomorrow-facing task should I create?';
+        }
+        if (kind === 'goal') {
+            if (snapshot.userState.standupGoal) return `What should the goal be called? Today's stated goal is <b>${snapshot.userState.standupGoal}</b>.`;
+            if (snapshot.moment.mode === 'deadline_pressure') return 'What deadline or deliverable should this goal protect?';
+        }
+        if (kind === 'habit') {
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'What low-friction habit should I create?';
+            if (snapshot.moment.mode === 'planning') return 'What habit would make tomorrow easier to start?';
+        }
+    } catch { /* keep fallback */ }
+    if (kind === 'scheduled_session') return 'What topic should I schedule?';
+    if (kind === 'session_task') return 'What should the session task be called?';
+    if (kind === 'goal') return 'What should the goal be called?';
+    if (kind === 'habit') return 'What should the habit be called?';
+    return 'What should the task be called?';
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -845,7 +905,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     } catch (err) {
         console.error('[TelegramAgent] Error:', err);
-        await sendTelegram(`Sorry, I couldn't process that. Use /menu for options.`, 'HTML', FULL_MENU_KEYBOARD);
+        await sendTelegram(formatTelegramFailureFallback(), 'HTML', FULL_MENU_KEYBOARD);
     }
 }
 
@@ -876,7 +936,7 @@ export async function executeAction(
 
         case 'CREATE_SESSION_TASK': {
             const title = (payload.title as string | undefined)?.trim();
-            if (!title) { await sendTelegram('What should the session task be called?', ''); break; }
+            if (!title) { await sendTelegram(formatTelegramTitlePrompt('session_task'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const personalization = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
             const defaults = buildAdaptiveTaskDefaults({
@@ -905,7 +965,7 @@ export async function executeAction(
 
         case 'SCHEDULE_SESSION': {
             const title = (payload.targetTitle as string | undefined)?.trim();
-            if (!title) { await sendTelegram('What topic should I schedule?', ''); break; }
+            if (!title) { await sendTelegram(formatTelegramTitlePrompt('scheduled_session'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const intendedStartAt = Number(payload.intendedStartAt) || Date.now() + 60 * 60_000;
             const plannedMinutes = getAdaptiveSessionMinutes(payload.durationMinutes);
             const schedulerSnapshot = buildPersonalizationSnapshot({
@@ -1279,7 +1339,7 @@ export async function executeAction(
 
         case 'CREATE_TASK': {
             const title = (payload.title as string | undefined)?.trim();
-            if (!title) { await sendTelegram('What should the task be called?', ''); break; }
+            if (!title) { await sendTelegram(formatTelegramTitlePrompt('task'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const safeStatus = ['todo', 'doing'].includes(payload.status as string) ? (payload.status as string) : 'todo';
             const safeType = ['task', 'assignment', 'exam'].includes(payload.task_type as string) ? (payload.task_type as string) : 'task';
@@ -1368,7 +1428,7 @@ export async function executeAction(
 
         case 'CREATE_GOAL': {
             const title = (payload.title as string | undefined)?.trim();
-            if (!title) { await sendTelegram('What should the goal be called?', ''); break; }
+            if (!title) { await sendTelegram(formatTelegramTitlePrompt('goal'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const type = (payload.type as string | undefined)?.trim();
             if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) {
                 await sendTelegram(`What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`, '');
@@ -1398,7 +1458,7 @@ export async function executeAction(
 
         case 'CREATE_HABIT': {
             const name = (payload.name as string | undefined)?.trim();
-            if (!name) { await sendTelegram('What should the habit be called?', ''); break; }
+            if (!name) { await sendTelegram(formatTelegramTitlePrompt('habit'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const habitPersonalization = buildPersonalizationSnapshot({
                 surface: 'habits',
                 maxInsights: 2,
