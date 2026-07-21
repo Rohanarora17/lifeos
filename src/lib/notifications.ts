@@ -109,6 +109,16 @@ function computeAdaptiveDedupMinutes(type: AlertType, severity: Severity, recent
     return Math.max(20, Math.round(base * fatigueMultiplier * severityMultiplier));
 }
 
+function clampHour(hour: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, hour));
+}
+
+function hourFromTime(value: string | null | undefined): number | null {
+    if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
+    const hour = Number.parseInt(value.slice(0, 2), 10);
+    return Number.isFinite(hour) ? hour : null;
+}
+
 function getRecentAlertCount(hours = 2): number {
     try {
         const db = getDb();
@@ -530,6 +540,37 @@ function buildAdaptiveDeadlineAlert(input: {
         severity,
         message: `${courseLabel}${task.title} ${leadLabel}${effortLabel}.${planSuffix}${recoverySuffix}`,
         reason: reasons.join('; '),
+    };
+}
+
+function buildAlertOpportunityPolicy(input: {
+    uil: ReturnType<typeof getIntelligenceProfile>;
+    today: ReturnType<typeof getTodayMicroContext>;
+    tomorrowPlan: ReturnType<typeof getTomorrowPlanContext>;
+}): {
+    habitHours: number[];
+    middayHour: number;
+    reason: string;
+} {
+    const wakeHour = hourFromTime(input.tomorrowPlan.wakeEstimate) ?? hourFromTime(getSetting('morning_brief_time')) ?? 8;
+    const lowEnergy = input.uil.currentEnergyEstimate === 'low' || input.uil.moodToday === 'low' || input.tomorrowPlan.energy === 'low' || input.tomorrowPlan.mood === 'low';
+    const peakMidday = input.uil.peakFocusHours.find(hour => hour >= 11 && hour <= 16);
+    const middayHour = peakMidday ?? clampHour(wakeHour + (lowEnergy ? 6 : 5), 11, 16);
+    const eveningHour = lowEnergy ? 19 : input.today.openTasks > input.uil.adaptiveThresholds.cognitiveLoadThreshold ? 18 : 20;
+    const habitHours = Array.from(new Set([
+        clampHour(wakeHour + 2, 8, 12),
+        clampHour(middayHour + 2, 13, 17),
+        eveningHour,
+    ])).sort((a, b) => a - b);
+
+    return {
+        habitHours,
+        middayHour,
+        reason: lowEnergy
+            ? 'alert windows moved around low mood/energy and wake estimate'
+            : peakMidday
+                ? 'midday pulse uses learned peak focus timing'
+                : 'alert windows derived from wake estimate',
     };
 }
 
@@ -1188,6 +1229,10 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
     const thresholds = uil.adaptiveThresholds;
 
     try {
+        const todayContext = getTodayMicroContext();
+        const tomorrowPlan = getTomorrowPlanContext(todayContext.tomorrowDate);
+        const alertWindows = buildAlertOpportunityPolicy({ uil, today: todayContext, tomorrowPlan });
+
         // 1. Cognitive Load (Zeigarnik Effect) — threshold from UIL, not hardcoded
         const openTasks = (db.prepare(
             "SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo', 'doing')"
@@ -1229,11 +1274,11 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             }
         }
 
-        // 3. Habit Streak at Risk (runs at 10am, 3pm, 8pm)
+        // 3. Habit Streak at Risk — runs in wake-relative adaptive windows
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         const hour = new Date(Date.now() + 19800000).getHours();
 
-        if (hour === 10 || hour === 15 || hour >= 20) {
+        if (alertWindows.habitHours.includes(hour)) {
             const uncheckedHabits = db.prepare(`
         SELECT h.name, h.icon FROM habits h
         WHERE h.archived = 0
@@ -1246,19 +1291,19 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
                 const names = uncheckedHabits.slice(0, 3).map(h => `${h.icon} ${h.name}`).join(', ');
                 const sent = await sendAlert(
                     'habit_streak',
-                    `${uncheckedHabits.length} habit(s) unchecked today: ${names}${uncheckedHabits.length > 3 ? '...' : ''}. ${thresholds.habitRiskAdvice || 'Your streak is at risk, take 2 minutes now.'}`,
+                    `${uncheckedHabits.length} habit(s) unchecked today: ${names}${uncheckedHabits.length > 3 ? '...' : ''}. ${thresholds.habitRiskAdvice || 'Your streak is at risk, take 2 minutes now.'} ${alertWindows.reason}.`,
                     'warning'
                 );
                 if (sent) triggered.push('habit_streak');
             }
         }
 
-        // 3.5 Mid-day check-in pulse
-        if (hour === 13) {
+        // 3.5 Mid-day check-in pulse — uses learned peak/wake timing
+        if (hour === alertWindows.middayHour) {
             const context = uil.currentNarrative || 'How is your focus so far today?';
             const sent = await sendAlert(
                 'midday_checkin',
-                `Mid-day pulse! ${context}`,
+                `Mid-day pulse. ${context} ${alertWindows.reason}.`,
                 'info'
             );
             if (sent) triggered.push('midday_checkin');
@@ -1345,7 +1390,6 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
         const ist = Date.now() + 19800000;
         const today2 = new Date(ist).toISOString().slice(0, 10);
-        const todayContext = getTodayMicroContext();
 
         for (const t of tasksDue) {
             const todayDate = new Date(today2 + 'T00:00:00');
