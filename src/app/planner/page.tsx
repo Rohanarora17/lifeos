@@ -109,6 +109,58 @@ function formatDuration(minutes: number) {
     return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+function minutesFromClock(value: string) {
+    const [h, m] = value.split(':').map(Number);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+    return h * 60 + m;
+}
+
+function sleepWindowMinutes(sleepTime: string, wakeEstimate: string) {
+    const sleep = minutesFromClock(sleepTime);
+    const wake = minutesFromClock(wakeEstimate);
+    if (sleep === null || wake === null) return null;
+    return wake >= sleep ? wake - sleep : wake + 1440 - sleep;
+}
+
+function buildEveningPlanningHint(input: {
+    sleepTime: string;
+    wakeEstimate: string;
+    mood: string;
+    energy: string;
+    selectedMinutes: number;
+    calendarEvents: number;
+    learnedSprintMinutes: number;
+    bestFocusWindow: string;
+}) {
+    const sleepMinutes = sleepWindowMinutes(input.sleepTime, input.wakeEstimate);
+    const sleepClock = minutesFromClock(input.sleepTime);
+    const pieces: string[] = [];
+
+    if (sleepMinutes !== null && sleepMinutes < 390) {
+        pieces.push(`Sleep window is only ${formatDuration(sleepMinutes)}, so make the first block lighter or later.`);
+    } else if (sleepClock !== null && sleepClock >= 60 && sleepClock <= 180) {
+        pieces.push('Late sleep is likely; tomorrow should avoid an aggressive first block.');
+    }
+
+    if (input.mood === 'low' || input.energy === 'low') {
+        pieces.push('Low mood or energy should shrink the ask and protect recovery.');
+    }
+
+    if (input.calendarEvents >= 3) {
+        pieces.push(`${input.calendarEvents} calendar items means use shorter blocks around fixed commitments.`);
+    }
+
+    if (input.selectedMinutes > input.learnedSprintMinutes * 4) {
+        pieces.push(`${formatDuration(input.selectedMinutes)} selected is a heavy plan; split it across focused sessions.`);
+    }
+
+    if (pieces.length === 0) {
+        pieces.push(input.bestFocusWindow ? `Anchor the hardest block near ${input.bestFocusWindow}.` : 'Use the selected tasks to create a realistic first block.');
+    }
+
+    return pieces.slice(0, 2).join(' ');
+}
+
 function parseRule(ruleJson: string) {
     try {
         return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string; rewardReason?: string };
@@ -211,6 +263,16 @@ export default function PlannerPage() {
             .filter(session => session.status !== 'cancelled')
             .reduce((sum, session) => sum + session.duration_minutes, 0) ?? 0;
     }, [data]);
+    const planningHint = data ? buildEveningPlanningHint({
+        sleepTime,
+        wakeEstimate,
+        mood,
+        energy,
+        selectedMinutes,
+        calendarEvents: data.calendarEvents.length,
+        learnedSprintMinutes: data.personalization.learnedSprintMinutes,
+        bestFocusWindow: data.personalization.bestFocusWindow,
+    }) : null;
 
     const generatePlan = async () => {
         setGenerating(true);
@@ -328,6 +390,18 @@ export default function PlannerPage() {
                             <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
                                 {data.suggestedInputs.reason} · {data.suggestedInputs.source.replaceAll('_', ' ')}
                             </div>
+                            {planningHint && (
+                                <div className="text-xs mb-3" style={{
+                                    color: 'var(--text-secondary)',
+                                    background: 'rgba(59,130,246,0.08)',
+                                    border: '1px solid rgba(59,130,246,0.18)',
+                                    borderRadius: 8,
+                                    padding: '8px 10px',
+                                    lineHeight: 1.45,
+                                }}>
+                                    {planningHint}
+                                </div>
+                            )}
 
                             <div className="grid grid-cols-2 gap-3 mb-3">
                                 <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -350,7 +424,11 @@ export default function PlannerPage() {
                                     className="input mt-1"
                                     value={tomorrowIntention}
                                     onChange={event => setTomorrowIntention(event.target.value)}
-                                    placeholder="study ZKs for 2 hours, revise maths, read one paper..."
+                                    placeholder={energy === 'low' || mood === 'low'
+                                        ? 'one must-do task and the smallest useful time target...'
+                                        : data.personalization.bestFocusWindow
+                                            ? `hardest task near ${data.personalization.bestFocusWindow}, plus any lighter work...`
+                                            : 'study ZKs for 2 hours, revise maths, read one paper...'}
                                 />
                             </label>
 
@@ -360,7 +438,9 @@ export default function PlannerPage() {
                                     className="input mt-1"
                                     value={eveningNotes}
                                     onChange={event => setEveningNotes(event.target.value)}
-                                    placeholder="mood, physical state, sleep pressure, disruptions, what affected focus"
+                                    placeholder={sleepWindowMinutes(sleepTime, wakeEstimate) !== null
+                                        ? 'what happened today that should change tomorrow: focus, body, stress, interruptions'
+                                        : 'include sleep pressure, late-night risk, mood, physical state, and disruptions'}
                                     rows={4}
                                     style={{ resize: 'vertical' }}
                                 />
