@@ -39,7 +39,7 @@ import {
   OverrideRequest,
   SoftWatchCommitment,
 } from './guardian-types';
-import { buildPersonalizationSnapshot } from './personalization-context';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 import { buildAdaptiveHabitPlans, type AdaptiveHabitInput } from './adaptive-habit-plan';
 import { getAutomaticityScore, getStreakCount } from './scoring';
 import { getAdaptiveSessionMinuteDecision, getAdaptiveSessionMinutes } from './adaptive-command-defaults';
@@ -644,6 +644,7 @@ function buildSpeechContext(
   const style = intent?.coachingStyle ?? 'balanced';
   const energy = intent?.energyAtStart ?? 'medium';
   const topic = session.targetTitle;
+  const personalization = getFallbackSpeechSnapshot(session, score, elapsed);
 
   const lines = [
     `Session: "${topic}", ${elapsed}/${session.durationMinutes} min, focus=${score}/100`,
@@ -658,6 +659,7 @@ function buildSpeechContext(
   if (intent?.workMode === 'urgent_sprint') lines.push('This is an urgent sprint — be direct and brief.');
   if (intent?.workMode === 'recovery') lines.push('This is a recovery session — be gentle and encouraging.');
   if (energy === 'low') lines.push('User has low energy — be supportive, not demanding.');
+  if (personalization) lines.push('', formatPersonalizationContext(personalization));
 
   return lines.join('\n');
 }
