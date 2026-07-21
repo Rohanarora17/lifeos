@@ -72,6 +72,41 @@ function formatSchedulerMomentLine(snapshot: ReturnType<typeof buildSchedulerSna
   return `🧭 <b>Today mode:</b> ${modeLabel[snapshot.moment.mode] || snapshot.moment.mode}.${goal}${pressure}`;
 }
 
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function composeStreakCliffMessage(streak: number): string {
+  const snapshot = buildSchedulerSnapshot();
+  const commitment = snapshot.userState.standupGoal
+    ? `\n\nToday you named: <i>${escapeTelegramHtml(snapshot.userState.standupGoal.slice(0, 120))}</i>`
+    : '';
+  const pressure = snapshot.today.overdueTasks > 0
+    ? `\n\nThere ${snapshot.today.overdueTasks === 1 ? 'is' : 'are'} ${snapshot.today.overdueTasks} overdue task${snapshot.today.overdueTasks === 1 ? '' : 's'}, so tomorrow needs one concrete relief move.`
+    : '';
+  const window = snapshot.userState.nextBestFocusWindow
+    ? ` Your next best focus window looks like <b>${escapeTelegramHtml(snapshot.userState.nextBestFocusWindow)}</b>.`
+    : '';
+
+  if (snapshot.moment.mode === 'recovery') {
+    return `You're on day ${streak}. This is usually where streaks become fragile, and today looks lower-capacity.${commitment}${pressure}\n\nMake tomorrow smaller, not vaguer.${window} What is the first minimum viable block?`;
+  }
+
+  if (snapshot.moment.mode === 'deadline_pressure') {
+    return `You're on day ${streak}, with deadline pressure in the system.${commitment}${pressure}\n\nTomorrow should protect the streak by removing one real bottleneck early.${window} What exactly starts first?`;
+  }
+
+  if (snapshot.moment.mode === 'protect_focus') {
+    return `You're on day ${streak}, and the data says focus is available right now.${commitment}\n\nUse that signal to design tomorrow's first block before the day gets noisy.${window} What starts first?`;
+  }
+
+  return `You're on day ${streak}. Strong stretches usually need a specific next morning, not a general promise.${commitment}${pressure}\n\n${window}What is tomorrow's first focused block?`;
+}
+
 async function runAdaptiveSchedulerJob(name: string, fn: () => Promise<void>): Promise<void> {
   const snapshot = buildSchedulerSnapshot();
   const decision = decideAdaptiveJobRun(name, snapshot);
@@ -762,7 +797,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                 const alreadySent = getSetting('streak_cliff_sent_date') === today;
                 if (!alreadySent) {
                     await sendTelegram(
-                        `You're on day 4. Your strongest stretches look exactly like this. Tomorrow is historically when the slide starts — not because you decide to stop, but because you find reasons. What's the plan for tomorrow morning specifically? Not in general. The first 30 minutes.`,
+                        composeStreakCliffMessage(streak),
                         'HTML'
                     );
                     setSetting('streak_cliff_sent_date', today);
