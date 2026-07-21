@@ -203,6 +203,26 @@ function taskTitlePlaceholder(personalization: TaskPersonalization | null): stri
     return 'Task title...';
 }
 
+function taskContextPlaceholder(personalization: TaskPersonalization | null): string {
+    if (!personalization) return 'Context, course, or project';
+    if (personalization.plannedFocus?.nextTitle) {
+        return 'Context for planned focus';
+    }
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Minimum context or easiest entry point';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Deadline, course, or blocker';
+    }
+    if (personalization.mode === 'planning') {
+        return 'Calendar constraint or tomorrow anchor';
+    }
+    if (personalization.standupGoal) {
+        return 'Goal, course, or workstream';
+    }
+    return 'Course, project, or work context';
+}
+
 function taskContextLine(personalization: TaskPersonalization | null): string {
     if (!personalization) return 'Drag between columns to update status';
     const planned = personalization.plannedFocus;
@@ -726,7 +746,7 @@ export default function TasksPage() {
                                                 <input
                                                     type="text"
                                                     className="input text-xs"
-                                                    placeholder="Course (e.g. CS 101)"
+                                                    placeholder={taskContextPlaceholder(personalization)}
                                                     value={newTaskCourse}
                                                     onChange={e => setNewTaskCourse(e.target.value)}
                                                     style={{ flex: 1 }}
