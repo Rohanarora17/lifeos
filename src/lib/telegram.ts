@@ -132,7 +132,7 @@ export const ALERT_KEYBOARD: InlineKeyboard = [
 export const SOFT_WATCH_KEYBOARD: InlineKeyboard = [
   [
     { text: '🚀 Start Now', callback_data: 'action:new_session' },
-    { text: '⏰ Snooze 15m', callback_data: 'action:snooze' },
+    { text: '⏰ Snooze', callback_data: 'action:snooze' },
   ],
   [
     { text: '❌ Cancel', callback_data: 'action:cancel_softwatch' },

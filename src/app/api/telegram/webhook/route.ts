@@ -11,7 +11,14 @@ import {
 } from '@/lib/telegram';
 import { handleTelegramCommand, executeAction } from '@/lib/telegram-agent';
 import { parseScreenTimeReport, storeScreenTimeReport, formatPhoneScreenTimeSummary } from '@/lib/phone-screen-time';
-import { startGuardianSession, endGuardianSession, getActiveGuardianSession, applyUserClassificationFeedback } from '@/lib/guardian-runtime';
+import {
+    startGuardianSession,
+    endGuardianSession,
+    getActiveGuardianSession,
+    applyUserClassificationFeedback,
+    dismissCurrentSoftWatchCommitment,
+    snoozeCurrentSoftWatchCommitment,
+} from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
 import { handleWeeklyReckoningResponse } from '@/lib/weekly-reckoning';
@@ -360,11 +367,27 @@ async function handleActionCallback(payload: string) {
             break;
 
         case 'cancel_softwatch':
-            await sendTelegram('❌ Soft watch cancelled.', '', FULL_MENU_KEYBOARD);
+            {
+                const commitment = dismissCurrentSoftWatchCommitment();
+                await sendTelegram(
+                    commitment ? `❌ Cancelled soft watch: <b>${commitment.targetTitle}</b>.` : 'No pending soft watch to cancel.',
+                    'HTML',
+                    FULL_MENU_KEYBOARD
+                );
+            }
             break;
 
         case 'snooze':
-            await sendTelegram('⏰ Snoozed 15 minutes.', '', FULL_MENU_KEYBOARD);
+            {
+                const result = snoozeCurrentSoftWatchCommitment();
+                await sendTelegram(
+                    result.ok
+                        ? `⏰ Snoozed <b>${result.targetTitle}</b> for ${result.snoozeMinutes} min.\n<i>${result.reason}</i>`
+                        : `No pending soft watch to snooze.`,
+                    'HTML',
+                    FULL_MENU_KEYBOARD
+                );
+            }
             break;
 
         default:

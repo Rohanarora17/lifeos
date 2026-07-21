@@ -2416,6 +2416,67 @@ export function listSoftWatchCommitments(): SoftWatchCommitment[] {
     .map((c) => ({ ...c }));
 }
 
+function loadCurrentPendingSoftWatch(): SoftWatchCommitment | null {
+  const now = Date.now();
+  const selected = Array.from(softWatchMap.values())
+    .filter((c) => c.status === 'pending')
+    .sort((a, b) => {
+      const aTouched = a.checkInSentAt || a.reminderSentAt ? 0 : 1;
+      const bTouched = b.checkInSentAt || b.reminderSentAt ? 0 : 1;
+      if (aTouched !== bTouched) return aTouched - bTouched;
+      return Math.abs(a.intendedStartAt - now) - Math.abs(b.intendedStartAt - now);
+    })[0];
+
+  if (selected) return { ...selected };
+
+  try {
+    const row = getDb().prepare(`
+      SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
+        intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
+        source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
+        status, locked_in_session_id as lockedInSessionId, calendar_event_id as calendarEventId, created_at as createdAt
+      FROM soft_watch_commitments
+      WHERE status = 'pending'
+      ORDER BY
+        CASE WHEN check_in_sent_at IS NOT NULL THEN 0 WHEN reminder_sent_at IS NOT NULL THEN 1 ELSE 2 END,
+        ABS(intended_start_at - ?)
+      LIMIT 1
+    `).get(now) as SoftWatchCommitment | undefined;
+    if (!row) return null;
+    softWatchMap.set(row.id, row);
+    return { ...row };
+  } catch {
+    return null;
+  }
+}
+
+export function snoozeCurrentSoftWatchCommitment(): {
+  ok: boolean;
+  targetTitle?: string;
+  snoozeMinutes?: number;
+  reason?: string;
+} {
+  const commitment = loadCurrentPendingSoftWatch();
+  if (!commitment) return { ok: false, reason: 'no pending soft watch found' };
+
+  const policy = buildSoftWatchPolicy(commitment);
+  const snoozeMinutes = Math.max(8, Math.min(45, formatPolicyMinutes(policy.checkInDelayMs)));
+  const newStartAt = Date.now() + snoozeMinutes * 60_000;
+  const ok = rescheduleSoftWatchCommitment(commitment.id, newStartAt, commitment.plannedMinutes);
+  return {
+    ok,
+    targetTitle: commitment.targetTitle,
+    snoozeMinutes,
+    reason: policy.reason,
+  };
+}
+
+export function dismissCurrentSoftWatchCommitment(): SoftWatchCommitment | null {
+  const commitment = loadCurrentPendingSoftWatch();
+  if (!commitment) return null;
+  return dismissSoftWatchCommitment(commitment.id) ? commitment : null;
+}
+
 export function dismissSoftWatchCommitment(id: string): boolean {
   const commitment = softWatchMap.get(id);
   if (!commitment) return false;
