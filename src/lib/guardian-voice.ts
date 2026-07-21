@@ -27,6 +27,7 @@ import { getAdaptiveTaskRecommendations } from './adaptive-task-recommendations'
 import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
 import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
+import { getTaskTimeProgress } from './task-time-sessions';
 import {
   computeFocusSessions,
   computeFocusScore,
@@ -96,7 +97,7 @@ interface ParsedVoiceIntent {
   taskTitle?: string;
   taskPriority?: string;           // 'low' | 'medium' | 'high'
   taskDueDate?: string;            // YYYY-MM-DD
-  taskStatus?: string;             // 'backlog'|'next'|'this_week'|'today'|'doing'|'done'
+  taskStatus?: string;             // 'todo'|'doing'|'done'
   taskId?: number;                 // for update/delete by id
   taskFilterScope?: string;        // 'today'|'this_week'|'high_priority'|'blocked'|'all'
   // Habit fields
@@ -527,7 +528,7 @@ SESSION:
 TASK MANAGEMENT (full CRUD):
 - create_task: Plain task (not session-linked). taskTitle, taskPriority (low/medium/high), taskDueDate (YYYY-MM-DD).
 - create_session_task: "Schedule a 25min session on Polkadot for today" → creates a task with type=session and estimated_minutes. Fields: taskTitle (topic), durationMinutes (the session length), taskDueDate (when to do it, YYYY-MM-DD). This is the primary way to plan work.
-- update_task: Modify an existing task. taskTitle (name to search), taskStatus (backlog/next/this_week/today/doing/done), taskPriority (low/medium/high), taskDueDate. Use when user says "mark X done", "move X to tomorrow", "prioritize X", "block X".
+- update_task: Modify an existing task. taskTitle (name to search), taskStatus (todo/doing/done), taskPriority (low/medium/high), taskDueDate. Use when user says "mark X done", "move X to tomorrow", "prioritize X", "block X".
 - delete_task: Delete a specific task by name. taskTitle. Requires confirm — set responseText asking.
 - show_tasks: Read current tasks. taskFilterScope: "today" | "this_week" | "high_priority" | "blocked" | "all". Default "today".
 - clear_done_tasks: Archive all done tasks. Requires confirm — set responseText asking.
@@ -564,7 +565,7 @@ KNOWLEDGE:
 2. DO NOT schedule_session unless a future time is mentioned. Same day = create_session_task.
 3. Destructive ops (delete_task, clear_done_tasks, archive_all_goals, delete_habit): set that action AND set responseText asking for confirmation. System queues it as pending.
 4. Resolve "that", "it", "same topic" from RECENT CONVERSATION context.
-5. "mark X done" = update_task with taskStatus=done. "block X" = update_task with taskStatus=doing (keep as is, note blocked).
+5. "mark X done" = update_task with taskStatus=done, but completion only succeeds if linked focus minutes have reached the task target. "block X" = update_task with taskStatus=doing.
 6. Responses ≤ 35 words. No filler. Voice only.
 7. If user gives a complex multi-step command, handle step 1 and signal what comes next.
 
@@ -1046,6 +1047,94 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       return { type: 'habit_logged', transcript, intent, responseText: response };
     } catch {
       const response = 'Failed to log the habit. Try again in a moment.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+  }
+
+  // ── update_task ───────────────────────────────────────────────────────────
+
+  if (intent.action === 'update_task') {
+    const taskTitle = intent.taskTitle?.trim();
+    if (!taskTitle) {
+      const response = 'Which task should I update?';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
+
+    try {
+      const db = getDb();
+      const task = db.prepare(`
+        SELECT id, title, status
+        FROM tasks
+        WHERE LOWER(title) LIKE ? AND status != 'done'
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+      `).get(`%${taskTitle.toLowerCase()}%`) as { id: number; title: string; status: string } | undefined;
+
+      if (!task) {
+        const response = `I couldn't find an active task matching ${taskTitle}.`;
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+        return { type: 'intent_only', transcript, intent, responseText: response };
+      }
+
+      const sets: string[] = [];
+      const vals: Array<string | number | null> = [];
+      const status = intent.taskStatus && ['todo', 'doing', 'done'].includes(intent.taskStatus)
+        ? intent.taskStatus
+        : null;
+
+      if (status === 'done') {
+        const progress = getTaskTimeProgress(task.id);
+        if (progress.targetMinutes === null) {
+          const response = `${task.title} needs a time target before it can complete. Add the target, then finish linked focus sessions against it.`;
+          await maybeSpeakVoiceResponse(activeSessionId, response);
+          addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+          return { type: 'intent_only', transcript, intent, responseText: response };
+        }
+        if (progress.creditedMinutes < progress.targetMinutes) {
+          const response = `${task.title} stays active: ${progress.remainingMinutes} minutes more linked focus time needed.`;
+          await maybeSpeakVoiceResponse(activeSessionId, response);
+          addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+          return { type: 'intent_only', transcript, intent, responseText: response };
+        }
+        sets.push("status = 'done'");
+        sets.push("completed_at = datetime('now')");
+      } else if (status) {
+        sets.push('status = ?');
+        vals.push(status);
+        sets.push('completed_at = NULL');
+      }
+
+      if (intent.taskPriority && ['low', 'medium', 'high', 'critical'].includes(intent.taskPriority)) {
+        sets.push('priority = ?');
+        vals.push(intent.taskPriority);
+      }
+      if (intent.taskDueDate !== undefined) {
+        sets.push('due_date = ?');
+        vals.push(intent.taskDueDate || null);
+      }
+
+      if (sets.length === 0) {
+        const response = `No update values provided for ${task.title}.`;
+        addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+        return { type: 'intent_only', transcript, intent, responseText: response };
+      }
+
+      sets.push("updated_at = datetime('now')");
+      vals.push(task.id);
+      db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      touchIntelligence(status === 'done' ? 'voice_task_completion_checked' : 'voice_task_updated');
+
+      const response = status === 'done'
+        ? `Completed ${task.title} by its linked focus time target.`
+        : `Updated ${task.title}.`;
+      await maybeSpeakVoiceResponse(activeSessionId, response);
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    } catch (err) {
+      console.error('[GuardianVoice] update_task failed:', err);
+      const response = 'Could not update that task right now.';
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: response };
     }
