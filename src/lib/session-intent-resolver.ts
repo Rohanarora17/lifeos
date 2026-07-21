@@ -139,7 +139,7 @@ interface ResolveWorkModeInput {
 
 async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
   const ai = getGenAI();
-  if (!ai) return fallbackWorkMode(input.topic, input.deadlineUrgency, input.energyAtStart);
+  if (!ai) return fallbackWorkMode(input);
 
   const {
     topic, energyAtStart, deadlineUrgency, sessionContext, goalTitle, sessionHistory, uil,
@@ -204,17 +204,38 @@ Return ONLY valid JSON:
     if (validModes.includes(parsed.workMode)) return parsed.workMode;
   } catch { /* fall through */ }
 
-  return fallbackWorkMode(topic, deadlineUrgency, energyAtStart);
+  return fallbackWorkMode(input);
 }
 
-function fallbackWorkMode(topic: string, deadlineUrgency: string, energy: string): WorkMode {
-  // Only use these as a last resort when AI is unavailable
-  if (deadlineUrgency === 'overdue' || deadlineUrgency === 'today') return 'urgent_sprint';
-  if (energy === 'low') return 'recovery';
-  const t = topic.toLowerCase();
-  if (/fix|bug|urgent|submit|deadline|asap/i.test(t)) return 'urgent_sprint';
-  if (/read|research|explore|paper|survey|investigate|docs/i.test(t)) return 'research';
-  if (/write|draft|design|create|compose|build|implement|code/i.test(t)) return 'deep_work';
-  if (/study|learn|review|practice|watch|course|lecture|assignment/i.test(t)) return 'learning';
-  return 'deep_work';
+function fallbackWorkMode(input: Pick<ResolveWorkModeInput, 'topic' | 'deadlineUrgency' | 'energyAtStart' | 'sessionContext'>): WorkMode {
+  const text = `${input.topic} ${input.sessionContext ?? ''}`.toLowerCase();
+  const scores: Record<WorkMode, number> = {
+    deep_work: 0,
+    research: 0,
+    urgent_sprint: 0,
+    learning: 0,
+    recovery: 0,
+  };
+
+  if (input.deadlineUrgency === 'overdue') scores.urgent_sprint += 5;
+  if (input.deadlineUrgency === 'today') scores.urgent_sprint += 4;
+  if (input.deadlineUrgency === 'this_week') scores.urgent_sprint += 2;
+
+  if (input.energyAtStart === 'low') {
+    scores.recovery += 3;
+    scores.learning += 1;
+  } else if (input.energyAtStart === 'high') {
+    scores.deep_work += 1;
+    scores.urgent_sprint += 1;
+  }
+
+  if (/(fix|bug|urgent|submit|deadline|asap|due|ship|finish|blocked|blocker)/.test(text)) scores.urgent_sprint += 3;
+  if (/(read|research|explore|paper|survey|investigate|docs|documentation|google|compare|literature|source|reference)/.test(text)) scores.research += 3;
+  if (/(switch(ing)? tabs|multiple tabs|browser|chatgpt|explain|look up|search|sources|unclear concept)/.test(text)) scores.research += 2;
+  if (/(write|draft|design|create|compose|build|implement|code|debug|refactor|test|repo|api)/.test(text)) scores.deep_work += 3;
+  if (/(study|learn|review|practice|course|lecture|assignment|math academy|problem|exercise|flashcard|quiz)/.test(text)) scores.learning += 3;
+  if (/(tired|drained|low energy|sleepy|recover|light|easy|small|minimum|gentle)/.test(text)) scores.recovery += 3;
+
+  if (scores.recovery >= 3 && scores.urgent_sprint >= 4) return 'urgent_sprint';
+  return (Object.entries(scores).sort((a, b) => b[1] - a[1])[0]?.[0] as WorkMode) || 'deep_work';
 }
