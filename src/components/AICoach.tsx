@@ -51,6 +51,58 @@ function feedbackButtonStyle(color: string): React.CSSProperties {
     };
 }
 
+function coachPlaceholder(personalization?: CoachContext['personalization']) {
+    if (!personalization) return 'Ask from current context...';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Ask for the smallest useful step...';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Ask what relieves deadline pressure next...';
+    }
+    if (personalization.mode === 'protect_focus') {
+        return 'Ask how to keep this thread moving...';
+    }
+    if (personalization.mode === 'planning') {
+        return 'Ask how to shape tomorrow...';
+    }
+    return 'Ask for a context-aware next move...';
+}
+
+function buildStarterPrompts(context: CoachContext | null): string[] {
+    const personalization = context?.personalization;
+    const topTask = context?.intelligence?.recommendedTasks?.[0];
+    if (!personalization) return ['What should I do next?'];
+
+    const prompts: Array<string | null> = [];
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        prompts.push('Give me a recovery-sized plan for the next 20 minutes.');
+        prompts.push(topTask ? `Make ${topTask.title} easier to start today.` : null);
+        prompts.push('What should I deliberately not do today?');
+    } else if (personalization.mode === 'deadline_pressure') {
+        prompts.push('What is the highest-leverage deadline move right now?');
+        prompts.push(topTask ? `Turn ${topTask.title} into the next concrete sprint.` : null);
+        prompts.push('What can I safely defer today?');
+    } else if (personalization.mode === 'protect_focus') {
+        prompts.push('Help me preserve this focus thread.');
+        prompts.push(topTask ? `Keep me locked on ${topTask.title}.` : null);
+        prompts.push('What should I ignore until this block ends?');
+    } else if (personalization.mode === 'planning') {
+        prompts.push('Help me shape tomorrow from today\'s signals.');
+        prompts.push(personalization.standupGoal ? `Did today match: ${personalization.standupGoal}?` : null);
+        prompts.push('What schedule should I protect tomorrow?');
+    } else {
+        prompts.push(`Given ${modeLabel[personalization.mode]} mode, what should I do next?`);
+        prompts.push(topTask ? `Help me start: ${topTask.title}` : null);
+        prompts.push(personalization.standupGoal ? `Keep me honest about: ${personalization.standupGoal}` : null);
+    }
+
+    if (personalization.alertFatigueLevel === 'high') {
+        prompts.push('Be brief: what matters enough to interrupt me?');
+    }
+
+    return Array.from(new Set(prompts.filter(Boolean) as string[])).slice(0, 4);
+}
+
 export default function AICoach() {
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState<CoachMessage[]>([]);
@@ -158,11 +210,8 @@ export default function AICoach() {
 
     const topTask = context?.intelligence?.recommendedTasks?.[0];
     const personalization = context?.personalization;
-    const starterPrompts = [
-        personalization ? `Given ${modeLabel[personalization.mode]} mode, what should I do next?` : 'What should I do next?',
-        topTask ? `Help me start: ${topTask.title}` : null,
-        personalization?.standupGoal ? `Keep me honest about: ${personalization.standupGoal}` : null,
-    ].filter(Boolean) as string[];
+    const starterPrompts = buildStarterPrompts(context);
+    const inputPlaceholder = coachPlaceholder(personalization);
 
     return (
         <div style={{ position: 'fixed', bottom: '30px', right: '30px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -283,7 +332,7 @@ export default function AICoach() {
                             value={inputTitle}
                             onChange={e => setInputTitle(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            placeholder="Message Jarvis..."
+                            placeholder={inputPlaceholder}
                             style={{
                                 flex: 1,
                                 backgroundColor: '#1a1a24',
