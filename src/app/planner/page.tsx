@@ -106,7 +106,7 @@ function formatDuration(minutes: number) {
 
 function parseRule(ruleJson: string) {
     try {
-        return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string };
+        return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string; rewardReason?: string };
     } catch {
         return {};
     }
@@ -514,7 +514,9 @@ export default function PlannerPage() {
                                                                 {' '}· {calendarStatusLabel(session.calendar_status)}
                                                             </div>
                                                             <div>
-                                                                Reward priced at {session.reward_xp} XP / {session.reward_coins} coins for this duration and task fit.
+                                                                {rule.rewardReason
+                                                                    ? `Reward: ${rule.rewardReason}`
+                                                                    : `Reward priced at ${session.reward_xp} XP / ${session.reward_coins} coins for this duration and task fit.`}
                                                             </div>
                                                         </div>
                                                     </div>

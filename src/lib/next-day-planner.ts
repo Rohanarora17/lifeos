@@ -9,6 +9,7 @@ import {
 } from './google-calendar';
 import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
+import { getAdaptiveRewardDecision, getAdaptiveTaskRewardBase } from './adaptive-rewards';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
 
@@ -117,6 +118,7 @@ interface SessionRule {
   breakMinutes: number;
   guidance: string;
   tools: string[];
+  rewardReason?: string;
 }
 
 const PRIORITY_WEIGHT: Record<string, number> = {
@@ -458,12 +460,29 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
   };
 }
 
-function computeReward(task: CandidateTask, durationMinutes: number, rule: SessionRule) {
+function computeReward(task: CandidateTask, durationMinutes: number, rule: SessionRule, snapshot: PersonalizationSnapshot) {
   const priority = PRIORITY_WEIGHT[task.priority] ?? PRIORITY_WEIGHT.medium;
   const difficulty = task.energy_required === 'high' ? 18 : task.energy_required === 'low' ? 6 : 12;
   const modeBonus = rule.mode === 'research_reading' || rule.mode === 'coding_build' ? 12 : 8;
   const xp = Math.max(20, Math.round((durationMinutes * 1.4) + priority + difficulty + modeBonus));
-  return { xp, coins: Math.max(5, Math.round(xp / 5)) };
+  const rewardBase = getAdaptiveTaskRewardBase({
+    title: task.title,
+    priority: task.priority,
+    targetMinutes: durationMinutes,
+    snapshot,
+  });
+  const reward = getAdaptiveRewardDecision({
+    action: 'task_auto_complete',
+    baseCoins: rewardBase.baseCoins,
+    priority: task.priority,
+    subject: `${task.title} planned block (${durationMinutes}m; ${rule.mode}; ${rewardBase.reason})`,
+    snapshot,
+  });
+  return {
+    xp,
+    coins: reward.coins,
+    reason: `${rewardBase.reason}; ${reward.reason}`,
+  };
 }
 
 function buildAvailability(date: string, wakeEstimate: string, sleepTime: string, calendarEvents: CalendarEventRow[]): Window[] {
@@ -544,6 +563,7 @@ function serializeRule(rule: SessionRule, task: CandidateTask): string {
     guidance: rule.guidance,
     tools: rule.tools,
     breakMinutes: rule.breakMinutes,
+    rewardReason: rule.rewardReason,
     source: 'next_day_planner',
     taskRemainingMinutes: task.remaining_minutes,
     taskReason: task.reason,
@@ -640,7 +660,8 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         const roundedDuration = clampMinutes(duration, Math.min(rule.minMinutes, available), Math.min(rule.maxMinutes, available));
         const start = new Date(cursor);
         const end = new Date(start.getTime() + roundedDuration * 60000);
-        const reward = computeReward(task, roundedDuration, rule);
+        const reward = computeReward(task, roundedDuration, rule, snapshot);
+        const pricedRule = { ...rule, rewardReason: reward.reason };
         const sessionId = `pfs_${randomUUID()}`;
         const softWatchId = `nextday_${sessionId}`;
         const row: PlannedFocusSession = {
@@ -652,7 +673,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           planned_end: toSqlDateTime(end),
           duration_minutes: roundedDuration,
           session_type: rule.mode,
-          rule_json: serializeRule(rule, task),
+          rule_json: serializeRule(pricedRule, task),
           reward_xp: reward.xp,
           reward_coins: reward.coins,
           calendar_event_id: null,
@@ -691,7 +712,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         });
 
         if (input.syncCalendar) {
-          const calendar = await syncSessionCalendar(row, rule);
+          const calendar = await syncSessionCalendar(row, pricedRule);
           db.prepare(`
             UPDATE planned_focus_sessions
             SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
