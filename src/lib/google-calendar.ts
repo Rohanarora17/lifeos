@@ -1,5 +1,6 @@
 import { google } from 'googleapis';
 import { getSetting, setSetting } from './db';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -57,6 +58,98 @@ export interface CalendarEventInput {
   startTime: Date;
   endTime: Date;
   colorId?: string; // '1'=lavender '2'=sage '3'=grape '4'=flamingo '9'=blueberry '11'=tomato
+  reminderSnapshot?: PersonalizationSnapshot;
+}
+
+export interface CalendarReminderDecision {
+  useDefault: boolean;
+  overrides: Array<{ method: 'popup'; minutes: number }>;
+  reason: string;
+  label: string;
+}
+
+function eventDurationMinutes(input: Pick<CalendarEventInput, 'startTime' | 'endTime'>): number {
+  return Math.max(5, Math.round((input.endTime.getTime() - input.startTime.getTime()) / 60000));
+}
+
+function minutesUntil(input: Pick<CalendarEventInput, 'startTime'>): number {
+  return Math.round((input.startTime.getTime() - Date.now()) / 60000);
+}
+
+function uniqueReminderMinutes(minutes: number[], leadMinutes: number): number[] {
+  return Array.from(new Set(minutes))
+    .map(value => Math.round(value))
+    .filter(value => value > 0 && value < leadMinutes)
+    .sort((a, b) => b - a)
+    .slice(0, 3);
+}
+
+export function buildAdaptiveCalendarReminders(
+  input: Pick<CalendarEventInput, 'summary' | 'startTime' | 'endTime'>,
+  snapshot?: PersonalizationSnapshot | null
+): CalendarReminderDecision {
+  const duration = eventDurationMinutes(input);
+  const leadMinutes = minutesUntil(input);
+
+  if (leadMinutes <= 5) {
+    return {
+      useDefault: false,
+      overrides: [],
+      reason: 'session starts immediately, so pre-start calendar reminders would be stale',
+      label: 'no stale pre-start reminders',
+    };
+  }
+
+  const mode = snapshot?.moment.mode ?? 'normal';
+  const energy = snapshot?.userState.energy ?? 'medium';
+  const mood = snapshot?.userState.mood ?? null;
+  const alertFatigue = snapshot?.feedback.alertFatigueLevel ?? 'low';
+  const startHour = input.startTime.getHours();
+  const isPeakWindow = snapshot?.userState.peakFocusHours.includes(startHour) ?? false;
+
+  let reminderMinutes: number[];
+  let reason: string;
+
+  if (duration <= 25) {
+    reminderMinutes = [5];
+    reason = 'short sprint gets one close reminder';
+  } else if (alertFatigue === 'high' || mode === 'protect_focus') {
+    reminderMinutes = [10];
+    reason = alertFatigue === 'high'
+      ? 'recent alert fatigue is high, so reminders stay quiet'
+      : 'focus-protection mode avoids early interruption';
+  } else if (mode === 'deadline_pressure') {
+    reminderMinutes = [45, 15, 5];
+    reason = 'deadline pressure gets earlier warning plus a final start cue';
+  } else if (mode === 'recovery' || energy === 'low' || mood === 'low') {
+    reminderMinutes = [20, 5];
+    reason = 'low energy or mood gets softer, closer reminders';
+  } else if (mode === 'planning' || startHour >= 20 || startHour < 7) {
+    reminderMinutes = [30, 10];
+    reason = 'planning or off-hour sessions get a gentler two-step reminder';
+  } else if (isPeakWindow) {
+    reminderMinutes = [10];
+    reason = 'peak focus window gets a minimal reminder';
+  } else {
+    reminderMinutes = [30, 15];
+    reason = 'normal day uses the learned baseline reminder cadence';
+  }
+
+  if (duration >= 75 && alertFatigue !== 'high' && mode !== 'protect_focus') {
+    reminderMinutes.unshift(60);
+  }
+
+  const overrides = uniqueReminderMinutes(reminderMinutes, leadMinutes)
+    .map(minutes => ({ method: 'popup' as const, minutes }));
+
+  return {
+    useDefault: false,
+    overrides,
+    reason,
+    label: overrides.length
+      ? `${overrides.map(reminder => `${reminder.minutes}m`).join(' + ')} before`
+      : 'no valid pre-start reminders',
+  };
 }
 
 /**
@@ -68,20 +161,22 @@ export async function createCalendarEvent(input: CalendarEventInput): Promise<st
 
   try {
     const calendar = google.calendar({ version: 'v3', auth });
+    const snapshot = input.reminderSnapshot ?? buildPersonalizationSnapshot({ surface: 'scheduler', maxInsights: 2, includeMemoryFacts: 2 });
+    const reminderDecision = buildAdaptiveCalendarReminders(input, snapshot);
     const res = await calendar.events.insert({
       calendarId: calendarId(),
       requestBody: {
         summary: input.summary,
-        description: input.description,
+        description: [
+          input.description,
+          `LifeOS adaptive reminders: ${reminderDecision.label} (${reminderDecision.reason}).`,
+        ].filter(Boolean).join('\n\n'),
         start: { dateTime: input.startTime.toISOString(), timeZone: 'Asia/Kolkata' },
         end: { dateTime: input.endTime.toISOString(), timeZone: 'Asia/Kolkata' },
         colorId: input.colorId ?? '9', // blueberry for study sessions
         reminders: {
-          useDefault: false,
-          overrides: [
-            { method: 'popup', minutes: 30 },
-            { method: 'popup', minutes: 15 },
-          ],
+          useDefault: reminderDecision.useDefault,
+          overrides: reminderDecision.overrides,
         },
       },
     });

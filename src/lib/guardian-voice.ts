@@ -868,11 +868,11 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
         `📅 <b>Session Scheduled</b>\n\n` +
         `📚 <b>${commitment.targetTitle}</b>\n` +
         `🕐 ${startStr} – ${endStr} (${plannedMinutes} min)\n\n` +
-        `I'll remind you 30 min and 15 min before. Calendar event created. 🗓️`
+        `Calendar reminders were adapted to your current day. 🗓️`
       );
     })();
 
-    const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr} for ${plannedMinutes} minutes. ${voiceModeLabel(personalization)} shaped that duration. Calendar event created with reminders.`;
+    const response = `Scheduled. ${commitment.targetTitle} from ${startStr} to ${endStr} for ${plannedMinutes} minutes. ${voiceModeLabel(personalization)} shaped that duration and the calendar reminders.`;
     addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
     return { type: 'session_scheduled', transcript, intent, session: commitment, responseText: response };
   }
