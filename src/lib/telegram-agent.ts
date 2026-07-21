@@ -321,6 +321,52 @@ function formatTelegramTitlePrompt(kind: 'session_task' | 'scheduled_session' | 
     return 'What should the task be called?';
 }
 
+function formatTelegramActionRepair(kind: 'goal_type' | 'goal_no_changes' | 'task_no_changes' | 'habit_rename_missing' | 'adjust_missing' | 'standup_failed', title?: string): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        if (kind === 'goal_type') {
+            if (snapshot.moment.mode === 'deadline_pressure') return `What type of goal is "${title}"? If this protects a deadline, use build_feature or learn_skill with the deliverable name.`;
+            if (snapshot.moment.mode === 'planning') return `What type of goal is "${title}"? Pick the type tomorrow should optimize around: build_feature / learn_skill / launch_project / general.`;
+            return `What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`;
+        }
+        if (kind === 'goal_no_changes') {
+            if (snapshot.userState.standupGoal) return `No goal changes provided for <b>${title}</b>. Today's stated goal is <b>${snapshot.userState.standupGoal}</b>; send deadline or active status if that changed.`;
+            if (snapshot.moment.mode === 'planning') return `No goal changes provided for <b>${title}</b>. Add a deadline or active/inactive state if tomorrow's plan should change.`;
+            return `No changes provided for goal: <b>${title}</b>.`;
+        }
+        if (kind === 'task_no_changes') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Nothing to update. For <b>${snapshot.today.plannedFocus.nextTitle}</b>, send title, status, priority, or linked focus-time progress.`;
+            if (snapshot.moment.mode === 'deadline_pressure') return 'Nothing to update. Send the deadline task status or priority so I can protect the pressure path.';
+            return 'Nothing to update. Specify title, status, or priority.';
+        }
+        if (kind === 'habit_rename_missing') {
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'Send current habit name and new name. Keep the habit wording small enough for low-capacity days.';
+            if (snapshot.moment.mode === 'planning') return 'Send current habit name and new name, especially if it should support tomorrow.';
+            return 'Provide both the current habit name and the new name.';
+        }
+        if (kind === 'adjust_missing') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Could not find that session to adjust. Current planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; start or reschedule that block instead.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'Could not find that session to adjust. Start a smaller recovery-safe block instead.';
+            return 'Could not find the session to adjust.';
+        }
+        if (kind === 'standup_failed') {
+            if (snapshot.moment.mode === 'planning') return 'Could not fetch standup data. Send tomorrow intention, sleep/wake, and fixed calendar constraints directly.';
+            if (snapshot.today.plannedFocus.nextTitle) return `Could not fetch standup data. Use current planned focus: <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            return 'Could not fetch standup data.';
+        }
+    } catch { /* keep fallback */ }
+    if (kind === 'goal_type') return `What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`;
+    if (kind === 'goal_no_changes') return `No changes provided for goal: <b>${title}</b>.`;
+    if (kind === 'task_no_changes') return 'Nothing to update. Specify title, status, or priority.';
+    if (kind === 'habit_rename_missing') return 'Provide both the current habit name and the new name.';
+    if (kind === 'adjust_missing') return 'Could not find the session to adjust.';
+    return 'Could not fetch standup data.';
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -1086,7 +1132,7 @@ export async function executeAction(
                 db.prepare(`UPDATE goals SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
                 if (replyText) await sendTelegram(`✅ Updated goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             } else {
-                if (replyText) await sendTelegram(`No changes provided for goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
+                if (replyText) await sendTelegram(formatTelegramActionRepair('goal_no_changes', goal.title), 'HTML', FULL_MENU_KEYBOARD);
             }
             break;
         } case 'START_SESSION': {
@@ -1132,7 +1178,7 @@ export async function executeAction(
             const { adjustGuardianSessionDuration } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const adjusted = adjustGuardianSessionDuration(session.sessionId, newDuration);
             if (!adjusted) {
-                await sendTelegram('Could not find the session to adjust.', 'HTML', FULL_MENU_KEYBOARD);
+                await sendTelegram(formatTelegramActionRepair('adjust_missing'), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             const adjElapsed = Math.max(0, Math.round((Date.now() - adjusted.startedAt) / 60_000));
@@ -1279,7 +1325,7 @@ export async function executeAction(
 
         case 'STANDUP': {
             const data = fetchStandupData();
-            if (!data) { await sendTelegram('Could not fetch standup data.', ''); break; }
+            if (!data) { await sendTelegram(formatTelegramActionRepair('standup_failed'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const tasks = (data.suggestedTasks as Array<{ id: number; title: string }>) ?? [];
             await sendTelegram(formatStandupBrief({
                 goal: data.goal ?? null,
@@ -1408,7 +1454,7 @@ export async function executeAction(
                 }
             }
             if (payload.priority) { sets.push('priority = ?'); vals.push(payload.priority as string); }
-            if (sets.length === 0) { await sendTelegram('Nothing to update — specify title, status, or priority.', ''); break; }
+            if (sets.length === 0) { await sendTelegram(formatTelegramActionRepair('task_no_changes'), 'HTML', FULL_MENU_KEYBOARD); break; }
             vals.push(task.id);
             db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
             await sendTelegram(`✅ Updated task: <b>${(payload.title as string) || task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
@@ -1431,7 +1477,7 @@ export async function executeAction(
             if (!title) { await sendTelegram(formatTelegramTitlePrompt('goal'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const type = (payload.type as string | undefined)?.trim();
             if (!type || !['build_feature', 'learn_skill', 'launch_project', 'general'].includes(type)) {
-                await sendTelegram(`What type of goal is "${title}"? (build_feature / learn_skill / launch_project / general)`, '');
+                await sendTelegram(formatTelegramActionRepair('goal_type', title), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             const db = getDb();
@@ -1490,7 +1536,7 @@ export async function executeAction(
         case 'UPDATE_HABIT': {
             const search = (payload.searchName as string | undefined)?.trim();
             const newName = (payload.newName as string | undefined)?.trim();
-            if (!search || !newName) { await sendTelegram('Provide both the current habit name and the new name.', ''); break; }
+            if (!search || !newName) { await sendTelegram(formatTelegramActionRepair('habit_rename_missing'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
             const habit = db.prepare(`SELECT id, name FROM habits WHERE LOWER(name) LIKE ? AND archived = 0 LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; name: string } | undefined;
             if (!habit) { await sendTelegram(formatTelegramLookupMiss('habit', search), 'HTML', FULL_MENU_KEYBOARD); break; }
