@@ -112,6 +112,19 @@ function parseRule(ruleJson: string) {
     }
 }
 
+function formatRuleMode(mode?: string) {
+    if (!mode) return 'adaptive block';
+    return mode.replaceAll('_', ' ');
+}
+
+function calendarStatusLabel(status: PlannedFocusSession['calendar_status']) {
+    if (status === 'not_configured') return 'calendar local only';
+    if (status === 'created') return 'calendar created';
+    if (status === 'synced') return 'calendar synced';
+    if (status === 'failed') return 'calendar sync failed';
+    return 'calendar deleted';
+}
+
 function pillStyle(color: string, bg: string) {
     return {
         fontSize: '11px',
@@ -478,10 +491,37 @@ export default function PlannerPage() {
                                                     <div className="text-xs mt-2" style={{ color: 'var(--text-secondary)' }}>
                                                         {rule.guidance || 'Personalized focus block'}
                                                     </div>
+                                                    <div
+                                                        className="mt-3"
+                                                        style={{
+                                                            padding: '9px 10px',
+                                                            borderRadius: 8,
+                                                            border: '1px solid rgba(255,255,255,0.08)',
+                                                            background: 'rgba(255,255,255,0.035)',
+                                                        }}
+                                                    >
+                                                        <div className="text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: 'var(--text-muted)' }}>
+                                                            Why this block
+                                                        </div>
+                                                        <div className="text-xs" style={{ color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                                                            <div>
+                                                                <span style={{ color: 'var(--text-primary)', fontWeight: 700 }}>{formatRuleMode(rule.mode || session.session_type)}</span>
+                                                                {' '}because {rule.taskReason || 'it fits the selected time target and tomorrow context'}.
+                                                            </div>
+                                                            <div>
+                                                                {formatDuration(session.duration_minutes)} block
+                                                                {typeof rule.breakMinutes === 'number' ? `, then ${rule.breakMinutes}m break` : ''}
+                                                                {' '}· {calendarStatusLabel(session.calendar_status)}
+                                                            </div>
+                                                            <div>
+                                                                Reward priced at {session.reward_xp} XP / {session.reward_coins} coins for this duration and task fit.
+                                                            </div>
+                                                        </div>
+                                                    </div>
                                                     <div className="flex flex-wrap gap-2 mt-2">
                                                         <span style={pillStyle('var(--accent-green)', 'var(--accent-green-glow)')}>{session.reward_xp} XP</span>
                                                         <span style={pillStyle('var(--accent-yellow)', 'var(--accent-yellow-glow)')}>{session.reward_coins} coins</span>
-                                                        <span style={pillStyle('var(--text-secondary)', 'var(--bg-card)')}>{session.calendar_status}</span>
+                                                        <span style={pillStyle('var(--text-secondary)', 'var(--bg-card)')}>{calendarStatusLabel(session.calendar_status)}</span>
                                                         {Array.isArray(rule.tools) && rule.tools.slice(0, 3).map(tool => (
                                                             <span key={tool} style={pillStyle('var(--text-secondary)', 'var(--bg-card)')}>{tool}</span>
                                                         ))}
