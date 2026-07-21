@@ -523,11 +523,56 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
   };
 }
 
-function computeReward(task: CandidateTask, durationMinutes: number, rule: SessionRule, snapshot: PersonalizationSnapshot) {
+function computeAdaptiveSessionXp(input: {
+  task: CandidateTask;
+  durationMinutes: number;
+  rule: SessionRule;
+  snapshot: PersonalizationSnapshot;
+}): { xp: number; reason: string } {
+  const { task, durationMinutes, rule, snapshot } = input;
   const priority = PRIORITY_WEIGHT[task.priority] ?? PRIORITY_WEIGHT.medium;
   const difficulty = task.energy_required === 'high' ? 18 : task.energy_required === 'low' ? 6 : 12;
   const modeBonus = rule.mode === 'research_reading' || rule.mode === 'coding_build' ? 12 : 8;
-  const xp = Math.max(20, Math.round((durationMinutes * 1.4) + priority + difficulty + modeBonus));
+  let multiplier = 1;
+  const reasons: string[] = [];
+
+  if (task.avg_focus_score !== null && task.avg_focus_score >= 78) {
+    multiplier += 0.12;
+    reasons.push(`past ${Math.round(task.avg_focus_score)} focus says this task type works`);
+  } else if (task.avg_focus_score !== null && task.avg_focus_score < 55) {
+    multiplier += snapshot.userState.energy === 'low' ? -0.1 : 0.08;
+    reasons.push(snapshot.userState.energy === 'low'
+      ? `past ${Math.round(task.avg_focus_score)} focus makes this risky on low energy`
+      : `past ${Math.round(task.avg_focus_score)} focus needs extra incentive`);
+  }
+
+  if (task.linked_sessions > 0 && task.remaining_minutes <= Math.max(durationMinutes, Math.round(task.estimated_minutes * 0.35))) {
+    multiplier += 0.1;
+    reasons.push('finishable from linked focus-session progress');
+  }
+
+  if (snapshot.moment.mode === 'deadline_pressure' && task.priority !== 'low') {
+    multiplier += 0.1;
+    reasons.push('deadline-pressure day rewards concrete task progress');
+  }
+
+  if ((snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low') && durationMinutes <= 30) {
+    multiplier += 0.08;
+    reasons.push('small recovery-compatible block gets consistency credit');
+  }
+
+  const base = (durationMinutes * 1.4) + priority + difficulty + modeBonus;
+  const xp = Math.max(20, Math.round(base * clampMinutes(multiplier, 0.8, 1.35)));
+  return {
+    xp,
+    reason: reasons.length
+      ? `XP adapted: ${reasons.join('; ')}`
+      : 'XP adapted from duration, priority, energy demand, and session mode',
+  };
+}
+
+function computeReward(task: CandidateTask, durationMinutes: number, rule: SessionRule, snapshot: PersonalizationSnapshot) {
+  const xp = computeAdaptiveSessionXp({ task, durationMinutes, rule, snapshot });
   const rewardBase = getAdaptiveTaskRewardBase({
     taskId: task.id,
     title: task.title,
@@ -543,9 +588,9 @@ function computeReward(task: CandidateTask, durationMinutes: number, rule: Sessi
     snapshot,
   });
   return {
-    xp,
+    xp: xp.xp,
     coins: reward.coins,
-    reason: `${rewardBase.reason}; ${reward.reason}`,
+    reason: `${xp.reason}; ${rewardBase.reason}; ${reward.reason}`,
   };
 }
 
