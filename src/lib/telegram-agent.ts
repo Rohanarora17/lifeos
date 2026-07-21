@@ -77,6 +77,40 @@ function nextIsoDate(): string {
     return tomorrow.toISOString().slice(0, 10);
 }
 
+function formatActiveSessionConflict(session: NonNullable<ReturnType<typeof getActiveGuardianSession>>): string {
+    const elapsed = Math.max(0, Math.floor((Date.now() - session.startedAt) / 60000));
+    const remaining = Math.max(0, session.durationMinutes - elapsed);
+    let suffix = `Use <code>/adjust &lt;minutes&gt;</code> if this block needs to change, or end it first.`;
+
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+            activeSession: {
+                sessionId: session.sessionId,
+                targetTitle: session.targetTitle,
+                focusScore: session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? null,
+                elapsedMinutes: elapsed,
+            },
+        });
+
+        if (snapshot.feedback.alertFatigueLevel === 'high') {
+            suffix = `Keeping this quiet because alert fatigue is high. Adjust only if the current block is wrong.`;
+        } else if (snapshot.moment.mode === 'deadline_pressure') {
+            suffix = `If the new request beats this deadline path, use <code>/adjust &lt;minutes&gt;</code>; otherwise finish this relief block first.`;
+        } else if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+            suffix = `Do not stack another commitment on a low-capacity window. Shrink or end this one before switching.`;
+        } else if (snapshot.moment.mode === 'protect_focus') {
+            suffix = `Protect the current thread unless the new request is clearly more important.`;
+        } else if ((snapshot.today.plannedFocus.recentFollowThroughRate ?? 1) < 0.5) {
+            suffix = `Recent planned-block follow-through is low, so changing plans should be intentional.`;
+        }
+    } catch { /* keep generic fallback */ }
+
+    return `Session already active: <b>${session.targetTitle}</b> (${elapsed}m elapsed, ${remaining}m left).\n\n${suffix}`;
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -844,11 +878,8 @@ export async function executeAction(
             break;
         } case 'START_SESSION': {
             if (session) {
-                // Active session exists — offer to adjust instead of hard-blocking
-                const elapsed = Math.max(0, Math.floor((Date.now() - session.startedAt) / 60000));
-                const remaining = Math.max(0, session.durationMinutes - elapsed);
                 await sendTelegram(
-                    `Session already active: <b>${session.targetTitle}</b> (${elapsed}m elapsed, ${remaining}m left).\n\nDid you mean to adjust it? Use <code>/adjust &lt;minutes&gt;</code> or end it first.`,
+                    formatActiveSessionConflict(session),
                     'HTML', SESSION_START_KEYBOARD
                 );
                 break;
