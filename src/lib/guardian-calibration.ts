@@ -4,6 +4,7 @@ import { MODEL_PRO } from '@/lib/models';
 import { insertFact } from '@/lib/memory';
 import type { GuardianPolicyBundle, LLMCalibrationSignal, SessionIntentProfile } from '@/lib/guardian-types';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
+import { recordExplicitFeedbackLearning, type ExplicitFeedback } from '@/lib/feedback-learning';
 
 const LEARNING_RATE = 0.02;
 const MIN_WEIGHT = 0.05;
@@ -231,6 +232,36 @@ export interface CalibrationResult {
   evalCaseCreated: boolean;
 }
 
+function sessionFeedbackSignal(input: {
+  regexSignals: CalibrationSignals;
+  llmSignal: LLMCalibrationSignal | null;
+  focusOver: boolean;
+  focusUnder: boolean;
+  energyOver: boolean;
+  energyUnder: boolean;
+}): ExplicitFeedback {
+  if (input.llmSignal?.workModeMismatch || input.focusOver || input.energyOver) return 'wrong';
+  if (input.regexSignals.session_too_long || input.regexSignals.session_too_short) return 'not_helpful';
+  if (input.llmSignal?.overallSessionQuality === 'poor' || input.llmSignal?.overallSessionQuality === 'mediocre') return 'not_helpful';
+  if (input.focusUnder || input.energyUnder || input.regexSignals.felt_focused) return 'helpful';
+  if (input.llmSignal?.overallSessionQuality === 'excellent' || input.llmSignal?.overallSessionQuality === 'good') return 'helpful';
+  return 'helpful';
+}
+
+function loadSessionFeedbackSubject(db: ReturnType<typeof getDb>, sessionId: string, intentProfile: SessionIntentProfile | null): string {
+  if (intentProfile?.topic) return `${intentProfile.topic} (${intentProfile.workMode})`;
+  try {
+    const row = db.prepare(`
+      SELECT target_title, goal_title
+      FROM guardian_session_summaries
+      WHERE session_id = ?
+    `).get(sessionId) as { target_title: string | null; goal_title: string | null } | undefined;
+    return [row?.target_title, row?.goal_title].filter(Boolean).join(' / ') || sessionId;
+  } catch {
+    return sessionId;
+  }
+}
+
 export async function processSessionFeedback(
   sessionId: string,
   rawText: string,
@@ -303,6 +334,37 @@ export async function processSessionFeedback(
     useLLM ? (llmSignal!.selfAwarenessScore ?? regexSignals.self_awareness_score) : regexSignals.self_awareness_score,
   );
   const feedbackId = feedbackRow.lastInsertRowid as number;
+
+  try {
+    recordExplicitFeedbackLearning({
+      source: 'session_feedback',
+      feedback: sessionFeedbackSignal({
+        regexSignals,
+        llmSignal,
+        focusOver,
+        focusUnder,
+        energyOver,
+        energyUnder,
+      }),
+      surface: 'guardian_session',
+      momentMode: intentProfile?.workMode ?? null,
+      reason: rawText,
+      subject: loadSessionFeedbackSubject(db, sessionId, intentProfile),
+      metadata: {
+        sessionId,
+        feedbackId,
+        gaps,
+        sessionLengthFit,
+        focusOver,
+        focusUnder,
+        energyOver,
+        energyUnder,
+        llmQuality: llmSignal?.overallSessionQuality ?? null,
+      },
+    });
+  } catch {
+    // Feedback memory should not block calibration.
+  }
 
   const adjustments: Array<{ component: string; previous: number; next: number; reason: string }> = [];
   const selfAwareness = useLLM ? (llmSignal!.selfAwarenessScore ?? 0) : regexSignals.self_awareness_score;
