@@ -182,6 +182,14 @@ function formatHelpfulRate(rate: number | null) {
   return rate === null ? 'learning' : `${Math.round(rate * 100)}% helpful`;
 }
 
+function formatDurationLabel(mins: number) {
+  const rounded = Math.max(0, Math.round(mins));
+  if (rounded < 60) return `${rounded}m`;
+  const hours = Math.floor(rounded / 60);
+  const minutes = rounded % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
 function formatAdaptiveSignal(personalization: DashboardPersonalization) {
   if (personalization.overdueTasks > 0) {
     return `${personalization.overdueTasks} overdue task${personalization.overdueTasks === 1 ? '' : 's'} need concrete relief.`;
@@ -208,6 +216,38 @@ function formatNotificationEmpty(personalization?: DashboardPersonalization, ale
   if (personalization.mode === 'protect_focus') return 'No routine notifications during this focus window';
   if (personalization.mode === 'recovery') return 'Only important nudges right now';
   return 'No new notifications';
+}
+
+function formatActivityEmpty(personalization?: DashboardPersonalization, surface: 'domains' | 'timeline' = 'domains') {
+  if (!personalization) {
+    return surface === 'timeline'
+      ? 'No activity tracked yet. Start a session or enable activity capture.'
+      : 'No activity tracked yet today.';
+  }
+
+  if (personalization.plannedFocus.nextTitle) {
+    return `No activity captured yet. Start "${personalization.plannedFocus.nextTitle}" so planned focus can be compared with actual work.`;
+  }
+
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No activity captured yet. Even a small recovery-safe block helps calibrate today.';
+  }
+
+  if (personalization.mode === 'deadline_pressure') {
+    return 'No activity captured yet. Track the first deadline-relief block before optional work.';
+  }
+
+  if (personalization.mode === 'planning') {
+    return 'No activity captured yet. Generate or start a tomorrow setup block to seed the plan.';
+  }
+
+  if (personalization.mode === 'protect_focus') {
+    return 'No activity captured yet. Start the protected focus thread so interruptions can be measured.';
+  }
+
+  return surface === 'timeline'
+    ? `No activity captured yet. Your learned default is ${formatDurationLabel(personalization.recommendedSessionMinutes)}.`
+    : 'No activity captured yet. Start the next useful block to seed today.';
 }
 
 function taskFitColor(fit?: 'high' | 'medium' | 'low') {
@@ -877,7 +917,7 @@ export default function DashboardPage() {
                 <span className="text-sm font-mono" style={{ color: 'var(--text-muted)' }}>{formatTime(d.minutes)}</span>
               </div>
             )) : (
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No activity tracked yet today</p>
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>{formatActivityEmpty(personalization, 'domains')}</p>
             )}
           </div>
         </div>
@@ -1302,7 +1342,7 @@ export default function DashboardPage() {
             </div>
           )) : (
             <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }}>
-              No activity tracked yet. Install the browser extension to get started! 🚀
+              {formatActivityEmpty(personalization, 'timeline')}
             </p>
           )}
         </div>
