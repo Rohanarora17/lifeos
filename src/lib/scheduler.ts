@@ -246,6 +246,61 @@ function resolveEveningReminderTime(): { time: string; reason: string } {
   };
 }
 
+function clampMinutes(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolveWakeRelativeTime(input: {
+  jobName: string;
+  offsetMinutes: number;
+  earliestMinutes: number;
+  latestMinutes: number;
+}): { time: string; reason: string } {
+  const wake = getWakeEstimate() ?? inferMorningTime();
+  const snapshot = buildSchedulerSnapshot();
+  const recoveryDelay = snapshot.moment.mode === 'recovery' ? 35 : 0;
+  const alertDelay = snapshot.feedback.alertFatigueLevel === 'high' ? 15 : 0;
+  const target = clampMinutes(
+    timeToMinutes(wake) + input.offsetMinutes + recoveryDelay + alertDelay,
+    input.earliestMinutes,
+    input.latestMinutes,
+  );
+  return {
+    time: minutesToTime(target),
+    reason: `${input.jobName} scheduled from wake ${wake}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
+}
+
+function resolveEveningRelativeTime(input: {
+  jobName: string;
+  leadMinutes: number;
+  earliestMinutes: number;
+  latestMinutes: number;
+}): { time: string; reason: string } {
+  const reflection = resolveEveningReflectionTimeDetailed();
+  const snapshot = buildSchedulerSnapshot();
+  const recoveryLead = snapshot.moment.mode === 'recovery' ? 25 : 0;
+  const alertQuieting = snapshot.feedback.alertFatigueLevel === 'high' ? -15 : 0;
+  const target = clampMinutes(
+    timeToMinutes(reflection.time, true) - input.leadMinutes - recoveryLead - alertQuieting,
+    input.earliestMinutes,
+    input.latestMinutes,
+  );
+  return {
+    time: minutesToTime(target),
+    reason: `${input.jobName} scheduled before evening reflection ${reflection.time}; ${reflection.reason}; mode=${snapshot.moment.mode}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
+}
+
+function registerAdaptiveDailyTimeJob(
+  name: string,
+  timing: { time: string; reason: string },
+  fn: () => Promise<void>,
+) {
+  console.log(`[Scheduler] ${name} adaptive time ${timing.time}: ${timing.reason}`);
+  registerDailyJob(name, timing.time, fn);
+}
+
 /**
  * Initialize the scheduler with all configured jobs.
  * Safe to call multiple times — will only initialize once.
@@ -418,8 +473,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetch(`${baseUrl}/api/gamification/engine`, { method: 'POST' });
     });
 
-    // Weekly review — runs every Sunday at 21:00
-    registerDailyJob('weekly_review', '21:00', async () => {
+    // Weekly review — Sunday evening, aligned to the current evening reflection window.
+    registerAdaptiveDailyTimeJob('weekly_review', resolveEveningRelativeTime({
+        jobName: 'weekly review',
+        leadMinutes: 45,
+        earliestMinutes: 18 * 60 + 30,
+        latestMinutes: 22 * 60 + 30,
+    }), async () => {
         const dayOfWeek = new Date().getDay();
         if (dayOfWeek === 0) { // Sunday
             await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
@@ -651,13 +711,18 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
-    // Morning UIL synthesis — before Rohan picks up his phone
-    registerDailyJob('morning_uil_synthesis', '07:30', async () => {
+    // Morning UIL synthesis — before the learned/declared wake pickup window.
+    registerAdaptiveDailyTimeJob('morning_uil_synthesis', resolveWakeRelativeTime({
+        jobName: 'morning UIL synthesis',
+        offsetMinutes: -20,
+        earliestMinutes: 5 * 60 + 45,
+        latestMinutes: 10 * 60 + 30,
+    }), async () => {
         try {
             // Trigger intelligence synthesis if function exists
             const { forceSynthesis } = await import('./intelligence');
             if (typeof forceSynthesis === 'function') {
-                await forceSynthesis('morning_7:30');
+                await forceSynthesis('morning_adaptive');
             }
             console.log('[Scheduler] Morning UIL synthesis complete');
         } catch (err) {
@@ -665,8 +730,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
-    // Streak cliff detection — day 4 of strong streak, fire at 20:00
-    registerDailyJob('streak_cliff_detection', '20:00', async () => {
+    // Streak cliff detection — day 4 of strong streak, before evening reflection.
+    registerAdaptiveDailyTimeJob('streak_cliff_detection', resolveEveningRelativeTime({
+        jobName: 'streak cliff detection',
+        leadMinutes: 75,
+        earliestMinutes: 18 * 60 + 30,
+        latestMinutes: 22 * 60,
+    }), async () => {
         try {
             const db = getDb();
 
@@ -703,22 +773,37 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
-    // Weekly reckoning — Sunday at 20:00
-    registerDailyJob('weekly_reckoning', '20:00', async () => {
+    // Weekly reckoning — Sunday evening, before the weekly review.
+    registerAdaptiveDailyTimeJob('weekly_reckoning', resolveEveningRelativeTime({
+        jobName: 'weekly reckoning',
+        leadMinutes: 90,
+        earliestMinutes: 18 * 60,
+        latestMinutes: 22 * 60,
+    }), async () => {
         const dayOfWeek = new Date().getDay(); // 0 = Sunday
         if (dayOfWeek !== 0) return;
         await sendWeeklyReckoning();
     });
 
-    // Weekly open loops audit — Monday morning at 08:15
-    registerDailyJob('open_loops_audit', '08:15', async () => {
+    // Weekly open loops audit — Monday morning after the wake window settles.
+    registerAdaptiveDailyTimeJob('open_loops_audit', resolveWakeRelativeTime({
+        jobName: 'open loops audit',
+        offsetMinutes: 75,
+        earliestMinutes: 7 * 60,
+        latestMinutes: 12 * 60,
+    }), async () => {
         const dayOfWeek = new Date().getDay(); // 1 = Monday
         if (dayOfWeek !== 1) return;
         await sendOpenLoopsAudit();
     });
 
-    // Monthly pattern letter — 1st of each month at 19:00
-    registerDailyJob('monthly_pattern_letter', '19:00', async () => {
+    // Monthly pattern letter — first evening of the month, tied to reflection timing.
+    registerAdaptiveDailyTimeJob('monthly_pattern_letter', resolveEveningRelativeTime({
+        jobName: 'monthly pattern letter',
+        leadMinutes: 120,
+        earliestMinutes: 18 * 60,
+        latestMinutes: 22 * 60,
+    }), async () => {
         const dayOfMonth = new Date().getDate();
         if (dayOfMonth !== 1) return;
         await sendMonthlyPatternLetter();
