@@ -326,6 +326,33 @@ function resolveNextDayPlanRefreshTime(): { time: string; reason: string } {
   };
 }
 
+function resolveDailySummaryTime(): { time: string; reason: string } {
+  const configured = getSetting('daily_summary_time').trim();
+  if (configured && configured !== '23:00') {
+    return { time: configured, reason: 'using configured daily summary time' };
+  }
+
+  const reflection = resolveEveningReflectionTimeDetailed();
+  const snapshot = buildSchedulerSnapshot();
+  const lagMinutes = snapshot.moment.mode === 'planning'
+    ? 35
+    : snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low'
+      ? 50
+      : snapshot.feedback.alertFatigueLevel === 'high'
+        ? 60
+        : 40;
+  const target = clampMinutes(
+    timeToMinutes(reflection.time, true) + lagMinutes,
+    20 * 60,
+    27 * 60,
+  );
+
+  return {
+    time: minutesToTime(target),
+    reason: `${lagMinutes}m after evening reflection ${reflection.time}; ${reflection.reason}; mode=${snapshot.moment.mode}, energy=${snapshot.userState.energy}, alerts=${snapshot.feedback.alertFatigueLevel}`,
+  };
+}
+
 function resolveMorningCheckinWindow(): {
   wake: string;
   startMinutes: number;
@@ -476,9 +503,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         }
     });
 
-    // Daily summary — runs at a user override when present, otherwise learned from evening session endings.
-    const summaryTime = configuredOrInferredTime('daily_summary_time', '23:00', inferEveningTime);
-    registerDailyJob('daily_summary', summaryTime, async () => {
+    // Daily summary — follows the adaptive evening reflection instead of a fixed clock time.
+    registerAdaptiveDailyTimeJob('daily_summary', resolveDailySummaryTime(), async () => {
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
         await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
         // Also send daily report to Telegram
