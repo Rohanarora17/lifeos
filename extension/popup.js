@@ -98,6 +98,54 @@ function startLiveTimer(startedAt) {
 // --- Focus Session UI ---
 let focusUpdateInterval = null;
 
+function formatFocusDuration(mins) {
+  const rounded = Math.max(0, Math.round(Number(mins) || 0));
+  if (rounded < 60) return `${rounded} min`;
+  const hours = Math.floor(rounded / 60);
+  const minutes = rounded % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+function addDurationOption(options, minutes, label) {
+  const numeric = Number(minutes);
+  if (!Number.isFinite(numeric) || numeric <= 0) return;
+  const rounded = Math.max(5, Math.round(numeric / 5) * 5);
+  if (options.some(option => option.minutes === rounded)) return;
+  options.push({ minutes: rounded, label });
+}
+
+function buildPopupDurationOptions({ adaptiveDuration, personalization, selectedTask, topTask }) {
+  const options = [];
+  const mode = personalization?.mode || 'normal';
+  const base = Math.round(Number(adaptiveDuration) || 45);
+
+  addDurationOption(options, selectedTask?.estimatedMinutes, 'This task');
+  addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
+
+  if (mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+    addDurationOption(options, Math.min(base, 20), 'Small start');
+    addDurationOption(options, Math.min(Math.max(base, 25), 35), 'Manageable');
+  } else if (mode === 'deadline_pressure') {
+    addDurationOption(options, Math.max(base, 45), 'Serious sprint');
+    addDurationOption(options, Math.max(base, 75), 'Deep push');
+  } else if (mode === 'planning') {
+    addDurationOption(options, Math.min(base, 30), 'Planning pass');
+    addDurationOption(options, Math.max(base, 45), 'Setup block');
+  } else {
+    addDurationOption(options, Math.max(25, base - 15), 'Shorter');
+    addDurationOption(options, Math.min(120, base + 15), 'Deeper');
+  }
+
+  addDurationOption(options, topTask?.estimatedMinutes, 'Top recommendation');
+  return options.slice(0, 5);
+}
+
+function renderDurationOptions(options) {
+  return options
+    .map(option => `<option value="${option.minutes}">${option.label} (${formatFocusDuration(option.minutes)})</option>`)
+    .join('');
+}
+
 async function loadFocusSection() {
   const focusEl = document.getElementById('focus-section');
   if (!focusEl) return;
@@ -113,20 +161,44 @@ async function loadFocusSection() {
 }
 
 async function renderFocusStarter(el) {
-  let goals = [], tasks = [];
+  let goals = [], tasks = [], insights = null;
   try {
-    const res = await fetch(`${API_BASE}/guardian/state`);
-    const data = await res.json();
+    const [stateRes, insightsRes] = await Promise.all([
+      fetch(`${API_BASE}/guardian/state`),
+      fetch(`${API_BASE}/guardian/insights`),
+    ]);
+    const data = await stateRes.json();
+    insights = insightsRes.ok ? await insightsRes.json() : null;
     goals = data.activeGoals || [];
     tasks = data.activeTasks || [];
   } catch { }
 
+  const recommendedTasks = Array.isArray(insights?.recommendedTasks) ? insights.recommendedTasks : [];
+  const topTask = recommendedTasks[0] || null;
+  const personalization = insights?.personalization || null;
+  const adaptiveDuration = personalization?.recommendedSessionMinutes || topTask?.estimatedMinutes || 45;
+  const modeLabel = {
+    protect_focus: 'Protect focus',
+    deadline_pressure: 'Deadline pressure',
+    recovery: 'Recovery',
+    planning: 'Planning',
+    normal: 'Balanced',
+  }[personalization?.mode || 'normal'];
+  const initialDurationOptions = buildPopupDurationOptions({
+    adaptiveDuration,
+    personalization,
+    selectedTask: null,
+    topTask,
+  });
   const goalOptions = goals.map(g => `<option value="goal-${g.id}" data-title="${g.title}">${g.title}</option>`).join('');
   const taskOptions = tasks.map(t => `<option value="task-${t.id}" data-title="${t.title}">${t.title}</option>`).join('');
 
   el.innerHTML = `
     <div class="focus-panel" style="margin: 0 10px 0;">
       <h3>🎯 Focus Session</h3>
+      <div style="font-size: 10px; color: #8888a0; margin: -2px 0 8px;">
+        ${modeLabel} · ${personalization?.energy || 'medium'} energy · ${formatFocusDuration(adaptiveDuration)} learned default
+      </div>
       <select class="focus-select" id="focus-target">
         <option value="">Select a goal or task...</option>
         ${goalOptions ? `<optgroup label="Goals">${goalOptions}</optgroup>` : ''}
@@ -134,16 +206,27 @@ async function renderFocusStarter(el) {
       </select>
       <div class="focus-row">
         <select class="focus-select" id="focus-duration" style="flex:1;">
-          <option value="25">25 min</option>
-          <option value="45">45 min</option>
-          <option value="60" selected>60 min</option>
-          <option value="90">90 min</option>
-          <option value="120">2 hours</option>
+          ${renderDurationOptions(initialDurationOptions)}
         </select>
         <button class="focus-btn focus-btn-start" id="focus-start-btn">Start Focus</button>
       </div>
     </div>
   `;
+
+  document.getElementById('focus-target').addEventListener('change', (event) => {
+    const selected = event.target.value;
+    const selectedTask = selected.startsWith('task-')
+      ? recommendedTasks.find(task => task.id === Number(selected.replace('task-', ''))) || null
+      : null;
+    const durationEl = document.getElementById('focus-duration');
+    const nextOptions = buildPopupDurationOptions({
+      adaptiveDuration,
+      personalization,
+      selectedTask,
+      topTask,
+    });
+    durationEl.innerHTML = renderDurationOptions(nextOptions);
+  });
 
   document.getElementById('focus-start-btn').addEventListener('click', async () => {
     const targetEl = document.getElementById('focus-target');
@@ -400,7 +483,7 @@ async function loadData() {
       <!-- Top Sites -->
       ${topSitesHtml}
     `;
-  } catch (e) {
+  } catch {
     content.innerHTML = `
       <div class="loading" style="flex-direction: column; gap: 8px;">
         <div style="font-size: 24px;">⚡</div>
