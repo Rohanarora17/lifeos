@@ -204,6 +204,7 @@ export function creditSessionTimeToTasks(input: {
         `).run(task.id);
         markAutoCompleted.run(task.id, input.sessionId);
         const rewardBase = getAdaptiveTaskRewardBase({
+          taskId: task.id,
           title: task.title,
           priority: task.priority,
           targetMinutes,

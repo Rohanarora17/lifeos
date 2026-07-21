@@ -496,6 +496,7 @@ function computeReward(task: CandidateTask, durationMinutes: number, rule: Sessi
   const modeBonus = rule.mode === 'research_reading' || rule.mode === 'coding_build' ? 12 : 8;
   const xp = Math.max(20, Math.round((durationMinutes * 1.4) + priority + difficulty + modeBonus));
   const rewardBase = getAdaptiveTaskRewardBase({
+    taskId: task.id,
     title: task.title,
     priority: task.priority,
     targetMinutes: durationMinutes,

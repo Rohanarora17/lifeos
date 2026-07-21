@@ -1,4 +1,5 @@
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
+import { getDb } from './db';
 
 export type RewardAction =
   | 'habit_checkin'
@@ -59,6 +60,7 @@ interface RewardDecisionInput {
 }
 
 export interface AdaptiveTaskRewardBaseInput {
+  taskId?: number | null;
   title: string;
   priority?: string | null;
   targetMinutes?: number | null;
@@ -125,6 +127,58 @@ function taskComplexityMultiplier(title: string): { multiplier: number; reason: 
   return { multiplier: 1, reason: 'standard task complexity' };
 }
 
+function taskFeedbackRewardAdjustment(taskId: number | null | undefined): {
+  multiplier: number;
+  reason: string | null;
+  stats: Record<string, number>;
+} {
+  if (!taskId) return { multiplier: 1, reason: null, stats: {} };
+
+  try {
+    const feedbackRows = getDb().prepare(`
+      SELECT feedback, COUNT(*) as count
+      FROM task_recommendation_feedback
+      WHERE task_id = ?
+        AND created_at >= datetime('now', '-45 days')
+      GROUP BY feedback
+    `).all(taskId) as Array<{ feedback: string; count: number }>;
+
+    if (feedbackRows.length === 0) return { multiplier: 1, reason: null, stats: {} };
+
+    const stats = feedbackRows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.feedback] = row.count;
+      return acc;
+    }, {});
+    const positive = (stats.helpful ?? 0) + (stats.started ?? 0) + (stats.completed ?? 0);
+    const negative = (stats.not_now ?? 0) + (stats.wrong ?? 0) + (stats.dismissed ?? 0);
+
+    if (positive > negative) {
+      return {
+        multiplier: clamp(1 + positive * 0.08, 1.04, 1.24),
+        reason: 'reward boosted because you previously accepted this task recommendation',
+        stats,
+      };
+    }
+
+    if (negative > positive) {
+      const penalty = (stats.wrong ?? 0) > 0 ? 0.78 : (stats.not_now ?? 0) > 0 ? 0.86 : 0.92;
+      return {
+        multiplier: penalty,
+        reason: 'reward softened because this recommendation was previously rejected or deferred',
+        stats,
+      };
+    }
+
+    return {
+      multiplier: 1,
+      reason: 'mixed recommendation feedback kept reward neutral',
+      stats,
+    };
+  } catch {
+    return { multiplier: 1, reason: null, stats: {} };
+  }
+}
+
 export function getAdaptiveTaskRewardBase(input: AdaptiveTaskRewardBaseInput): {
   baseCoins: number;
   reason: string;
@@ -140,6 +194,7 @@ export function getAdaptiveTaskRewardBase(input: AdaptiveTaskRewardBaseInput): {
         priority === 'low' ? 0.82 : 1;
   const durationWeight = clamp(targetMinutes / 45, 0.45, 2.1);
   const complexity = taskComplexityMultiplier(title);
+  const taskFeedback = taskFeedbackRewardAdjustment(input.taskId);
 
   let contextWeight = 1;
   if (snapshot.moment.mode === 'deadline_pressure') contextWeight += priority === 'low' ? -0.1 : 0.18;
@@ -149,12 +204,16 @@ export function getAdaptiveTaskRewardBase(input: AdaptiveTaskRewardBaseInput): {
   if (snapshot.userState.focusTrend === 'declining') contextWeight += 0.07;
   if (snapshot.today.overdueTasks > 0 && priority !== 'low') contextWeight += 0.12;
 
-  const raw = 28 * priorityWeight * durationWeight * complexity.multiplier * clamp(contextWeight, 0.72, 1.45);
+  const raw = 28 * priorityWeight * durationWeight * complexity.multiplier * clamp(contextWeight, 0.72, 1.45) * taskFeedback.multiplier;
   const baseCoins = Math.max(5, Math.round(raw / 5) * 5);
 
   return {
     baseCoins,
-    reason: `${complexity.reason}; ${snapshot.moment.mode} mode shaped ${targetMinutes}m reward base`,
+    reason: [
+      complexity.reason,
+      `${snapshot.moment.mode} mode shaped ${targetMinutes}m reward base`,
+      taskFeedback.reason,
+    ].filter(Boolean).join('; '),
     factors: {
       priority,
       priorityWeight: Number(priorityWeight.toFixed(2)),
@@ -166,6 +225,8 @@ export function getAdaptiveTaskRewardBase(input: AdaptiveTaskRewardBaseInput): {
       energy: snapshot.userState.energy,
       focusTrend: snapshot.userState.focusTrend,
       overdueTasks: snapshot.today.overdueTasks,
+      taskFeedbackMultiplier: Number(taskFeedback.multiplier.toFixed(2)),
+      taskFeedback: Object.keys(taskFeedback.stats).length ? JSON.stringify(taskFeedback.stats) : null,
     },
   };
 }

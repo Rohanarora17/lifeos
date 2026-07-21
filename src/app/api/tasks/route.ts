@@ -296,6 +296,7 @@ export async function PATCH(request: NextRequest) {
                     if (task?.status !== 'done') {
                         const snapshot = buildPersonalizationSnapshot({ surface: 'rewards', maxInsights: 2, includeMemoryFacts: 3 });
                         const rewardBase = getAdaptiveTaskRewardBase({
+                            taskId: id,
                             title: task?.title ?? `Task ${id}`,
                             priority: task?.priority,
                             targetMinutes: task?.estimated_minutes ?? getAdaptiveSessionMinutes(),
