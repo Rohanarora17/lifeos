@@ -96,6 +96,7 @@ export async function GET() {
         alertFatigueLevel: personalization.feedback.alertFatigueLevel,
         recentAlerts: personalization.feedback.recentAlerts,
         nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
+        plannedFocus: personalization.today.plannedFocus,
       },
       recommendedTasks,
       generatedAt: Date.now(),

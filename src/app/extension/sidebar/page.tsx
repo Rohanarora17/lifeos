@@ -74,6 +74,14 @@ interface InsightsData {
         alertFatigueLevel: 'low' | 'medium' | 'high';
         recentAlerts: number;
         nextBestFocusWindow: string;
+        plannedFocus?: {
+            plannedToday: number;
+            completedToday: number;
+            skippedToday: number;
+            nextTitle: string | null;
+            nextMinutes: number | null;
+            recentFollowThroughRate: number | null;
+        };
     };
     recommendedTasks?: Array<{
         id: number;
@@ -117,6 +125,11 @@ function addDurationOption(options: DurationOption[], minutes: number | null | u
     options.push({ minutes: rounded, label });
 }
 
+function formatPlannedFocusLabel(plannedFocus: NonNullable<InsightsData['personalization']>['plannedFocus']) {
+    if (!plannedFocus?.nextTitle) return null;
+    return `${plannedFocus.nextTitle}${plannedFocus.nextMinutes ? ` · ${formatDuration(plannedFocus.nextMinutes)}` : ''}`;
+}
+
 function buildDurationOptions(input: {
     adaptiveDuration: number;
     personalization?: InsightsData['personalization'];
@@ -128,8 +141,10 @@ function buildDurationOptions(input: {
     const base = Math.round(input.adaptiveDuration);
     const selectedEstimate = input.selectedTask?.estimatedMinutes ?? null;
     const topEstimate = input.topTask?.estimatedMinutes ?? null;
+    const plannedMinutes = input.personalization?.plannedFocus?.nextMinutes ?? null;
 
     addDurationOption(options, selectedEstimate, 'This task');
+    addDurationOption(options, plannedMinutes, 'Next planned');
     addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
 
     if (mode === 'recovery' || input.personalization?.energy === 'low' || input.personalization?.mood === 'low') {
@@ -162,7 +177,10 @@ export default function ExtensionSidebar() {
         ? insights?.recommendedTasks?.find(task => task.id === Number(focusTarget.replace('task-', ''))) ?? null
         : null;
     const [focusDuration, setFocusDuration] = useState<number | null>(null);
-    const adaptiveDuration = insights?.personalization?.recommendedSessionMinutes
+    const plannedFocus = insights?.personalization?.plannedFocus;
+    const plannedFocusLabel = formatPlannedFocusLabel(plannedFocus);
+    const adaptiveDuration = plannedFocus?.nextMinutes
+        ?? insights?.personalization?.recommendedSessionMinutes
         ?? topRecommendedTask?.estimatedMinutes
         ?? adaptiveDefaults.recommendedSessionMinutes;
     const effectiveFocusDuration = focusDuration ?? (adaptiveDuration ? Math.round(adaptiveDuration) : null);
@@ -209,7 +227,8 @@ export default function ExtensionSidebar() {
                 const nextInsights = insightsData as InsightsData;
                 setInsights(nextInsights);
                 if (!session.active) {
-                    const recommended = nextInsights.personalization?.recommendedSessionMinutes
+                    const recommended = nextInsights.personalization?.plannedFocus?.nextMinutes
+                        ?? nextInsights.personalization?.recommendedSessionMinutes
                         ?? adaptiveDefaults.recommendedSessionMinutes;
                     setFocusDuration(prev => prev ?? Math.round(recommended));
                 }
@@ -558,7 +577,7 @@ export default function ExtensionSidebar() {
             <div style={{ borderTop: '1px solid #2a2a40', margin: '0 10px' }} />
 
             {/* UIL Coaching Card */}
-            {insights && (insights.profile.coachingInsights.length > 0 || insights.profile.nextBestFocusWindow || insights.habits.completionRate !== null) && (
+            {insights && (insights.profile.coachingInsights.length > 0 || insights.profile.nextBestFocusWindow || plannedFocusLabel || insights.habits.completionRate !== null) && (
                 <div style={{ padding: '8px 10px' }}>
                     <div style={{
                         background: 'linear-gradient(135deg, rgba(245,158,11,0.06), rgba(234,179,8,0.04))',
@@ -583,6 +602,14 @@ export default function ExtensionSidebar() {
                         )}
 
                         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' as const }}>
+                            {plannedFocusLabel && (
+                                <div style={{
+                                    background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.25)',
+                                    borderRadius: '6px', padding: '3px 7px', fontSize: '10px', color: '#93c5fd',
+                                }}>
+                                    Planned: {plannedFocusLabel}
+                                </div>
+                            )}
                             {/* Next best focus window — only when no session */}
                             {!session.active && insights.profile.nextBestFocusWindow && (
                                 <div style={{
