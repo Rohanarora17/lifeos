@@ -23,6 +23,7 @@ import { formatCommandMomentLine, getAdaptiveSessionMinutes, getAdaptiveSessionM
 import { buildAdaptiveNewHabitDefaults } from './adaptive-habit-plan';
 import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
+import { generateNextDayPlan } from './next-day-planner';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
@@ -60,6 +61,20 @@ function isDenial(text: string): boolean {
     return /^(no|nope|cancel|stop|not now|wait|hold on|nevermind|never mind|nah)\b/i.test(text.trim());
 }
 
+function normalizeTelegramSignalLevel(value: unknown): 'high' | 'medium' | 'low' | null {
+    if (value !== 'high' && value !== 'medium' && value !== 'low') return null;
+    return value;
+}
+
+function normalizeTelegramTime(value: unknown): string | null {
+    return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function nextIsoDate(): string {
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    return tomorrow.toISOString().slice(0, 10);
+}
+
 // Single-user system — one confirmation slot
 const SINGLE_USER_KEY = 'default';
 
@@ -91,7 +106,7 @@ AVAILABLE ACTIONS:
 - "ADJUST_SESSION": Change duration of the CURRENT active session. Payload: durationMinutes (new total).
 - "END_SESSION": End the current session.
 - "STORE_INTENTION": Store a planned intention without starting anything. Payload: intention (string), when ("today"|"tomorrow"|"this_week").
-- "LOG_EVENING": Log evening check-in — sleep time, wake estimate, tomorrow's intention. Payload: sleepTime ("HH:MM" 24h or null), wakeEstimate ("HH:MM" 24h or null, derive as sleepTime+8h if not stated), tomorrowIntention (string or null), recap (string).
+- "LOG_EVENING": Log evening check-in — sleep time, wake estimate, mood, energy, day events, tomorrow's intention. Payload: sleepTime ("HH:MM" 24h or null), wakeEstimate ("HH:MM" 24h or null, derive as sleepTime+8h if not stated), mood ("high"|"medium"|"low"|null), energy ("high"|"medium"|"low"|null), tomorrowIntention (string or null), recap (what happened today that affected focus/mood/body/schedule).
 - "CORRECTION_NOTED": User corrected a prior bot inference. Payload: wasWrong (what was incorrectly inferred), actualMeaning (what user actually meant).
 - "LOG_HABIT": Log a habit. Payload: habitTitle.
 - "LOG_STANDUP": Set today's goal + mood. Payload: goal (string), mood (high/medium/low).
@@ -1174,46 +1189,49 @@ export async function executeAction(
             const intention = payload.intention as string | undefined;
             const when = (payload.when as string | undefined) || 'today';
             if (intention) {
-                const db = getDb();
-                const today = new Date().toISOString().slice(0, 10);
                 try {
-                    db.prepare(`
-                        INSERT INTO daily_checkins (checkin_date, checkin_type, tomorrow_intention, raw_transcript)
-                        VALUES (?, 'evening', ?, ?)
-                    `).run(today, `${intention} (${when})`, `[telegram intent] ${intention}`);
+                    await generateNextDayPlan({
+                        planDate: when === 'today' ? new Date().toISOString().slice(0, 10) : nextIsoDate(),
+                        tomorrowIntention: `${intention}${when ? ` (${when})` : ''}`,
+                        eveningNotes: `[telegram intent] ${intention}`,
+                        syncCalendar: false,
+                    });
                     touchIntelligence('intention_stored');
-                } catch { /* non-fatal if column missing until migration runs */ }
+                } catch (err) {
+                    console.error('[TelegramAgent] failed to store intention through planner:', err);
+                }
             }
             await sendTelegram(replyText || `Stored: ${payload.intention || 'intention'}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
         case 'LOG_EVENING': {
-            const db = getDb();
-            const today = new Date().toISOString().slice(0, 10);
-            const sleepTime = payload.sleepTime as string | null ?? null;
-            const wakeEstimate = payload.wakeEstimate as string | null ?? null;
+            const sleepTime = normalizeTelegramTime(payload.sleepTime);
+            const wakeEstimate = normalizeTelegramTime(payload.wakeEstimate);
+            const mood = normalizeTelegramSignalLevel(payload.mood);
+            const energy = normalizeTelegramSignalLevel(payload.energy);
             const tomorrowIntention = payload.tomorrowIntention as string | null ?? null;
             const recap = payload.recap as string | undefined;
             try {
-                // Upsert evening check-in with sleep/wake fields
-                const existing = db.prepare(
-                    `SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'evening' ORDER BY received_at DESC LIMIT 1`
-                ).get(today) as { id: number } | undefined;
-                if (existing) {
-                    db.prepare(`
-                        UPDATE daily_checkins SET sleep_time = ?, wake_estimate = ?, tomorrow_intention = ?, raw_transcript = ?
-                        WHERE id = ?
-                    `).run(sleepTime, wakeEstimate, tomorrowIntention, recap ?? null, existing.id);
-                } else {
-                    db.prepare(`
-                        INSERT INTO daily_checkins (checkin_date, checkin_type, sleep_time, wake_estimate, tomorrow_intention, raw_transcript)
-                        VALUES (?, 'evening', ?, ?, ?, ?)
-                    `).run(today, sleepTime, wakeEstimate, tomorrowIntention, recap ?? null);
-                }
+                await generateNextDayPlan({
+                    sleepTime,
+                    wakeEstimate,
+                    mood,
+                    energy,
+                    tomorrowIntention,
+                    eveningNotes: recap ?? null,
+                    syncCalendar: false,
+                });
                 touchIntelligence('evening_checkin');
-            } catch { /* non-fatal */ }
-            await sendTelegram(replyText || `Evening logged. Wake estimate: ${wakeEstimate ?? 'not set'}`, 'HTML', FULL_MENU_KEYBOARD);
+            } catch (err) {
+                console.error('[TelegramAgent] failed to log evening through planner:', err);
+            }
+            const details = [
+                wakeEstimate ? `wake ${wakeEstimate}` : null,
+                mood ? `${mood} mood` : null,
+                energy ? `${energy} energy` : null,
+            ].filter(Boolean).join(' · ');
+            await sendTelegram(replyText || `Evening logged${details ? `: ${details}` : ''}.`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
