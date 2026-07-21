@@ -55,6 +55,15 @@ interface Goal {
 type TaskOption = { id: number; title: string; status: string; goal_id: number | null };
 type HabitOption = { id: number; name: string; icon: string; goal_id: number | null };
 
+interface GoalPersonalization {
+    mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
+    guidance: string;
+    energy: 'high' | 'medium' | 'low';
+    mood: 'high' | 'medium' | 'low' | null;
+    standupGoal: string | null;
+    alertFatigueLevel: 'low' | 'medium' | 'high';
+}
+
 const ADAPTIVE_STATUS_LABEL: Record<NonNullable<Goal['adaptiveGoalStatus']>, string> = {
     protect: 'Protect focus',
     deadline_risk: 'Risk focus',
@@ -71,9 +80,92 @@ const ADAPTIVE_FIT_COLOR: Record<NonNullable<Goal['adaptiveProgressFit']>, strin
     low: 'var(--accent-orange)',
 };
 
+function compactGoalText(text: string, maxLength = 58): string {
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function buildGoalHeaderText(personalization: GoalPersonalization | null): string {
+    if (!personalization) return 'Goals drive tasks. Tasks build habits. Habits sustain progress.';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Goals should shrink to minimum viable movement when today has lower capacity.';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'Goals should expose the blocker that reduces deadline pressure today.';
+    }
+    if (personalization.mode === 'planning') {
+        return 'Goals should turn tomorrow into clear tasks, habits, and first focus blocks.';
+    }
+    if (personalization.standupGoal) {
+        return `Today is anchored on ${compactGoalText(personalization.standupGoal)}.`;
+    }
+    return personalization.guidance;
+}
+
+function buildGoalTitlePlaceholder(personalization: GoalPersonalization | null): string {
+    if (!personalization) return 'Goal Title (e.g., Build ZK Proof System)...';
+    if (personalization.standupGoal) return `Goal that supports: ${compactGoalText(personalization.standupGoal)}`;
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'Goal title (small, recoverable, measurable)...';
+    }
+    if (personalization.mode === 'deadline_pressure') return 'Goal title (deadline pressure to relieve)...';
+    if (personalization.mode === 'planning') return 'Goal title (tomorrow outcome to protect)...';
+    return 'Goal Title (e.g., Build ZK Proof System)...';
+}
+
+function buildGoalDescriptionPlaceholder(personalization: GoalPersonalization | null): string {
+    if (!personalization) return 'Description (optional)';
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'What counts as enough on a low-capacity day?';
+    }
+    if (personalization.mode === 'deadline_pressure') return 'What deadline, deliverable, or blocker does this goal protect?';
+    if (personalization.mode === 'planning') return 'What should tomorrow inherit from this goal?';
+    return 'Why this matters now, and what progress should look like';
+}
+
+function buildLinkedTasksEmpty(goal: Goal, personalization: GoalPersonalization | null): string {
+    if (goal.adaptiveGoalStatus === 'deadline_risk' || personalization?.mode === 'deadline_pressure') {
+        return 'No tasks linked yet. Add the smallest blocker-relief task before adding more goals.';
+    }
+    if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.mode === 'recovery' || personalization?.energy === 'low') {
+        return 'No tasks linked yet. Add one minimum session task that keeps this alive.';
+    }
+    return 'No tasks linked yet. Add a time-based task so sessions can complete it automatically.';
+}
+
+function buildLinkedHabitsEmpty(goal: Goal, personalization: GoalPersonalization | null): string {
+    if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.mode === 'recovery' || personalization?.energy === 'low') {
+        return 'No habits linked yet. Link a low-friction habit that survives rough days.';
+    }
+    if (goal.adaptiveGoalStatus === 'stalled') return 'No habits linked yet. A recurring support habit can restart momentum.';
+    return 'No habits linked yet. Link the support habit that makes this goal repeatable.';
+}
+
+function buildIfPlaceholder(goal: Goal, personalization: GoalPersonalization | null): string {
+    if (goal.adaptiveGoalStatus === 'deadline_risk' || personalization?.mode === 'deadline_pressure') {
+        return 'The deadline task feels too big...';
+    }
+    if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return 'My energy drops or sleep was bad...';
+    }
+    if (personalization?.alertFatigueLevel === 'high') return 'I ignore another reminder...';
+    return 'I feel distracted by social media...';
+}
+
+function buildThenPlaceholder(goal: Goal, personalization: GoalPersonalization | null): string {
+    if (goal.adaptiveGoalStatus === 'deadline_risk' || personalization?.mode === 'deadline_pressure') {
+        return 'I will do the next 10-minute blocker-relief step.';
+    }
+    if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+        return 'I will do the smallest version and stop cleanly.';
+    }
+    if (personalization?.alertFatigueLevel === 'high') return 'I will silence non-urgent nudges and choose one action.';
+    return 'I will take a 5-minute break outside.';
+}
+
 export default function GoalsPage() {
     const [goals, setGoals] = useState<Goal[]>([]);
     const [selfEfficacy, setSelfEfficacy] = useState(50);
+    const [personalization, setPersonalization] = useState<GoalPersonalization | null>(null);
     const [todayDate] = useState(() => new Date().toISOString().slice(0, 10));
     const [showNewGoal, setShowNewGoal] = useState(false);
     const [expandedGoal, setExpandedGoal] = useState<number | null>(null);
@@ -94,9 +186,10 @@ export default function GoalsPage() {
 
     const fetchGoals = useCallback(async () => {
         const res = await fetch('/api/goals');
-        const data = await res.json() as { goals?: Goal[]; selfEfficacy?: number };
+        const data = await res.json() as { goals?: Goal[]; selfEfficacy?: number; personalization?: GoalPersonalization };
         setGoals(data.goals || []);
         setSelfEfficacy(data.selfEfficacy ?? 50);
+        setPersonalization(data.personalization ?? null);
     }, []);
 
     const fetchUnlinked = useCallback(async () => {
@@ -224,7 +317,7 @@ export default function GoalsPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Goals 🎯</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        Goals drive tasks. Tasks build habits. Habits sustain progress.
+                        {buildGoalHeaderText(personalization)}
                     </p>
                 </div>
                 <div className="text-center">
@@ -398,7 +491,7 @@ export default function GoalsPage() {
                                         </div>
                                     ))}
                                     {goal.linkedTasks.length === 0 && (
-                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No tasks linked yet</p>
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{buildLinkedTasksEmpty(goal, personalization)}</p>
                                     )}
                                 </div>
 
@@ -431,7 +524,7 @@ export default function GoalsPage() {
                                         </div>
                                     ))}
                                     {goal.linkedHabits.length === 0 && (
-                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No habits linked yet — link from the habits page</p>
+                                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{buildLinkedHabitsEmpty(goal, personalization)}</p>
                                     )}
                                 </div>
                                 {allHabits.length > 0 && (
@@ -469,11 +562,11 @@ export default function GoalsPage() {
                                 <div className="flex flex-col gap-2 p-3 rounded-lg mt-2" style={{ background: 'rgba(157, 78, 221, 0.05)', border: '1px dashed var(--accent-purple)' }}>
                                     <div className="flex gap-2 items-center">
                                         <span className="font-bold text-xs w-10 text-right" style={{ color: 'var(--accent-purple)' }}>IF</span>
-                                        <input className="input w-full text-xs py-1" placeholder="I feel distracted by social media..." value={newIf} onChange={e => setNewIf(e.target.value)} />
+                                        <input className="input w-full text-xs py-1" placeholder={buildIfPlaceholder(goal, personalization)} value={newIf} onChange={e => setNewIf(e.target.value)} />
                                     </div>
                                     <div className="flex gap-2 items-center">
                                         <span className="font-bold text-xs w-10 text-right" style={{ color: 'var(--accent-blue)' }}>THEN</span>
-                                        <input className="input w-full text-xs py-1" placeholder="I will take a 5-minute break outside." value={newThen} onChange={e => setNewThen(e.target.value)} />
+                                        <input className="input w-full text-xs py-1" placeholder={buildThenPlaceholder(goal, personalization)} value={newThen} onChange={e => setNewThen(e.target.value)} />
                                     </div>
                                     <button className="btn btn-sm shrink-0 self-end mt-1 text-xs" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }} onClick={() => addIntention(goal.id)}>Add Intention</button>
                                 </div>
@@ -487,14 +580,14 @@ export default function GoalsPage() {
                     <div className="card space-y-3" style={{ padding: '1.25rem' }}>
                         <input
                             className="input w-full font-medium"
-                            placeholder="Goal Title (e.g., Build ZK Proof System)..."
+                            placeholder={buildGoalTitlePlaceholder(personalization)}
                             value={title}
                             onChange={e => setTitle(e.target.value)}
                             autoFocus
                         />
                         <input
                             className="input w-full text-sm"
-                            placeholder="Description (optional)"
+                            placeholder={buildGoalDescriptionPlaceholder(personalization)}
                             value={description}
                             onChange={e => setDescription(e.target.value)}
                         />
