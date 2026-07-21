@@ -161,6 +161,44 @@ function buildEveningPlanningHint(input: {
     return pieces.slice(0, 2).join(' ');
 }
 
+function buildNoGeneratedSessionsMessage(input: {
+    data: PlannerPayload;
+    sleepTime: string;
+    wakeEstimate: string;
+    mood: string;
+    energy: string;
+    selectedMinutes: number;
+}) {
+    const sleepMinutes = sleepWindowMinutes(input.sleepTime, input.wakeEstimate);
+    const mode = input.data.personalization.mode;
+
+    if (input.data.candidateTasks.length === 0) {
+        return 'No generated sessions yet. Add time-based tasks first so the planner has measurable work to schedule.';
+    }
+
+    if (input.selectedMinutes <= 0) {
+        return 'No generated sessions yet. Select at least one candidate task so tomorrow has a concrete focus target.';
+    }
+
+    if (sleepMinutes !== null && sleepMinutes < 390) {
+        return `No generated sessions yet. Sleep window is ${formatDuration(sleepMinutes)}; regenerate with a lighter first block or later wake estimate.`;
+    }
+
+    if (mode === 'recovery' || input.energy === 'low' || input.mood === 'low') {
+        return 'No generated sessions yet. Keep selected work small and regenerate a recovery-safe plan.';
+    }
+
+    if (mode === 'deadline_pressure') {
+        return 'No generated sessions yet. Select the deadline-relief task and regenerate before adding optional work.';
+    }
+
+    if (mode === 'planning') {
+        return 'No generated sessions yet. Add tomorrow intention, fixed constraints, and regenerate the first block.';
+    }
+
+    return `No generated sessions yet. Regenerate around ${input.data.personalization.bestFocusWindow || 'your learned focus window'}.`;
+}
+
 function parseRule(ruleJson: string) {
     try {
         return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string; rewardReason?: string };
@@ -273,6 +311,14 @@ export default function PlannerPage() {
         learnedSprintMinutes: data.personalization.learnedSprintMinutes,
         bestFocusWindow: data.personalization.bestFocusWindow,
     }) : null;
+    const noGeneratedSessionsMessage = data ? buildNoGeneratedSessionsMessage({
+        data,
+        sleepTime,
+        wakeEstimate,
+        mood,
+        energy,
+        selectedMinutes,
+    }) : 'No generated sessions yet.';
 
     const generatePlan = async () => {
         setGenerating(true);
@@ -541,7 +587,7 @@ export default function PlannerPage() {
 
                             {data.sessions.length === 0 ? (
                                 <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-muted)' }}>
-                                    No generated sessions yet.
+                                    {noGeneratedSessionsMessage}
                                 </div>
                             ) : (
                                 <div className="space-y-3">
