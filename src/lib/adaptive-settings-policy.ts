@@ -11,6 +11,7 @@ export interface AdaptiveSettingsPolicy {
   alertFatigueLevel: PersonalizationSnapshot['feedback']['alertFatigueLevel'];
   focusTrend: PersonalizationSnapshot['userState']['focusTrend'];
   nextBestFocusWindow: string;
+  plannedFocus: PersonalizationSnapshot['today']['plannedFocus'];
   nudgeThresholdMinutes: number;
   nudgeReason: string;
   sessionMinutes: number;
@@ -122,6 +123,19 @@ export function buildAdaptiveSettingsPolicy(
     });
   }
 
+  if (
+    snapshot.today.plannedFocus.nextMinutes &&
+    String(snapshot.today.plannedFocus.nextMinutes) !== String(settings.default_focus_minutes ?? '')
+  ) {
+    recommendations.push({
+      key: 'default_focus_minutes',
+      value: String(snapshot.today.plannedFocus.nextMinutes),
+      label: 'Match default focus length to the next planned block',
+      reason: `next planned focus is ${snapshot.today.plannedFocus.nextTitle ?? 'the active plan'} for ${snapshot.today.plannedFocus.nextMinutes}m`,
+      currentValue: settings.default_focus_minutes ?? null,
+    });
+  }
+
   return {
     mode: snapshot.moment.mode,
     guidance: snapshot.moment.guidance,
@@ -130,6 +144,7 @@ export function buildAdaptiveSettingsPolicy(
     alertFatigueLevel: snapshot.feedback.alertFatigueLevel,
     focusTrend: snapshot.userState.focusTrend,
     nextBestFocusWindow: snapshot.userState.nextBestFocusWindow,
+    plannedFocus: snapshot.today.plannedFocus,
     nudgeThresholdMinutes: nudge.threshold,
     nudgeReason: nudge.reason,
     sessionMinutes: getAdaptiveSessionMinutes(),

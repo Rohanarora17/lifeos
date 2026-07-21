@@ -10,6 +10,14 @@ interface AdaptiveSettingsPolicy {
     alertFatigueLevel: 'low' | 'medium' | 'high';
     focusTrend: 'improving' | 'declining' | 'stable';
     nextBestFocusWindow: string;
+    plannedFocus: {
+        plannedToday: number;
+        completedToday: number;
+        skippedToday: number;
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
     nudgeThresholdMinutes: number;
     nudgeReason: string;
     sessionMinutes: number;
@@ -270,6 +278,15 @@ export default function SettingsPage() {
 	                            <br />
 	                            Capacity {adaptivePolicy.dailyCapacityMinutes} min · next window {adaptivePolicy.nextBestFocusWindow}
 	                        </div>
+                            {adaptivePolicy.plannedFocus.plannedToday > 0 && (
+                                <div style={{ color: 'var(--text-secondary)' }}>
+                                    <b style={{ color: 'var(--text-primary)' }}>Planned focus:</b> {adaptivePolicy.plannedFocus.completedToday}/{adaptivePolicy.plannedFocus.plannedToday} blocks
+                                    <br />
+                                    {adaptivePolicy.plannedFocus.nextTitle
+                                        ? `Next ${adaptivePolicy.plannedFocus.nextTitle}${adaptivePolicy.plannedFocus.nextMinutes ? ` · ${adaptivePolicy.plannedFocus.nextMinutes} min` : ''}`
+                                        : `${adaptivePolicy.plannedFocus.skippedToday} skipped today`}
+                                </div>
+                            )}
 	                        <div style={{ color: 'var(--text-secondary)' }}>
 	                            <b style={{ color: 'var(--text-primary)' }}>Rewards:</b> {adaptivePolicy.rewardMultiplier.toFixed(2)}x
 	                            <br />
