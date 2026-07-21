@@ -7,10 +7,15 @@ interface CandidateTask {
     title: string;
     priority: string;
     status: string;
+    task_type: string;
+    course: string | null;
     goal_title: string | null;
     energy_required: string;
     estimated_minutes: number;
     credited_minutes: number;
+    linked_sessions: number;
+    avg_focus_score: number | null;
+    last_credited_at: string | null;
     remaining_minutes: number;
     score: number;
     reason: string;
@@ -407,7 +412,19 @@ export default function PlannerPage() {
                                         <div className="flex gap-2 mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
                                             <span>{task.priority}</span>
                                             <span>{task.energy_required} energy</span>
+                                            <span>{task.task_type}</span>
+                                            {task.course && <span>{task.course}</span>}
                                             <span>{task.credited_minutes}/{task.estimated_minutes}m</span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                            <span>score {Math.round(task.score)}</span>
+                                            <span>{task.linked_sessions} linked session{task.linked_sessions === 1 ? '' : 's'}</span>
+                                            {task.avg_focus_score !== null && (
+                                                <span>{Math.round(task.avg_focus_score)} avg focus</span>
+                                            )}
+                                            {task.last_credited_at && (
+                                                <span>last touched {new Date(task.last_credited_at).toLocaleDateString()}</span>
+                                            )}
                                         </div>
                                     </button>
                                 ))}
