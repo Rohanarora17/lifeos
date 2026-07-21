@@ -570,6 +570,66 @@ function serializeRule(rule: SessionRule, task: CandidateTask): string {
   });
 }
 
+function candidateForPlannedSession(input: {
+  taskId: number | null;
+  title: string;
+  durationMinutes: number;
+}): CandidateTask {
+  const fallback: CandidateTask = {
+    id: input.taskId ?? 0,
+    title: input.title,
+    status: 'planned',
+    priority: 'medium',
+    goal_id: null,
+    goal_title: null,
+    energy_required: 'medium',
+    estimated_minutes: input.durationMinutes,
+    credited_minutes: 0,
+    remaining_minutes: input.durationMinutes,
+    due_date: null,
+    score: 0,
+    reason: 'manual planned-session edit',
+  };
+
+  if (!input.taskId) return fallback;
+
+  try {
+    const row = getDb().prepare(`
+      SELECT
+        t.id,
+        COALESCE(t.priority, 'medium') as priority,
+        t.status,
+        t.goal_id,
+        g.title as goal_title,
+        COALESCE(t.energy_required, 'medium') as energy_required,
+        COALESCE(t.estimated_minutes, ?) as estimated_minutes,
+        COALESCE(SUM(l.credited_minutes), 0) as credited_minutes,
+        t.due_date
+      FROM tasks t
+      LEFT JOIN goals g ON g.id = t.goal_id
+      LEFT JOIN task_session_logs l ON l.task_id = t.id
+      WHERE t.id = ?
+      GROUP BY t.id
+      LIMIT 1
+    `).get(input.durationMinutes, input.taskId) as Omit<CandidateTask, 'title' | 'remaining_minutes' | 'score' | 'reason'> | undefined;
+
+    if (!row) return fallback;
+    const target = Math.max(5, Math.round(Number(row.estimated_minutes || input.durationMinutes)));
+    const credited = Math.round(Number(row.credited_minutes || 0));
+    return {
+      ...row,
+      title: input.title,
+      estimated_minutes: target,
+      credited_minutes: credited,
+      remaining_minutes: Math.max(0, target - credited),
+      score: 0,
+      reason: 'edited planned session refreshed from linked task and current day signals',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise<NextDayPlanPayload> {
   const db = getDb();
   const planDate = normalizeDate(input.planDate);
@@ -801,13 +861,35 @@ export async function updatePlannedFocusSession(id: string, patch: {
   const durationMinutes = Math.max(5, minutesBetween(plannedStart, plannedEnd));
   const status = patch.status ?? existing.status;
   const taskId = patch.taskId !== undefined ? patch.taskId : existing.task_id;
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'scheduler',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+  });
+  const task = candidateForPlannedSession({ taskId, title, durationMinutes });
+  const rule = deriveSessionRule(task, snapshot);
+  const reward = computeReward(task, durationMinutes, rule, snapshot);
+  const pricedRule = { ...rule, rewardReason: reward.reason };
 
   db.prepare(`
     UPDATE planned_focus_sessions
     SET title = ?, task_id = ?, planned_start = ?, planned_end = ?, duration_minutes = ?,
+        session_type = ?, rule_json = ?, reward_xp = ?, reward_coins = ?,
         status = ?, updated_at = datetime('now', 'localtime')
     WHERE id = ?
-  `).run(title, taskId, toSqlDateTime(plannedStart), toSqlDateTime(plannedEnd), durationMinutes, status, id);
+  `).run(
+    title,
+    taskId,
+    toSqlDateTime(plannedStart),
+    toSqlDateTime(plannedEnd),
+    durationMinutes,
+    pricedRule.mode,
+    serializeRule(pricedRule, task),
+    reward.xp,
+    reward.coins,
+    status,
+    id
+  );
 
   if (existing.soft_watch_id) {
     db.prepare(`
@@ -821,6 +903,7 @@ export async function updatePlannedFocusSession(id: string, patch: {
   if (patch.syncCalendar && existing.calendar_event_id) {
     const ok = await updateCalendarEvent(existing.calendar_event_id, {
       summary: `Focus: ${title}`,
+      description: `LifeOS next-day plan\n${pricedRule.guidance}\nReward: ${reward.xp} XP / ${reward.coins} coins\n${reward.reason}`,
       startTime: plannedStart,
       endTime: plannedEnd,
     });
