@@ -1,6 +1,63 @@
 import { NextResponse } from 'next/server';
 import { getDb, getSetting } from '@/lib/db';
 import { sendAlert } from '@/lib/notifications';
+import { getAdaptiveBands } from '@/lib/adaptive-bands';
+import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
+import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+
+type WeeklyTrendDay = {
+    date: string;
+    xp_earned: number | null;
+    productive_minutes: number | null;
+    distraction_minutes: number | null;
+    tasks_completed: number | null;
+    habits_completed: number | null;
+};
+
+function getWeeklyTrend(db: ReturnType<typeof getDb>): WeeklyTrendDay[] {
+    return db.prepare(`
+      SELECT date, xp_earned, productive_minutes, distraction_minutes, tasks_completed, habits_completed
+      FROM daily_scores
+      WHERE date >= date('now', '-7 days')
+      ORDER BY date ASC
+    `).all() as WeeklyTrendDay[];
+}
+
+function buildWeeklyAdaptiveLens(db: ReturnType<typeof getDb>) {
+    const weekTrend = getWeeklyTrend(db);
+    const personalization = buildPersonalizationSnapshot({
+        surface: 'analytics',
+        maxInsights: 2,
+        includeMemoryFacts: 3,
+    });
+    const analyticsPolicy = buildAdaptiveAnalyticsPolicy({
+        snapshot: personalization,
+        weekTrend,
+        dailyCapacityMinutes: getAdaptiveBands().dailyCapacityMinutes,
+        recommendedSessionMinutes: getAdaptiveSessionMinutes(),
+    });
+    const capacityDays = analyticsPolicy.days.filter(day =>
+        day.capacityFit === 'on_track' || day.capacityFit === 'above_capacity'
+    ).length;
+    const trackedCapacityDays = analyticsPolicy.days.filter(day => day.capacityFit !== 'insufficient_signal').length;
+    const bestFitDay = [...analyticsPolicy.days]
+        .filter(day => day.capacityFit !== 'insufficient_signal')
+        .sort((a, b) => b.productivityRatio - a.productivityRatio)[0] ?? null;
+
+    return {
+        mode: analyticsPolicy.mode,
+        title: analyticsPolicy.lensTitle,
+        summary: analyticsPolicy.lensSummary,
+        primaryMetric: analyticsPolicy.primaryMetric,
+        productiveTargetMinutes: analyticsPolicy.productiveTargetMinutes,
+        distractionBudgetMinutes: analyticsPolicy.distractionBudgetMinutes,
+        capacityDays,
+        trackedCapacityDays,
+        bestFitDay,
+        days: analyticsPolicy.days,
+    };
+}
 
 // POST — Generate weekly retrospective report
 export async function POST() {
@@ -34,6 +91,8 @@ export async function POST() {
       FROM daily_scores WHERE date >= date('now', '-14 days') AND date < date('now', '-7 days')
     `).get() as any;
 
+        const adaptiveLens = buildWeeklyAdaptiveLens(db);
+
         const delta = (curr: number, prev: number) => {
             if (prev === 0) return curr > 0 ? '+100%' : '0%';
             const pct = Math.round(((curr - prev) / prev) * 100);
@@ -66,6 +125,7 @@ export async function POST() {
                 weekTasksDone: g.week_done,
                 totalProgress: g.total > 0 ? Math.round((g.all_done / g.total) * 100) : 0,
             })),
+            adaptiveLens,
         };
 
         // Build summary text
@@ -75,7 +135,14 @@ export async function POST() {
             `Tasks: ${thisWeek.tasks_done} completed (${report.deltas.tasks})`,
             `Habits: avg ${Math.round(thisWeek.avg_habit_score)}% (${report.deltas.habitScore})`,
             `Focus: ${thisWeek.prod_min}min productive (${report.deltas.productive})`,
+            `Adaptive Lens: ${adaptiveLens.title}`,
+            `Capacity Fit: ${adaptiveLens.capacityDays}/${adaptiveLens.trackedCapacityDays || 0} tracked days met your ${adaptiveLens.productiveTargetMinutes}m/day current target`,
+            `Distraction Budget: ${adaptiveLens.distractionBudgetMinutes}m/day for this week context`,
         ];
+
+        if (adaptiveLens.bestFitDay) {
+            lines.push(`Best-fit day: ${adaptiveLens.bestFitDay.date} (${Math.round(adaptiveLens.bestFitDay.productivityRatio * 100)}% productive signal)`);
+        }
 
         for (const g of report.goalProgress) {
             lines.push(`🎯 ${g.title}: ${g.totalProgress}% (+${g.weekTasksDone} tasks this week)`);
@@ -114,6 +181,16 @@ export async function POST() {
                   <tr><td style="padding:8px;color:#888;">Avg Habit Score</td><td style="padding:8px;font-weight:bold;">${Math.round(thisWeek.avg_habit_score)}% <span style="color:${thisWeek.avg_habit_score >= lastWeek.avg_habit_score ? '#4caf50' : '#ff5555'}">${report.deltas.habitScore}</span></td></tr>
                   <tr><td style="padding:8px;color:#888;">Productive Time</td><td style="padding:8px;font-weight:bold;">${thisWeek.prod_min}min <span style="color:${thisWeek.prod_min >= lastWeek.prod_min ? '#4caf50' : '#ff5555'}">${report.deltas.productive}</span></td></tr>
                 </table>
+                <div style="border-top:1px solid #333;padding-top:16px;margin-bottom:20px;">
+                  <h3 style="color:#667eea;margin:0 0 8px;">Adaptive Lens: ${adaptiveLens.title}</h3>
+                  <p style="color:#aaa;margin:0 0 12px;">${adaptiveLens.summary}</p>
+                  <table style="width:100%;border-collapse:collapse;">
+                    <tr><td style="padding:8px;color:#888;">Capacity Fit</td><td style="padding:8px;font-weight:bold;">${adaptiveLens.capacityDays}/${adaptiveLens.trackedCapacityDays || 0} tracked days</td></tr>
+                    <tr><td style="padding:8px;color:#888;">Current Productive Target</td><td style="padding:8px;font-weight:bold;">${adaptiveLens.productiveTargetMinutes}min/day</td></tr>
+                    <tr><td style="padding:8px;color:#888;">Distraction Budget</td><td style="padding:8px;font-weight:bold;">${adaptiveLens.distractionBudgetMinutes}min/day</td></tr>
+                    ${adaptiveLens.bestFitDay ? `<tr><td style="padding:8px;color:#888;">Best-fit Day</td><td style="padding:8px;font-weight:bold;">${adaptiveLens.bestFitDay.date}</td></tr>` : ''}
+                  </table>
+                </div>
                 ${goalRows ? `<h3 style="color:#667eea;margin:16px 0 8px;">🎯 Goal Progress</h3><table style="width:100%;border-collapse:collapse;"><tr style="color:#888;"><th style="padding:8px;text-align:left;">Goal</th><th style="padding:8px;">Progress</th><th style="padding:8px;">This Week</th></tr>${goalRows}</table>` : ''}
               </div>
             </div>
@@ -157,7 +234,7 @@ export async function GET() {
       FROM daily_scores WHERE date >= date('now', '-14 days') AND date < date('now', '-7 days')
     `).get() as any;
 
-        return NextResponse.json({ thisWeek, lastWeek });
+        return NextResponse.json({ thisWeek, lastWeek, adaptiveLens: buildWeeklyAdaptiveLens(db) });
     } catch (error) {
         return NextResponse.json({ error: 'Failed' }, { status: 500 });
     }
