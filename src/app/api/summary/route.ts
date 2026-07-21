@@ -3,6 +3,38 @@ import { getDb, getSetting } from '@/lib/db';
 import { generateDailySummary, generateMorningBrief } from '@/lib/ai';
 import { calculateDailyXp, getStreakCount, getAccountabilityScore, getDailyActivityStats, ScoreConfig } from '@/lib/scoring';
 
+function normalizeSignal(value: unknown): 'high' | 'medium' | 'low' | null {
+    const signal = String(value ?? '').toLowerCase();
+    if (signal.includes('high') || signal.includes('good') || signal.includes('great')) return 'high';
+    if (signal.includes('low') || signal.includes('bad') || signal.includes('tired') || signal.includes('rough')) return 'low';
+    if (signal.includes('medium') || signal.includes('okay') || signal.includes('normal')) return 'medium';
+    return null;
+}
+
+function getSummaryAdaptiveContext(db: ReturnType<typeof getDb>, date: string) {
+    const plan = db.prepare(`
+        SELECT mood, energy
+        FROM daily_plans
+        WHERE plan_date = ?
+        LIMIT 1
+    `).get(date) as { mood: string | null; energy: string | null } | undefined;
+    const overdueTasks = (db.prepare(`
+        SELECT COUNT(*) as count
+        FROM tasks
+        WHERE status NOT IN ('done','cancelled')
+          AND due_date < ?
+    `).get(date) as { count: number }).count;
+    const mood = normalizeSignal(plan?.mood);
+    const energy = normalizeSignal(plan?.energy) ?? 'medium';
+
+    return {
+        mode: overdueTasks > 0 ? 'deadline_pressure' as const : (mood === 'low' || energy === 'low' ? 'recovery' as const : 'normal' as const),
+        energy,
+        mood,
+        overdueTasks,
+    };
+}
+
 function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
     try {
         const plan = db.prepare(`
@@ -120,6 +152,7 @@ export async function GET(request: NextRequest) {
                     totalTasks: (yesterdayScore as { tasks_completed: number }).tasks_completed || 0,
                     habitsCompleted: (yesterdayScore as { habits_completed: number }).habits_completed || 0,
                     totalHabits: (yesterdayScore as { total_habits: number }).total_habits || 0,
+                    adaptiveContext: getSummaryAdaptiveContext(db, yesterdayStr),
                 }) : 0,
                 streak,
                 yesterdayDistractionMinutes: (yesterdayScore as { distraction_minutes: number })?.distraction_minutes || 0,
@@ -192,6 +225,7 @@ export async function GET(request: NextRequest) {
             totalTasks: Math.max(totalTasks, 1),
             habitsCompleted,
             totalHabits: Math.max(totalHabits, 1),
+            adaptiveContext: getSummaryAdaptiveContext(db, date),
         });
 
         const summaryText = await generateDailySummary(date, {
