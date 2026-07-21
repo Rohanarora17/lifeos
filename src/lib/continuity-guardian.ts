@@ -6,6 +6,7 @@ import { sendTelegram } from './telegram';
 import { getRecentObservations } from './screenshot-pipeline';
 import { getTodayPhoneScreenTime } from './phone-screen-time';
 import { getAdaptiveBands } from './adaptive-bands';
+import { buildPersonalizationSnapshot } from './personalization-context';
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -34,6 +35,44 @@ function incrementContinuityMsgCount(): void {
   const db = getDb();
   const current = parseInt(getSetting(CONTINUITY_MSG_COUNT_KEY) || '0');
   db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)").run(CONTINUITY_MSG_COUNT_KEY, String(current + 1));
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function composeStreakContinuityMessage(state: ContinuityState): string {
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'notification',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+  });
+  const commitment = state.morningCommitment
+    ? `\n\nYou said: <i>${escapeTelegramHtml(state.morningCommitment.slice(0, 120))}</i>`
+    : '';
+  const likelihood = state.morningLikelihoodScore !== null
+    ? ` Your own likelihood was ${state.morningLikelihoodScore}/10.`
+    : '';
+  const overdue = snapshot.today.overdueTasks > 0
+    ? `\n\nThere ${snapshot.today.overdueTasks === 1 ? 'is' : 'are'} ${snapshot.today.overdueTasks} overdue task${snapshot.today.overdueTasks === 1 ? '' : 's'} in the system.`
+    : '';
+  const focusWindow = snapshot.userState.nextBestFocusWindow
+    ? ` Best window: <b>${escapeTelegramHtml(snapshot.userState.nextBestFocusWindow)}</b>.`
+    : '';
+
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low') {
+    return `You're on day ${state.streakDay}. This is a streak-risk point, but today looks lower-capacity.${commitment}${likelihood}${overdue}\n\nTomorrow should be smaller and easier to start.${focusWindow} What is the minimum first block?`;
+  }
+
+  if (snapshot.moment.mode === 'deadline_pressure') {
+    return `You're on day ${state.streakDay}, and deadline pressure changes the plan.${commitment}${likelihood}${overdue}\n\nTomorrow's first block should remove one bottleneck, not chase a perfect routine.${focusWindow} What starts first?`;
+  }
+
+  return `You're on day ${state.streakDay}. The risk is not motivation; it is an unspecific next morning.${commitment}${likelihood}${overdue}\n\n${focusWindow} What exactly is the first block tomorrow?`;
 }
 
 // ─── Data Queries ────────────────────────────────────────────────────────────
@@ -205,7 +244,7 @@ function evaluateTriggers(state: ContinuityState): string | null {
 
   // 4. Day 4 of strong streak (fire once, in the evening)
   if (streakDay === 4 && hour >= 20 && hour < 21) {
-    return `You're on day 4. Your strongest stretches look exactly like this. Tomorrow is historically when the slide starts — not because you decide to stop, but because you find reasons. What's the plan for tomorrow morning specifically? Not in general. The first 30 minutes.`;
+    return composeStreakContinuityMessage(state);
   }
 
   // 5. Topic not touched recently (uses adaptive habit-risk-days)
