@@ -253,6 +253,44 @@ function guardianTopicPlaceholder(personalization?: GuardianInsights['personaliz
   return 'What should move forward now?';
 }
 
+function formatNextDayMode(mode?: string) {
+  if (mode === 'recovery') return 'recovery mode';
+  if (mode === 'deadline_pressure') return 'deadline-pressure mode';
+  if (mode === 'planning') return 'planning mode';
+  if (mode === 'protect_focus') return 'focus-protection mode';
+  return 'balanced mode';
+}
+
+function buildNextDayPlanEmptyMessage(plan: GuardianNextDayPlan | null): string {
+  if (!plan) return 'Loading tomorrow context from check-ins, sleep history, and learned focus windows.';
+
+  const sourceLabel = plan.suggestedInputs.source.replace(/_/g, ' ');
+  const mode = formatNextDayMode(plan.personalization.mode);
+  const sleepWindow = `${plan.suggestedInputs.sleepTime}-${plan.suggestedInputs.wakeEstimate}`;
+
+  if (plan.personalization.mode === 'recovery' || plan.personalization.energy === 'low' || plan.personalization.mood === 'low') {
+    return `No plan yet. ${sourceLabel} suggests ${sleepWindow}; add tomorrow's must-do so sessions start lighter in ${mode}.`;
+  }
+
+  if (plan.personalization.mode === 'deadline_pressure') {
+    return `No plan yet. Add tomorrow's deadline target and regenerate so the first blocks protect the highest-pressure work.`;
+  }
+
+  return `No plan yet. ${plan.suggestedInputs.reason} Add tomorrow's intention and regenerate adaptive focus sessions.`;
+}
+
+function buildNoSessionsMessage(plan: GuardianNextDayPlan): string {
+  if (plan.plan?.tomorrow_intention) {
+    return `Plan captured "${plan.plan.tomorrow_intention}", but no focus blocks were scheduled. Add duration or task detail, then regenerate.`;
+  }
+
+  if (!plan.calendarConfigured) {
+    return 'Plan exists, but no focus blocks were scheduled. Connect calendar or add fixed constraints before regenerating.';
+  }
+
+  return `Plan exists, but no focus blocks were scheduled. Add what matters tomorrow; ${formatNextDayMode(plan.personalization.mode)} needs clearer targets.`;
+}
+
 export default function GuardianPage() {
   const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
@@ -1074,7 +1112,7 @@ export default function GuardianPage() {
 
         {!nextDayPlan?.plan ? (
           <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '20px 0' }}>
-            No tomorrow plan yet. Add evening context or regenerate to schedule adaptive focus sessions.
+            {buildNextDayPlanEmptyMessage(nextDayPlan)}
           </div>
         ) : (
           <>
@@ -1110,7 +1148,7 @@ export default function GuardianPage() {
 
             {nextDayPlan.sessions.length === 0 ? (
               <div style={{ fontSize: '12px', color: '#555570', textAlign: 'center', padding: '16px 0' }}>
-                Plan exists, but no focus blocks were scheduled. Regenerate after adding what matters tomorrow.
+                {buildNoSessionsMessage(nextDayPlan)}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
