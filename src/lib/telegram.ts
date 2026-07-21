@@ -74,6 +74,33 @@ function closingLine(snapshot: PersonalizationSnapshot | null, surface: 'morning
   return 'Carry forward the clearest next action.';
 }
 
+function emptySignalLine(snapshot: PersonalizationSnapshot | null, surface: 'habits' | 'goals' | 'tomorrow' | 'calibration'): string {
+  const mode = snapshot?.moment.mode ?? 'normal';
+  if (surface === 'habits') {
+    if (mode === 'recovery' || snapshot?.userState.energy === 'low' || snapshot?.userState.mood === 'low') {
+      return 'Add one low-friction habit that still works on a rough day.';
+    }
+    if (mode === 'planning') return 'Add a habit that makes tomorrow easier to start.';
+    return 'Add one habit with a measurable trigger so sessions and check-ins can learn from it.';
+  }
+  if (surface === 'goals') {
+    if (mode === 'deadline_pressure') return 'Add the goal tied to the nearest deadline so tasks can rank around it.';
+    if (mode === 'recovery') return 'Add only goals that can shrink to minimum viable progress today.';
+    if (mode === 'planning') return 'Add tomorrow-facing goals before generating the next-day plan.';
+    return 'Add an active goal so tasks, habits, rewards, and sessions can share the same anchor.';
+  }
+  if (surface === 'tomorrow') {
+    if (mode === 'recovery') return 'Send sleep/wake, mood, and the one must-do so tomorrow starts lighter.';
+    if (mode === 'deadline_pressure') return 'Send the deadline target, available window, and minimum acceptable progress.';
+    if (mode === 'planning') return 'Send tomorrow intention, fixed calendar constraints, and preferred first block.';
+    return 'Send sleep/wake, mood, and what you want protected tomorrow.';
+  }
+  if (mode === 'recovery') return 'Submit short feedback about energy fit; that matters more than a long review today.';
+  if (mode === 'deadline_pressure') return 'Submit feedback on whether sessions reduced deadline pressure.';
+  if (mode === 'planning') return 'Submit feedback on what the next plan should inherit or avoid.';
+  return 'Submit session feedback to calibrate timing, energy, and intervention strength.';
+}
+
 // ─── Inline keyboard types ────────────────────────────────────────────────────
 
 export interface InlineKeyboardButton {
@@ -474,7 +501,8 @@ export function formatHabitStatus(habits: Array<{
   current_value: number | null;
   goal_metric: string;
 }>): string {
-  if (habits.length === 0) return `💪 <b>Habits</b>\n\nNo habits configured yet.`;
+  const snapshot = getTelegramSnapshot();
+  if (habits.length === 0) return [`💪 <b>Habits</b>`, ``, modeLine(snapshot), emptySignalLine(snapshot, 'habits')].filter(Boolean).join('\n');
   const lines = [`💪 <b>Today's Habits</b>`, ``];
   for (const h of habits) {
     const check = h.completed ? '✅' : '⬜';
@@ -522,8 +550,9 @@ export function formatNextDayPlanSummary(plan: {
   suggestedInputs?: { reason?: string };
   calendarConfigured?: boolean;
 }): string {
+  const snapshot = getTelegramSnapshot();
   const date = plan.plan?.plan_date ?? 'tomorrow';
-  const summary = plan.plan?.generated_summary ?? plan.suggestedInputs?.reason ?? 'No plan summary yet';
+  const summary = plan.plan?.generated_summary ?? plan.suggestedInputs?.reason ?? emptySignalLine(snapshot, 'tomorrow');
   const lines = [`🗓 <b>Tomorrow Plan</b>`, `<i>${date} · ${summary}</i>`, ``];
   if (plan.plan?.sleep_time || plan.plan?.wake_estimate || plan.plan?.energy || plan.plan?.mood) {
     lines.push([
@@ -535,7 +564,7 @@ export function formatNextDayPlanSummary(plan: {
     lines.push('');
   }
   if (plan.sessions.length === 0) {
-    lines.push('No focus blocks scheduled yet. Send sleep/wake, mood, and what you want protected tomorrow.');
+    lines.push(`No focus blocks scheduled yet. ${emptySignalLine(snapshot, 'tomorrow')}`);
   } else {
     for (const session of plan.sessions.slice(0, 6)) {
       const time = new Date(session.planned_start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -556,7 +585,8 @@ export function formatGoalHealthStatus(goals: Array<{
   target_value: number | null;
   deadline: string | null;
 }>): string {
-  if (goals.length === 0) return `🎯 <b>Goals</b>\n\nNo active goals. Add goals to track progress.`;
+  const snapshot = getTelegramSnapshot();
+  if (goals.length === 0) return [`🎯 <b>Goals</b>`, ``, modeLine(snapshot), emptySignalLine(snapshot, 'goals')].filter(Boolean).join('\n');
   const lines = [`🎯 <b>Goal Health</b>`, ``];
   for (const g of goals) {
     const status = g.health_status;
@@ -623,7 +653,8 @@ export function formatCalibrationStatus(data: {
       lines.push(`  ${delta > 0 ? '▲' : '▼'} ${label}: ${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`);
     }
   } else {
-    lines.push(``, `<i>Submit session feedback to start calibration.</i>`);
+    const snapshot = getTelegramSnapshot();
+    lines.push(``, modeLine(snapshot) ?? '', `<i>${emptySignalLine(snapshot, 'calibration')}</i>`);
   }
   return lines.join('\n');
 }
