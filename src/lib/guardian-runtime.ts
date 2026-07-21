@@ -2078,6 +2078,50 @@ export function consumeGuardianCommands(sessionId: string) {
   return commands.map((command) => ({ ...command }));
 }
 
+function getAdaptiveOverrideFollowUpDelayMinutes(input: {
+  decision: OverrideDecision;
+  request: OverrideRequest;
+  session?: GuardianState;
+}): { minutes: number; reason: string } {
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'intervention',
+    maxInsights: 2,
+    includeMemoryFacts: 3,
+    activeSession: input.session ? {
+      sessionId: input.session.sessionId,
+      targetTitle: input.session.targetTitle,
+      focusScore: input.session.focusScoreHistory.at(-1) ?? null,
+      elapsedMinutes: Math.max(0, Math.round((Date.now() - input.session.startedAt) / 60_000)),
+    } : null,
+  });
+  const classification = classifyUrlForGuardian(input.request.url, input.session?.sessionClassificationCache, Boolean(input.session));
+  const ttl = Math.max(1, input.decision.ttlMinutes);
+  let minutes = Math.max(5, Math.round(ttl * 1.2));
+  const reasons = [`${ttl}m approved TTL`];
+
+  if (classification === 'distraction') {
+    minutes = Math.min(minutes, Math.max(5, Math.round(ttl * 0.75)));
+    reasons.push('domain looks distraction-prone');
+  }
+  if (snapshot.moment.mode === 'protect_focus') {
+    minutes = Math.min(minutes, Math.max(5, Math.round(ttl * 0.8)));
+    reasons.push('active focus should be protected');
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.feedback.alertFatigueLevel === 'high') {
+    minutes = Math.max(minutes, Math.min(45, ttl + 10));
+    reasons.push(snapshot.moment.mode === 'recovery' ? 'recovery mode reduces interruption pressure' : 'alert fatigue is high');
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') {
+    minutes = Math.min(minutes, Math.max(6, ttl));
+    reasons.push('deadline pressure needs faster accountability');
+  }
+
+  return {
+    minutes: Math.max(5, Math.min(45, minutes)),
+    reason: reasons.join('; '),
+  };
+}
+
 export async function adjudicateOverride(request: OverrideRequest): Promise<OverrideDecision> {
   const session = guardianSessions.get(request.sessionId);
   const requestedMinutes = Math.max(1, Math.min(30, request.requestedMinutes || 10));
@@ -2206,14 +2250,16 @@ JSON schema:
       createdAt: Date.now(),
     });
 
-    // Schedule a follow-up message 20 minutes after the approved override
+    // Schedule a follow-up from the approved TTL and current intervention context.
     try {
       const db = getDb();
-      const followUpAt = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+      const followUp = getAdaptiveOverrideFollowUpDelayMinutes({ decision, request, session });
+      const followUpAt = new Date(Date.now() + followUp.minutes * 60 * 1000).toISOString();
       db.prepare(`
         INSERT INTO override_follow_ups (session_id, override_url, override_reason, follow_up_at)
         VALUES (?, ?, ?, ?)
       `).run(request.sessionId, request.url, request.reason, followUpAt);
+      console.log(`[GuardianRuntime] Override follow-up scheduled in ${followUp.minutes}m: ${followUp.reason}`);
     } catch (followUpErr) {
       console.error('[GuardianRuntime] Failed to schedule override follow-up', followUpErr);
     }

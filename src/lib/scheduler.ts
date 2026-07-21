@@ -107,6 +107,29 @@ function composeStreakCliffMessage(streak: number): string {
   return `You're on day ${streak}. Strong stretches usually need a specific next morning, not a general promise.${commitment}${pressure}\n\n${window}What is tomorrow's first focused block?`;
 }
 
+function composeOverrideFollowUpMessage(input: {
+  domain: string;
+  reason: string | null;
+}): string {
+  const snapshot = buildSchedulerSnapshot();
+  const escapedDomain = escapeTelegramHtml(input.domain);
+  const escapedReason = escapeTelegramHtml(input.reason || 'none');
+
+  if (snapshot.moment.mode === 'protect_focus') {
+    return `<b>Override check-in</b>\n\nYou opened <code>${escapedDomain}</code> during a focus-protection window.\nReason you gave: "${escapedReason}"\n\nDid it support the session, or did it pull you off-thread? Reply yes/no or what actually happened.`;
+  }
+
+  if (snapshot.moment.mode === 'deadline_pressure') {
+    return `<b>Override check-in</b>\n\nYou opened <code>${escapedDomain}</code> while deadline pressure is active.\nReason you gave: "${escapedReason}"\n\nDid it move the work forward? Reply yes/no or what changed.`;
+  }
+
+  if (snapshot.feedback.alertFatigueLevel === 'high' || snapshot.moment.mode === 'recovery') {
+    return `<b>Override check-in</b>\n\nQuick calibration on <code>${escapedDomain}</code>.\nReason you gave: "${escapedReason}"\n\nWorth keeping as an allowed exception next time, or should I be stricter?`;
+  }
+
+  return `<b>Override check-in</b>\n\nThe override for <code>${escapedDomain}</code> has had time to play out.\nReason you gave: "${escapedReason}"\n\nWas it worth it? Reply yes/no or what actually happened.`;
+}
+
 async function runAdaptiveSchedulerJob(name: string, fn: () => Promise<void>): Promise<void> {
   const snapshot = buildSchedulerSnapshot();
   const decision = decideAdaptiveJobRun(name, snapshot);
@@ -735,7 +758,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             try {
                 const domain = new URL(f.override_url).hostname.replace('www.', '');
                 await sendTelegram(
-                    `<b>Override check-in</b>\n\nYou visited <code>${domain}</code> 20 min ago.\nReason you gave: "${f.override_reason || 'none'}"\n\nWas it worth it? Reply yes/no or what actually happened.`,
+                    composeOverrideFollowUpMessage({ domain, reason: f.override_reason }),
                     'HTML'
                 );
                 db.prepare(`UPDATE override_follow_ups SET sent = 1, sent_at = ? WHERE id = ?`)
