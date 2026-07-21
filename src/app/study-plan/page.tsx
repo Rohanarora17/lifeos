@@ -20,6 +20,7 @@ interface StudyPlan {
         guidance: string;
         studyBlockMinutes: number;
         breakMinutes: number;
+        activityMode: 'problem_practice' | 'research_reading' | 'coding_build' | 'concept_study';
         generatedBy: 'ai' | 'adaptive_fallback';
     };
 }
@@ -35,6 +36,7 @@ interface StudyPlanDefaults {
         standupGoal: string | null;
         studyBlockMinutes: number;
         breakMinutes: number;
+        activityMode: NonNullable<StudyPlan['adaptiveContext']>['activityMode'];
     };
 }
 
@@ -44,6 +46,13 @@ const modeLabel: Record<NonNullable<StudyPlan['adaptiveContext']>['mode'], strin
     recovery: 'Recovery',
     planning: 'Planning',
     normal: 'Balanced',
+};
+
+const activityModeLabel: Record<NonNullable<StudyPlan['adaptiveContext']>['activityMode'], string> = {
+    problem_practice: 'Problem practice',
+    research_reading: 'Research reading',
+    coding_build: 'Coding/build',
+    concept_study: 'Concept study',
 };
 
 export default function StudyPlanPage() {
@@ -136,7 +145,7 @@ export default function StudyPlanPage() {
 	                                />
                                 {defaults && (
                                     <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                                        Suggested {Math.round(defaults.recommendedDurationMinutes)}m from {modeLabel[defaults.adaptiveContext.mode].toLowerCase()} mode · {defaults.adaptiveContext.studyBlockMinutes}m blocks
+                                        Suggested {Math.round(defaults.recommendedDurationMinutes)}m from {modeLabel[defaults.adaptiveContext.mode].toLowerCase()} mode · {defaults.adaptiveContext.studyBlockMinutes}m {activityModeLabel[defaults.adaptiveContext.activityMode].toLowerCase()} blocks
                                         {defaults.adaptiveContext.breakMinutes > 0 ? ` · ${defaults.adaptiveContext.breakMinutes}m breaks` : ''}
                                     </p>
                                 )}
@@ -188,7 +197,7 @@ export default function StudyPlanPage() {
                                             <span className="font-bold" style={{ color: 'var(--text-primary)' }}>
                                                 {modeLabel[plan.adaptiveContext.mode]}
                                             </span>
-                                            {' '}· {plan.adaptiveContext.energy} energy · {plan.adaptiveContext.studyBlockMinutes}m blocks
+                                            {' '}· {activityModeLabel[plan.adaptiveContext.activityMode]} · {plan.adaptiveContext.energy} energy · {plan.adaptiveContext.studyBlockMinutes}m blocks
                                             {plan.adaptiveContext.breakMinutes > 0 ? ` · ${plan.adaptiveContext.breakMinutes}m breaks` : ''}
                                         </div>
                                     )}
