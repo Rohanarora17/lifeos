@@ -25,6 +25,7 @@ export interface RewardPolicySummary {
   guidance: string;
   energy: PersonalizationSnapshot['userState']['energy'];
   mood: PersonalizationSnapshot['userState']['mood'];
+  focusTrend: PersonalizationSnapshot['userState']['focusTrend'];
   alertFatigueLevel: PersonalizationSnapshot['feedback']['alertFatigueLevel'];
   helpfulRate: number | null;
   coinMultiplier: number;
@@ -396,6 +397,7 @@ export function getAdaptiveRewardPolicy(snapshot?: PersonalizationSnapshot): Rew
     guidance: resolved.moment.guidance,
     energy: resolved.userState.energy,
     mood: resolved.userState.mood,
+    focusTrend: resolved.userState.focusTrend,
     alertFatigueLevel: resolved.feedback.alertFatigueLevel,
     helpfulRate: resolved.feedback.helpfulRate,
     coinMultiplier: multiplier,

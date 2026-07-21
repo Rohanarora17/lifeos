@@ -43,6 +43,7 @@ interface RewardPolicy {
     guidance: string;
     energy: 'high' | 'medium' | 'low';
     mood: 'high' | 'medium' | 'low' | null;
+    focusTrend: 'improving' | 'declining' | 'stable';
     alertFatigueLevel: 'low' | 'medium' | 'high';
     helpfulRate: number | null;
     coinMultiplier: number;
@@ -58,11 +59,87 @@ const MODE_LABEL: Record<RewardPolicy['mode'], string> = {
     normal: 'Balanced',
 };
 
+type RewardCategory = 'restorative' | 'leisure' | 'purchase' | 'escape' | 'social' | 'custom';
+
 const FIT_COLOR: Record<'high' | 'medium' | 'low', string> = {
     high: 'var(--accent-green)',
     medium: 'var(--accent-blue)',
     low: 'var(--accent-orange)',
 };
+
+function inferDraftCategory(title: string, explicit: RewardCategory): RewardCategory {
+    if (explicit !== 'custom') return explicit;
+    const lower = title.toLowerCase();
+    if (/(sleep|nap|walk|massage|bath|rest|meditat|stretch|tea)/.test(lower)) return 'restorative';
+    if (/(game|gaming|movie|youtube|netflix|anime|scroll|instagram|twitter|reddit)/.test(lower)) return 'leisure';
+    if (/(buy|order|coffee|food|book|course|device|shopping|purchase)/.test(lower)) return 'purchase';
+    if (/(skip|avoid|bunk|delay|postpone|cheat)/.test(lower)) return 'escape';
+    if (/(friend|call|party|date|meet|hangout)/.test(lower)) return 'social';
+    return 'custom';
+}
+
+function draftRewardBaseCost(category: RewardCategory, title: string): number {
+    const lower = title.toLowerCase();
+    if (category === 'restorative') return 350;
+    if (category === 'social') return 700;
+    if (category === 'purchase') return /(expensive|device|keyboard|shoe|course)/.test(lower) ? 2200 : 1200;
+    if (category === 'escape') return 2400;
+    if (category === 'leisure') return /(hour|movie|gaming|game|netflix)/.test(lower) ? 1200 : 850;
+    return 800;
+}
+
+function buildRewardPricePreview(input: {
+    title: string;
+    explicitCost: string;
+    category: RewardCategory;
+    balance: number;
+    policy: RewardPolicy | null;
+}) {
+    const manual = Number(input.explicitCost);
+    const category = inferDraftCategory(input.title, input.category);
+    if (Number.isFinite(manual) && manual > 0) {
+        return {
+            cost: Math.round(manual),
+            category,
+            reason: 'manual price; LifeOS records context but will not override it',
+        };
+    }
+
+    const policy = input.policy;
+    const reasons: string[] = [];
+    let multiplier = 1;
+    if (policy?.mode === 'deadline_pressure' && (category === 'leisure' || category === 'escape')) {
+        multiplier += 0.35;
+        reasons.push('higher because deadline pressure makes escape rewards risky');
+    }
+    if (policy?.mode === 'recovery' && category === 'restorative') {
+        multiplier -= 0.2;
+        reasons.push('lower because restorative rewards support recovery');
+    }
+    if (policy?.energy === 'low' && category === 'escape') {
+        multiplier += 0.15;
+        reasons.push('higher because low energy can turn escape into avoidance');
+    }
+    if (policy?.focusTrend === 'declining' && category === 'leisure') {
+        multiplier += 0.15;
+        reasons.push('higher because focus trend is declining');
+    }
+    if (policy?.mode === 'protect_focus' && (category === 'restorative' || category === 'social')) {
+        multiplier -= 0.1;
+        reasons.push('slightly lower because it can preserve momentum after focus');
+    }
+
+    const base = draftRewardBaseCost(category, input.title);
+    const balanceFloor = input.balance > 0 ? Math.max(100, Math.round(input.balance * 0.08 / 25) * 25) : 0;
+    const balanceCeil = input.balance > 0 ? Math.max(500, Math.round(input.balance * 0.6 / 25) * 25) : 5000;
+    const cost = Math.max(100, Math.min(balanceCeil, Math.max(balanceFloor, Math.round((base * Math.max(0.7, Math.min(1.75, multiplier))) / 25) * 25)));
+
+    return {
+        cost,
+        category,
+        reason: reasons[0] ?? `priced from ${category} baseline for ${policy ? MODE_LABEL[policy.mode].toLowerCase() : 'today'} mode`,
+    };
+}
 
 export default function StorePage() {
     const [balance, setBalance] = useState(0);
@@ -70,6 +147,9 @@ export default function StorePage() {
     const [store, setStore] = useState<StoreItem[]>([]);
     const [badges, setBadges] = useState<Badge[]>([]);
     const [rewardPolicy, setRewardPolicy] = useState<RewardPolicy | null>(null);
+    const [draftRewardTitle, setDraftRewardTitle] = useState('');
+    const [draftRewardCategory, setDraftRewardCategory] = useState<RewardCategory>('custom');
+    const [draftRewardCost, setDraftRewardCost] = useState('');
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -123,6 +203,13 @@ export default function StorePage() {
 
     const unlockedBadges = badges.filter(b => b.unlocked_at);
     const lockedBadges = badges.filter(b => !b.unlocked_at);
+    const rewardPricePreview = buildRewardPricePreview({
+        title: draftRewardTitle,
+        explicitCost: draftRewardCost,
+        category: draftRewardCategory,
+        balance,
+        policy: rewardPolicy,
+    });
 
     return (
         <div className="max-w-5xl mx-auto space-y-8 pb-12">
@@ -198,16 +285,16 @@ export default function StorePage() {
                     <section className="card" style={{ padding: '1.5rem', border: '1px dashed var(--accent-orange)' }}>
                         <h3 className="text-lg font-bold mb-3 flex items-center gap-2">✨ Create Custom Reward</h3>
                         <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-                            Set your own real-world rewards (e.g. &quot;Buy a Video Game&quot;) to spend your coins on!
+                            Name the real-world reward; LifeOS prices it from today&apos;s mode, energy, focus trend, and coin balance unless you override it.
                         </p>
                         <form
-                            className="flex flex-col sm:flex-row gap-3"
+                            className="flex flex-col gap-3"
                             onSubmit={async (e) => {
                                 e.preventDefault();
-                                const form = e.target as HTMLFormElement;
-                                const title = (form.elements.namedItem('title') as HTMLInputElement).value;
-                                const cost = (form.elements.namedItem('cost') as HTMLInputElement).value;
-                                    const category = (form.elements.namedItem('category') as HTMLSelectElement).value;
+                                const title = draftRewardTitle.trim();
+                                const cost = draftRewardCost.trim();
+                                const category = draftRewardCategory;
+                                if (!title) return;
 
                                 try {
                                     const res = await fetch('/api/gamification', {
@@ -216,14 +303,32 @@ export default function StorePage() {
                                         body: JSON.stringify({ title, cost: cost || null, category, icon: '🌟' })
                                     });
                                     if (res.ok) {
-                                        form.reset();
+                                        setDraftRewardTitle('');
+                                        setDraftRewardCategory('custom');
+                                        setDraftRewardCost('');
                                         fetchGamificationData();
                                     }
                                 } catch { }
                             }}
                         >
-                            <input required name="title" type="text" placeholder="Reward Title..." className="input flex-1" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
-                                <select name="category" className="input w-40" defaultValue="custom" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                            <div className="flex flex-col sm:flex-row gap-3">
+                                <input
+                                    required
+                                    name="title"
+                                    type="text"
+                                    placeholder="Reward Title..."
+                                    className="input flex-1"
+                                    value={draftRewardTitle}
+                                    onChange={e => setDraftRewardTitle(e.target.value)}
+                                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                                />
+                                <select
+                                    name="category"
+                                    className="input w-40"
+                                    value={draftRewardCategory}
+                                    onChange={e => setDraftRewardCategory(e.target.value as RewardCategory)}
+                                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                                >
                                     <option value="custom">Custom</option>
                                     <option value="restorative">Restorative</option>
                                     <option value="leisure">Leisure</option>
@@ -231,8 +336,23 @@ export default function StorePage() {
                                     <option value="escape">Escape</option>
                                     <option value="social">Social</option>
                                 </select>
-                            <input name="cost" type="number" min="1" placeholder="Auto price" className="input w-32" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }} />
-                            <button type="submit" className="btn btn-primary" style={{ background: 'var(--accent-orange)' }}>Add</button>
+                                <input
+                                    name="cost"
+                                    type="number"
+                                    min="1"
+                                    placeholder="Auto price"
+                                    className="input w-32"
+                                    value={draftRewardCost}
+                                    onChange={e => setDraftRewardCost(e.target.value)}
+                                    style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                                />
+                                <button type="submit" className="btn btn-primary" style={{ background: 'var(--accent-orange)' }}>Add</button>
+                            </div>
+                            <div className="rounded-md px-3 py-2 text-xs" style={{ background: 'rgba(255,165,0,0.08)', border: '1px solid rgba(255,165,0,0.16)', color: 'var(--text-secondary)' }}>
+                                <strong style={{ color: 'var(--accent-orange)' }}>Price preview:</strong>
+                                {' '}
+                                {rewardPricePreview.cost} coins · {rewardPricePreview.category} · {rewardPricePreview.reason}
+                            </div>
                         </form>
                     </section>
 
