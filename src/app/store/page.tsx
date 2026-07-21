@@ -176,6 +176,30 @@ function buildRewardFormHint(policy: RewardPolicy | null, preview: ReturnType<ty
     return `${posture} Preview: ${preview.cost} coins · ${preview.category} · ${preview.reason}`;
 }
 
+function buildRewardCostPlaceholder(policy: RewardPolicy | null): string {
+    if (!policy) return 'Auto price';
+    if (policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low') return 'Auto: cheaper rest';
+    if (policy.mode === 'deadline_pressure') return 'Auto: pressure-aware';
+    if (policy.mode === 'planning') return 'Auto: tomorrow setup';
+    if (policy.alertFatigueLevel === 'high') return 'Auto: low-noise';
+    return `Auto: ${policy.coinMultiplier.toFixed(2)}x`;
+}
+
+function buildLedgerEmpty(policy: RewardPolicy | null, balance: number): string {
+    if (!policy) return 'No transactions yet.';
+    if (policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low') {
+        return 'No reward history yet. Start with restorative rewards priced for low energy.';
+    }
+    if (policy.mode === 'deadline_pressure') {
+        return 'No reward history yet. Earn coins from deadline-relief blocks before escape rewards.';
+    }
+    if (policy.mode === 'planning') {
+        return 'No reward history yet. Add a reward for completing tomorrow setup.';
+    }
+    if (balance <= 0) return `No transactions yet. ${policy.earningGuidance}`;
+    return `No transactions yet. ${policy.spendingGuidance}`;
+}
+
 export default function StorePage() {
     const [balance, setBalance] = useState(0);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -246,6 +270,8 @@ export default function StorePage() {
         policy: rewardPolicy,
     });
     const rewardFormHint = buildRewardFormHint(rewardPolicy, rewardPricePreview);
+    const rewardCostPlaceholder = buildRewardCostPlaceholder(rewardPolicy);
+    const ledgerEmptyCopy = buildLedgerEmpty(rewardPolicy, balance);
 
     return (
         <div className="max-w-5xl mx-auto space-y-8 pb-12">
@@ -376,7 +402,7 @@ export default function StorePage() {
                                     name="cost"
                                     type="number"
                                     min="1"
-                                    placeholder="Auto price"
+                                    placeholder={rewardCostPlaceholder}
                                     className="input w-32"
                                     value={draftRewardCost}
                                     onChange={e => setDraftRewardCost(e.target.value)}
@@ -474,7 +500,7 @@ export default function StorePage() {
                                 </div>
                             ))}
                             {transactions.length === 0 && (
-                                <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>No transactions yet.</p>
+                                <p className="text-sm text-center py-4" style={{ color: 'var(--text-muted)' }}>{ledgerEmptyCopy}</p>
                             )}
                         </div>
                     </section>
