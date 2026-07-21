@@ -695,6 +695,7 @@ export async function executeAction(
             const defaults = buildAdaptiveTaskDefaults({
                 title,
                 taskType: 'session',
+                course: (payload.course as string | undefined) || null,
                 dueDate: (payload.due_date as string | undefined) || null,
                 explicitEstimateMinutes: payload.durationMinutes,
                 snapshot: personalization,
@@ -1071,6 +1072,7 @@ export async function executeAction(
             const defaults = buildAdaptiveTaskDefaults({
                 title,
                 taskType: safeType,
+                course: (payload.course as string | undefined) || null,
                 dueDate: (payload.due_date as string | undefined) || null,
                 explicitPriority: payload.priority,
                 explicitEstimateMinutes: payload.estimated_minutes ?? payload.durationMinutes,

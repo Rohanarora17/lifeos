@@ -177,6 +177,7 @@ export async function POST(request: NextRequest) {
         const defaults = buildAdaptiveTaskDefaults({
             title: safeTitle,
             taskType: safeType,
+            course: course || null,
             dueDate: due_date || null,
             explicitPriority: priority,
             explicitEstimateMinutes: hasExplicitEstimate ? rawEstimatedMinutes : undefined,
