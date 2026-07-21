@@ -27,9 +27,55 @@ import { downloadTelegramVoice, transcribeAudio } from '@/lib/stt';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
 function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
+}
+
+function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing'): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        if (kind === 'alert_dismissed') {
+            if (snapshot.feedback.alertFatigueLevel === 'high') return '✅ Alert dismissed. I will keep routine nudges quieter while alert fatigue is high.';
+            if (snapshot.moment.mode === 'deadline_pressure') return '✅ Alert dismissed. Deadline-relevant alerts will still stay visible.';
+            return `✅ Alert dismissed. Current mode: ${snapshot.moment.mode.replace(/_/g, ' ')}.`;
+        }
+        if (kind === 'no_feedback_session') {
+            if (snapshot.today.plannedFocus.nextTitle) return `No recent session to review. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; feedback will matter after that block.`;
+            if (snapshot.moment.mode === 'planning') return 'No recent session to review. Use this moment to set tomorrow\'s first block instead.';
+            return 'No recent session to review. Start a focus block first so the model has something real to learn from.';
+        }
+        if (kind === 'no_softwatch') {
+            if (snapshot.today.plannedFocus.nextTitle) return `No pending soft watch. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'No pending soft watch. Keep the next commitment small if you add one.';
+            return 'No pending soft watch right now.';
+        }
+        if (kind === 'review_missing') {
+            if (snapshot.moment.mode === 'planning') return 'Review not found. Use the current review queue or tomorrow planner instead.';
+            return 'Review not found. Open the latest review queue so I can use a current completion.';
+        }
+        if (kind === 'session_start_failed') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Could not start that session. Try starting <b>${snapshot.today.plannedFocus.nextTitle}</b> from the current plan.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return 'Could not start that session. Try a smaller title and duration for this low-capacity window.';
+            return 'Could not start that session. Try again with a clear title and duration.';
+        }
+        if (kind === 'task_missing') {
+            if (snapshot.today.plannedFocus.nextTitle) return `Task not found. Current planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; try that task from the latest list.`;
+            if (snapshot.moment.mode === 'deadline_pressure') return 'Task not found. Try the deadline, course, or deliverable name.';
+            return 'Task not found. Refresh tasks and try the current item.';
+        }
+    } catch { /* keep fallback */ }
+    if (kind === 'alert_dismissed') return '✅ Alert dismissed.';
+    if (kind === 'no_feedback_session') return 'No recent session to give feedback on.';
+    if (kind === 'no_softwatch') return 'No pending soft watch right now.';
+    if (kind === 'review_missing') return 'Review not found.';
+    if (kind === 'task_missing') return 'Task not found.';
+    return 'Could not start session. Try again.';
 }
 
 // POST: Telegram Webhook Entrypoint
@@ -371,7 +417,7 @@ async function handleActionCallback(payload: string) {
                     'HTML'
                 );
             } else {
-                await sendTelegram('No recent session to give feedback on.', '', FULL_MENU_KEYBOARD);
+                await sendTelegram(webhookPersonalizedLine('no_feedback_session'), 'HTML', FULL_MENU_KEYBOARD);
             }
             break;
         }
@@ -385,14 +431,14 @@ async function handleActionCallback(payload: string) {
         }
 
         case 'dismiss_alert':
-            await sendTelegram('✅ Alert dismissed.', '', FULL_MENU_KEYBOARD);
+            await sendTelegram(webhookPersonalizedLine('alert_dismissed'), 'HTML', FULL_MENU_KEYBOARD);
             break;
 
         case 'cancel_softwatch':
             {
                 const commitment = dismissCurrentSoftWatchCommitment();
                 await sendTelegram(
-                    commitment ? `❌ Cancelled soft watch: <b>${commitment.targetTitle}</b>.` : 'No pending soft watch to cancel.',
+                    commitment ? `❌ Cancelled soft watch: <b>${commitment.targetTitle}</b>.` : webhookPersonalizedLine('no_softwatch'),
                     'HTML',
                     FULL_MENU_KEYBOARD
                 );
@@ -405,7 +451,7 @@ async function handleActionCallback(payload: string) {
                 await sendTelegram(
                     result.ok
                         ? `⏰ Snoozed <b>${result.targetTitle}</b> for ${result.snoozeMinutes} min.\n<i>${result.reason}</i>`
-                        : `No pending soft watch to snooze.`,
+                        : webhookPersonalizedLine('no_softwatch'),
                     'HTML',
                     FULL_MENU_KEYBOARD
                 );
@@ -428,7 +474,7 @@ async function handleReviewCallback(rest: string) {
 
     const db = getDb();
     const row = db.prepare(`SELECT id, task_id FROM session_completions WHERE id = ?`).get(id) as { id: number; task_id: number | null } | undefined;
-    if (!row) { await sendTelegram('Review not found.', '', FULL_MENU_KEYBOARD); return; }
+    if (!row) { await sendTelegram(webhookPersonalizedLine('review_missing'), 'HTML', FULL_MENU_KEYBOARD); return; }
 
     let msg = '';
     if (subAction === 'done') {
@@ -495,7 +541,7 @@ async function handlePendingSessionContext(reply: string, pendingRaw: string) {
             'HTML', SESSION_START_KEYBOARD
         );
     } catch {
-        await sendTelegram('Could not start session. Try again.', '', FULL_MENU_KEYBOARD);
+        await sendTelegram(webhookPersonalizedLine('session_start_failed'), 'HTML', FULL_MENU_KEYBOARD);
     }
 }
 
@@ -513,7 +559,7 @@ async function handleTaskCallback(rest: string) {
         }
         const db = getDb();
         const task = db.prepare(`SELECT title, estimated_minutes FROM tasks WHERE id = ?`).get(id) as { title: string; estimated_minutes: number | null } | undefined;
-        if (!task) { await sendTelegram('Task not found.', '', FULL_MENU_KEYBOARD); return; }
+        if (!task) { await sendTelegram(webhookPersonalizedLine('task_missing'), 'HTML', FULL_MENU_KEYBOARD); return; }
         const duration = getAdaptiveSessionMinutes(task.estimated_minutes);
         // Store pending state and ask for context before starting
         setSetting('pending_session_context', JSON.stringify({ topic: task.title, duration, source: 'api' }));
