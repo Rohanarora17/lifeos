@@ -25,6 +25,7 @@ import { buildAdaptiveNewHabitDefaults } from './adaptive-habit-plan';
 import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import { generateNextDayPlan } from './next-day-planner';
+import { getTaskTimeProgress } from './task-time-sessions';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
@@ -1082,7 +1083,7 @@ export async function executeAction(
             const title = (payload.title as string | undefined)?.trim();
             if (!title) { await sendTelegram('What should the task be called?', ''); break; }
             const db = getDb();
-            const safeStatus = ['todo', 'doing', 'done'].includes(payload.status as string) ? (payload.status as string) : 'todo';
+            const safeStatus = ['todo', 'doing'].includes(payload.status as string) ? (payload.status as string) : 'todo';
             const safeType = ['task', 'assignment', 'exam'].includes(payload.task_type as string) ? (payload.task_type as string) : 'task';
             const personalization = buildPersonalizationSnapshot({ surface: 'telegram', maxInsights: 2, includeMemoryFacts: 4 });
             const defaults = buildAdaptiveTaskDefaults({
@@ -1128,7 +1129,26 @@ export async function executeAction(
             const sets: string[] = [];
             const vals: (string | number)[] = [];
             if (payload.title) { sets.push('title = ?'); vals.push(payload.title as string); }
-            if (payload.status) { sets.push('status = ?'); vals.push(payload.status as string); }
+            if (payload.status) {
+                const nextStatus = ['todo', 'doing', 'done'].includes(payload.status as string) ? payload.status as string : null;
+                if (nextStatus === 'done') {
+                    const progress = getTaskTimeProgress(task.id);
+                    if (progress.targetMinutes === null) {
+                        await sendTelegram('That task needs a time target before it can complete. Add a target, then complete linked focus sessions against it.', 'HTML', FULL_MENU_KEYBOARD);
+                        break;
+                    }
+                    if (progress.creditedMinutes < progress.targetMinutes) {
+                        await sendTelegram(`Task stays active: ${progress.remainingMinutes}m more linked focus time needed (${progress.creditedMinutes}/${progress.targetMinutes}m).`, 'HTML', FULL_MENU_KEYBOARD);
+                        break;
+                    }
+                    sets.push("status = 'done'");
+                    sets.push("completed_at = datetime('now')");
+                } else if (nextStatus) {
+                    sets.push('status = ?');
+                    vals.push(nextStatus);
+                    if (nextStatus !== 'done') sets.push('completed_at = NULL');
+                }
+            }
             if (payload.priority) { sets.push('priority = ?'); vals.push(payload.priority as string); }
             if (sets.length === 0) { await sendTelegram('Nothing to update — specify title, status, or priority.', ''); break; }
             vals.push(task.id);
