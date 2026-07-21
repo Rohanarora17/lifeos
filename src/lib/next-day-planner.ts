@@ -24,11 +24,16 @@ interface CandidateTask {
   title: string;
   status: string;
   priority: string;
+  task_type: string;
+  course: string | null;
   goal_id: number | null;
   goal_title: string | null;
   energy_required: string;
   estimated_minutes: number;
   credited_minutes: number;
+  linked_sessions: number;
+  avg_focus_score: number | null;
+  last_credited_at: string | null;
   remaining_minutes: number;
   due_date: string | null;
   score: number;
@@ -383,11 +388,16 @@ function loadCandidateTasks(
       t.title,
       t.status,
       COALESCE(t.priority, 'medium') as priority,
+      COALESCE(t.task_type, 'task') as task_type,
+      t.course,
       t.goal_id,
       g.title as goal_title,
       COALESCE(t.energy_required, 'medium') as energy_required,
       COALESCE(t.estimated_minutes, ?) as estimated_minutes,
       COALESCE(SUM(l.credited_minutes), 0) as credited_minutes,
+      COUNT(l.id) as linked_sessions,
+      AVG(l.focus_score) as avg_focus_score,
+      MAX(l.credited_at) as last_credited_at,
       t.due_date
     FROM tasks t
     LEFT JOIN goals g ON g.id = t.goal_id
@@ -415,11 +425,34 @@ function loadCandidateTasks(
         score += 35;
         reasons.push('matches tomorrow intention');
       }
+      if (textMatches(task.task_type, intention) || textMatches(task.course ?? '', intention)) {
+        score += 18;
+        reasons.push('matches stated task kind/course');
+      }
       if (task.status === 'doing') reasons.push('already in progress');
       if (task.due_date && task.due_date <= planDate) { score += 22; reasons.push('due soon'); }
       if (energy === 'high' && task.energy_required === 'high') { score += 12; reasons.push('high-energy fit'); }
       if (energy === 'low' && task.energy_required === 'low') { score += 12; reasons.push('low-energy fit'); }
       if (energy === 'low' && task.energy_required === 'high') { score -= 18; reasons.push('defer if drained'); }
+      if (task.avg_focus_score !== null && task.avg_focus_score >= 75) {
+        score += energy === 'low' ? 8 : 14;
+        reasons.push(`works well historically (${Math.round(task.avg_focus_score)} focus)`);
+      }
+      if (task.avg_focus_score !== null && task.avg_focus_score < 55 && energy === 'low') {
+        score -= 14;
+        reasons.push(`low-energy risk from past ${Math.round(task.avg_focus_score)} focus`);
+      }
+      if (task.linked_sessions > 0 && remaining <= Math.max(learnedEstimate, Math.round(target * 0.35))) {
+        score += 16;
+        reasons.push(`${task.linked_sessions} linked session${task.linked_sessions === 1 ? '' : 's'}; finishable`);
+      }
+      if (task.last_credited_at) {
+        const daysSinceCredit = Math.max(0, Math.round((new Date(`${planDate}T00:00:00+05:30`).getTime() - new Date(task.last_credited_at).getTime()) / 86400000));
+        if (daysSinceCredit >= 3) {
+          score += 7;
+          reasons.push(`not touched for ${daysSinceCredit}d`);
+        }
+      }
       if (remaining <= 0) score -= 100;
       if (remaining > 0 && remaining <= getAdaptiveSessionMinutes()) { score += 8; reasons.push('close to completion'); }
 
@@ -438,7 +471,7 @@ function loadCandidateTasks(
 }
 
 function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapshot): SessionRule {
-  const text = `${task.title} ${task.goal_title ?? ''}`.toLowerCase();
+  const text = `${task.title} ${task.goal_title ?? ''} ${task.task_type} ${task.course ?? ''}`.toLowerCase();
   const learned = getAdaptiveSessionMinutes();
   const energy = snapshot.userState.energy;
   const energyMultiplier = energy === 'high' ? 1.1 : energy === 'low' ? 0.8 : 1;
@@ -611,11 +644,16 @@ function candidateForPlannedSession(input: {
     title: input.title,
     status: 'planned',
     priority: 'medium',
+    task_type: 'task',
+    course: null,
     goal_id: null,
     goal_title: null,
     energy_required: 'medium',
     estimated_minutes: input.durationMinutes,
     credited_minutes: 0,
+    linked_sessions: 0,
+    avg_focus_score: null,
+    last_credited_at: null,
     remaining_minutes: input.durationMinutes,
     due_date: null,
     score: 0,
@@ -630,11 +668,16 @@ function candidateForPlannedSession(input: {
         t.id,
         COALESCE(t.priority, 'medium') as priority,
         t.status,
+        COALESCE(t.task_type, 'task') as task_type,
+        t.course,
         t.goal_id,
         g.title as goal_title,
         COALESCE(t.energy_required, 'medium') as energy_required,
         COALESCE(t.estimated_minutes, ?) as estimated_minutes,
         COALESCE(SUM(l.credited_minutes), 0) as credited_minutes,
+        COUNT(l.id) as linked_sessions,
+        AVG(l.focus_score) as avg_focus_score,
+        MAX(l.credited_at) as last_credited_at,
         t.due_date
       FROM tasks t
       LEFT JOIN goals g ON g.id = t.goal_id

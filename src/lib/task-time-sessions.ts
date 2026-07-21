@@ -9,7 +9,11 @@ interface CandidateTask {
   status: string;
   priority: string;
   goal_id: number | null;
+  task_type: string;
+  course: string | null;
   estimated_minutes: number | null;
+  linked_sessions: number;
+  avg_focus_score: number | null;
 }
 
 export interface TaskTimeProgress {
@@ -45,28 +49,45 @@ function isTitleContained(a: string, b: string): boolean {
 function scoreTaskForSession(task: CandidateTask, topic: string, goalId?: string | null): number {
   let score = 0;
   const topicWords = tokenize(topic).filter(word => word.length > 2);
-  const titleWords = tokenize(task.title);
+  const titleWords = tokenize(`${task.title} ${task.task_type} ${task.course ?? ''}`);
   const overlap = topicWords.filter(word => titleWords.includes(word) && word.length > 3).length;
   const goalMatch = goalId && task.goal_id === Number.parseInt(goalId, 10);
 
   if (goalMatch) score += 6;
   if (isTitleContained(topic, task.title)) score += 5;
+  if (task.course && isTitleContained(topic, task.course)) score += 4;
+  if (task.task_type && topicWords.includes(task.task_type.toLowerCase())) score += 3;
   score += overlap * 2;
   if (task.status === 'doing') score += 1;
   if (task.estimated_minutes && task.estimated_minutes > 0) score += 1;
+  if (task.linked_sessions > 0) score += Math.min(3, task.linked_sessions);
+  if (task.avg_focus_score !== null && task.avg_focus_score >= 75) score += 2;
+  if (task.avg_focus_score !== null && task.avg_focus_score < 50) score -= 2;
   return score;
 }
 
 function loadCandidateTasks(): CandidateTask[] {
   return getDb().prepare(`
-    SELECT id, title, status, priority, goal_id, estimated_minutes
-    FROM tasks
-    WHERE status IN ('todo', 'doing')
+    SELECT
+      t.id,
+      t.title,
+      t.status,
+      t.priority,
+      t.goal_id,
+      COALESCE(t.task_type, 'task') as task_type,
+      t.course,
+      t.estimated_minutes,
+      COUNT(l.id) as linked_sessions,
+      AVG(l.focus_score) as avg_focus_score
+    FROM tasks t
+    LEFT JOIN task_session_logs l ON l.task_id = t.id
+    WHERE t.status IN ('todo', 'doing')
+    GROUP BY t.id
     ORDER BY
-      CASE status WHEN 'doing' THEN 0 ELSE 1 END,
-      CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-      CASE WHEN priority_rank IS NULL THEN 1 ELSE 0 END, priority_rank ASC,
-      created_at DESC
+      CASE t.status WHEN 'doing' THEN 0 ELSE 1 END,
+      CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+      CASE WHEN t.priority_rank IS NULL THEN 1 ELSE 0 END, t.priority_rank ASC,
+      t.created_at DESC
     LIMIT 40
   `).all() as CandidateTask[];
 }
