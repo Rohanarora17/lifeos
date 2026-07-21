@@ -2500,6 +2500,33 @@ function formatPolicyMinutes(ms: number): number {
   return Math.max(1, Math.round(ms / 60_000));
 }
 
+function formatSoftWatchVoiceReminder(commitment: SoftWatchCommitment, policy: SoftWatchPolicy): string {
+  if (policy.tone === 'gentle') {
+    return `Soft reminder: ${commitment.targetTitle} is coming up. Start with the smallest useful version if today feels heavy.`;
+  }
+  if (policy.tone === 'direct') {
+    return `Deadline check: ${commitment.targetTitle} is due for focus now. Lock in before the window slips.`;
+  }
+  if (policy.followThroughRate !== null && policy.followThroughRate < 0.45) {
+    return `You planned ${commitment.targetTitle} now. Make it real with a small start or reschedule it honestly.`;
+  }
+  return `You planned to work on ${commitment.targetTitle} now. Ready to lock in?`;
+}
+
+function formatSoftWatchVoiceCheckIn(commitment: SoftWatchCommitment, policy: SoftWatchPolicy): string {
+  const delayMinutes = formatPolicyMinutes(policy.checkInDelayMs);
+  if (policy.tone === 'gentle') {
+    return `Still holding ${commitment.targetTitle}. Shrink it, move it, or let it go without turning it into noise.`;
+  }
+  if (policy.tone === 'direct') {
+    return `${commitment.targetTitle} is still pending after ${delayMinutes} minutes. Start the deadline block now, shrink it, or reschedule.`;
+  }
+  if (policy.followThroughRate !== null && policy.followThroughRate < 0.45) {
+    return `${commitment.targetTitle} has been waiting ${delayMinutes} minutes. Choose one: start, shrink, or reschedule.`;
+  }
+  return `Still here. You committed to ${commitment.targetTitle} about ${delayMinutes} minutes ago. Start now or let it go?`;
+}
+
 function persistSoftWatch(c: SoftWatchCommitment) {
   try {
     const db = getDb();
@@ -2569,9 +2596,7 @@ function tickSoftWatchChecker() {
       persistSoftWatch(commitment);
       void speak(
         'soft_watch',
-        policy.tone === 'gentle'
-          ? `Soft reminder — ${commitment.targetTitle} is coming up. Want to start small?`
-          : `Heads up — you planned to work on ${commitment.targetTitle} now. Ready to lock in?`,
+        formatSoftWatchVoiceReminder(commitment, policy),
         policy.tone === 'direct' ? 'urgent' : 'normal',
         'midpoint_checkin'
       );
@@ -2592,9 +2617,7 @@ function tickSoftWatchChecker() {
       const delayMinutes = formatPolicyMinutes(policy.checkInDelayMs);
       void speak(
         'soft_watch',
-        policy.tone === 'gentle'
-          ? `Still holding ${commitment.targetTitle}. Do you want a smaller start or should I let it go?`
-          : `Still here. You committed to ${commitment.targetTitle} about ${delayMinutes} minutes ago. Start now or let it go?`,
+        formatSoftWatchVoiceCheckIn(commitment, policy),
         policy.tone === 'direct' ? 'urgent' : 'normal',
         'direct_push'
       );
