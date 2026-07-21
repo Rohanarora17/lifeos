@@ -221,8 +221,9 @@ async function handleActionCallback(payload: string) {
             break;
 
         case 'new_session':
+            const learnedMinutes = getAdaptiveSessionMinutes();
             await sendTelegram(
-                `🎯 <b>Start a Session</b>\n\nReply with what to focus on, e.g.:\n<i>"Lock in on React for 60m"</i>`,
+                `🎯 <b>Start a Session</b>\n\nToday's learned default is <b>${learnedMinutes}m</b>. Reply with what to focus on, or add a duration only if you want to override it.\n<i>Example: "study zks" or "read the paper for 35m"</i>`,
                 'HTML'
             );
             break;
