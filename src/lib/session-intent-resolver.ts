@@ -163,6 +163,17 @@ async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
     uil.optimalSessionMinutes ? `Optimal session length: ${uil.optimalSessionMinutes}min` : '',
     uil.preferredCoachingStyle ? `Coaching style: ${uil.preferredCoachingStyle}` : '',
   ].filter(Boolean).join('\n');
+  const profileFallback = [
+    `No stable learned profile fields yet; use today's adaptive context instead.`,
+    `Moment mode: ${personalization.moment.mode}`,
+    `Energy: ${personalization.userState.energy}`,
+    `Mood: ${personalization.userState.mood ?? 'unknown'}`,
+    personalization.today.plannedFocus.nextTitle
+      ? `Planned focus: ${personalization.today.plannedFocus.nextTitle}${personalization.today.plannedFocus.nextMinutes ? ` (${personalization.today.plannedFocus.nextMinutes}m)` : ''}`
+      : '',
+    personalization.userState.standupGoal ? `Today's stated goal: ${personalization.userState.standupGoal}` : '',
+    personalization.userState.nextBestFocusWindow ? `Learned focus window: ${personalization.userState.nextBestFocusWindow}` : '',
+  ].filter(Boolean).join('\n');
 
   try {
     const result = await generateWithFallback(ai, {
@@ -177,7 +188,7 @@ DEADLINE URGENCY: ${deadlineUrgency}
 ${contextLine}
 
 USER PROFILE:
-${uilLine || 'No profile data yet.'}
+${uilLine || profileFallback}
 
 TODAY PERSONALIZATION:
 ${formatPersonalizationContext(personalization)}
