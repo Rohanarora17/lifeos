@@ -45,6 +45,14 @@ interface TaskPersonalization {
     alertFatigueLevel: 'low' | 'medium' | 'high';
     nextBestFocusWindow: string;
     recommendedSessionMinutes?: number;
+    plannedFocus?: {
+        plannedToday: number;
+        completedToday: number;
+        skippedToday: number;
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
 }
 
 interface DayHistory {
@@ -154,7 +162,8 @@ function TypeBadge({ task_type }: { task_type: string }) {
 }
 
 function suggestedTaskTargetMinutes(personalization: TaskPersonalization | null): number {
-    const learned = personalization?.recommendedSessionMinutes ?? 45;
+    const plannedMinutes = personalization?.plannedFocus?.nextMinutes;
+    const learned = plannedMinutes ?? personalization?.recommendedSessionMinutes ?? 45;
     if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
         return Math.max(15, Math.min(learned, 30));
     }
@@ -169,6 +178,16 @@ function suggestedTaskTargetMinutes(personalization: TaskPersonalization | null)
 
 function taskTitlePlaceholder(personalization: TaskPersonalization | null): string {
     if (!personalization) return 'Task title...';
+    if (personalization.plannedFocus?.nextTitle) {
+        return `Time target for: ${personalization.plannedFocus.nextTitle.slice(0, 44)}`;
+    }
+    if (
+        personalization.plannedFocus?.recentFollowThroughRate !== null &&
+        personalization.plannedFocus?.recentFollowThroughRate !== undefined &&
+        personalization.plannedFocus.recentFollowThroughRate < 0.5
+    ) {
+        return 'Smaller task to recover planned focus...';
+    }
     if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
         return 'Small useful time target...';
     }
@@ -182,6 +201,19 @@ function taskTitlePlaceholder(personalization: TaskPersonalization | null): stri
         return `Move today forward: ${personalization.standupGoal.slice(0, 48)}`;
     }
     return 'Task title...';
+}
+
+function taskContextLine(personalization: TaskPersonalization | null): string {
+    if (!personalization) return 'Drag between columns to update status';
+    const planned = personalization.plannedFocus;
+    const base = `${MODE_LABEL[personalization.mode]} · ${personalization.energy} energy`;
+    if (planned?.nextTitle) {
+        return `${base} · next planned: ${planned.nextTitle}${planned.nextMinutes ? ` (${planned.nextMinutes}m)` : ''}`;
+    }
+    if (planned && planned.plannedToday > 0) {
+        return `${base} · focus ${planned.completedToday}/${planned.plannedToday} planned blocks`;
+    }
+    return `${base} · ${personalization.guidance}`;
 }
 
 export default function TasksPage() {
@@ -335,7 +367,7 @@ export default function TasksPage() {
                 <div>
                     <h1 className="text-2xl font-bold">Tasks</h1>
                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                        {showHistory ? 'Day-by-day task performance' : personalization ? `${MODE_LABEL[personalization.mode]} · ${personalization.energy} energy · ${personalization.guidance}` : 'Drag between columns to update status'}
+                        {showHistory ? 'Day-by-day task performance' : taskContextLine(personalization)}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">

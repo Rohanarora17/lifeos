@@ -144,6 +144,7 @@ export async function GET(request: NextRequest) {
                 alertFatigueLevel: personalization.feedback.alertFatigueLevel,
                 nextBestFocusWindow: personalization.userState.nextBestFocusWindow,
                 recommendedSessionMinutes: getAdaptiveSessionMinutes(),
+                plannedFocus: personalization.today.plannedFocus,
             },
         });
     } catch (error) {
