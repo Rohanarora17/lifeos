@@ -19,6 +19,14 @@ interface CoachContext {
         standupGoal: string | null;
         nextBestFocusWindow: string;
         alertFatigueLevel: 'low' | 'medium' | 'high';
+        plannedFocus?: {
+            plannedToday: number;
+            completedToday: number;
+            skippedToday: number;
+            nextTitle: string | null;
+            nextMinutes: number | null;
+            recentFollowThroughRate: number | null;
+        };
     };
     intelligence?: {
         recommendedTasks: Array<{
@@ -51,8 +59,54 @@ function feedbackButtonStyle(color: string): React.CSSProperties {
     };
 }
 
+function formatPlannedFocusTitle(plannedFocus: NonNullable<CoachContext['personalization']>['plannedFocus']) {
+    if (!plannedFocus?.nextTitle) return null;
+    return `${plannedFocus.nextTitle}${plannedFocus.nextMinutes ? ` (${plannedFocus.nextMinutes}m)` : ''}`;
+}
+
+function hasWeakFollowThrough(plannedFocus: NonNullable<CoachContext['personalization']>['plannedFocus']) {
+    return plannedFocus?.recentFollowThroughRate !== null
+        && plannedFocus?.recentFollowThroughRate !== undefined
+        && plannedFocus.recentFollowThroughRate < 0.5;
+}
+
+function plannedFocusStarter(personalization?: CoachContext['personalization']) {
+    const plannedFocus = personalization?.plannedFocus;
+    if (!plannedFocus) return null;
+
+    const nextBlock = formatPlannedFocusTitle(plannedFocus);
+    if (nextBlock) return `Help me protect ${nextBlock}.`;
+
+    if (plannedFocus.plannedToday > plannedFocus.completedToday) {
+        return 'Adjust my remaining planned focus for today.';
+    }
+
+    if (hasWeakFollowThrough(plannedFocus)) {
+        return 'Why am I missing planned focus blocks?';
+    }
+
+    return null;
+}
+
+function plannedFocusStatus(personalization?: CoachContext['personalization']) {
+    const plannedFocus = personalization?.plannedFocus;
+    if (!plannedFocus || plannedFocus.plannedToday <= 0) return null;
+
+    const nextBlock = formatPlannedFocusTitle(plannedFocus);
+    if (nextBlock) return `next ${nextBlock}`;
+
+    return `focus ${plannedFocus.completedToday}/${plannedFocus.plannedToday}`;
+}
+
 function coachPlaceholder(personalization?: CoachContext['personalization']) {
     if (!personalization) return 'Ask from current context...';
+    const nextBlock = formatPlannedFocusTitle(personalization.plannedFocus);
+    if (nextBlock) {
+        return `Ask about protecting ${nextBlock}...`;
+    }
+    if (hasWeakFollowThrough(personalization.plannedFocus)) {
+        return 'Ask why planned blocks are slipping...';
+    }
     if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
         return 'Ask for the smallest useful step...';
     }
@@ -74,6 +128,8 @@ function buildStarterPrompts(context: CoachContext | null): string[] {
     if (!personalization) return ['What should I do next?'];
 
     const prompts: Array<string | null> = [];
+    prompts.push(plannedFocusStarter(personalization));
+
     if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
         prompts.push('Give me a recovery-sized plan for the next 20 minutes.');
         prompts.push(topTask ? `Make ${topTask.title} easier to start today.` : null);
@@ -98,6 +154,12 @@ function buildStarterPrompts(context: CoachContext | null): string[] {
 
     if (personalization.alertFatigueLevel === 'high') {
         prompts.push('Be brief: what matters enough to interrupt me?');
+    }
+    if ((personalization.plannedFocus?.skippedToday ?? 0) > 0) {
+        prompts.push('Reschedule what I skipped today.');
+    }
+    if (hasWeakFollowThrough(personalization.plannedFocus)) {
+        prompts.push('What should I change about my plan today?');
     }
 
     return Array.from(new Set(prompts.filter(Boolean) as string[])).slice(0, 4);
@@ -212,6 +274,7 @@ export default function AICoach() {
     const personalization = context?.personalization;
     const starterPrompts = buildStarterPrompts(context);
     const inputPlaceholder = coachPlaceholder(personalization);
+    const focusStatus = plannedFocusStatus(personalization);
 
     return (
         <div style={{ position: 'fixed', bottom: '30px', right: '30px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -236,7 +299,7 @@ export default function AICoach() {
                             </h3>
                             {personalization && (
                                 <p style={{ margin: '4px 0 0', color: '#a1a1aa', fontSize: '11px' }}>
-                                    {modeLabel[personalization.mode]} · {personalization.energy} energy · {personalization.recommendedSessionMinutes}m default
+                                    {modeLabel[personalization.mode]} · {personalization.energy} energy · {focusStatus ?? `${personalization.recommendedSessionMinutes}m default`}
                                 </p>
                             )}
                         </div>
@@ -256,6 +319,11 @@ export default function AICoach() {
                                     <div style={{ fontSize: '12px', lineHeight: 1.5 }}>
                                         {personalization?.guidance || 'Jarvis will use your current tasks, energy, feedback, and day context.'}
                                     </div>
+                                    {focusStatus && (
+                                        <div style={{ fontSize: '11px', marginTop: '6px', color: '#93c5fd' }}>
+                                            Planned focus: {focusStatus}
+                                        </div>
+                                    )}
                                 </div>
                                 {topTask && (
                                     <div style={{
