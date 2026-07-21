@@ -66,6 +66,20 @@ function cloudReasoningLine(config: LiveKitConfig | null, targetTitle: string): 
     : 'Cloud reasoning will use sanitized session text when available.';
 }
 
+function modelLine(config: LiveKitConfig | null, targetTitle: string): string {
+  if (config?.agentModel) return config.agentModel;
+  return targetTitle
+    ? `Not configured for ${targetTitle}; push-to-talk still carries session context.`
+    : 'Not configured; push-to-talk still carries session context.';
+}
+
+function voiceLine(config: LiveKitConfig | null, targetTitle: string): string {
+  if (config?.agentVoice) return config.agentVoice;
+  return targetTitle
+    ? `Session default for ${targetTitle}`
+    : 'Session default';
+}
+
 export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVoiceRoomProps) {
   const [config, setConfig] = useState<LiveKitConfig | null>(null);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
@@ -317,8 +331,8 @@ export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVo
         <div>Voice mode: {config?.voiceMode || 'local'}</div>
         <div>Provider: {config?.voiceProvider || 'local'}</div>
         <div>Reasoning mode: {config?.cloudReasoningMode || 'cloud-reasoning'}</div>
-        <div>Model: {config?.agentModel || 'Not configured'}</div>
-        <div>Voice: {config?.agentVoice || 'Default'}</div>
+        <div>Model: {modelLine(config, targetTitle)}</div>
+        <div>Voice: {voiceLine(config, targetTitle)}</div>
         <div>Interruptions: {config?.features.interruptionHandling ? 'enabled' : 'disabled'}</div>
         <div>Semantic turns: {config?.features.semanticTurnDetection ? 'enabled' : 'disabled'}</div>
         <div>Wake word: {config?.features.wakeWord ? 'enabled' : 'later'}</div>
