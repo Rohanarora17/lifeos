@@ -135,20 +135,22 @@ function buildGoalDeadlineLabel(personalization: GoalPersonalization | null): st
 
 function buildLinkedTasksEmpty(goal: Goal, personalization: GoalPersonalization | null): string {
     if (goal.adaptiveGoalStatus === 'deadline_risk' || personalization?.mode === 'deadline_pressure') {
-        return 'No tasks linked yet. Add the smallest blocker-relief task before adding more goals.';
+        return `No tasks linked yet. Add the smallest blocker-relief task for ${compactGoalText(goal.title, 42)} before adding more goals.`;
     }
     if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.mode === 'recovery' || personalization?.energy === 'low') {
-        return 'No tasks linked yet. Add one minimum session task that keeps this alive.';
+        return `No tasks linked yet. Add one minimum session task that keeps ${compactGoalText(goal.title, 42)} alive.`;
     }
+    if (personalization?.standupGoal) return `No tasks linked yet. Add a time target connecting ${compactGoalText(goal.title, 36)} to today's anchor.`;
     return 'No tasks linked yet. Add a time-based task so sessions can complete it automatically.';
 }
 
 function buildLinkedHabitsEmpty(goal: Goal, personalization: GoalPersonalization | null): string {
     if (goal.adaptiveGoalStatus === 'recovery_minimum' || personalization?.mode === 'recovery' || personalization?.energy === 'low') {
-        return 'No habits linked yet. Link a low-friction habit that survives rough days.';
+        return `No habits linked yet. Link a low-friction habit that keeps ${compactGoalText(goal.title, 42)} alive on rough days.`;
     }
-    if (goal.adaptiveGoalStatus === 'stalled') return 'No habits linked yet. A recurring support habit can restart momentum.';
-    return 'No habits linked yet. Link the support habit that makes this goal repeatable.';
+    if (goal.adaptiveGoalStatus === 'stalled') return `No habits linked yet. A recurring support habit can restart ${compactGoalText(goal.title, 42)}.`;
+    if (personalization?.mode === 'planning') return `No habits linked yet. Link the habit tomorrow should use to support ${compactGoalText(goal.title, 42)}.`;
+    return `No habits linked yet. Link the support habit that makes ${compactGoalText(goal.title, 42)} repeatable.`;
 }
 
 function buildIfPlaceholder(goal: Goal, personalization: GoalPersonalization | null): string {
