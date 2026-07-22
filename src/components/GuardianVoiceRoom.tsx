@@ -80,6 +80,17 @@ function voiceLine(config: LiveKitConfig | null, targetTitle: string): string {
     : 'Session default';
 }
 
+function pushToTalkLine(config: LiveKitConfig | null, targetTitle: string): string {
+  if (config?.pushToTalkTranscriptionConfigured) {
+    return targetTitle
+      ? `whisper.cpp ready for ${targetTitle}`
+      : 'whisper.cpp ready for this session';
+  }
+  return targetTitle
+    ? `manual transcript fallback; replies still use ${targetTitle} context`
+    : 'manual transcript fallback; replies still use session context';
+}
+
 export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVoiceRoomProps) {
   const [config, setConfig] = useState<LiveKitConfig | null>(null);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
@@ -336,7 +347,7 @@ export default function GuardianVoiceRoom({ sessionId, targetTitle }: GuardianVo
         <div>Interruptions: {config?.features.interruptionHandling ? 'enabled' : 'disabled'}</div>
         <div>Semantic turns: {config?.features.semanticTurnDetection ? 'enabled' : 'disabled'}</div>
         <div>Wake word: {config?.features.wakeWord ? 'enabled' : 'later'}</div>
-        <div>Push-to-talk STT: {config?.pushToTalkTranscriptionConfigured ? 'whisper.cpp ready' : 'fallback/stub'}</div>
+        <div>Push-to-talk STT: {pushToTalkLine(config, targetTitle)}</div>
         <div>{config?.voiceModeSummary || 'Local-first voice mode'}</div>
         <div>{cloudReasoningLine(config, targetTitle)}</div>
       </div>
