@@ -439,6 +439,40 @@ function completionActionFailureMessage(personalization?: GuardianInsights['pers
   return 'Could not update this review right now. Try again from the current review queue.';
 }
 
+function optimizerMutationSourceLabel(source: string, personalization?: GuardianInsights['personalization']) {
+  if (source === 'llm') return 'LLM mutations';
+  if (!personalization) return 'data fallback variants';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') return 'recovery-safe fallback variants';
+  if (personalization.mode === 'deadline_pressure') return 'deadline-pressure fallback variants';
+  if (personalization.alertFatigueLevel === 'high') return 'quiet-alert fallback variants';
+  if (personalization.mode === 'planning') return 'planning-mode fallback variants';
+  return `${MODE_LABEL[personalization.mode].toLowerCase()} fallback variants`;
+}
+
+function optimizerNoPromotionLabel(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'No promotion — baseline retained';
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No promotion — kept the gentler baseline for today';
+  }
+  if (personalization.mode === 'deadline_pressure') return 'No promotion — baseline still handles deadline pressure better';
+  if (personalization.alertFatigueLevel === 'high') return 'No promotion — baseline still keeps alert pressure safer';
+  if (personalization.mode === 'planning') return 'No promotion — baseline retained for tomorrow planning';
+  return 'No promotion — baseline retained';
+}
+
+function optimizerHistoryEmptyMessage(personalization?: GuardianInsights['personalization']) {
+  if (!personalization) return 'No optimization history. Run the optimizer after a few reviewed sessions.';
+  if (personalization.plannedFocus?.nextTitle) {
+    return `No optimization history. After "${personalization.plannedFocus.nextTitle}", use feedback to generate policy candidates.`;
+  }
+  if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+    return 'No optimization history. Start with feedback on whether interventions stayed gentle enough today.';
+  }
+  if (personalization.mode === 'deadline_pressure') return 'No optimization history. Run it after a pressure block to tune deadline interventions.';
+  if (personalization.mode === 'planning') return 'No optimization history. Use tomorrow planning feedback before generating candidates.';
+  return 'No optimization history. Run the optimizer after reviewed sessions create enough signal.';
+}
+
 export default function GuardianPage() {
   const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
@@ -1729,7 +1763,7 @@ export default function GuardianPage() {
         {optimizeResult && (
           <div style={{ marginBottom: '16px', padding: '10px 12px', background: '#0a0a12', border: '1px solid #2a2a40', borderRadius: '9px' }}>
             <div style={{ fontSize: '10px', color: '#555570', fontWeight: 600, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Last Run · <span style={{ color: optimizeResult.mutationSource === 'llm' ? '#22c55e' : '#f59e0b' }}>{optimizeResult.mutationSource === 'llm' ? 'LLM mutations' : 'fallback variants'}</span>
+              Last Run · <span style={{ color: optimizeResult.mutationSource === 'llm' ? '#22c55e' : '#f59e0b' }}>{optimizerMutationSourceLabel(optimizeResult.mutationSource, adaptivePersonalization)}</span>
             </div>
 
             {/* Baseline */}
@@ -1776,7 +1810,7 @@ export default function GuardianPage() {
                 </span>
               ) : (
                 <span style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', fontWeight: 600 }}>
-                  No promotion — baseline retained
+                  {optimizerNoPromotionLabel(adaptivePersonalization)}
                 </span>
               )}
               {optimizeResult.canary && (
@@ -1878,7 +1912,7 @@ export default function GuardianPage() {
         {/* Empty state */}
         {!optimizerData?.activeArtifact && !optimizeResult && (
           <div style={{ fontSize: '12px', color: '#444460', textAlign: 'center', padding: '8px 0' }}>
-            No optimization history. Run the optimizer to generate and evaluate policy candidates.
+            {optimizerHistoryEmptyMessage(adaptivePersonalization)}
           </div>
         )}
 
