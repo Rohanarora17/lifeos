@@ -20,7 +20,7 @@ import { getGuardianSession, getActiveGuardianSession } from './guardian-runtime
 import { getDb } from './db';
 import type { ScreenVisionSignal, ScreenContext } from './guardian-types';
 import type { FocusCopilotCallout } from './focus-copilot-types';
-import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
+import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -203,6 +203,25 @@ function buildGuidanceFallback(input: GuidanceInput): GuidanceResponse {
   };
 }
 
+function noActiveSessionGuidanceBlock(personalization: PersonalizationSnapshot): string {
+  const planned = personalization.today.plannedFocus.nextTitle
+    ? `\nNext planned focus: ${personalization.today.plannedFocus.nextTitle}${personalization.today.plannedFocus.nextMinutes ? ` (${personalization.today.plannedFocus.nextMinutes}m)` : ''}`
+    : '';
+  const standup = personalization.userState.standupGoal
+    ? `\nToday's stated goal: ${personalization.userState.standupGoal}`
+    : '';
+
+  return [
+    'No active Guardian session.',
+    `Moment mode: ${personalization.moment.mode}`,
+    `Energy: ${personalization.userState.energy}`,
+    `Mood: ${personalization.userState.mood ?? 'unknown'}`,
+    `Learned focus window: ${personalization.userState.nextBestFocusWindow || 'unknown'}`,
+    `Alert fatigue: ${personalization.feedback.alertFatigueLevel}${planned}${standup}`,
+    `Guidance: ${personalization.moment.guidance}`,
+  ].join('\n');
+}
+
 // ─── Main guidance assembler ──────────────────────────────────────────────────
 
 export async function assembleGuidanceResponse(input: GuidanceInput): Promise<GuidanceResponse> {
@@ -253,7 +272,7 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
         elapsedMin !== null ? `Elapsed: ${elapsedMin} min` : '',
         focusScore !== null ? `Current focus score: ${Math.round(focusScore)}/100` : '',
       ].filter(Boolean).join('\n')
-    : 'No active session.';
+    : noActiveSessionGuidanceBlock(personalization);
 
   const systemInstruction = [
     'You are the LifeOS Guardian — a precise, context-aware focus coach.',
