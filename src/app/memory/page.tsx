@@ -150,7 +150,21 @@ function memoryContentPlaceholder(personalization: MemoryPersonalization | null,
 }
 
 function memoryEmptyMessage(activeTab: 'all' | 'unverified' | FactCategory, search: string, personalization: MemoryPersonalization | null): string {
-  if (search) return `No facts matching "${search}"`;
+  if (search) {
+    if (personalization?.plannedFocus.nextTitle) {
+      return `No facts matching "${search}". Add what LifeOS should remember for ${compactMemoryText(personalization.plannedFocus.nextTitle, 42)}.`;
+    }
+    if (personalization?.mode === 'recovery' || personalization?.energy === 'low' || personalization?.mood === 'low') {
+      return `No facts matching "${search}". Add an energy, sleep, or capacity rule if this keeps affecting your day.`;
+    }
+    if (personalization?.mode === 'deadline_pressure') {
+      return `No facts matching "${search}". Add the blocker, constraint, or deadline rule LifeOS should use next time.`;
+    }
+    if (personalization?.mode === 'planning') {
+      return `No facts matching "${search}". Add what tomorrow planning should inherit or avoid.`;
+    }
+    return `No facts matching "${search}". Add the personal rule if this should guide future choices.`;
+  }
   if (activeTab === 'unverified') return 'No unverified facts. The next useful signal is fresh feedback after a session.';
   if (!personalization) return 'No facts in this category yet.';
   if (activeTab === 'mood' || personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
