@@ -33,7 +33,7 @@ function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
 }
 
-function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing' | 'voice_download_failed' | 'voice_transcribe_failed' | 'screentime_parse_failed'): string {
+function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_active_session' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing' | 'voice_download_failed' | 'voice_transcribe_failed' | 'screentime_parse_failed'): string {
     try {
         const snapshot = buildPersonalizationSnapshot({
             surface: 'telegram',
@@ -49,6 +49,14 @@ function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session'
             if (snapshot.today.plannedFocus.nextTitle) return `No recent session to review. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; feedback will matter after that block.`;
             if (snapshot.moment.mode === 'planning') return 'No recent session to review. Use this moment to set tomorrow\'s first block instead.';
             return 'No recent session to review. Start a focus block first so the model has something real to learn from.';
+        }
+        if (kind === 'no_active_session') {
+            if (snapshot.today.plannedFocus.nextTitle) return `💤 No active session to end. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`;
+            if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') return '💤 No active session to end. If you start one, keep it small enough for this low-capacity window.';
+            if (snapshot.moment.mode === 'deadline_pressure') return '💤 No active session to end. Start the deadline-relief block before optional work.';
+            if (snapshot.moment.mode === 'planning') return '💤 No active session to end. Use this window to lock tomorrow’s first block.';
+            if (snapshot.userState.nextBestFocusWindow) return `💤 No active session to end. Best learned window: <b>${snapshot.userState.nextBestFocusWindow}</b>.`;
+            return '💤 No active session to end. Start the next useful block when ready.';
         }
         if (kind === 'no_softwatch') {
             if (snapshot.today.plannedFocus.nextTitle) return `No pending soft watch. Next planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>.`;
@@ -86,6 +94,7 @@ function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_feedback_session'
         }
     } catch { /* keep fallback */ }
     if (kind === 'alert_dismissed') return '✅ Alert dismissed.';
+    if (kind === 'no_active_session') return '💤 No active session to end. Start the next useful block when ready.';
     if (kind === 'no_feedback_session') return 'No recent session to give feedback on.';
     if (kind === 'no_softwatch') return 'No pending soft watch right now.';
     if (kind === 'review_missing') return 'Review not found.';
@@ -294,7 +303,7 @@ async function handleActionCallback(payload: string) {
 
         case 'end_session':
             if (!session) {
-                await sendTelegram('💤 No active session.', 'HTML', FULL_MENU_KEYBOARD);
+                await sendTelegram(webhookPersonalizedLine('no_active_session'), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
             endGuardianSession(session.sessionId);
