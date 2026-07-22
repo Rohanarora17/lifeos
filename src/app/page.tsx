@@ -214,10 +214,15 @@ function formatAdaptiveSignal(personalization: DashboardPersonalization) {
 function formatNotificationEmpty(personalization?: DashboardPersonalization, alertPolicy?: AlertCenterPolicy | null) {
   if (alertPolicy) return alertPolicy.emptyState;
   if (!personalization) return 'No new notifications';
+  if (personalization.plannedFocus.nextTitle) {
+    return `No new notifications. Keep space for ${personalization.plannedFocus.nextTitle}${personalization.plannedFocus.nextMinutes ? ` (${personalization.plannedFocus.nextMinutes}m)` : ''}.`;
+  }
+  if (personalization.standupGoal) return `No new notifications. Today's anchor is: ${personalization.standupGoal}`;
   if (personalization.alertFatigueLevel === 'high') return 'Quieting non-urgent notifications for now';
   if (personalization.mode === 'protect_focus') return 'No routine notifications during this focus window';
   if (personalization.mode === 'recovery') return 'Only important nudges right now';
-  return 'No new notifications';
+  if (personalization.nextBestFocusWindow) return `No new notifications. Best learned window: ${personalization.nextBestFocusWindow}.`;
+  return `No new notifications. ${personalization.guidance}`;
 }
 
 function formatActivityEmpty(personalization?: DashboardPersonalization, surface: 'domains' | 'timeline' = 'domains') {
