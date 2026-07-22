@@ -98,6 +98,25 @@ function plannedFocusStatus(personalization?: CoachContext['personalization']) {
     return `focus ${plannedFocus.completedToday}/${plannedFocus.plannedToday}`;
 }
 
+function coachTimingStatus(personalization?: CoachContext['personalization']) {
+    if (!personalization) return null;
+    const planned = plannedFocusStatus(personalization);
+    if (planned) return planned;
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return `${personalization.recommendedSessionMinutes}m low-capacity block`;
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return `${personalization.recommendedSessionMinutes}m pressure-relief block`;
+    }
+    if (personalization.mode === 'planning') {
+        return `${personalization.recommendedSessionMinutes}m tomorrow setup`;
+    }
+    if (personalization.nextBestFocusWindow) {
+        return `best window ${personalization.nextBestFocusWindow}`;
+    }
+    return `${personalization.recommendedSessionMinutes}m learned fit`;
+}
+
 function coachPlaceholder(personalization?: CoachContext['personalization']) {
     if (!personalization) return 'Ask from current context...';
     const nextBlock = formatPlannedFocusTitle(personalization.plannedFocus);
@@ -274,7 +293,8 @@ export default function AICoach() {
     const personalization = context?.personalization;
     const starterPrompts = buildStarterPrompts(context);
     const inputPlaceholder = coachPlaceholder(personalization);
-    const focusStatus = plannedFocusStatus(personalization);
+    const plannedStatus = plannedFocusStatus(personalization);
+    const timingStatus = coachTimingStatus(personalization);
 
     return (
         <div style={{ position: 'fixed', bottom: '30px', right: '30px', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -299,7 +319,7 @@ export default function AICoach() {
                             </h3>
                             {personalization && (
                                 <p style={{ margin: '4px 0 0', color: '#a1a1aa', fontSize: '11px' }}>
-                                    {modeLabel[personalization.mode]} · {personalization.energy} energy · {focusStatus ?? `${personalization.recommendedSessionMinutes}m default`}
+                                    {modeLabel[personalization.mode]} · {personalization.energy} energy · {timingStatus}
                                 </p>
                             )}
                         </div>
@@ -319,9 +339,9 @@ export default function AICoach() {
                                     <div style={{ fontSize: '12px', lineHeight: 1.5 }}>
                                         {personalization?.guidance || 'Jarvis will use your current tasks, energy, feedback, and day context.'}
                                     </div>
-                                    {focusStatus && (
+                                    {plannedStatus && (
                                         <div style={{ fontSize: '11px', marginTop: '6px', color: '#93c5fd' }}>
-                                            Planned focus: {focusStatus}
+                                            Planned focus: {plannedStatus}
                                         </div>
                                     )}
                                 </div>
