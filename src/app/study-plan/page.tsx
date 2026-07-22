@@ -60,7 +60,7 @@ function compactPrompt(text: string, maxLength = 58): string {
 }
 
 function buildStudyTopicPlaceholder(defaults: StudyPlanDefaults | null): string {
-    if (!defaults) return 'e.g., Quantum Computing, Rust Ownership, React Hooks';
+    if (!defaults) return "Topic from today's focus, open blocker, or weakest concept...";
 
     const context = defaults.adaptiveContext;
     if (context.standupGoal) {
@@ -87,7 +87,7 @@ function buildStudyTopicPlaceholder(defaults: StudyPlanDefaults | null): string 
         return 'e.g., Math Academy, proof drills, missed problems';
     }
 
-    return 'e.g., Quantum Computing, Rust Ownership, React Hooks';
+    return "Topic from today's focus, open blocker, or weakest concept...";
 }
 
 function buildStudyTopicHint(defaults: StudyPlanDefaults | null): string | null {
