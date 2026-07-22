@@ -38,6 +38,29 @@ interface RankedPriorityItem {
     reason: string;
 }
 
+function activeGoalsFallback(personalization: ReturnType<typeof buildPersonalizationSnapshot>): string {
+    if (personalization.today.plannedFocus.nextTitle) {
+        return `- No active goals; use planned focus "${personalization.today.plannedFocus.nextTitle}" as today's temporary anchor.`;
+    }
+    if (personalization.userState.standupGoal) {
+        return `- No active goals; use today's stated goal "${personalization.userState.standupGoal}" as the anchor.`;
+    }
+    if (personalization.moment.mode === 'deadline_pressure') return '- No active goals; infer deadline relief from due dates and task types.';
+    if (personalization.moment.mode === 'recovery') return '- No active goals; rank by minimum viable low-energy progress.';
+    if (personalization.moment.mode === 'planning') return '- No active goals; rank tasks that make tomorrow easier to schedule.';
+    return '- No active goals; rank by current day context, deadlines, and learned fit.';
+}
+
+function adaptiveBaselineFallback(personalization: ReturnType<typeof buildPersonalizationSnapshot>): string {
+    if (personalization.today.plannedFocus.nextTitle) {
+        return `- No adaptive baseline rows; planned focus "${personalization.today.plannedFocus.nextTitle}" is the strongest current signal.`;
+    }
+    if (personalization.feedback.alertFatigueLevel === 'high') return '- No adaptive baseline rows; avoid ranking notification-chasing work high unless urgent.';
+    if (personalization.moment.mode === 'recovery') return '- No adaptive baseline rows; prefer small, low-friction tasks.';
+    if (personalization.moment.mode === 'deadline_pressure') return '- No adaptive baseline rows; prefer concrete deadline relief.';
+    return '- No adaptive baseline rows; use energy, due dates, and recent personalization context.';
+}
+
 function daysUntil(due: string | null): number | null {
     if (!due) return null;
     const today = new Date(Date.now() + 19800000); // IST
@@ -206,13 +229,13 @@ ENERGY: ${energyBand} (${energy}/100)
 ${formatPersonalizationContext(personalization)}
 
 ACTIVE GOALS:
-${goalLines || '- No active goals'}
+${goalLines || activeGoalsFallback(personalization)}
 
 TASKS:
 ${taskLines}
 
 ADAPTIVE MODEL BASELINE:
-${adaptiveLines || '- No adaptive baseline available'}
+${adaptiveLines || adaptiveBaselineFallback(personalization)}
 
 Rules:
 - Use the adaptive baseline as grounding, but override it when a real deadline, exam, active goal, or user feedback makes another order more useful.
