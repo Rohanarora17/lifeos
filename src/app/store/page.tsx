@@ -186,7 +186,11 @@ function buildRewardCostPlaceholder(policy: RewardPolicy | null): string {
 }
 
 function buildLedgerEmpty(policy: RewardPolicy | null, balance: number): string {
-    if (!policy) return 'No transactions yet.';
+    if (!policy) {
+        return balance > 0
+            ? `No transactions yet. ${balance} coins are available once today's reward policy loads.`
+            : 'No transactions yet. Earn coins from a focus session so reward pricing has real context.';
+    }
     if (policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low') {
         return 'No reward history yet. Start with restorative rewards priced for low energy.';
     }
