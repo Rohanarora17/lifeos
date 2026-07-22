@@ -215,6 +215,23 @@ function buildLoadingPlannerEmptyMessage(input: {
     return 'No generated sessions yet. Planner is loading tomorrow context before choosing blocks.';
 }
 
+function buildTaskPoolEmptyMessage(data: PlannerPayload, energy: string, mood: string): string {
+    const mode = data.personalization.mode;
+    if (mode === 'recovery' || energy === 'low' || mood === 'low') {
+        return 'No open time-target tasks found. Add one small recovery-safe target before generating tomorrow.';
+    }
+    if (mode === 'deadline_pressure') {
+        return 'No open time-target tasks found. Add the deadline-relief task that tomorrow must protect.';
+    }
+    if (mode === 'planning') {
+        return 'No open time-target tasks found. Turn tomorrow’s intention into one measurable time target.';
+    }
+    if (data.personalization.bestFocusWindow) {
+        return `No open time-target tasks found. Add one task sized for ${data.personalization.bestFocusWindow}.`;
+    }
+    return 'No open time-target tasks found. Add a measurable task so sessions can complete it by time.';
+}
+
 function parseRule(ruleJson: string) {
     try {
         return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string; rewardReason?: string };
@@ -529,7 +546,7 @@ export default function PlannerPage() {
                             </div>
                             <div className="space-y-2">
                                 {data.candidateTasks.length === 0 ? (
-                                    <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No open time-target tasks found.</div>
+                                    <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{buildTaskPoolEmptyMessage(data, energy, mood)}</div>
                                 ) : data.candidateTasks.map(task => (
                                     <button
                                         key={task.id}
