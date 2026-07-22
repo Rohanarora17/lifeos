@@ -101,6 +101,22 @@ function emptySignalLine(snapshot: PersonalizationSnapshot | null, surface: 'hab
   return 'Submit session feedback to calibrate timing, energy, and intervention strength.';
 }
 
+function emptyTasksLine(snapshot: PersonalizationSnapshot | null): string {
+  if (!snapshot) return 'No tasks found. Add one time-target task so focus sessions have something measurable to complete.';
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `No tasks found. Current planned focus is <b>${snapshot.today.plannedFocus.nextTitle}</b>; add its time target if it should count.`;
+  }
+  if (snapshot.userState.standupGoal) {
+    return `No tasks found. Turn today's anchor into one measurable task: <b>${snapshot.userState.standupGoal}</b>.`;
+  }
+  if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+    return 'No tasks found. Add one small recovery-safe time target if today still needs a win.';
+  }
+  if (snapshot.moment.mode === 'deadline_pressure') return 'No tasks found. Add the nearest deadline-relief task first.';
+  if (snapshot.moment.mode === 'planning') return 'No tasks found. Add tomorrow’s first measurable focus target.';
+  return `No tasks found. Add the next task that fits ${snapshot.moment.mode.replace(/_/g, ' ')} mode.`;
+}
+
 // ─── Inline keyboard types ────────────────────────────────────────────────────
 
 export interface InlineKeyboardButton {
@@ -766,7 +782,7 @@ export function formatTasksList(
 ): string {
   const snapshot = getTelegramSnapshot();
   if (tasks.length === 0) {
-    return [`No tasks found.`, modeLine(snapshot)].filter(Boolean).join('\n');
+    return [emptyTasksLine(snapshot), modeLine(snapshot)].filter(Boolean).join('\n');
   }
 
   const ist = Date.now() + 19800000;
