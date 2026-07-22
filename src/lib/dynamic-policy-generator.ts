@@ -9,7 +9,41 @@ import type { GuardianPolicyBundle, SessionIntentProfile } from './guardian-type
 
 // ─── Session performance history ──────────────────────────────────────────────
 
-function loadSessionPerformanceHistory(intent: SessionIntentProfile): string {
+function noSessionHistoryContext(intent: SessionIntentProfile, snapshot: PersonalizationSnapshot): string {
+  const planned = snapshot.today.plannedFocus.nextTitle
+    ? `\n- Current planned focus: ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}`
+    : '';
+  const standup = snapshot.userState.standupGoal
+    ? `\n- Today's stated goal: ${snapshot.userState.standupGoal}`
+    : '';
+  const plannedDuration = snapshot.today.plannedFocus.nextMinutes
+    ? `\n- Next planned block length: ${snapshot.today.plannedFocus.nextMinutes}m`
+    : '';
+
+  return `No completed session history was readable for "${intent.topic}". Use live personalization as the session fallback:
+- Moment mode: ${snapshot.moment.mode}
+- Energy: ${snapshot.userState.energy}
+- Mood: ${snapshot.userState.mood ?? 'unknown'}
+- Learned best focus window: ${snapshot.userState.nextBestFocusWindow || 'unknown'}
+- Alert fatigue: ${snapshot.feedback.alertFatigueLevel}${planned}${plannedDuration}${standup}
+- Guidance: ${snapshot.moment.guidance}`;
+}
+
+function similarSessionFallback(intent: SessionIntentProfile, snapshot: PersonalizationSnapshot): string {
+  const parts = [`No prior sessions on similar topics for "${intent.topic}".`];
+  if (snapshot.today.plannedFocus.nextTitle) {
+    parts.push(`Compare against today's planned focus: ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`);
+  }
+  if (snapshot.userState.nextBestFocusWindow) {
+    parts.push(`Use learned best focus window: ${snapshot.userState.nextBestFocusWindow}.`);
+  }
+  if (snapshot.today.plannedFocus.nextMinutes) {
+    parts.push(`Use the next planned ${snapshot.today.plannedFocus.nextMinutes}m block as the session-length prior.`);
+  }
+  return parts.join(' ');
+}
+
+function loadSessionPerformanceHistory(intent: SessionIntentProfile, snapshot: PersonalizationSnapshot): string {
   try {
     const db = getDb();
     const keywords = intent.topic.split(/\s+/).filter(w => w.length > 3).slice(0, 3);
@@ -60,7 +94,7 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile): string {
         );
       }
     } else {
-      lines.push('No prior sessions on similar topics.');
+      lines.push(similarSessionFallback(intent, snapshot));
     }
 
     if (recentSessions.length > 0) {
@@ -81,7 +115,7 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile): string {
 
     return lines.join('\n');
   } catch {
-    return 'No session history available.';
+    return noSessionHistoryContext(intent, snapshot);
   }
 }
 
@@ -221,7 +255,7 @@ export async function generateDynamicPolicy(
     includeThresholds: true,
     includeMemoryFacts: 8,
   });
-  const sessionHistory = loadSessionPerformanceHistory(intent);
+  const sessionHistory = loadSessionPerformanceHistory(intent, personalization);
   const memoryFacts = loadMemoryFacts(intent.topic, personalization);
   const personalizationContext = formatPersonalizationContext(personalization);
   const feedbackSignals = loadPolicyFeedbackSignals(personalization);
