@@ -345,7 +345,10 @@ function voiceNoActiveSessionLine(snapshot: PersonalizationSnapshot, action: 'ad
   }
   if (snapshot.moment.mode === 'deadline_pressure') return 'No active session right now. Start the deadline-relief block before optional work.';
   if (snapshot.moment.mode === 'planning') return 'No active session right now. Use this moment to lock tomorrow\'s first block.';
-  if (action === 'resume') return 'No paused session found. Start the next useful block when you are ready.';
+  if (action === 'resume' && snapshot.userState.nextBestFocusWindow) {
+    return `No paused session found. Start the next useful block near ${snapshot.userState.nextBestFocusWindow}.`;
+  }
+  if (action === 'resume') return `No paused session found. ${snapshot.moment.guidance}`;
   return 'No active session right now. Start the next useful block when you are ready.';
 }
 
