@@ -95,6 +95,26 @@ function buildEmptyConceptMapMessage(goal: Goal, personalization: KnowledgePerso
     return 'No concept nodes yet. Generate the knowledge map that should guide tasks and study sessions.';
 }
 
+function buildNoGoalsMessage(personalization: KnowledgePersonalization | null): string {
+    if (!personalization) return 'No active goals found. Create the goal that should anchor tasks, sessions, and concept learning.';
+    if (personalization.plannedFocus.nextTitle) {
+        return `No active goals found. Add a goal for "${compactKnowledgeText(personalization.plannedFocus.nextTitle, 44)}" so sessions and concepts share an anchor.`;
+    }
+    if (personalization.standupGoal) {
+        return `No active goals found. Turn today's stated goal into a durable learning anchor: ${compactKnowledgeText(personalization.standupGoal, 52)}.`;
+    }
+    if (personalization.mode === 'recovery' || personalization.energy === 'low' || personalization.mood === 'low') {
+        return 'No active goals found. Add one low-pressure goal that can shrink on rough days.';
+    }
+    if (personalization.mode === 'deadline_pressure') {
+        return 'No active goals found. Add the deadline goal first so blockers and prerequisites can be mapped.';
+    }
+    if (personalization.mode === 'planning') {
+        return 'No active goals found. Add the goal tomorrow should optimize before generating study blocks.';
+    }
+    return `No active goals found. Create the goal that should guide today's concepts: ${personalization.guidance}`;
+}
+
 export default function KnowledgeGraphPage() {
     const [goals, setGoals] = useState<Goal[]>([]);
     const [selectedGoalId, setSelectedGoalId] = useState<number | null>(null);
@@ -401,7 +421,7 @@ export default function KnowledgeGraphPage() {
                 </div>
             )}
 
-            {goals.length === 0 && <p className="text-sm text-center mt-10" style={{ color: 'var(--text-muted)' }}>No active goals found. Create the goal that should anchor tasks, sessions, and concept learning.</p>}
+            {goals.length === 0 && <p className="text-sm text-center mt-10" style={{ color: 'var(--text-muted)' }}>{buildNoGoalsMessage(personalization)}</p>}
         </div>
     );
 }
