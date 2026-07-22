@@ -199,6 +199,22 @@ function buildNoGeneratedSessionsMessage(input: {
     return `No generated sessions yet. Regenerate around ${input.data.personalization.bestFocusWindow || 'your learned focus window'}.`;
 }
 
+function buildLoadingPlannerEmptyMessage(input: {
+    sleepTime: string;
+    wakeEstimate: string;
+    mood: string;
+    energy: string;
+}) {
+    const sleepMinutes = sleepWindowMinutes(input.sleepTime, input.wakeEstimate);
+    if (sleepMinutes !== null && sleepMinutes < 390) {
+        return `No generated sessions yet. Sleep estimate is ${formatDuration(sleepMinutes)}, so the first plan should load lighter.`;
+    }
+    if (input.energy === 'low' || input.mood === 'low') {
+        return 'No generated sessions yet. Current mood or energy points toward a recovery-safe first block.';
+    }
+    return 'No generated sessions yet. Planner is loading tomorrow context before choosing blocks.';
+}
+
 function parseRule(ruleJson: string) {
     try {
         return JSON.parse(ruleJson) as { mode?: string; guidance?: string; tools?: string[]; breakMinutes?: number; taskReason?: string; rewardReason?: string };
@@ -318,7 +334,7 @@ export default function PlannerPage() {
         mood,
         energy,
         selectedMinutes,
-    }) : 'No generated sessions yet.';
+    }) : buildLoadingPlannerEmptyMessage({ sleepTime, wakeEstimate, mood, energy });
 
     const generatePlan = async () => {
         setGenerating(true);
