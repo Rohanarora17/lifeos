@@ -111,6 +111,32 @@ function formatActiveSessionConflict(session: NonNullable<ReturnType<typeof getA
     return `Session already active: <b>${session.targetTitle}</b> (${elapsed}m elapsed, ${remaining}m left).\n\n${suffix}`;
 }
 
+function formatLlmUnavailableLine(): string {
+    try {
+        const snapshot = buildPersonalizationSnapshot({
+            surface: 'telegram',
+            maxInsights: 1,
+            includeMemoryFacts: 2,
+        });
+        if (snapshot.today.plannedFocus.nextTitle) {
+            return `❌ LLM is offline. Use /menu or start <b>${snapshot.today.plannedFocus.nextTitle}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''} from the current plan.`;
+        }
+        if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+            return '❌ LLM is offline. Use /menu and choose one small recovery-safe action.';
+        }
+        if (snapshot.moment.mode === 'deadline_pressure') {
+            return '❌ LLM is offline. Use /tasks and pick the nearest deadline-relief item first.';
+        }
+        if (snapshot.moment.mode === 'planning') {
+            return '❌ LLM is offline. Use /plan to lock tomorrow’s first block.';
+        }
+        if (snapshot.userState.nextBestFocusWindow) {
+            return `❌ LLM is offline. Use /menu; your learned focus window is ${snapshot.userState.nextBestFocusWindow}.`;
+        }
+    } catch { /* keep fallback */ }
+    return '❌ LLM not configured. Use /menu for quick actions.';
+}
+
 function formatScheduleFitLine(snapshot: ReturnType<typeof buildPersonalizationSnapshot>, plannedMinutes: number): string {
     const mode = snapshot.moment.mode.replace(/_/g, ' ');
     if (snapshot.today.plannedFocus.nextTitle) {
@@ -851,7 +877,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
 
     const ai = getGenAI();
     if (!ai) {
-        await sendTelegram('❌ LLM not configured. Use /menu for quick actions.', 'HTML', FULL_MENU_KEYBOARD);
+        await sendTelegram(formatLlmUnavailableLine(), 'HTML', FULL_MENU_KEYBOARD);
         return;
     }
 
