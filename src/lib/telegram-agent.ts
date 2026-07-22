@@ -174,11 +174,16 @@ function formatNoActiveTelegramSession(snapshot: ReturnType<typeof buildPersonal
     if (snapshot.moment.mode === 'planning') {
         return `💤 <b>No active session.</b> Lock tomorrow's first block before adding more.`;
     }
-    if (action === 'adjust') return `💤 <b>No active session to adjust.</b> Start the next useful block first.`;
-    if (action === 'end') return `💤 <b>No active session to end.</b>`;
     if (snapshot.userState.nextBestFocusWindow) {
-        return `💤 <b>No active session.</b> Best learned window: <b>${snapshot.userState.nextBestFocusWindow}</b>.`;
+        const actionLine = action === 'adjust'
+            ? 'There is nothing to adjust yet.'
+            : action === 'end'
+                ? 'There is nothing to end yet.'
+                : 'Start the next useful block when ready.';
+        return `💤 <b>No active session.</b> ${actionLine} Best learned window: <b>${snapshot.userState.nextBestFocusWindow}</b>.`;
     }
+    if (action === 'adjust') return `💤 <b>No active session to adjust.</b> ${snapshot.moment.guidance}`;
+    if (action === 'end') return `💤 <b>No active session to end.</b> ${snapshot.moment.guidance}`;
     return `💤 <b>No active session.</b> Start the next useful block when ready.`;
 }
 
