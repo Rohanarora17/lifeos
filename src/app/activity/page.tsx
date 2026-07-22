@@ -26,6 +26,30 @@ interface Stats {
     total_minutes: number;
 }
 
+function activityReason(act: Activity): string {
+    if (act.ai_classification) {
+        try {
+            const parsed = JSON.parse(act.ai_classification) as { reasoning?: unknown };
+            if (typeof parsed.reasoning === 'string' && parsed.reasoning.trim()) {
+                return parsed.reasoning.trim();
+            }
+        } catch {
+            // Fall through to the contextual reason below.
+        }
+    }
+
+    const subject = act.title || act.domain || act.url || 'this activity';
+    const duration = act.duration_seconds > 0
+        ? ` for ${Math.max(1, Math.round(act.duration_seconds / 60))}m`
+        : '';
+    const device = act.device_name && act.device_name !== 'Unknown Device'
+        ? ` on ${act.device_name}`
+        : '';
+    const channel = act.youtube_channel ? ` from ${act.youtube_channel}` : '';
+
+    return `${subject}${channel}${duration}${device} is currently treated as ${act.category}${act.subcategory ? `/${act.subcategory}` : ''} based on captured activity context.`;
+}
+
 export default function ActivityPage() {
     const [activities, setActivities] = useState<Activity[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
@@ -135,7 +159,7 @@ export default function ActivityPage() {
                                 <div className="flex-1 min-w-0">
                                     <p
                                         className="text-sm truncate font-medium cursor-help"
-                                        title={act.ai_classification ? JSON.parse(act.ai_classification).reasoning : 'No reasoning available'}
+                                        title={activityReason(act)}
                                     >
                                         {act.youtube_video_id && '🎬 '}
                                         {act.title || act.url}
