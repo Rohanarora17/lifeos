@@ -134,8 +134,28 @@ function derivePosture(snapshot: PersonalizationSnapshot): Pick<AdaptiveAlertCen
     posture: 'normal',
     reason: snapshot.moment.guidance,
     visibleSeverities: ['info', 'warning', 'urgent'],
-    emptyState: 'No new notifications',
+    emptyState: normalEmptyState(snapshot),
   };
+}
+
+function normalEmptyState(snapshot: PersonalizationSnapshot): string {
+  if (snapshot.today.plannedFocus.nextTitle) {
+    return `No new notifications. Keep the next block clear for ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`;
+  }
+
+  if (snapshot.userState.standupGoal) {
+    return `No new notifications. Stay anchored on today's goal: ${snapshot.userState.standupGoal}.`;
+  }
+
+  if (snapshot.feedback.helpfulRate !== null && snapshot.feedback.helpfulRate < 0.45) {
+    return 'No new notifications. Holding back routine nudges because recent alert feedback has been weak.';
+  }
+
+  if (snapshot.userState.nextBestFocusWindow) {
+    return `No new notifications. Best learned focus window: ${snapshot.userState.nextBestFocusWindow}.`;
+  }
+
+  return `No new notifications. ${snapshot.moment.guidance}`;
 }
 
 function summarize(snapshot: PersonalizationSnapshot, visibleCount: number, quietedCount: number, posture: AdaptiveAlertCenterPolicy['posture']): string {
