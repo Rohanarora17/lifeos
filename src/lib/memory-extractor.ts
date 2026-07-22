@@ -27,6 +27,7 @@ import {
 } from './memory';
 import { getIntelligenceProfile } from './intelligence';
 import { getDb } from './db';
+import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,12 +65,19 @@ async function runLLMExtraction(contextText: string, source: string, topicQuery?
     existingFacts = existingFacts.slice(0, 40);
   }
 
-  const existingContext = existingFacts.length > 0
-    ? existingFacts.map(f => `[ID:${f.id}] [${f.category}/${f.topic}] ${f.content} (conf:${f.confidence.toFixed(2)})`).join('\n')
-    : 'No existing facts yet.';
-
   // Inject UIL narrative so extraction understands current user state and can judge relevance
   const profile = getIntelligenceProfile();
+  const personalization = buildPersonalizationSnapshot({
+    surface: 'self_model',
+    maxInsights: 3,
+    includeThresholds: false,
+    includeMemoryFacts: 6,
+  });
+  const personalizationContext = formatPersonalizationContext(personalization);
+  const existingContext = existingFacts.length > 0
+    ? existingFacts.map(f => `[ID:${f.id}] [${f.category}/${f.topic}] ${f.content} (conf:${f.confidence.toFixed(2)})`).join('\n')
+    : `No stored memory facts matched yet. Use current personalization as the extraction prior:
+${personalizationContext}`;
   const narrativeBlock = profile.currentNarrative
     ? `\nCURRENT USER STATE: ${profile.currentNarrative}`
     : '';
@@ -78,6 +86,9 @@ async function runLLMExtraction(contextText: string, source: string, topicQuery?
 
 EXISTING MEMORY:
 ${existingContext}
+
+CURRENT PERSONALIZATION:
+${personalizationContext}
 
 NEW CONTEXT (source: ${source}):
 ${contextText}
