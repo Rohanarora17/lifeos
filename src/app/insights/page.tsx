@@ -132,7 +132,7 @@ const GOAL_METRICS = [
 ];
 
 function buildNoSessionsCopy(context?: AdaptiveInsightsContext): string {
-    if (!context) return 'No sessions detected yet today.';
+    if (!context) return 'No sessions detected yet today. Complete a timed block so insights can compare focus, energy, and follow-through.';
     if (context.currentSignals.activeSession) return 'Active session is still being tracked; completed blocks will land here.';
     if (context.mode === 'recovery' || context.energy === 'low' || context.mood === 'low') {
         return `No completed sessions yet. Start with a lighter block around ${context.nextBestFocusWindow}.`;
@@ -165,7 +165,9 @@ function buildGoalTargetPlaceholder(metric: string, context?: AdaptiveInsightsCo
 }
 
 function buildDomainEmptyCopy(kind: 'productive' | 'distraction', context?: AdaptiveInsightsContext): string {
-    if (!context) return 'No data yet.';
+    if (!context) return kind === 'productive'
+        ? 'No productive domains yet. Start one tracked focus block so LifeOS can learn what counts as useful work.'
+        : 'No distraction domains yet. Keep tracking so LifeOS can separate real breaks from avoidance.';
     if (kind === 'productive') {
         if (context.mode === 'recovery' || context.energy === 'low') return 'No productive domains yet. A small restorative block still counts.';
         return `No productive domains yet. ${context.recommendedAnalysis}`;
