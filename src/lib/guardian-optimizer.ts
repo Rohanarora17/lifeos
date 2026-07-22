@@ -11,6 +11,7 @@ import {
 import { evaluateGuardianPolicyScenario } from './guardian-eval';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
 
 const ACTIVE_POLICY_TYPE = 'guardian_policy_bundle';
 const DEFAULT_PRIMARY_METRIC = 'guardian_eval_score';
@@ -576,7 +577,7 @@ export function validatePolicyBundle(obj: unknown): GuardianPolicyBundle {
 
 async function generateLLMMutations(
   policy: GuardianPolicyBundle,
-  context: { recentSessions: RecentSessionSummary[]; lastEvalFailures: EvalCaseFailure[] }
+  context: { recentSessions: RecentSessionSummary[]; lastEvalFailures: EvalCaseFailure[]; personalization: PersonalizationSnapshot }
 ): Promise<Array<GuardianPolicyBundle & { _rationale?: string }>> {
   const ai = getGenAI();
   if (!ai) return [];
@@ -587,7 +588,8 @@ async function generateLLMMutations(
         `focus=${s.average_focus_score}/100, blocks=${s.blocked_count}, overrides=${s.override_count}` +
         (s.reflection_text ? `, reflection: "${s.reflection_text.slice(0, 100)}"` : '')
       ).join('\n')
-    : 'No completed sessions yet — use eval failure patterns to guide mutations.';
+    : `No completed sessions yet. Use the current personalization context as the live prior:
+${formatPersonalizationContext(context.personalization)}`;
 
   const failureLines = context.lastEvalFailures.length > 0
     ? context.lastEvalFailures.map((f) => `- ${f.caseName} (score:${f.score}): ${f.reasons.join('; ')}`).join('\n')
@@ -606,6 +608,9 @@ ${JSON.stringify(policy, null, 2)}
 
 RECENT SESSION OUTCOMES (latest first):
 ${sessionLines}
+
+CURRENT PERSONALIZATION:
+${formatPersonalizationContext(context.personalization)}
 
 LAST EVAL CASE FAILURES:
 ${failureLines}
@@ -745,7 +750,15 @@ export async function runGuardianOptimizationCycle(input?: {
   });
 
   // 2. Generate mutations — LLM first, fall back to hand-coded
-  const mutationContext = buildMutationContext();
+  const mutationContext = {
+    ...buildMutationContext(),
+    personalization: buildPersonalizationSnapshot({
+      surface: 'intervention',
+      maxInsights: 3,
+      includeThresholds: true,
+      includeMemoryFacts: 6,
+    }),
+  };
   let mutationSource: 'llm' | 'fallback' = 'llm';
   let candidates = await generateLLMMutations(activePolicy, mutationContext);
   if (candidates.length === 0) {
