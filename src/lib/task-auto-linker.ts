@@ -7,6 +7,7 @@
 import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_FLASH } from './models';
+import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 
 interface GoalRow {
   id: number;
@@ -35,8 +36,7 @@ export async function autoLinkTaskToGoal(taskId: number): Promise<number | null>
 
   const ai = getGenAI();
   if (!ai) {
-    // Fallback: keyword overlap scoring
-    return keywordMatchGoal(task, goals);
+    return keywordMatchGoal(task, goals, buildTaskLinkSnapshot());
   }
 
   const goalList = goals.map(g =>
@@ -76,12 +76,37 @@ Respond ONLY with valid JSON (no markdown):
     return null;
   } catch (err) {
     console.error('[auto-linker] LLM failed, falling back to keyword match:', err);
-    return keywordMatchGoal(task, goals);
+    return keywordMatchGoal(task, goals, buildTaskLinkSnapshot());
   }
 }
 
-/** Simple keyword fallback when LLM is unavailable. */
-function keywordMatchGoal(task: TaskRow, goals: GoalRow[]): number | null {
+function buildTaskLinkSnapshot(): PersonalizationSnapshot | null {
+  try {
+    return buildPersonalizationSnapshot({
+      surface: 'tasks',
+      maxInsights: 1,
+      includeMemoryFacts: 2,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function scorePersonalizedGoalFit(taskWords: string[], goalWords: string[], goal: GoalRow, snapshot: PersonalizationSnapshot | null): number {
+  if (!snapshot) return 0;
+  let score = 0;
+  const planned = tokenize(snapshot.today.plannedFocus.nextTitle || '');
+  const standup = tokenize(snapshot.userState.standupGoal || '');
+  if (planned.some(w => taskWords.includes(w) && goalWords.includes(w))) score += 2;
+  if (standup.some(w => taskWords.includes(w) && goalWords.includes(w))) score += 2;
+  if (snapshot.moment.mode === 'deadline_pressure' && /deadline|exam|assignment|launch|deliver|ship|urgent/i.test(`${goal.title} ${goal.description || ''}`)) score += 1.5;
+  if ((snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') && /health|habit|recovery|maintenance|minimum/i.test(`${goal.category} ${goal.title}`)) score += 1;
+  if (snapshot.moment.mode === 'planning' && /plan|tomorrow|project|launch|roadmap/i.test(`${goal.title} ${goal.description || ''}`)) score += 1;
+  return score;
+}
+
+/** Deterministic fallback when LLM is unavailable, weighted by today's context. */
+function keywordMatchGoal(task: TaskRow, goals: GoalRow[], snapshot: PersonalizationSnapshot | null): number | null {
   const taskWords = tokenize(`${task.title} ${task.description || ''}`);
   let bestGoal: GoalRow | null = null;
   let bestScore = 0;
@@ -89,8 +114,9 @@ function keywordMatchGoal(task: TaskRow, goals: GoalRow[]): number | null {
   for (const goal of goals) {
     const goalWords = tokenize(`${goal.title} ${goal.description || ''} ${goal.category}`);
     const overlap = taskWords.filter(w => goalWords.includes(w) && w.length > 3).length;
-    if (overlap > bestScore) {
-      bestScore = overlap;
+    const score = overlap + scorePersonalizedGoalFit(taskWords, goalWords, goal, snapshot);
+    if (score > bestScore) {
+      bestScore = score;
       bestGoal = goal;
     }
   }
