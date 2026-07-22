@@ -8,7 +8,23 @@ import type { GuardianStartRequest, SessionIntentProfile, WorkMode } from './gua
 
 // ─── Session history for similar topics ──────────────────────────────────────
 
-function loadSimilarSessionHistory(topic: string): string {
+function noSimilarSessionHistory(topic: string, personalization: PersonalizationSnapshot): string {
+  const planned = personalization.today.plannedFocus.nextTitle
+    ? `\n- Current planned focus: ${personalization.today.plannedFocus.nextTitle}${personalization.today.plannedFocus.nextMinutes ? ` (${personalization.today.plannedFocus.nextMinutes}m)` : ''}`
+    : '';
+  const standup = personalization.userState.standupGoal
+    ? `\n- Today's stated goal: ${personalization.userState.standupGoal}`
+    : '';
+
+  return `No prior sessions matched "${topic}". Use today's personalization as the closest session prior:
+- Moment mode: ${personalization.moment.mode}
+- Energy: ${personalization.userState.energy}
+- Mood: ${personalization.userState.mood ?? 'unknown'}
+- Learned focus window: ${personalization.userState.nextBestFocusWindow || 'unknown'}
+- Alert fatigue: ${personalization.feedback.alertFatigueLevel}${planned}${standup}`;
+}
+
+function loadSimilarSessionHistory(topic: string, personalization: PersonalizationSnapshot): string {
   try {
     const db = getDb();
     // Match on first 3 meaningful words of the topic
@@ -36,7 +52,7 @@ function loadSimilarSessionHistory(topic: string): string {
         productive_events: number;
       }>;
 
-    if (sessions.length === 0) return 'No prior sessions on similar topics.';
+    if (sessions.length === 0) return noSimilarSessionHistory(topic, personalization);
 
     return sessions.map(s =>
       `- "${s.target_title}" (${s.mood || '?'} energy): ${s.elapsed_minutes}min, ` +
@@ -44,7 +60,7 @@ function loadSimilarSessionHistory(topic: string): string {
       `blocked=${s.blocked_count}, distractions=${s.distraction_events}, productive=${s.productive_events}`
     ).join('\n');
   } catch {
-    return 'No prior sessions found.';
+    return noSimilarSessionHistory(topic, personalization);
   }
 }
 
@@ -64,12 +80,12 @@ export async function resolveSessionIntent(
   const recentAvoidancePatterns = uil.avoidancePatterns?.slice(0, 5) ?? [];
   const optimalSprintMinutes = uil.optimalSessionMinutes || durationMinutes;
   const deadlineUrgency = resolveDeadlineUrgency(request.goalId, topic);
-  const sessionHistory = loadSimilarSessionHistory(topic);
   const personalization = buildPersonalizationSnapshot({
     surface: 'intervention',
     maxInsights: 2,
     includeMemoryFacts: 4,
   });
+  const sessionHistory = loadSimilarSessionHistory(topic, personalization);
 
   const workMode = await resolveWorkMode({
     topic,
