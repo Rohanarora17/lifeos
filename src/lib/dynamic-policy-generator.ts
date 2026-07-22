@@ -85,16 +85,33 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile): string {
   }
 }
 
-function loadMemoryFacts(topic: string): string {
+function noMemoryFactsContext(topic: string, snapshot: PersonalizationSnapshot): string {
+  const planned = snapshot.today.plannedFocus.nextTitle
+    ? `\n- Current planned focus: ${snapshot.today.plannedFocus.nextTitle}${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}`
+    : '';
+  const standup = snapshot.userState.standupGoal
+    ? `\n- Today's stated goal: ${snapshot.userState.standupGoal}`
+    : '';
+
+  return `No stored memory facts matched "${topic}". Use current personalization as the memory fallback:
+- Moment mode: ${snapshot.moment.mode}
+- Energy: ${snapshot.userState.energy}
+- Mood: ${snapshot.userState.mood ?? 'unknown'}
+- Alert fatigue: ${snapshot.feedback.alertFatigueLevel}
+- Learned focus window: ${snapshot.userState.nextBestFocusWindow || 'unknown'}${planned}${standup}
+- Guidance: ${snapshot.moment.guidance}`;
+}
+
+function loadMemoryFacts(topic: string, snapshot: PersonalizationSnapshot): string {
   try {
     const relevant = queryRelevantFacts({ status: 'active', limit: 10 });
     const topicFacts = searchFactsByText(topic, 10);
     const seen = new Set(relevant.map(f => f.id));
     const all = [...relevant, ...topicFacts.filter(f => !seen.has(f.id))].slice(0, 12);
-    if (all.length === 0) return 'No memory facts available.';
+    if (all.length === 0) return noMemoryFactsContext(topic, snapshot);
     return all.map(f => `- [${f.category}/${f.topic}] ${f.content} (conf:${f.confidence.toFixed(2)})`).join('\n');
   } catch {
-    return 'No memory facts available.';
+    return noMemoryFactsContext(topic, snapshot);
   }
 }
 
@@ -198,14 +215,14 @@ export async function generateDynamicPolicy(
 ): Promise<GuardianPolicyBundle> {
   const base = getActiveGuardianPolicyBundle();
   const uil = getIntelligenceProfile();
-  const sessionHistory = loadSessionPerformanceHistory(intent);
-  const memoryFacts = loadMemoryFacts(intent.topic);
   const personalization = buildPersonalizationSnapshot({
     surface: 'scheduler',
     maxInsights: 3,
     includeThresholds: true,
     includeMemoryFacts: 8,
   });
+  const sessionHistory = loadSessionPerformanceHistory(intent);
+  const memoryFacts = loadMemoryFacts(intent.topic, personalization);
   const personalizationContext = formatPersonalizationContext(personalization);
   const feedbackSignals = loadPolicyFeedbackSignals(personalization);
 
