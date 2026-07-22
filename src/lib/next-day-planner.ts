@@ -737,7 +737,17 @@ function candidateForPlannedSession(input: {
   taskId: number | null;
   title: string;
   durationMinutes: number;
+  snapshot: PersonalizationSnapshot;
 }): CandidateTask {
+  const fallbackReason = input.snapshot.today.plannedFocus.nextTitle
+    ? `manual planned-session edit aligned with ${input.snapshot.today.plannedFocus.nextTitle}`
+    : input.snapshot.moment.mode === 'recovery' || input.snapshot.userState.energy === 'low' || input.snapshot.userState.mood === 'low'
+      ? 'manual planned-session edit sized for recovery-safe planning'
+      : input.snapshot.moment.mode === 'deadline_pressure'
+        ? 'manual planned-session edit protecting deadline-relief work'
+        : input.snapshot.moment.mode === 'planning'
+          ? 'manual planned-session edit from tomorrow planning context'
+          : `manual planned-session edit using ${input.snapshot.moment.mode.replace(/_/g, ' ')} context`;
   const fallback: CandidateTask = {
     id: input.taskId ?? 0,
     title: input.title,
@@ -756,7 +766,7 @@ function candidateForPlannedSession(input: {
     remaining_minutes: input.durationMinutes,
     due_date: null,
     score: 0,
-    reason: 'manual planned-session edit',
+    reason: fallbackReason,
   };
 
   if (!input.taskId) return fallback;
@@ -1044,7 +1054,7 @@ export async function updatePlannedFocusSession(id: string, patch: {
     maxInsights: 2,
     includeMemoryFacts: 4,
   });
-  const task = candidateForPlannedSession({ taskId, title, durationMinutes });
+  const task = candidateForPlannedSession({ taskId, title, durationMinutes, snapshot });
   const rule = deriveSessionRule(task, snapshot);
   const reward = computeReward(task, durationMinutes, rule, snapshot);
   const pricedRule = { ...rule, rewardReason: reward.reason };
