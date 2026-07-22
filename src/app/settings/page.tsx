@@ -84,7 +84,24 @@ interface SelfModel {
     };
 }
 
-
+function adaptiveSessionLabel(policy: AdaptiveSettingsPolicy): string {
+    if (policy.plannedFocus.nextTitle) {
+        return `${policy.sessionMinutes} min aligned to ${policy.plannedFocus.nextTitle}`;
+    }
+    if (policy.mode === 'recovery' || policy.energy === 'low' || policy.mood === 'low') {
+        return `${policy.sessionMinutes} min recovery-safe block`;
+    }
+    if (policy.mode === 'deadline_pressure') {
+        return `${policy.sessionMinutes} min pressure-relief block`;
+    }
+    if (policy.mode === 'planning') {
+        return `${policy.sessionMinutes} min tomorrow setup block`;
+    }
+    if (policy.nextBestFocusWindow) {
+        return `${policy.sessionMinutes} min learned fit near ${policy.nextBestFocusWindow}`;
+    }
+    return `${policy.sessionMinutes} min learned fit`;
+}
 
 export default function SettingsPage() {
     const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -274,7 +291,7 @@ export default function SettingsPage() {
 	                            {adaptivePolicy.nudgeReason}
 	                        </div>
 	                        <div style={{ color: 'var(--text-secondary)' }}>
-	                            <b style={{ color: 'var(--text-primary)' }}>Focus session:</b> {adaptivePolicy.sessionMinutes} min default
+	                            <b style={{ color: 'var(--text-primary)' }}>Focus session:</b> {adaptiveSessionLabel(adaptivePolicy)}
 	                            <br />
 	                            Capacity {adaptivePolicy.dailyCapacityMinutes} min · next window {adaptivePolicy.nextBestFocusWindow}
 	                        </div>
