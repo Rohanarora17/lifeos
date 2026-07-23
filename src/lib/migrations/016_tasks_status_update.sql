@@ -50,7 +50,11 @@ SELECT
   NULL,   -- priority_rank (new column)
   NULL,   -- priority_reason (new column)
   created_at, completed_at, position, goal_id, priority,
-  energy_required, complexity, estimated_minutes, blocked_since, subtask_of
+  'medium',  -- energy_required (new column)
+  'familiar', -- complexity (new column)
+  NULL,      -- estimated_minutes (new column)
+  NULL,      -- blocked_since (new column)
+  NULL       -- subtask_of (new column)
 FROM tasks;
 
 DROP TABLE tasks;

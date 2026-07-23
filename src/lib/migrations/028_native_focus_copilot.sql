@@ -45,6 +45,17 @@ ALTER TABLE screen_observations_v028 RENAME TO screen_observations;
 CREATE INDEX IF NOT EXISTS idx_screen_obs_observed_at ON screen_observations(observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_obs_session     ON screen_observations(session_id, observed_at DESC);
 
+CREATE TABLE IF NOT EXISTS mem_episodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL CHECK(source IN ('guardian','voice','chat','browse','manual','native_copilot')),
+  summary TEXT NOT NULL,
+  raw_context TEXT,
+  importance REAL DEFAULT 0.5,
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE mem_episodes_v028 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source TEXT NOT NULL CHECK(source IN ('guardian','voice','chat','browse','manual','native_copilot')),
