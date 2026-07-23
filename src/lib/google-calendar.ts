@@ -6,6 +6,21 @@ const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/calendar/google/callback';
 
+interface FakeCalendarEvent {
+  summary?: string;
+  description?: string;
+  startTime?: string;
+  endTime?: string;
+  colorId?: string;
+  reminders?: CalendarReminderDecision;
+}
+
+const fakeCalendarEvents = new Map<string, FakeCalendarEvent>();
+
+function useFakeCalendar(): boolean {
+  return process.env.LIFEOS_FAKE_GOOGLE_CALENDAR === '1' || process.env.LIFEOS_FAKE_GOOGLE_CALENDAR === 'true';
+}
+
 export function getOAuth2Client() {
   return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 }
@@ -47,6 +62,7 @@ function calendarId(): string {
 }
 
 export function isCalendarConfigured(): boolean {
+  if (useFakeCalendar()) return true;
   return !!(getSetting('google_calendar_refresh_token'));
 }
 
@@ -156,6 +172,24 @@ export function buildAdaptiveCalendarReminders(
  * Create a calendar event. Returns the event ID.
  */
 export async function createCalendarEvent(input: CalendarEventInput): Promise<string | null> {
+  if (useFakeCalendar()) {
+    const snapshot = input.reminderSnapshot ?? buildPersonalizationSnapshot({ surface: 'scheduler', maxInsights: 2, includeMemoryFacts: 2 });
+    const reminderDecision = buildAdaptiveCalendarReminders(input, snapshot);
+    const id = `fake_gcal_${fakeCalendarEvents.size + 1}`;
+    fakeCalendarEvents.set(id, {
+      summary: input.summary,
+      description: [
+        input.description,
+        `LifeOS adaptive reminders: ${reminderDecision.label} (${reminderDecision.reason}).`,
+      ].filter(Boolean).join('\n\n'),
+      startTime: input.startTime.toISOString(),
+      endTime: input.endTime.toISOString(),
+      colorId: input.colorId ?? '9',
+      reminders: reminderDecision,
+    });
+    return id;
+  }
+
   const auth = getAuthedClient();
   if (!auth) return null;
 
@@ -202,6 +236,32 @@ export async function updateCalendarEvent(
   eventId: string,
   patch: Partial<CalendarEventInput> & { description?: string }
 ): Promise<boolean> {
+  if (useFakeCalendar()) {
+    const existing = fakeCalendarEvents.get(eventId);
+    if (!existing) return false;
+    const next: FakeCalendarEvent = { ...existing };
+    if (patch.summary) next.summary = patch.summary;
+    if (patch.description !== undefined) next.description = patch.description;
+    if (patch.startTime) next.startTime = patch.startTime.toISOString();
+    if (patch.endTime) next.endTime = patch.endTime.toISOString();
+    if (patch.colorId) next.colorId = patch.colorId;
+    if (patch.startTime && patch.endTime) {
+      next.reminders = buildAdaptiveCalendarReminders({
+        summary: patch.summary ?? next.summary ?? 'Focus session',
+        startTime: patch.startTime,
+        endTime: patch.endTime,
+      }, patch.reminderSnapshot ?? null);
+      if (patch.description !== undefined) {
+        next.description = [
+          patch.description,
+          `LifeOS adaptive reminders: ${next.reminders.label} (${next.reminders.reason}).`,
+        ].filter(Boolean).join('\n\n');
+      }
+    }
+    fakeCalendarEvents.set(eventId, next);
+    return true;
+  }
+
   const auth = getAuthedClient();
   if (!auth) return false;
 
@@ -248,6 +308,10 @@ export async function updateCalendarEvent(
  * Delete a calendar event.
  */
 export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
+  if (useFakeCalendar()) {
+    return fakeCalendarEvents.delete(eventId);
+  }
+
   const auth = getAuthedClient();
   if (!auth) return false;
 
