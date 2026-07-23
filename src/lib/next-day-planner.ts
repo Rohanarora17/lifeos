@@ -35,6 +35,8 @@ interface CandidateTask {
   avg_focus_score: number | null;
   last_credited_at: string | null;
   remaining_minutes: number;
+  session_feedback_duration_delta: number;
+  session_feedback_reason: string | null;
   due_date: string | null;
   score: number;
   reason: string;
@@ -53,6 +55,15 @@ interface TaskFeedbackBias {
   notNow: number;
   wrong: number;
   dismissed: number;
+}
+
+interface SessionFeedbackBias {
+  targetTitle: string;
+  tooLong: number;
+  tooShort: number;
+  aboutRight: number;
+  focusOverestimated: number;
+  focusUnderestimated: number;
 }
 
 export interface NextDayPlanInput {
@@ -399,6 +410,7 @@ function loadCandidateTasks(
   const learnedEstimate = getAdaptiveSessionMinutes();
   const plannedOutcomeBias = loadPlannedOutcomeBias(planDate);
   const feedbackBias = loadTaskFeedbackBias();
+  const sessionFeedbackBias = loadSessionFeedbackBias();
   const rows = db.prepare(`
     SELECT
       t.id,
@@ -434,6 +446,8 @@ function loadCandidateTasks(
       const remaining = Math.max(0, target - credited);
       const reasons: string[] = [];
       let score = 0;
+      let sessionFeedbackDurationDelta = 0;
+      let sessionFeedbackReason: string | null = null;
 
       score += PRIORITY_WEIGHT[task.priority] ?? PRIORITY_WEIGHT.medium;
       score += STATUS_WEIGHT[task.status] ?? 10;
@@ -481,6 +495,33 @@ function loadCandidateTasks(
         }
       }
 
+      const sessionFeedback = matchSessionFeedbackBias(task, sessionFeedbackBias);
+      if (sessionFeedback) {
+        if (sessionFeedback.aboutRight > Math.max(sessionFeedback.tooLong, sessionFeedback.tooShort)) {
+          score += Math.min(12, sessionFeedback.aboutRight * 4);
+          reasons.push('session feedback says this block length fits');
+          sessionFeedbackReason = 'recent Guardian feedback said similar session length fit well';
+        } else if (sessionFeedback.tooLong > sessionFeedback.tooShort) {
+          sessionFeedbackDurationDelta = -10;
+          score += snapshot.userState.energy === 'low' ? 6 : 0;
+          reasons.push('session feedback says shorter blocks work better');
+          sessionFeedbackReason = 'recent Guardian feedback said similar sessions were too long';
+        } else if (sessionFeedback.tooShort > sessionFeedback.tooLong) {
+          sessionFeedbackDurationDelta = 10;
+          score += 4;
+          reasons.push('session feedback says longer blocks are tolerable');
+          sessionFeedbackReason = 'recent Guardian feedback said similar sessions were too short';
+        }
+        if (sessionFeedback.focusOverestimated > sessionFeedback.focusUnderestimated) {
+          score -= snapshot.userState.energy === 'low' ? 10 : 4;
+          reasons.push('past feedback reported lower focus than expected');
+        }
+        if (sessionFeedback.focusUnderestimated > sessionFeedback.focusOverestimated) {
+          score += 6;
+          reasons.push('past feedback reported better focus than expected');
+        }
+      }
+
       const outcome = plannedOutcomeBias.get(task.id);
       if (outcome) {
         if (outcome.completed > outcome.skipped) {
@@ -507,6 +548,8 @@ function loadCandidateTasks(
         estimated_minutes: target,
         credited_minutes: credited,
         remaining_minutes: remaining,
+        session_feedback_duration_delta: sessionFeedbackDurationDelta,
+        session_feedback_reason: sessionFeedbackReason,
         score,
         reason: reasons.join(', ') || 'open time-target task',
       };
@@ -514,6 +557,49 @@ function loadCandidateTasks(
     .filter(task => task.remaining_minutes > 0)
     .filter(task => !selected || selected.has(task.id))
     .sort((a, b) => b.score - a.score);
+}
+
+function loadSessionFeedbackBias(): SessionFeedbackBias[] {
+  try {
+    const rows = getDb().prepare(`
+      SELECT
+        gss.target_title as targetTitle,
+        SUM(CASE WHEN sf.session_length_fit = 'too_long' THEN 1 ELSE 0 END) as tooLong,
+        SUM(CASE WHEN sf.session_length_fit = 'too_short' THEN 1 ELSE 0 END) as tooShort,
+        SUM(CASE WHEN sf.session_length_fit = 'about_right' THEN 1 ELSE 0 END) as aboutRight,
+        SUM(CASE WHEN sf.prediction_error_focus > 0 THEN 1 ELSE 0 END) as focusOverestimated,
+        SUM(CASE WHEN sf.prediction_error_focus < 0 THEN 1 ELSE 0 END) as focusUnderestimated
+      FROM session_feedback sf
+      JOIN guardian_session_summaries gss ON gss.session_id = sf.session_id
+      WHERE sf.created_at >= datetime('now', '-45 days')
+      GROUP BY gss.target_title
+    `).all() as Array<{
+      targetTitle: string;
+      tooLong: number | null;
+      tooShort: number | null;
+      aboutRight: number | null;
+      focusOverestimated: number | null;
+      focusUnderestimated: number | null;
+    }>;
+
+    return rows
+      .map(row => ({
+        targetTitle: row.targetTitle,
+        tooLong: Number(row.tooLong ?? 0),
+        tooShort: Number(row.tooShort ?? 0),
+        aboutRight: Number(row.aboutRight ?? 0),
+        focusOverestimated: Number(row.focusOverestimated ?? 0),
+        focusUnderestimated: Number(row.focusUnderestimated ?? 0),
+      }))
+      .filter(row => row.targetTitle.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function matchSessionFeedbackBias(task: Pick<CandidateTask, 'title' | 'task_type' | 'course' | 'goal_title'>, rows: SessionFeedbackBias[]): SessionFeedbackBias | null {
+  const taskText = `${task.title} ${task.task_type} ${task.course ?? ''} ${task.goal_title ?? ''}`;
+  return rows.find(row => textMatches(taskText, row.targetTitle) || textMatches(row.targetTitle, task.title)) ?? null;
 }
 
 function loadPlannedOutcomeBias(planDate: string): Map<number, PlannedOutcomeBias> {
@@ -589,7 +675,7 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
   const energyMultiplier = energy === 'high' ? 1.1 : energy === 'low' ? 0.8 : 1;
 
   if (/(math|problem|academy|exercise|drill|proof)/.test(text)) {
-    return {
+    return applySessionFeedbackToRule({
       mode: 'problem_practice',
       preferredMinutes: clampMinutes(30 * energyMultiplier, 20, 40),
       minMinutes: 20,
@@ -597,11 +683,11 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       breakMinutes: 7,
       guidance: 'Use short, closed-loop practice blocks and review mistakes before extending.',
       tools: ['Math Academy', 'notes'],
-    };
+    }, task);
   }
 
   if (/(paper|research|read|reading|domain|concept|google|literature|survey)/.test(text)) {
-    return {
+    return applySessionFeedbackToRule({
       mode: 'research_reading',
       preferredMinutes: clampMinutes(Math.max(45, learned) * energyMultiplier, 35, 70),
       minMinutes: 30,
@@ -609,11 +695,11 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       breakMinutes: 10,
       guidance: 'Use longer exploration blocks with explicit concept capture and unclear-question follow-up.',
       tools: ['browser', 'ChatGPT', 'notes'],
-    };
+    }, task);
   }
 
   if (/(code|build|debug|implement|ship|pr|repo|test)/.test(text)) {
-    return {
+    return applySessionFeedbackToRule({
       mode: 'coding_build',
       preferredMinutes: clampMinutes(Math.max(45, learned) * energyMultiplier, 35, 80),
       minMinutes: 30,
@@ -621,10 +707,10 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       breakMinutes: 10,
       guidance: 'Use build/test checkpoints and stop with the next concrete handoff written down.',
       tools: ['editor', 'terminal', 'tests'],
-    };
+    }, task);
   }
 
-  return {
+  return applySessionFeedbackToRule({
     mode: 'study',
     preferredMinutes: clampMinutes(learned * energyMultiplier, 25, 60),
     minMinutes: 20,
@@ -632,6 +718,22 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
     breakMinutes: 8,
     guidance: 'Use a focused study block and end by logging what changed in understanding.',
     tools: ['notes'],
+  }, task);
+}
+
+function applySessionFeedbackToRule(rule: SessionRule, task: CandidateTask): SessionRule {
+  if (!task.session_feedback_duration_delta) return rule;
+  const preferredMinutes = clampMinutes(
+    rule.preferredMinutes + task.session_feedback_duration_delta,
+    rule.minMinutes,
+    rule.maxMinutes
+  );
+  return {
+    ...rule,
+    preferredMinutes,
+    guidance: task.session_feedback_reason
+      ? `${rule.guidance} ${task.session_feedback_reason}.`
+      : rule.guidance,
   };
 }
 
@@ -823,6 +925,8 @@ function candidateForPlannedSession(input: {
     avg_focus_score: null,
     last_credited_at: null,
     remaining_minutes: input.durationMinutes,
+    session_feedback_duration_delta: 0,
+    session_feedback_reason: null,
     due_date: null,
     score: 0,
     reason: fallbackReason,
@@ -864,6 +968,8 @@ function candidateForPlannedSession(input: {
       estimated_minutes: target,
       credited_minutes: credited,
       remaining_minutes: Math.max(0, target - credited),
+      session_feedback_duration_delta: 0,
+      session_feedback_reason: null,
       score: 0,
       reason: 'edited planned session refreshed from linked task and current day signals',
     };
