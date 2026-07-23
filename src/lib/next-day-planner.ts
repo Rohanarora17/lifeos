@@ -217,6 +217,34 @@ function clampMinutes(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(value / 5) * 5));
 }
 
+function applyPlanningStateToSnapshot(
+  snapshot: PersonalizationSnapshot,
+  input: { mood?: string | null; energy?: string | null }
+): PersonalizationSnapshot {
+  const mood = input.mood === 'high' || input.mood === 'medium' || input.mood === 'low'
+    ? input.mood
+    : snapshot.userState.mood;
+  const energy = input.energy === 'high' || input.energy === 'medium' || input.energy === 'low'
+    ? input.energy
+    : snapshot.userState.energy;
+  const recovery = energy === 'low' || mood === 'low';
+
+  return {
+    ...snapshot,
+    userState: {
+      ...snapshot.userState,
+      mood,
+      energy,
+    },
+    moment: recovery
+      ? {
+        mode: 'recovery',
+        guidance: 'Use low-friction recommendations. Convert goals into minimum viable actions.',
+      }
+      : snapshot.moment,
+  };
+}
+
 function minutesBetween(start: Date, end: Date): number {
   return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 60000));
 }
@@ -982,23 +1010,23 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   const db = getDb();
   const planDate = normalizeDate(input.planDate);
   const latestCheckin = loadLatestEveningCheckin();
-  const snapshot = buildPersonalizationSnapshot({
+  const baseSnapshot = buildPersonalizationSnapshot({
     surface: 'scheduler',
     maxInsights: 3,
     includeMemoryFacts: 4,
   });
-  const suggestedInputs = buildPlanningSuggestedInputs({ latestCheckin, snapshot });
+  const suggestedInputs = buildPlanningSuggestedInputs({ latestCheckin, snapshot: baseSnapshot });
   const sourceCheckinId = upsertEveningCheckin(input, planDate) ?? latestCheckin?.id ?? null;
   const sleepTime = normalizeTime(input.sleepTime ?? latestCheckin?.sleep_time, suggestedInputs.sleepTime);
   const wakeEstimate = normalizeTime(input.wakeEstimate ?? latestCheckin?.wake_estimate, suggestedInputs.wakeEstimate);
   const intention = (input.tomorrowIntention ?? latestCheckin?.tomorrow_intention ?? '').trim() || null;
+  const planMood = input.mood ?? latestCheckin?.mood ?? baseSnapshot.userState.mood;
+  const planEnergy = input.energy ?? latestCheckin?.energy ?? baseSnapshot.userState.energy;
+  const snapshot = applyPlanningStateToSnapshot(baseSnapshot, { mood: planMood, energy: planEnergy });
+  const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
   const calendarEvents = getCalendarEvents(planDate, planDate) as CalendarEventRow[];
   const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate);
   const windows = buildAvailability(planDate, wakeEstimate, sleepTime, calendarEvents);
-
-  const planMood = input.mood ?? latestCheckin?.mood ?? snapshot.userState.mood;
-  const planEnergy = input.energy ?? latestCheckin?.energy ?? snapshot.userState.energy;
-  const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
 
   const summaryParts = [
     intention ? `intention: ${intention}` : 'no stated intention',
@@ -1158,7 +1186,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
 export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
   const db = getDb();
   const normalizedDate = normalizeDate(planDate);
-  const snapshot = buildPersonalizationSnapshot({
+  const baseSnapshot = buildPersonalizationSnapshot({
     surface: 'scheduler',
     maxInsights: 3,
     includeMemoryFacts: 4,
@@ -1170,6 +1198,10 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
     WHERE plan_date = ? AND status != 'archived'
     LIMIT 1
   `).get(normalizedDate) as DailyPlan | undefined;
+  const snapshot = applyPlanningStateToSnapshot(baseSnapshot, {
+    mood: plan?.mood ?? latestCheckin?.mood,
+    energy: plan?.energy ?? latestCheckin?.energy,
+  });
   const sessions = plan
     ? db.prepare(`
         SELECT * FROM planned_focus_sessions
