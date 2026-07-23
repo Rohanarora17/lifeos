@@ -21,7 +21,8 @@
     "verify:session-feedback-planning": "node scripts/verify-session-feedback-planning.cjs",
     "verify:planned-focus-alerts": "node scripts/verify-planned-focus-alerts.cjs",
     "verify:adaptive-calendar-policy": "node scripts/verify-adaptive-calendar-policy.cjs",
-    "verify:adaptive-activity-policy": "node scripts/verify-adaptive-activity-policy.cjs"
+    "verify:adaptive-activity-policy": "node scripts/verify-adaptive-activity-policy.cjs",
+    "verify:planned-session-flow": "node scripts/verify-planned-session-completion-flow.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
