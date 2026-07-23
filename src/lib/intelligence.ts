@@ -348,6 +348,10 @@ let uilCacheTs = 0;
 let uilSynthesisRunning = false;
 let uilSynthesisQueued = false;
 
+function isUILSynthesisDisabled(): boolean {
+  return process.env.LIFEOS_DISABLE_UIL_SYNTHESIS === '1' || process.env.LIFEOS_DISABLE_UIL_SYNTHESIS === 'true';
+}
+
 const UIL_DEFAULT: UserIntelligenceProfile = {
   version: 0, synthesizedAt: 0, trigger: 'default',
   peakFocusHours: [9, 15], optimalSessionMinutes: 60,
@@ -814,12 +818,12 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
       uilProfile = p;
       uilCacheTs = Date.now();
       const staleMs = Date.now() - (p.synthesizedAt || 0);
-      if (staleMs > UIL_CACHE_TTL && !uilSynthesisRunning) void _runSynthesisBackground('cache_stale');
+      if (staleMs > UIL_CACHE_TTL && !uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('cache_stale');
       return p;
     }
   } catch { /* */ }
 
-  if (!uilSynthesisRunning) void _runSynthesisBackground('initial');
+  if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('initial');
   return { ...UIL_DEFAULT };
 }
 
@@ -828,6 +832,7 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
  * Debounced — rapid calls collapse into one synthesis 5s later.
  */
 export function touchIntelligence(trigger: string): void {
+  if (isUILSynthesisDisabled()) return;
   if (uilSynthesisQueued || uilSynthesisRunning) return;
   uilSynthesisQueued = true;
   setTimeout(() => {
