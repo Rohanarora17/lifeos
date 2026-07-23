@@ -11,8 +11,27 @@ interface CalendarEvent {
     location: string;
 }
 
+interface CalendarPolicy {
+    headline: string;
+    subhead: string;
+    emptyTitle: string;
+    emptyMessage: string;
+    emptyAction: string;
+    emphasis: 'protect_focus' | 'plan_focus' | 'recover' | 'sync_calendar' | 'review';
+    plannedFocus: {
+        plannedToday: number;
+        completedToday: number;
+        skippedToday: number;
+        nextTitle: string | null;
+        nextMinutes: number | null;
+        recentFollowThroughRate: number | null;
+    };
+    nextBestFocusWindow: string;
+}
+
 export default function CalendarPage() {
     const [events, setEvents] = useState<CalendarEvent[]>([]);
+    const [calendarPolicy, setCalendarPolicy] = useState<CalendarPolicy | null>(null);
     const [loading, setLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
     const [view, setView] = useState<'today' | 'upcoming'>('today');
@@ -27,6 +46,7 @@ export default function CalendarPage() {
             const res = await fetch(`/api/calendar?action=${view}`);
             const data = await res.json();
             setEvents(data.events || []);
+            setCalendarPolicy(data.calendarPolicy || null);
         } catch { /* ignore */ }
         setLoading(false);
     };
@@ -75,13 +95,15 @@ export default function CalendarPage() {
 
     const colors = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'];
     const getColor = (i: number) => colors[i % colors.length];
+    const headline = calendarPolicy?.headline ?? 'Calendar';
+    const subhead = calendarPolicy?.subhead ?? 'Your schedule from Google Calendar';
 
     return (
         <div className="max-w-[700px] mx-auto animate-fade-in">
             <div className="flex items-center justify-between mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold">Calendar 📅</h1>
-                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Your schedule from Google Calendar</p>
+                    <h1 className="text-2xl font-bold">{headline}</h1>
+                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>{subhead}</p>
                 </div>
                 <div className="flex gap-2">
                     <button
@@ -131,11 +153,11 @@ export default function CalendarPage() {
             ) : events.length === 0 ? (
                 <div className="card" style={{ padding: 48, textAlign: 'center', color: '#8888a0' }}>
                     <div style={{ fontSize: 48, marginBottom: 16 }}>📅</div>
-                    <h3 style={{ margin: '0 0 8px', fontWeight: 700 }}>No Events</h3>
+                    <h3 style={{ margin: '0 0 8px', fontWeight: 700 }}>{calendarPolicy?.emptyTitle ?? 'No Events'}</h3>
                     <p style={{ fontSize: 13 }}>
-                        {view === 'today' ? 'Nothing scheduled today.' : 'No upcoming events.'}<br />
+                        {calendarPolicy?.emptyMessage ?? (view === 'today' ? 'Nothing scheduled today.' : 'No upcoming events.')}<br />
                         <span style={{ color: '#555570' }}>
-                            Add your Google Calendar ICS URL in Settings → Sync Calendar
+                            {calendarPolicy?.emptyAction ?? 'Add your Google Calendar ICS URL in Settings -> Sync Calendar'}
                         </span>
                     </p>
                 </div>
