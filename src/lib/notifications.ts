@@ -622,6 +622,12 @@ function deterministicAlertDecision(
     const taskAlreadyPlanned = taskReminderAlreadyPlanned(opts, today.plannedSessionsToday);
     const protectedPlannedSession = getProtectedPlannedSession(today.plannedSessionsToday);
     const routineAlertTypes: AlertType[] = ['habit_streak', 'midday_checkin', 'goal_gradient', 'efficacy_drop'];
+    const taskDeadlineAlert = type === 'task_reminder' || type === 'task_overdue';
+    const deadlineReason = typeof opts?.context?.deadlineReason === 'string' ? opts.context.deadlineReason : null;
+
+    if (deadlineReason) {
+        reasons.push(deadlineReason);
+    }
 
     if (recentAlertCount >= 5 && nextSeverity === 'info') {
         shouldSend = false;
@@ -682,7 +688,7 @@ function deterministicAlertDecision(
         reasons.push('linked focus drop to stated day priority');
     }
 
-    if (today.todayEvents.length > 0 && (type === 'task_reminder' || type === 'goal_deadline')) {
+    if (today.todayEvents.length > 0 && (taskDeadlineAlert || type === 'goal_deadline')) {
         nextMessage = `${nextMessage} Calendar today: ${compactList(today.todayEvents)}.`;
         reasons.push('added calendar pressure context');
     }
@@ -692,17 +698,19 @@ function deterministicAlertDecision(
         reasons.push('softened warning because current energy estimate is low');
     }
 
-    if (type === 'task_reminder' && taskAlreadyPlanned.planned && taskAlreadyPlanned.label) {
+    if (taskDeadlineAlert && taskAlreadyPlanned.planned && taskAlreadyPlanned.label) {
         if (nextSeverity === 'info') {
             shouldSend = false;
             reasons.push(`suppressed because task is already planned today at ${taskAlreadyPlanned.label}`);
         } else {
-            nextMessage = `${nextMessage} It is already on today's focus plan: ${taskAlreadyPlanned.label}.`;
+            if (!nextMessage.includes('Planned block:')) {
+                nextMessage = `${nextMessage} It is already on today's focus plan: ${taskAlreadyPlanned.label}.`;
+            }
             reasons.push('linked task reminder to planned focus session');
         }
     }
 
-    if (type === 'task_reminder' && !taskAlreadyPlanned.planned && protectedPlannedSession && nextSeverity === 'info') {
+    if (taskDeadlineAlert && !taskAlreadyPlanned.planned && protectedPlannedSession && nextSeverity === 'info') {
         shouldSend = false;
         reasons.push(`suppressed routine task reminder because planned focus is protected: ${protectedPlannedSession.label}`);
     }
