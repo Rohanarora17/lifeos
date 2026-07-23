@@ -432,6 +432,28 @@ function formatPlannedSession(session: { title: string; start: string; durationM
     return `${time} ${session.title} (${session.durationMinutes}m)`;
 }
 
+function getProtectedPlannedSession(
+    sessions: Array<{ title: string; start: string; durationMinutes: number; status?: string }>,
+    nowMs = Date.now()
+): { label: string; phase: 'starting_soon' | 'active' } | null {
+    for (const session of sessions) {
+        const startMs = new Date(session.start).getTime();
+        if (!Number.isFinite(startMs)) continue;
+
+        const endMs = startMs + session.durationMinutes * 60_000;
+        const startsSoon = nowMs >= startMs - 15 * 60_000 && nowMs < startMs;
+        const active = nowMs >= startMs && nowMs <= endMs + 10 * 60_000;
+        if (!startsSoon && !active) continue;
+
+        return {
+            label: formatPlannedSession(session),
+            phase: startsSoon ? 'starting_soon' : 'active',
+        };
+    }
+
+    return null;
+}
+
 function taskReminderAlreadyPlanned(
     opts: AdaptiveAlertOptions | undefined,
     sessions: Array<{ taskId: number | null; title: string; start: string; durationMinutes: number }>
@@ -598,6 +620,8 @@ function deterministicAlertDecision(
     const overloadedDay = today.overdueTasks > 0 || today.openTasks >= uil.adaptiveThresholds.cognitiveLoadThreshold;
     const lowEnergy = uil.currentEnergyEstimate === 'low' || uil.moodToday === 'low';
     const taskAlreadyPlanned = taskReminderAlreadyPlanned(opts, today.plannedSessionsToday);
+    const protectedPlannedSession = getProtectedPlannedSession(today.plannedSessionsToday);
+    const routineAlertTypes: AlertType[] = ['habit_streak', 'midday_checkin', 'goal_gradient', 'efficacy_drop'];
 
     if (recentAlertCount >= 5 && nextSeverity === 'info') {
         shouldSend = false;
@@ -627,6 +651,15 @@ function deterministicAlertDecision(
     if (inPeakWindow && nextSeverity === 'info' && !overloadedDay) {
         shouldSend = false;
         reasons.push('suppressed low-urgency alert during a personal peak-focus hour');
+    }
+
+    if (protectedPlannedSession && nextSeverity !== 'urgent' && routineAlertTypes.includes(type)) {
+        shouldSend = false;
+        reasons.push(
+            protectedPlannedSession.phase === 'starting_soon'
+                ? `suppressed routine alert because planned focus starts soon: ${protectedPlannedSession.label}`
+                : `suppressed routine alert during planned focus: ${protectedPlannedSession.label}`
+        );
     }
 
     if (type === 'midday_checkin' && uil.standupGoalToday) {
@@ -667,6 +700,11 @@ function deterministicAlertDecision(
             nextMessage = `${nextMessage} It is already on today's focus plan: ${taskAlreadyPlanned.label}.`;
             reasons.push('linked task reminder to planned focus session');
         }
+    }
+
+    if (type === 'task_reminder' && !taskAlreadyPlanned.planned && protectedPlannedSession && nextSeverity === 'info') {
+        shouldSend = false;
+        reasons.push(`suppressed routine task reminder because planned focus is protected: ${protectedPlannedSession.label}`);
     }
 
     if (type === 'midday_checkin' && today.plannedSessionsToday.length > 0) {
