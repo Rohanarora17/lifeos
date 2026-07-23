@@ -587,6 +587,32 @@ function loadCandidateTasks(
     .sort((a, b) => b.score - a.score);
 }
 
+function shouldScheduleCandidate(input: {
+  task: CandidateTask;
+  snapshot: PersonalizationSnapshot;
+  selectedTaskIds?: number[];
+  planDate: string;
+}): boolean {
+  const { task, snapshot, selectedTaskIds, planDate } = input;
+  const selected = Boolean(selectedTaskIds?.includes(task.id));
+  const dueNow = Boolean(task.due_date && task.due_date <= planDate);
+  const recoveryMode = snapshot.moment.mode === 'recovery'
+    || snapshot.userState.energy === 'low'
+    || snapshot.userState.mood === 'low';
+
+  if (
+    recoveryMode
+    && task.energy_required === 'high'
+    && task.status !== 'doing'
+    && !selected
+    && !dueNow
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function loadSessionFeedbackBias(): SessionFeedbackBias[] {
   try {
     const rows = getDb().prepare(`
@@ -1084,6 +1110,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
 
     for (const task of candidateTasks) {
       if (!cursor || windowIndex >= windows.length) break;
+      if (!shouldScheduleCandidate({ task, snapshot, selectedTaskIds: input.selectedTaskIds, planDate })) continue;
       const rule = deriveSessionRule(task, snapshot);
       let remaining = task.remaining_minutes;
 
