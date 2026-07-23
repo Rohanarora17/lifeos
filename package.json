@@ -16,7 +16,8 @@
     "verify:task-time-sessions": "node scripts/verify-task-time-sessions.cjs",
     "verify:next-day-planner": "node scripts/verify-next-day-planner.cjs",
     "verify:alert-feedback-learning": "node scripts/verify-alert-feedback-learning.cjs",
-    "verify:calendar-sync": "node scripts/verify-calendar-sync.cjs"
+    "verify:calendar-sync": "node scripts/verify-calendar-sync.cjs",
+    "verify:planner-feedback-learning": "node scripts/verify-planner-feedback-learning.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
