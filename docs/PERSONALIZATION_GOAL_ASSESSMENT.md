@@ -28,7 +28,7 @@ Overall goal status: about 88-90% complete.
 
 Implemented product behavior: about 85-90% complete. The shared personalization spine is now used broadly across the scheduler, notifications, Telegram agent, analytics, rewards, memory extraction, adaptive policy generation, task linking, calendar helpers, and guardian flows.
 
-Verified end-to-end behavior: about 82-85% complete. Isolated scenario gates now prove time-target task completion, planned Guardian session start/end completion flow, next-day planning persistence, planner create/edit/cancel backend sync, calendar create/update/delete sync through the Google Calendar CRUD boundary, adaptive alert feedback learning, and repeated feedback being distilled into memory.
+Verified end-to-end behavior: about 84-87% complete. Isolated scenario gates now prove time-target task completion, planned Guardian session start/end completion flow, recovery-day planning behavior, deadline-day planning and reminder behavior, next-day planning persistence, planner create/edit/cancel backend sync, calendar create/update/delete sync through the Google Calendar CRUD boundary, adaptive alert feedback learning, and repeated feedback being distilled into memory.
 
 User-facing hardcoded fallback cleanup: about 90-93% complete for the surfaces inspected so far. Dashboard, analytics, activity, calendar, store, planner, memory, Telegram, settings, voice, reward, notification fallback copy, and major setup/error paths now have substantially more contextual behavior, but a final rendered/manual audit is still needed.
 
@@ -40,6 +40,7 @@ User-facing hardcoded fallback cleanup: about 90-93% complete for the surfaces i
 - Time-session task infrastructure exists, including logic that can link focus sessions to tasks and complete time-target tasks from accumulated minutes.
 - Time-session task completion is verified with a repeatable isolated scenario.
 - Planned Guardian sessions are verified to lock to a soft-watch commitment, complete the planned focus session, credit linked task minutes, and finish the time-target task.
+- Recovery-day and deadline-day scenario fixtures now prove that day state changes task choice, block size, reward reasoning, and reminder posture.
 - Next-day planning infrastructure exists and accounts for sleep, wake, mood, energy, calendar context, task candidates, and schedule fit.
 - Next-day planning persistence, session creation, edit/cancel backend sync, adaptive task-specific session rules, and calendar conflict avoidance are verified with repeatable isolated scenarios.
 - Calendar create/update/delete sync is verified through the Google Calendar CRUD boundary using deterministic fake-calendar mode; live OAuth still needs a real-account smoke check.
@@ -89,6 +90,8 @@ npm run verify:planned-focus-alerts
 npm run verify:planned-session-flow
 npm run verify:adaptive-calendar-policy
 npm run verify:adaptive-activity-policy
+npm run verify:final-recovery-day
+npm run verify:final-deadline-day
 npx tsc --noEmit --pretty false
 git diff --check
 rg -n "No .*found|No .*yet|fallback|default|not configured|LLM is offline|manual planned-session|No tasks found" src/lib src/app src/components --glob '!**/*.js'
@@ -100,9 +103,8 @@ These should stay narrow and reviewable:
 
 1. `test: add personalization scenario fixtures`
 2. `test: verify final recovery-day scenario`
-3. `test: verify final deadline-day scenario`
-4. `test: verify final planning-evening scenario`
-5. `test: verify final protect-focus scenario`
-6. `test: verify feedback affects later planning`
-7. `refactor: centralize adaptive empty state helpers`
-8. `docs: record final personalization completion audit`
+3. `test: verify final planning-evening scenario`
+4. `test: verify final protect-focus scenario`
+5. `test: verify feedback affects later planning`
+6. `refactor: centralize adaptive empty state helpers`
+7. `docs: record final personalization completion audit`
