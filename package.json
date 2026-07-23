@@ -14,7 +14,8 @@
     "guardian:voice-agent:connect": "node scripts/livekit-guardian-agent.mjs connect",
     "guardian:stt-local": "node scripts/whispercpp-server.mjs",
     "verify:task-time-sessions": "node scripts/verify-task-time-sessions.cjs",
-    "verify:next-day-planner": "node scripts/verify-next-day-planner.cjs"
+    "verify:next-day-planner": "node scripts/verify-next-day-planner.cjs",
+    "verify:alert-feedback-learning": "node scripts/verify-alert-feedback-learning.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
