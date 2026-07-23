@@ -15,7 +15,8 @@
     "guardian:stt-local": "node scripts/whispercpp-server.mjs",
     "verify:task-time-sessions": "node scripts/verify-task-time-sessions.cjs",
     "verify:next-day-planner": "node scripts/verify-next-day-planner.cjs",
-    "verify:alert-feedback-learning": "node scripts/verify-alert-feedback-learning.cjs"
+    "verify:alert-feedback-learning": "node scripts/verify-alert-feedback-learning.cjs",
+    "verify:calendar-sync": "node scripts/verify-calendar-sync.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
