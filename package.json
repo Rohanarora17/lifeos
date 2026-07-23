@@ -19,7 +19,8 @@
     "verify:calendar-sync": "node scripts/verify-calendar-sync.cjs",
     "verify:planner-feedback-learning": "node scripts/verify-planner-feedback-learning.cjs",
     "verify:session-feedback-planning": "node scripts/verify-session-feedback-planning.cjs",
-    "verify:planned-focus-alerts": "node scripts/verify-planned-focus-alerts.cjs"
+    "verify:planned-focus-alerts": "node scripts/verify-planned-focus-alerts.cjs",
+    "verify:adaptive-calendar-policy": "node scripts/verify-adaptive-calendar-policy.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
