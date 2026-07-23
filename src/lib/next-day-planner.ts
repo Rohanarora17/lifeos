@@ -46,6 +46,15 @@ interface PlannedOutcomeBias {
   lastStatus: SessionStatus | null;
 }
 
+interface TaskFeedbackBias {
+  helpful: number;
+  started: number;
+  completed: number;
+  notNow: number;
+  wrong: number;
+  dismissed: number;
+}
+
 export interface NextDayPlanInput {
   planDate?: string;
   sleepTime?: string | null;
@@ -389,6 +398,7 @@ function loadCandidateTasks(
   const selected = selectedTaskIds && selectedTaskIds.length > 0 ? new Set(selectedTaskIds) : null;
   const learnedEstimate = getAdaptiveSessionMinutes();
   const plannedOutcomeBias = loadPlannedOutcomeBias(planDate);
+  const feedbackBias = loadTaskFeedbackBias();
   const rows = db.prepare(`
     SELECT
       t.id,
@@ -453,6 +463,24 @@ function loadCandidateTasks(
         score += 16;
         reasons.push(`${task.linked_sessions} linked session${task.linked_sessions === 1 ? '' : 's'}; finishable`);
       }
+
+      const feedback = feedbackBias.get(task.id);
+      if (feedback) {
+        const positive = feedback.helpful + feedback.started + feedback.completed;
+        const negative = feedback.notNow + feedback.wrong + feedback.dismissed;
+        if (positive > negative) {
+          score += Math.min(24, positive * 8);
+          reasons.push('previous feedback says this task fits');
+        }
+        if (negative > positive && !selected?.has(task.id)) {
+          const penalty = (feedback.wrong * 18) + (feedback.notNow * 12) + (feedback.dismissed * 8);
+          score -= Math.min(36, penalty);
+          if (feedback.wrong > 0) reasons.push('previously marked wrong fit');
+          else if (feedback.notNow > 0) reasons.push('previously deferred');
+          else reasons.push('often dismissed');
+        }
+      }
+
       const outcome = plannedOutcomeBias.get(task.id);
       if (outcome) {
         if (outcome.completed > outcome.skipped) {
@@ -520,6 +548,37 @@ function loadPlannedOutcomeBias(planDate: string): Map<number, PlannedOutcomeBia
       bias.set(row.taskId, current);
     }
   } catch { /* planned outcomes are optional during migration */ }
+  return bias;
+}
+
+function loadTaskFeedbackBias(): Map<number, TaskFeedbackBias> {
+  const bias = new Map<number, TaskFeedbackBias>();
+  try {
+    const rows = getDb().prepare(`
+      SELECT task_id as taskId, feedback, COUNT(*) as count
+      FROM task_recommendation_feedback
+      WHERE created_at >= datetime('now', '-45 days')
+      GROUP BY task_id, feedback
+    `).all() as Array<{ taskId: number; feedback: string; count: number }>;
+
+    for (const row of rows) {
+      const current = bias.get(row.taskId) ?? {
+        helpful: 0,
+        started: 0,
+        completed: 0,
+        notNow: 0,
+        wrong: 0,
+        dismissed: 0,
+      };
+      if (row.feedback === 'helpful') current.helpful += Number(row.count || 0);
+      if (row.feedback === 'started') current.started += Number(row.count || 0);
+      if (row.feedback === 'completed') current.completed += Number(row.count || 0);
+      if (row.feedback === 'not_now') current.notNow += Number(row.count || 0);
+      if (row.feedback === 'wrong') current.wrong += Number(row.count || 0);
+      if (row.feedback === 'dismissed') current.dismissed += Number(row.count || 0);
+      bias.set(row.taskId, current);
+    }
+  } catch { /* task recommendation feedback is optional during migration */ }
   return bias;
 }
 
