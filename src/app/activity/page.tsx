@@ -26,6 +26,18 @@ interface Stats {
     total_minutes: number;
 }
 
+interface ActivityPolicy {
+    headline: string;
+    subhead: string;
+    emptyTitle: string;
+    emptyMessage: string;
+    primaryMetricLabel: string;
+    productiveLabel: string;
+    distractionLabel: string;
+    neutralLabel: string;
+    interpretation: string;
+}
+
 function activityReason(act: Activity): string {
     if (act.ai_classification) {
         try {
@@ -53,6 +65,7 @@ function activityReason(act: Activity): string {
 export default function ActivityPage() {
     const [activities, setActivities] = useState<Activity[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
+    const [activityPolicy, setActivityPolicy] = useState<ActivityPolicy | null>(null);
     const [date, setDate] = useState(new Date(Date.now() + 19800000).toISOString().slice(0, 10));
     const [filter, setFilter] = useState<string>('all');
 
@@ -67,6 +80,7 @@ export default function ActivityPage() {
         const data = await res.json();
         setActivities(data.activities || []);
         setStats(data.stats || null);
+        setActivityPolicy(data.activityPolicy || null);
     };
 
     const handleCategoryChange = async (id: number, newCategory: string) => {
@@ -99,8 +113,10 @@ export default function ActivityPage() {
             {/* Header */}
             <div className="flex items-center justify-between mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold">Activity Timeline 📊</h1>
-                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Everything you browsed, categorized by AI</p>
+                    <h1 className="text-2xl font-bold">{activityPolicy?.headline ?? 'Activity Timeline'}</h1>
+                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                        {activityPolicy?.subhead ?? 'Everything you browsed, categorized by AI'}
+                    </p>
                 </div>
                 <input
                     type="date"
@@ -115,22 +131,28 @@ export default function ActivityPage() {
             {stats && (
                 <div className="grid grid-cols-4 gap-3 mb-6">
                     <div className="stat-card green">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Productive</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{activityPolicy?.productiveLabel ?? 'Productive'}</p>
                         <p className="text-xl font-bold" style={{ color: 'var(--accent-green)' }}>{formatTime(stats.productive_minutes)}</p>
                     </div>
                     <div className="stat-card red">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Distraction</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{activityPolicy?.distractionLabel ?? 'Distraction'}</p>
                         <p className="text-xl font-bold" style={{ color: 'var(--accent-red)' }}>{formatTime(stats.distraction_minutes)}</p>
                     </div>
                     <div className="stat-card orange">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Neutral</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{activityPolicy?.neutralLabel ?? 'Neutral'}</p>
                         <p className="text-xl font-bold" style={{ color: 'var(--accent-yellow)' }}>{formatTime(stats.neutral_minutes)}</p>
                     </div>
                     <div className="stat-card blue">
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total</p>
+                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{activityPolicy?.primaryMetricLabel ?? 'Total'}</p>
                         <p className="text-xl font-bold">{formatTime(stats.total_minutes)}</p>
                     </div>
                 </div>
+            )}
+
+            {activityPolicy && (
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                    {activityPolicy.interpretation}
+                </p>
             )}
 
             {/* Filters */}
@@ -201,9 +223,9 @@ export default function ActivityPage() {
                 ) : (
                     <div className="text-center py-16">
                         <div className="text-4xl mb-3">🔍</div>
-                        <p className="font-medium mb-1">No activity for this date</p>
+                        <p className="font-medium mb-1">{activityPolicy?.emptyTitle ?? 'No activity for this date'}</p>
                         <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                            Browse the web with the LifeOS extension installed to start tracking
+                            {activityPolicy?.emptyMessage ?? 'Browse the web with the LifeOS extension installed to start tracking'}
                         </p>
                     </div>
                 )}

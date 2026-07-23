@@ -3,6 +3,8 @@ import { getDb } from '@/lib/db';
 import { classifyActivity } from '@/lib/ai';
 import { extractDomain } from '@/lib/categories';
 import { getActiveGuardianSession } from '@/lib/guardian-runtime';
+import { buildAdaptiveActivityPolicy } from '@/lib/adaptive-activity-policy';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -94,7 +96,17 @@ export async function GET(request: NextRequest) {
             stats = getDailyActivityStats(db, date);
         }
 
-        return NextResponse.json({ activities, stats });
+        const personalization = buildPersonalizationSnapshot({
+            surface: 'analytics',
+            maxInsights: 2,
+            includeMemoryFacts: 3,
+        });
+
+        return NextResponse.json({
+            activities,
+            stats,
+            activityPolicy: buildAdaptiveActivityPolicy(personalization, stats),
+        });
     } catch (error) {
         console.error('Activity GET error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
