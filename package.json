@@ -24,7 +24,8 @@
     "verify:adaptive-activity-policy": "node scripts/verify-adaptive-activity-policy.cjs",
     "verify:planned-session-flow": "node scripts/verify-planned-session-completion-flow.cjs",
     "verify:final-recovery-day": "node scripts/verify-final-recovery-day.cjs",
-    "verify:final-deadline-day": "node scripts/verify-final-deadline-day.cjs"
+    "verify:final-deadline-day": "node scripts/verify-final-deadline-day.cjs",
+    "verify:final-planning-evening": "node scripts/verify-final-planning-evening.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
