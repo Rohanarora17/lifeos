@@ -15,6 +15,29 @@ import { assembleGuidanceResponse } from '@/lib/screen-guidance';
 import { speak } from '@/lib/tts';
 import { getActiveGuardianSession } from '@/lib/guardian-runtime';
 import { emitGuardianRuntimeEvent } from '@/lib/guardian-bus';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+
+function noSessionGuidanceError(): string {
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'guidance',
+      maxInsights: 2,
+      includeMemoryFacts: 2,
+    });
+    if (snapshot.today.plannedFocus.nextTitle) {
+      return `No active guardian session. Start "${snapshot.today.plannedFocus.nextTitle}"${snapshot.today.plannedFocus.nextMinutes ? ` for ${snapshot.today.plannedFocus.nextMinutes}m` : ''} before requesting guidance.`;
+    }
+    if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+      return 'No active guardian session. Start a short recovery-safe block before requesting guidance.';
+    }
+    if (snapshot.moment.mode === 'deadline_pressure') {
+      return 'No active guardian session. Start the nearest deadline-relief task before requesting guidance.';
+    }
+    return `No active guardian session. Start the next useful block near ${snapshot.userState.nextBestFocusWindow} before requesting guidance.`;
+  } catch {
+    return 'No active guardian session. Start a focus session before requesting guidance.';
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -47,7 +70,7 @@ export async function POST(req: Request) {
 
     if (!resolvedSessionId) {
       return NextResponse.json(
-        { error: 'No active guardian session. Start a session before requesting guidance.' },
+        { error: noSessionGuidanceError() },
         { status: 400 }
       );
     }

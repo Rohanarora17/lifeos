@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSetting } from '@/lib/db';
+import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
 const COMMANDS = [
   { command: 'menu', description: 'Show main menu with all buttons' },
@@ -22,10 +23,29 @@ const COMMANDS = [
   { command: 'help', description: 'Full command reference' },
 ];
 
+function telegramTokenError(): string {
+  try {
+    const snapshot = buildPersonalizationSnapshot({
+      surface: 'telegram',
+      maxInsights: 2,
+      includeMemoryFacts: 2,
+    });
+    if (snapshot.today.plannedFocus.nextTitle) {
+      return `Telegram is not connected yet. Add TELEGRAM_BOT_TOKEN before reminder commands can protect ${snapshot.today.plannedFocus.nextTitle}.`;
+    }
+    if (snapshot.feedback.alertFatigueLevel === 'high') {
+      return 'Telegram is not connected yet. Add TELEGRAM_BOT_TOKEN before quiet-mode reminder feedback can sync.';
+    }
+    return `Telegram is not connected yet. Add TELEGRAM_BOT_TOKEN before LifeOS can send reminders around ${snapshot.userState.nextBestFocusWindow}.`;
+  } catch {
+    return 'Telegram is not connected yet. Add TELEGRAM_BOT_TOKEN before registering commands.';
+  }
+}
+
 export async function POST() {
   const tok = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
   if (!tok) {
-    return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN not configured' }, { status: 400 });
+    return NextResponse.json({ error: telegramTokenError() }, { status: 400 });
   }
 
   const res = await fetch(`https://api.telegram.org/bot${tok}/setMyCommands`, {
@@ -45,7 +65,7 @@ export async function POST() {
 export async function GET() {
   const tok = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
   if (!tok) {
-    return NextResponse.json({ error: 'TELEGRAM_BOT_TOKEN not configured' }, { status: 400 });
+    return NextResponse.json({ error: telegramTokenError() }, { status: 400 });
   }
 
   const res = await fetch(`https://api.telegram.org/bot${tok}/getMyCommands`);

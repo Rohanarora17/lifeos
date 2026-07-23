@@ -76,8 +76,8 @@ function modelLine(config: LiveKitConfig | null, targetTitle: string): string {
 function voiceLine(config: LiveKitConfig | null, targetTitle: string): string {
   if (config?.agentVoice) return config.agentVoice;
   return targetTitle
-    ? `Session default for ${targetTitle}`
-    : 'Session default';
+    ? `Session voice inherits ${targetTitle} context`
+    : 'Session voice inherits current focus context';
 }
 
 function pushToTalkLine(config: LiveKitConfig | null, targetTitle: string): string {

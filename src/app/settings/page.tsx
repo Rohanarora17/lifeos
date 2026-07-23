@@ -236,7 +236,7 @@ export default function SettingsPage() {
 	            description: adaptivePolicy?.scheduleGuidance ?? 'When to generate reports; scheduler may adapt delivery based on context.',
 		            fields: [
 		                { key: 'daily_summary_time', label: 'Daily summary time override', type: 'text', placeholder: '23:00', adaptiveHint: adaptivePolicy?.scheduleGuidance },
-		                { key: 'morning_brief_time', label: 'Morning brief time override', type: 'text', placeholder: '08:00', adaptiveHint: adaptivePolicy ? `Next best focus window: ${adaptivePolicy.nextBestFocusWindow}. Session default now ${adaptivePolicy.sessionMinutes} min.` : undefined },
+		                { key: 'morning_brief_time', label: 'Morning brief time override', type: 'text', placeholder: '08:00', adaptiveHint: adaptivePolicy ? `Next best focus window: ${adaptivePolicy.nextBestFocusWindow}. Adaptive session length now ${adaptivePolicy.sessionMinutes} min.` : undefined },
 		                { key: 'evening_reflection_time', label: 'Evening reflection override', type: 'text', placeholder: '21:30', adaptiveHint: adaptivePolicy?.scheduleGuidance },
 		            ]
 	        },
