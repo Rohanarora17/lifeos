@@ -19,8 +19,27 @@ function assert(condition, message) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, message, timeoutMs = 6_000) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  while (((globalThis.performance?.now?.() ?? Date.now()) - started) < timeoutMs) {
+    const value = predicate();
+    if (value) return value;
+    await sleep(100);
+  }
+  throw new Error(message);
+}
+
 const { getDb, setSetting } = require('../src/lib/db.ts');
 const { generateNextDayPlan } = require('../src/lib/next-day-planner.ts');
+const {
+  endGuardianSession,
+  startGuardianSession,
+} = require('../src/lib/guardian-runtime.ts');
+const { getTaskTimeProgress } = require('../src/lib/task-time-sessions.ts');
 
 async function main() {
   const db = getDb();
@@ -31,7 +50,7 @@ async function main() {
     INSERT INTO tasks (
       title, status, priority, task_type, course, energy_required, estimated_minutes, due_date
     ) VALUES (
-      'Math Academy light review', 'todo', 'medium', 'math', 'probability', 'low', 30, ?
+      'Math Academy light review', 'todo', 'medium', 'math', 'probability', 'low', 25, ?
     )
   `).run(planDate);
   const heavyTask = db.prepare(`
@@ -87,15 +106,64 @@ async function main() {
   assert(heavyCandidate.reason.includes('defer if drained'), 'Expected heavy candidate to cite low-energy deferral.');
   assert(lightCandidate.score > heavyCandidate.score, 'Expected low-energy task to outrank heavy task on recovery day.');
 
+  const originalDateNow = Date.now;
+  const sessionStartMs = new Date(first.planned_start).getTime();
+  Date.now = () => sessionStartMs;
+  let started;
+  try {
+    started = startGuardianSession({
+      topic: first.title,
+      durationMinutes: first.duration_minutes,
+      mood: 'low',
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
+  assert(started?.sessionId, 'Expected recovery Guardian session to start.');
+
+  const locked = db.prepare(`
+    SELECT status, locked_in_session_id
+    FROM soft_watch_commitments
+    WHERE id = ?
+  `).get(first.soft_watch_id);
+  assert(locked.status === 'locked_in', `Expected recovery soft watch locked_in, got ${locked.status}.`);
+  assert(locked.locked_in_session_id === started.sessionId, 'Expected recovery soft watch to lock to the started session.');
+
+  Date.now = () => sessionStartMs + first.duration_minutes * 60_000;
+  try {
+    const ended = endGuardianSession(started.sessionId);
+    assert(ended?.state === 'COMPLETE', `Expected recovery Guardian session complete, got ${ended?.state}.`);
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const completedSession = db.prepare(`
+    SELECT status
+    FROM planned_focus_sessions
+    WHERE id = ?
+  `).get(first.id);
+  assert(completedSession.status === 'completed', `Expected recovery planned session completed, got ${completedSession.status}.`);
+
+  const completedTask = await waitFor(() => {
+    const row = db.prepare('SELECT status, completed_at FROM tasks WHERE id = ?').get(lightTaskId);
+    return row.status === 'done' ? row : null;
+  }, 'Expected recovery focus minutes to complete the linked task.');
+  const progress = getTaskTimeProgress(lightTaskId);
+  assert(progress.creditedMinutes === first.duration_minutes, `Expected ${first.duration_minutes} credited minutes, got ${progress.creditedMinutes}.`);
+  assert(progress.remainingMinutes === 0, `Expected no remaining recovery task minutes, got ${progress.remainingMinutes}.`);
+  assert(Boolean(completedTask.completed_at), 'Expected recovery task completion timestamp.');
+
   console.log(JSON.stringify({
     ok: true,
     dbPath,
-    scenario: 'recovery day uses sleep mood energy to select smaller low-friction planned work',
+    scenario: 'recovery day uses sleep mood energy to select smaller low-friction planned work and complete it from linked time',
     planDate,
     firstSessionTitle: first.title,
     firstSessionMinutes: first.duration_minutes,
     mode: payload.personalization.mode,
     rewardReason: rule.rewardReason,
+    creditedMinutes: progress.creditedMinutes,
+    taskStatus: completedTask.status,
   }, null, 2));
 }
 
