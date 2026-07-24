@@ -19,6 +19,20 @@ function assert(condition, message) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, message, timeoutMs = 6_000) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  while (((globalThis.performance?.now?.() ?? Date.now()) - started) < timeoutMs) {
+    const value = predicate();
+    if (value) return value;
+    await sleep(100);
+  }
+  throw new Error(message);
+}
+
 function todayIst() {
   return new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
 }
@@ -32,6 +46,11 @@ function addDays(date, days) {
 const { getDb, setSetting } = require('../src/lib/db.ts');
 const { runAlertEngine } = require('../src/lib/notifications.ts');
 const { generateNextDayPlan } = require('../src/lib/next-day-planner.ts');
+const {
+  endGuardianSession,
+  startGuardianSession,
+} = require('../src/lib/guardian-runtime.ts');
+const { getTaskTimeProgress } = require('../src/lib/task-time-sessions.ts');
 
 async function main() {
   const db = getDb();
@@ -43,7 +62,7 @@ async function main() {
     INSERT INTO tasks (
       title, status, priority, task_type, course, energy_required, estimated_minutes, due_date, due_time
     ) VALUES (
-      'Submit ZK assignment', 'todo', 'critical', 'assignment', 'zero knowledge', 'high', 80, ?, '18:00'
+      'Submit ZK assignment', 'todo', 'critical', 'assignment', 'zero knowledge', 'high', 60, ?, '18:00'
     )
   `).run(overdueDate);
   const optionalTask = db.prepare(`
@@ -110,16 +129,65 @@ async function main() {
     'Expected alert reason to link the reminder to the planned focus session.'
   );
 
+  const originalDateNow = Date.now;
+  const sessionStartMs = new Date(first.planned_start).getTime();
+  Date.now = () => sessionStartMs;
+  let started;
+  try {
+    started = startGuardianSession({
+      topic: first.title,
+      durationMinutes: first.duration_minutes,
+      mood: 'medium',
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
+  assert(started?.sessionId, 'Expected deadline Guardian session to start.');
+
+  const locked = db.prepare(`
+    SELECT status, locked_in_session_id
+    FROM soft_watch_commitments
+    WHERE id = ?
+  `).get(first.soft_watch_id);
+  assert(locked.status === 'locked_in', `Expected deadline soft watch locked_in, got ${locked.status}.`);
+  assert(locked.locked_in_session_id === started.sessionId, 'Expected deadline soft watch to lock to the started session.');
+
+  Date.now = () => sessionStartMs + first.duration_minutes * 60_000;
+  try {
+    const ended = endGuardianSession(started.sessionId);
+    assert(ended?.state === 'COMPLETE', `Expected deadline Guardian session complete, got ${ended?.state}.`);
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const completedSession = db.prepare(`
+    SELECT status
+    FROM planned_focus_sessions
+    WHERE id = ?
+  `).get(first.id);
+  assert(completedSession.status === 'completed', `Expected deadline planned session completed, got ${completedSession.status}.`);
+
+  const completedTask = await waitFor(() => {
+    const row = db.prepare('SELECT status, completed_at FROM tasks WHERE id = ?').get(pressureTaskId);
+    return row.status === 'done' ? row : null;
+  }, 'Expected deadline focus minutes to complete the linked task.');
+  const progress = getTaskTimeProgress(pressureTaskId);
+  assert(progress.creditedMinutes === first.duration_minutes, `Expected ${first.duration_minutes} credited minutes, got ${progress.creditedMinutes}.`);
+  assert(progress.remainingMinutes === 0, `Expected no remaining deadline task minutes, got ${progress.remainingMinutes}.`);
+  assert(Boolean(completedTask.completed_at), 'Expected deadline task completion timestamp.');
+
   console.log(JSON.stringify({
     ok: true,
     dbPath,
-    scenario: 'deadline day prioritizes overdue work and keeps protective reminders visible',
+    scenario: 'deadline day prioritizes overdue work, keeps protective reminders visible, and completes linked time',
     planDate,
     firstSessionTitle: first.title,
     firstSessionMinutes: first.duration_minutes,
     alertType: alert.type,
     alertSeverity: alert.severity,
     rewardReason: rule.rewardReason,
+    creditedMinutes: progress.creditedMinutes,
+    taskStatus: completedTask.status,
   }, null, 2));
 }
 
