@@ -20,6 +20,20 @@ function assert(condition, message) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitFor(predicate, message, timeoutMs = 6_000) {
+  const started = globalThis.performance?.now?.() ?? Date.now();
+  while (((globalThis.performance?.now?.() ?? Date.now()) - started) < timeoutMs) {
+    const value = predicate();
+    if (value) return value;
+    await sleep(100);
+  }
+  throw new Error(message);
+}
+
 function todayIst() {
   return new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
 }
@@ -44,6 +58,11 @@ const {
   generateNextDayPlan,
   updatePlannedFocusSession,
 } = require('../src/lib/next-day-planner.ts');
+const {
+  endGuardianSession,
+  startGuardianSession,
+} = require('../src/lib/guardian-runtime.ts');
+const { getTaskTimeProgress } = require('../src/lib/task-time-sessions.ts');
 
 async function main() {
   const db = getDb();
@@ -54,7 +73,7 @@ async function main() {
     INSERT INTO tasks (
       title, status, priority, task_type, course, energy_required, estimated_minutes, due_date
     ) VALUES (
-      'Read distributed systems paper', 'todo', 'high', 'research', 'distributed systems', 'medium', 75, ?
+      'Read distributed systems paper', 'todo', 'high', 'research', 'distributed systems', 'medium', 70, ?
     )
   `).run(planDate);
   const taskId = Number(taskResult.lastInsertRowid);
@@ -145,16 +164,64 @@ async function main() {
   assert(softWatch.planned_minutes === updated.duration_minutes, 'Expected soft watch duration to sync with edit.');
   assert(softWatch.calendar_event_id === originalEventId, 'Expected soft watch to retain calendar event id.');
 
+  const originalDateNow = Date.now;
+  Date.now = () => movedStart.getTime();
+  let started;
+  try {
+    started = startGuardianSession({
+      topic: updated.title,
+      durationMinutes: updated.duration_minutes,
+      mood: 'medium',
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
+  assert(started?.sessionId, 'Expected edited planning-evening Guardian session to start.');
+
+  const locked = db.prepare(`
+    SELECT status, locked_in_session_id
+    FROM soft_watch_commitments
+    WHERE id = ?
+  `).get(first.soft_watch_id);
+  assert(locked.status === 'locked_in', `Expected edited soft watch locked_in, got ${locked.status}.`);
+  assert(locked.locked_in_session_id === started.sessionId, 'Expected edited soft watch to lock to the started session.');
+
+  Date.now = () => movedStart.getTime() + updated.duration_minutes * 60_000;
+  try {
+    const ended = endGuardianSession(started.sessionId);
+    assert(ended?.state === 'COMPLETE', `Expected edited planning session complete, got ${ended?.state}.`);
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const completedSession = db.prepare(`
+    SELECT status
+    FROM planned_focus_sessions
+    WHERE id = ?
+  `).get(updated.id);
+  assert(completedSession.status === 'completed', `Expected edited planned session completed, got ${completedSession.status}.`);
+
+  const completedTask = await waitFor(() => {
+    const row = db.prepare('SELECT status, completed_at FROM tasks WHERE id = ?').get(taskId);
+    return row.status === 'done' ? row : null;
+  }, 'Expected edited planning-evening focus minutes to complete the linked task.');
+  const progress = getTaskTimeProgress(taskId);
+  assert(progress.creditedMinutes === updated.duration_minutes, `Expected ${updated.duration_minutes} credited minutes, got ${progress.creditedMinutes}.`);
+  assert(progress.remainingMinutes === 0, `Expected no remaining planning task minutes, got ${progress.remainingMinutes}.`);
+  assert(Boolean(completedTask.completed_at), 'Expected planning-evening task completion timestamp.');
+
   console.log(JSON.stringify({
     ok: true,
     dbPath,
-    scenario: 'planning evening collects missing details, schedules tomorrow, and keeps edits synced',
+    scenario: 'planning evening collects missing details, schedules tomorrow, keeps edits synced, and completes linked time',
     planDate,
     draftReminder: draftReminder.reason,
     sessionsCreated: payload.sessions.length,
     firstSessionTitle: first.title,
     updatedSessionId: updated.id,
     retainedCalendarEventId: originalEventId,
+    creditedMinutes: progress.creditedMinutes,
+    taskStatus: completedTask.status,
   }, null, 2));
 }
 
