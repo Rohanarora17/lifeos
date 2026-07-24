@@ -2797,7 +2797,27 @@ export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, ne
   return true;
 }
 
+function hydratePendingSoftWatchesForTarget(targetTitle: string) {
+  try {
+    const rows = getDb().prepare(`
+      SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
+        intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
+        source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
+        status, locked_in_session_id as lockedInSessionId, calendar_event_id as calendarEventId, created_at as createdAt
+      FROM soft_watch_commitments
+      WHERE status = 'pending'
+        AND lower(target_title) = lower(?)
+    `).all(targetTitle) as SoftWatchCommitment[];
+    for (const row of rows) {
+      softWatchMap.set(row.id, row);
+    }
+  } catch {
+    // DB may not be initialized in early startup paths.
+  }
+}
+
 function linkSoftWatchToSession(sessionId: string, targetTitle: string) {
+  hydratePendingSoftWatchesForTarget(targetTitle);
   for (const [id, commitment] of softWatchMap) {
     if (commitment.status !== 'pending') continue;
     if (commitment.targetTitle.toLowerCase() !== targetTitle.toLowerCase()) continue;
