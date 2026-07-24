@@ -27,7 +27,8 @@
     "verify:final-deadline-day": "node scripts/verify-final-deadline-day.cjs",
     "verify:final-planning-evening": "node scripts/verify-final-planning-evening.cjs",
     "verify:final-protect-focus": "node scripts/verify-final-protect-focus.cjs",
-    "verify:evening-journal-planning": "node scripts/verify-evening-journal-planning.cjs"
+    "verify:evening-journal-planning": "node scripts/verify-evening-journal-planning.cjs",
+    "verify:rendered-adaptive-planner": "node scripts/verify-rendered-adaptive-planner.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
