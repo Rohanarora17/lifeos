@@ -24,13 +24,29 @@ The goal is done when these checkpoints are true:
 
 ## Current Assessment
 
-Overall goal status: about 91-92% complete.
+Overall goal status: about 84-87% complete.
 
-Implemented product behavior: about 85-90% complete. The shared personalization spine is now used broadly across the scheduler, notifications, Telegram agent, analytics, rewards, memory extraction, adaptive policy generation, task linking, calendar helpers, and guardian flows.
+Implemented product behavior: about 86-90% complete for the backend and agent paths inspected so far. The shared personalization spine is now used broadly across the scheduler, notifications, Telegram agent, analytics, rewards, memory extraction, adaptive policy generation, task linking, calendar helpers, and guardian flows.
 
-Verified end-to-end behavior: about 91-92% complete. Isolated scenario gates now prove time-target task completion, planned Guardian session start/end completion flow, recovery-day planning behavior, deadline-day planning and reminder behavior, planning-evening intake plus edit sync, protect-focus alert and completion behavior, evening-journal signals changing the next generated plan, next-day planning persistence, planner create/edit/cancel backend sync, calendar create/update/delete sync through the Google Calendar CRUD boundary, adaptive alert feedback learning, task recommendation feedback changing later planning choices, Guardian session feedback shortening later planning blocks, and repeated feedback being distilled into memory.
+Verified backend behavior: about 82-86% complete. Isolated scenario gates prove time-target task completion, planned Guardian session start/end completion flow, recovery-day planning behavior, deadline-day planning and reminder behavior, planning-evening intake plus edit sync, protect-focus alert and completion behavior, evening-journal signals changing the next generated plan, next-day planning persistence, planner create/edit/cancel backend sync, calendar create/update/delete sync through the Google Calendar CRUD boundary, adaptive alert feedback learning, task recommendation feedback changing later planning choices, Guardian session feedback shortening later planning blocks, and repeated feedback being distilled into memory. This is strong backend evidence, but it is not the same as proving the full rendered application experience.
 
-User-facing hardcoded fallback cleanup: about 90-93% complete for the surfaces inspected so far. Dashboard, analytics, activity, calendar, store, planner, memory, Telegram, settings, voice, reward, notification fallback copy, and major setup/error paths now have substantially more contextual behavior, but a final rendered/manual audit is still needed.
+User-facing hardcoded fallback cleanup: about 72-80% complete. Dashboard, analytics, activity, calendar, store, planner, memory, Telegram, settings, voice, reward, notification fallback copy, and major setup/error paths now have substantially more contextual behavior. The remaining risk is not just copy: rendered browser smoke checks, live AI extraction, live calendar sync, and a complete component-by-component fallback audit are still missing.
+
+Assessment correction on 2026-07-24: the prior 91-92% estimate was too high because it weighted isolated backend verifiers too heavily. The user goal says the whole application and agent should feel adaptive across all layers. Current evidence proves many core mechanisms, but not every visible surface, not every final scenario criterion in each scenario, and not the live external integrations.
+
+## Requirement Evidence Audit
+
+| Requirement | Current evidence | Status |
+| --- | --- | --- |
+| Shared context spine across major backend/agent paths | Personalization snapshot is used in planner, notifications, Telegram, rewards, analytics, memory, guardian, scheduler paths. | Strong but still needs rendered surface audit |
+| Time-based task completion | `verify:task-time-sessions`, `verify:planned-session-flow`, and protect-focus final scenario prove credited focus minutes complete linked tasks. | Strong |
+| Next-day planning from sleep/wake/mood/energy/calendar/tasks | `verify:next-day-planner`, `verify:final-planning-evening`, `verify:final-recovery-day`, and `verify:evening-journal-planning`. | Strong backend proof |
+| Calendar/backend sync | Fake Google Calendar CRUD and planning-evening edit sync are verified. | Strong deterministic proof; live OAuth unverified |
+| Adaptive notifications | Alert feedback, deadline alerts, planned-focus suppression, evening planner, and protect-focus task reminder linking are verified. | Strong backend proof |
+| Feedback/self-model loop | Alert feedback, task recommendation feedback, Guardian session feedback, memory distillation, and deterministic evening-journal planning are verified. | Good; live AI extraction still unverified |
+| Adaptive rewards | Recovery and deadline scenarios assert reward reasoning; reward pricing policy exists. | Good; not all final scenarios assert rewards |
+| Whole rendered app feels personalized | Static searches show many adaptive empty states, but no current Playwright/manual rendered smoke pass proves the experience. | Incomplete |
+| Every final scenario demonstrates every finish-criteria bullet | Protect-focus is closest. Recovery/deadline/planning-evening do not each prove time-target completion, personalized agent response, calendar CRUD, reward, reminder, and learning together. | Incomplete |
 
 ## Done Or Strong
 
@@ -61,6 +77,7 @@ User-facing hardcoded fallback cleanup: about 90-93% complete for the surfaces i
 - Consolidate any repeated local adaptive-copy helpers into shared utilities if the final audit shows drift.
 - Run a final high-impact hardcoded fallback search and either adapt or explicitly justify each remaining default.
 - Verify live calendar behavior with the user's actual Google OAuth account or documented ICS setup.
+- Add at least one rendered smoke check that proves the dashboard/planner/guardian surfaces expose the adaptive state, not only backend payloads.
 
 ## Finish Criteria
 
@@ -109,7 +126,9 @@ rg -n "No .*found|No .*yet|fallback|default|not configured|LLM is offline|manual
 
 These should stay narrow and reviewable:
 
-1. `test: add personalization scenario fixtures`
-2. `test: verify final recovery-day scenario`
-3. `refactor: centralize adaptive empty state helpers`
-4. `docs: record final personalization completion audit`
+1. `test: verify recovery session completion inside final fixture`
+2. `test: verify deadline session completion inside final fixture`
+3. `test: verify planning evening rendered planner state`
+4. `test: verify live/prose evening extraction when Gemini key is available`
+5. `refactor: centralize adaptive empty state helpers`
+6. `docs: record final personalization completion audit`
