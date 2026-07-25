@@ -43,7 +43,7 @@ Assessment correction on 2026-07-24: the prior 91-92% estimate was too high beca
 | Next-day planning from sleep/wake/mood/energy/calendar/tasks | `verify:next-day-planner`, `verify:final-planning-evening`, `verify:final-recovery-day`, and `verify:evening-journal-planning`. | Strong backend proof |
 | Calendar/backend sync | Fake Google Calendar CRUD and planning-evening edit sync are verified. | Strong deterministic proof; live OAuth unverified |
 | Adaptive notifications | Alert feedback, deadline alerts, planned-focus suppression, evening planner, and protect-focus task reminder linking are verified. | Strong backend proof |
-| Feedback/self-model loop | Alert feedback, task recommendation feedback, Guardian session feedback, memory distillation, and deterministic evening-journal planning are verified. | Good; live AI extraction still unverified |
+| Feedback/self-model loop | Alert feedback, task recommendation feedback, Guardian session feedback, memory distillation, and deterministic evening-journal planning are verified. `verify:live-evening-extraction` now exercises the production Gemini extraction path when a valid key is configured. | Good; local live AI extraction remains unverified because the configured Developer API key is invalid |
 | Adaptive rewards | Recovery and deadline scenarios assert reward reasoning; reward pricing policy exists. | Good; not all final scenarios assert rewards |
 | Whole rendered app feels personalized | `verify:rendered-adaptive-planner` proves dashboard and Guardian planner render adaptive recovery/planning state, sleep/wake, calendar, session guidance, XP, and calendar status. `verify:rendered-deadline-protect` proves dashboard and Guardian render deadline-pressure state, urgent planned work, visible overdue pressure, deadline alert posture, and the switch into protect-focus mode from an active high-focus Guardian session. | Better but still partial; more surfaces need smoke coverage |
 | Every final scenario demonstrates every finish-criteria bullet | All four final scenarios now prove linked time completion. Some still rely on separate fixtures for full calendar CRUD, live personalized agent response, and learning feedback loops. | Partial |
@@ -56,6 +56,7 @@ Assessment correction on 2026-07-24: the prior 91-92% estimate was too high beca
 - Planner feedback is verified to change later planning choices: positive recommendation feedback lifts a task into the plan, negative feedback keeps the task visible but unscheduled, and candidate reasons cite the learned signal.
 - Guardian session feedback is verified to change later planning shape: similar reading blocks are shortened after the user reports they were too long and low-focus.
 - Evening journal signals are verified to change later planning: late sleep, low mood/energy, and day events move the next plan into recovery mode, prioritize lighter work, shorten the block, defer optional high-energy work, and keep the check-in linked as the plan source.
+- The live evening-prose extraction path is now factored into a reusable verifier hook. Local live proof is still not complete: on 2026-07-25 the verifier reached Gemini but failed with an invalid configured Developer API key.
 - Time-session task infrastructure exists, including logic that can link focus sessions to tasks and complete time-target tasks from accumulated minutes.
 - Time-session task completion is verified with a repeatable isolated scenario.
 - Planned Guardian sessions are verified to lock to a soft-watch commitment, complete the planned focus session, credit linked task minutes, and finish the time-target task.
@@ -73,7 +74,7 @@ Assessment correction on 2026-07-24: the prior 91-92% estimate was too high beca
 
 - Expand rendered/manual browser smoke checks beyond dashboard and Guardian into other high-traffic surfaces.
 - Audit whether every focus session created from the planner links cleanly back to the intended task or goal outside the final fixtures.
-- Confirm the non-deterministic AI extraction path from raw evening prose with a live Gemini key; deterministic extracted-signal planning is now verified.
+- Rerun `verify:live-evening-extraction` with a valid Gemini Developer API key; deterministic extracted-signal planning is verified, and the live verifier now exists but failed locally because the configured key is invalid.
 - Consolidate any repeated local adaptive-copy helpers into shared utilities if the final audit shows drift.
 - Run a final high-impact hardcoded fallback search and either adapt or explicitly justify each remaining default.
 - Verify live calendar behavior with the user's actual Google OAuth account or documented ICS setup.
@@ -119,6 +120,8 @@ npm run verify:final-planning-evening
 npm run verify:final-protect-focus
 npm run verify:rendered-adaptive-planner
 npm run verify:rendered-deadline-protect
+# Requires a valid Gemini Developer API key in GEMINI_API_KEY or API_KEY.
+npm run verify:live-evening-extraction
 npx tsc --noEmit --pretty false
 git diff --check
 rg -n "No .*found|No .*yet|fallback|default|not configured|LLM is offline|manual planned-session|No tasks found" src/lib src/app src/components --glob '!**/*.js'
@@ -128,7 +131,7 @@ rg -n "No .*found|No .*yet|fallback|default|not configured|LLM is offline|manual
 
 These should stay narrow and reviewable:
 
-1. `test: verify live/prose evening extraction when Gemini key is available`
+1. `test: rerun live evening extraction with a valid Gemini key`
 2. `test: expand rendered smoke coverage to remaining high-traffic surfaces`
 3. `refactor: centralize adaptive empty state helpers`
 4. `docs: record final personalization completion audit`
