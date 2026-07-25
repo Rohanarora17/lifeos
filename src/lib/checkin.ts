@@ -320,9 +320,9 @@ function buildFallbackCheckinResponse(likelihoodScore: number | null): string {
   return `Noted. I'll be watching.`;
 }
 
-type CheckinSignalLevel = 'low' | 'medium' | 'high';
+export type CheckinSignalLevel = 'low' | 'medium' | 'high';
 
-interface EveningCheckinSignals {
+export interface EveningCheckinSignals {
   sleepTime: string | null;
   wakeEstimate: string | null;
   tomorrowIntention: string | null;
@@ -361,6 +361,39 @@ function parseEveningCheckinSignals(raw: string): EveningCheckinSignals {
     energy: normalizeSignalLevel(parsed.energy),
     dayEvents: normalizeShortText(parsed.dayEvents),
   };
+}
+
+function buildEveningSignalExtractionPrompt(text: string): string {
+  return `Extract adaptive planning signals from this evening check-in. Return JSON only, no markdown.
+
+Response: "${text}"
+
+Return: {
+  "sleepTime": "HH:MM in 24h format, or null if not mentioned",
+  "wakeEstimate": "HH:MM in 24h format — derive as sleepTime + 8h if not stated, or null",
+  "tomorrowIntention": "what they plan to do tomorrow in one phrase, or null",
+  "mood": "low, medium, high, or null",
+  "energy": "low, medium, high, or null",
+  "dayEvents": "specific things that happened today that affected focus, mood, body, schedule, or work, or null"
+}
+
+Examples:
+- "sleeping at 1am, drained after family work" -> sleepTime: "01:00", wakeEstimate: "09:00", energy: "low", dayEvents: "family work drained energy"
+- "bed by midnight, mood was good" -> sleepTime: "00:00", wakeEstimate: "08:00", mood: "high"
+- "want to finish module 3" -> tomorrowIntention: "finish module 3"
+If nothing relevant for a field, return null for that field.`;
+}
+
+export async function extractEveningCheckinSignalsFromText(text: string): Promise<EveningCheckinSignals> {
+  const ai = getGenAI();
+  const result = await generateWithFallback(ai, {
+    model: MODEL_FLASH,
+    contents: buildEveningSignalExtractionPrompt(text),
+    config: { temperature: 0.1, maxOutputTokens: 200 },
+  });
+  const raw = result.text ?? '';
+  const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+  return parseEveningCheckinSignals(cleaned);
 }
 
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
@@ -458,35 +491,7 @@ Return ONLY the response. No quotes.`,
   // Extract sleep/wake/intention non-blocking
   void (async () => {
     try {
-      const extractPrompt = `Extract adaptive planning signals from this evening check-in. Return JSON only, no markdown.
-
-Response: "${text}"
-
-Return: {
-  "sleepTime": "HH:MM in 24h format, or null if not mentioned",
-  "wakeEstimate": "HH:MM in 24h format — derive as sleepTime + 8h if not stated, or null",
-  "tomorrowIntention": "what they plan to do tomorrow in one phrase, or null",
-  "mood": "low, medium, high, or null",
-  "energy": "low, medium, high, or null",
-  "dayEvents": "specific things that happened today that affected focus, mood, body, schedule, or work, or null"
-}
-
-Examples:
-- "sleeping at 1am, drained after family work" -> sleepTime: "01:00", wakeEstimate: "09:00", energy: "low", dayEvents: "family work drained energy"
-- "bed by midnight, mood was good" -> sleepTime: "00:00", wakeEstimate: "08:00", mood: "high"
-- "want to finish module 3" -> tomorrowIntention: "finish module 3"
-If nothing relevant for a field, return null for that field.`;
-
-      const ai = getGenAI();
-      if (!ai) throw new Error('No AI client');
-      const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
-        contents: extractPrompt,
-        config: { temperature: 0.1, maxOutputTokens: 200 },
-      });
-      const raw = result.text ?? '';
-      const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-      const extracted = parseEveningCheckinSignals(cleaned);
+      const extracted = await extractEveningCheckinSignalsFromText(text);
 
       if (
         extracted.sleepTime ||
