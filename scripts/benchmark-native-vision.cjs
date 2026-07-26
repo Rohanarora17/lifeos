@@ -51,10 +51,10 @@ function makeCases() {
       ? 95
       : label === 'active_learning'
         ? 90
-        : label === 'passive_consumption'
+          : label === 'passive_consumption'
           ? 82
           : label === 'idle'
-            ? 15
+            ? 5
             : 5,
   })));
 }
@@ -92,7 +92,7 @@ export function buildConstraint(witness: bigint) {
   }
   if (label === 'idle') {
     return `
-      <main class="idle-screen"><div class="idle-card"><span>FOCUS SESSION PAUSED</span><h1>${topic}</h1><div class="clock">${String(10 + Number(id.slice(-2))).padStart(2, '0')}:00</div><p>No keyboard or pointer activity detected.</p><button>Resume session</button><small>Case ${id}</small></div></main>`;
+      <main class="idle-screen"><div class="idle-card"><span>COMPUTER IDLE</span><h1>No active work is visible</h1><div class="clock">${String(10 + Number(id.slice(-2))).padStart(2, '0')}:00</div><p>No keyboard or pointer activity detected. The focus session is paused.</p><button>Resume session</button><small>Case ${id}</small></div></main>`;
   }
   return `
     <header><strong>Daily Buzz</strong><span>Entertainment feed</span><b>${id}</b></header>
