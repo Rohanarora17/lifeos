@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installHotkeys()
         Task { await pollHeartbeatLoop() }
+        Task { await visionCaptureLoop() }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.flushAppDwellIfActive()
@@ -73,6 +74,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 activeSessionId = nil
             }
             try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
+    private func visionCaptureLoop() async {
+        var nextDelayMs = 5_000
+        while true {
+            do {
+                try await api.sendVisionHeartbeat()
+                let state = try await api.visionState()
+                activeSessionId = state.active ? state.sessionId : nil
+                nextDelayMs = max(5_000, min(60_000, state.nextIntervalMs))
+
+                if state.active, let sessionId = state.sessionId {
+                    let windowCapture = await capture.captureFrontmostWindow()
+                    if let base64Jpeg = windowCapture.base64Jpeg {
+                        try await api.sendVisionCapture(
+                            sessionId: sessionId,
+                            base64Jpeg: base64Jpeg,
+                            app: windowCapture.app,
+                            title: windowCapture.title
+                        )
+                    } else if windowCapture.privacyReason == "sensitive_window" {
+                        try await api.sendSensitivitySkip(
+                            sessionId: sessionId,
+                            reason: "sensitive_window"
+                        )
+                    }
+                }
+            } catch {
+                nextDelayMs = 5_000
+                print("[LifeOSCopilot] Vision loop error: \(error.localizedDescription)")
+            }
+
+            try? await Task.sleep(
+                nanoseconds: UInt64(nextDelayMs) * 1_000_000
+            )
         }
     }
 

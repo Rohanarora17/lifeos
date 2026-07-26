@@ -36,6 +36,12 @@ struct NativeHeartbeatResponse: Codable {
     let sessionId: String?
 }
 
+struct VisionStateResponse: Codable {
+    let active: Bool
+    let sessionId: String?
+    let nextIntervalMs: Int
+}
+
 struct NativeIngestResponse: Codable {
     let ok: Bool
     let stored: String?

@@ -51,7 +51,7 @@ final class ScreenCaptureService {
                 ?? "Unknown App"
             let title = window.title ?? ""
             if isSensitive(app: appName, title: title) {
-                return emptyCapture(app: appName, title: title, reason: "sensitive_window")
+                return emptyCapture(app: "Sensitive App", title: "", reason: "sensitive_window")
             }
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -175,6 +175,19 @@ final class LifeOSAPIClient {
         }
     }
 
+    private func responseData(for request: URLRequest) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw NSError(
+                domain: "LifeOSAPI",
+                code: status,
+                userInfo: [NSLocalizedDescriptionKey: "LifeOS request failed with HTTP \(status)"]
+            )
+        }
+        return data
+    }
+
     func heartbeat() async throws -> NativeHeartbeatResponse {
         let url = serverBase.appendingPathComponent("/api/native/ingest")
         var request = URLRequest(url: url)
@@ -182,8 +195,63 @@ final class LifeOSAPIClient {
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: ["kind": "capture_heartbeat"])
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let data = try await responseData(for: request)
         return try JSONDecoder().decode(NativeHeartbeatResponse.self, from: data)
+    }
+
+    func sendVisionHeartbeat() async throws {
+        let url = serverBase.appendingPathComponent("/api/guardian/vision")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["type": "heartbeat"])
+        _ = try await responseData(for: request)
+    }
+
+    func visionState() async throws -> VisionStateResponse {
+        let url = serverBase.appendingPathComponent("/api/guardian/vision")
+        var request = URLRequest(url: url)
+        authorize(&request)
+        let data = try await responseData(for: request)
+        return try JSONDecoder().decode(VisionStateResponse.self, from: data)
+    }
+
+    func sendVisionCapture(
+        sessionId: String,
+        base64Jpeg: String,
+        app: String,
+        title: String
+    ) async throws {
+        let url = serverBase.appendingPathComponent("/api/guardian/vision")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "type": "capture",
+            "sessionId": sessionId,
+            "base64Jpeg": base64Jpeg,
+            "appInFocus": app,
+            "windowTitle": title
+        ])
+        _ = try await responseData(for: request)
+    }
+
+    func sendSensitivitySkip(sessionId: String, reason: String) async throws {
+        let url = serverBase.appendingPathComponent("/api/native/ingest")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "kind": "sensitivity_skip",
+            "sessionId": sessionId,
+            "appInFocus": "Sensitive App",
+            "windowTitle": "",
+            "reason": reason
+        ])
+        _ = try await responseData(for: request)
     }
 
     func sendAppDwell(sessionId: String, app: String, title: String, durationSeconds: Int) async throws {
@@ -199,7 +267,7 @@ final class LifeOSAPIClient {
             "windowTitle": title,
             "durationSeconds": durationSeconds
         ])
-        _ = try await URLSession.shared.data(for: request)
+        _ = try await responseData(for: request)
     }
 
     func sendTurn(sessionId: String, transcript: String?, audioURL: URL?, screenshotBase64: String?, selectedText: String?, app: String, title: String, screenSize: (width: Double, height: Double), cursorPoint: (x: Double, y: Double)) async throws -> CopilotTurnResponse {
@@ -237,7 +305,7 @@ final class LifeOSAPIClient {
             ])
         }
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let data = try await responseData(for: request)
         return try JSONDecoder().decode(CopilotTurnResponse.self, from: data)
     }
 
