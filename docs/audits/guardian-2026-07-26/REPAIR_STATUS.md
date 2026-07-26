@@ -26,7 +26,7 @@ session on 2026-07-27.
 
 - Full browser interval matrix across lock, sleep, restart, and network loss
 - Microphone, Accessibility, and Input Monitoring permissions
-- At least 60 labelled frontmost-window captures and quantitative vision gates
+- Diverse labelled real-application captures beyond the controlled browser corpus
 - Indian-English PTT word error rate and realtime latency/interruption/reconnect gates
 - Live Vertex model discovery and Gemini Live canary promotion
 - Full 18-page and current API-route Playwright workflow suite
@@ -41,10 +41,13 @@ session on 2026-07-27.
 | P1 | Existing legacy ingestion routes still need parity adapters into `TelemetryEventV1` before duplicate tables can be retired. |
 | P1 | Realtime Gemini Live remains disabled and has no real-device promotion evidence. |
 | P1 | Claim/correction propagation must be extended from Guardian insights to planner, notifications, chat, rewards, and analytics. |
-| P1 | Vision accuracy still needs the 60-frame labelled benchmark; transport success alone does not establish accuracy. |
+| P1 | Vision passed the controlled 60-frame benchmark, but still needs a diverse real-application matrix before population-level accuracy claims. |
+| P1 | Synthetic Guardian sessions need an enforced non-learning storage attribute or disposable database routing; descriptive session context alone does not prevent personalization contamination. |
 | P2 | The native app is ad-hoc signed because no Apple code-signing identity is installed; explicit binary updates can require Screen Recording reauthorization. |
 | P2 | The extension iframe sidebar needs an authenticated embedded-session design; its health request is authenticated, but iframe cookie behavior is browser-policy dependent. |
 | P2 | Log rotation is deployment-triggered until a dedicated periodic launchd job is installed. |
+| P2 | Deployment is not atomic: replacing `.next` while the prior process is live caused a transient `ChunkLoadError` during the benchmark. |
+| P2 | Vision assessments do not persist the actual model/version used, so fallback-free logs cannot establish per-assessment model provenance. |
 
 ## Mac Mini Evidence Refresh
 
@@ -94,6 +97,19 @@ SSH evidence was collected on 2026-07-26 without reading secret values.
 - Final diagnostics on commit `6f0bb6141dbf1e619c3e087ecc8960df2f54ff56`
   reported fresh browser and screen telemetry, configured security, a ready
   database, and an idle Guardian after clean session completion.
+- The first controlled 60-frame benchmark failed category, alignment, and
+  static-screen gates. It exposed insufficient same-template change detection
+  and a contradictory idle fixture.
+- After combining decoded pixels with app/window state and correcting the idle
+  fixture, the repeated 60-frame plus 12-static-repeat run passed all gates:
+  macro-F1 1.00, alignment MAE 6.35, zero capture/title/schema failures, and
+  zero static creation false positives.
+- No raw frames were retained. Seventeen exact synthetic audit sessions and all
+  linked production rows were removed transactionally after aggregate evidence
+  was retained. SQLite integrity remained `ok`, with zero matching sessions or
+  orphaned screen/telemetry rows.
+- The final benchmark code was deployed at
+  `f78e971955b5d200ec539003c11863212ce2a036`.
 
 ## Honest Completion Estimate
 
@@ -105,13 +121,13 @@ These percentages describe evidence-backed readiness, not feature marketing.
 | Guardian runtime | 48% |
 | Push-to-talk voice | 55% |
 | Realtime voice | 15% |
-| Vision | 68% |
+| Vision | 78% |
 | Intelligence | 38% |
 | Personalization propagation | 40% |
 | Security | 88% |
 | Deployment and operations | 85% |
 | General product workflows | 55% |
 
-Weighted overall readiness: **56%**. The largest remaining portion is
+Weighted overall readiness: **58%**. The largest remaining portion is
 real-device validation, cross-surface integration, legacy adapter retirement,
 and the elapsed 14-day study.

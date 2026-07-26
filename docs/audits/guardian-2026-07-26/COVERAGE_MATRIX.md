@@ -15,7 +15,7 @@ real-device result.
 | Chat | Evidence-aware answers, feedback persistence | Pending | Pending |
 | Extension sidebar | Timed task progress, session linkage | Pending | Pending |
 | Goals | Timed task roll-up and completion | Pending | Pending |
-| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, benign capture/inference, and sensitive-window denial passed |
+| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, benign capture/inference, sensitive-window denial, and controlled 60-frame vision benchmark passed |
 | Habits | CRUD, day boundaries | Pending | Pending |
 | Insights | Claim evidence, confidence, expiry, correction | Pending | Pending |
 | Knowledge graph | Provenance and deletion | Pending | Pending |
@@ -59,18 +59,22 @@ current 74-route inventory by the route audit script.
 
 ## Quantitative Gates
 
-| Capability | Gate |
-| --- | --- |
-| Screen category | Macro-F1 at least 0.85 over at least 60 labelled captures |
-| Task alignment | Mean absolute error at most 10 points |
-| Screen privacy | Zero sensitive captures |
-| Static screen handling | Zero static screens classified as active creation |
-| PTT transcription | Word error rate at most 15% in quiet conditions |
-| Realtime first audio | p95 at most 1.5 seconds |
-| Realtime interruption | Playback stops within 300 ms |
-| Realtime reconnect | Session usable within 5 seconds |
-| Claim freshness | Zero expired claims driving decisions |
-| Correction retention | 100% across all listed consumers |
+| Capability | Gate | Status |
+| --- | --- | --- |
+| Screen category | Macro-F1 at least 0.85 over at least 60 labelled captures | Pass on controlled synthetic corpus: 1.00 over 60 |
+| Task alignment | Mean absolute error at most 10 points | Pass on controlled synthetic corpus: 6.35 |
+| Screen privacy | Zero sensitive captures | Pass for fixture corpus and repaired denial regression |
+| Static screen handling | Zero static screens classified as active creation | Pass: 0 over 12 exact repeats |
+| PTT transcription | Word error rate at most 15% in quiet conditions | Pending |
+| Realtime first audio | p95 at most 1.5 seconds | Pending |
+| Realtime interruption | Playback stops within 300 ms | Pending |
+| Realtime reconnect | Session usable within 5 seconds | Pending |
+| Claim freshness | Zero expired claims driving decisions | Pending |
+| Correction retention | 100% across all listed consumers | Pending |
+
+The vision results use real ScreenCaptureKit transport and the production API,
+but controlled browser fixtures. Diverse real-application accuracy remains
+unverified.
 
 ## Longitudinal Study
 

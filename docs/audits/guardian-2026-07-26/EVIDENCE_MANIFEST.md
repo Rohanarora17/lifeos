@@ -30,6 +30,9 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | DEVICE-VISION-003 | MacBook and Mac Mini | Bundled TextEdit capture and inference smoke test | 2026-07-27 | Synthetic document, aggregate score, and app label only; frame excluded |
 | DEVICE-TCC-001 | MacBook | Native bundle identity and Screen Recording authorization | 2026-07-27 | Bundle identifier and signing class only |
 | PROD-FRESH-002 | Mac Mini | Post-session authenticated diagnostics | 2026-07-27 | Freshness states and capability flags only |
+| DEVICE-VISION-004 | MacBook and Mac Mini | Initial 60-frame controlled native benchmark | 2026-07-27 | Aggregate metrics and synthetic labels only; no frames retained |
+| DEVICE-VISION-005 | MacBook and Mac Mini | Repaired 60-frame plus 12-repeat benchmark | 2026-07-27 | Aggregate metrics and synthetic labels only; no frames retained |
+| PROD-CLEANUP-001 | Mac Mini | Exact audit-session cleanup and SQLite verification | 2026-07-27 | Aggregate deleted-row counts and integrity result only |
 
 ## Reproduction Constraints
 
@@ -42,5 +45,10 @@ database rows and matching logs were redacted, and no raw frame was persisted by
 LifeOS. Subsequent privacy tests retained only sanitized skip records and sent
 zero image uploads.
 
-The post-repair evidence run must use a disposable audit database and generated
-fixtures before any explicitly approved real session.
+The controlled 60-frame run used production ingestion before it was confirmed
+that the session's non-learning context was descriptive rather than enforced.
+After retaining aggregate evidence, all 17 exact audit sessions and their linked
+rows were removed transactionally. Integrity checks passed and no orphaned
+screen or telemetry rows remained. Future generated-fixture runs must use a
+disposable audit database or a storage-level non-learning attribute before any
+explicitly approved real session.
