@@ -1,5 +1,5 @@
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 import getDb from './db';
 
 // Semantically maps a URL/title visited during a focus session to the closest Knowledge Graph concept node
@@ -31,7 +31,7 @@ Return ONLY a JSON object:
 `;
 
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH || 'gemini-2.5-flash',
+            model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' }
         });

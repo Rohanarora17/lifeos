@@ -265,7 +265,7 @@ export function getKnowledgeMasteryBonus(): number {
  */
 export async function generateConceptsForGoal(goalTitle: string, difficulty: string = 'intermediate'): Promise<{ title: string; description: string; node_type: 'concept' | 'skill' | 'topic'; prerequisites: number[] }[]> {
     const { getGenAI, generateWithFallback } = await import('./ai');
-    const { MODEL_FLASH } = await import('./models');
+    const { MODEL_PRO } = await import('./models');
 
     const ai = getGenAI();
     if (!ai) return [];
@@ -282,7 +282,7 @@ Order from foundational to advanced. Ensure a clear dependency chain.`;
 
     try {
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' }
         });
