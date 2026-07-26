@@ -1,5 +1,6 @@
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { getDb } from './db';
+import { getVoluntaryRewardMultiplier } from './cognitive-active-coach';
 
 export type RewardAction =
   | 'habit_checkin'
@@ -58,6 +59,8 @@ interface RewardDecisionInput {
   subject?: string;
   priority?: string | null;
   snapshot?: PersonalizationSnapshot;
+  /** When set, non-crisis completions can receive active-coach rewiring bonus */
+  taskDueDate?: string | null;
 }
 
 export interface AdaptiveTaskRewardBaseInput {
@@ -365,17 +368,27 @@ export function getAdaptiveRewardDecision(input: RewardDecisionInput): AdaptiveR
   }
 
   let actionMultiplier = multiplier;
+  const reasonParts: string[] = [];
   if (input.action === 'photo_proof') actionMultiplier += 0.1;
   if (input.action === 'badge_unlock') actionMultiplier += 0.05;
   if (input.action === 'task_auto_complete') {
     if (priority === 'critical') actionMultiplier += 0.2;
     if (priority === 'high') actionMultiplier += 0.1;
     if (priority === 'low' && snapshot.moment.mode === 'deadline_pressure') actionMultiplier -= 0.15;
+
+    const voluntary = getVoluntaryRewardMultiplier({
+      dueDate: input.taskDueDate,
+      snapshot,
+    });
+    if (voluntary.multiplier > 1) {
+      actionMultiplier *= voluntary.multiplier;
+      if (voluntary.reason) reasonParts.push(voluntary.reason);
+    }
   }
 
-  const cappedMultiplier = clamp(actionMultiplier, 0.85, input.action === 'task_auto_complete' ? 1.6 : 1.5);
+  const cappedMultiplier = clamp(actionMultiplier, 0.85, input.action === 'task_auto_complete' ? 1.75 : 1.5);
   const coins = Math.max(1, Math.round(input.baseCoins * cappedMultiplier / 5) * 5);
-  const reason = describePolicy(snapshot, cappedMultiplier);
+  const reason = [describePolicy(snapshot, cappedMultiplier), ...reasonParts].join('; ');
 
   return {
     action: input.action,

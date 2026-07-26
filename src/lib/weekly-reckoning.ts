@@ -139,10 +139,25 @@ export async function sendWeeklyReckoning(): Promise<void> {
 
     const intelligenceContext = getIntelligenceContext({ maxInsights: 2 });
 
+    let cognitiveBlock = '';
+    let cognitiveQuestion: string | null = null;
+    try {
+      const { computeCognitiveTraits, formatCognitiveTraitsForPrompt, selectWeeklyCognitiveQuestion } =
+        await import('./cognitive-traits');
+      const traits = computeCognitiveTraits({ windowDays: 45 });
+      cognitiveBlock = formatCognitiveTraitsForPrompt(traits, 5);
+      cognitiveQuestion = selectWeeklyCognitiveQuestion(traits);
+    } catch {
+      /* cognitive map is optional for reckoning */
+    }
+
     const prompt = `You are Rohan's personal guardian writing his weekly reckoning. Be honest. Be specific. Use actual data.
 
 Intelligence profile:
 ${intelligenceContext}
+
+Cognitive self-map (pressure wiring / voluntary starts / activation):
+${cognitiveBlock || 'Not enough cognitive trait data yet.'}
 
 This week's data:
 ${dataContext}
@@ -152,18 +167,20 @@ Write the weekly reckoning in this EXACT format (no deviations):
 WEEK OF [date range]
 
 REALITY:
-[4-6 bullet points of the hardest, most specific facts from the data. No softening. Numbers only.]
+[4-6 bullet points of the hardest, most specific facts from the data. No softening. Numbers only. If pressure-dependency or voluntary-start metrics are available, include them.]
 
 GOALS:
 [one line per active goal with ✓/✗ and one specific observation]
 
 PATTERN THIS WEEK:
-[2-3 sentences identifying the most important behavioral pattern — must reference specific days, times, or events from the data]
+[2-3 sentences identifying the most important behavioral pattern — must reference specific days, times, or events from the data. Prefer pressure-dependency / avoidance / activation patterns when the cognitive map supports them.]
 
 ONE QUESTION I'M NOT MOVING ON FROM:
-[One direct question about the most important unresolved pattern or avoidance. Make it specific enough that it requires a real answer, not a general one.]
+${cognitiveQuestion
+  ? `Prefer this cognitive question unless the week's data makes a more specific crisis unavoidable:\n"${cognitiveQuestion}"`
+  : '[One direct question about the most important unresolved pattern or avoidance. Make it specific enough that it requires a real answer, not a general one.]'}
 
-Keep total length under 400 words. No filler. No encouragement. Facts and one honest question.`;
+Keep total length under 400 words. No filler. No encouragement. Facts and one honest question. Never shame crisis productivity — measure it and ask about rewiring.`;
 
     const { getGenAI, generateWithFallback } = await import('./ai');
     const { MODEL_PRO } = await import('./models');

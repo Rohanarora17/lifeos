@@ -2,6 +2,25 @@ import { getDb } from './db';
 import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { getMemoryContext } from './memory';
 import { getAdaptiveBands } from './adaptive-bands';
+import {
+  computeCognitiveTraits,
+  formatCognitiveTraitsForPrompt,
+  type CognitiveTraitBundle,
+} from './cognitive-traits';
+import {
+  formatExperimentForPrompt,
+  getCognitiveExperimentState,
+  type CognitiveExperimentState,
+} from './cognitive-experiments';
+import {
+  formatActiveCoachForPrompt,
+  getActiveCoachPolicy,
+  type ActiveCoachPolicy,
+} from './cognitive-active-coach';
+import {
+  getCognitiveTrajectory,
+  type CognitiveTrajectory,
+} from './cognitive-self-answer';
 
 export type PersonalizationSurface =
   | 'agent'
@@ -74,6 +93,18 @@ export interface PersonalizationSnapshot {
   moment: {
     mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
     guidance: string;
+  };
+  /**
+   * First-class Cognitive Self-Map — shared with every surface that builds a snapshot.
+   * Deterministic traits + coach + trajectory; not a UI-only silo.
+   */
+  cognitive: {
+    traits: CognitiveTraitBundle;
+    activeCoach: ActiveCoachPolicy;
+    trajectory: CognitiveTrajectory;
+    experiments: CognitiveExperimentState;
+    /** Compact prompt-ready block (same data as structured fields) */
+    contextBlock: string;
   };
   intelligenceContext: string;
   memoryContext: string;
@@ -303,9 +334,22 @@ export function buildPersonalizationSnapshot(opts?: {
   const helpfulRate = getHelpfulRate();
   const plannedFocus = getPlannedFocusContext(date);
 
-  return {
+  const moment = deriveMoment({
+    hour,
+    openTasks,
+    overdueTasks,
+    uncheckedHabits: uncheckedHabits.length,
+    energy: profile.currentEnergyEstimate,
+    mood: profile.moodToday,
+    focusScore,
+    focusGood: bands.focusGood,
+    peakFocusHours: profile.peakFocusHours,
+  });
+
+  const generatedAt = now.toISOString();
+  const partialForCoach: PersonalizationSnapshot = {
     surface,
-    generatedAt: now.toISOString(),
+    generatedAt,
     today: {
       date,
       hour,
@@ -340,23 +384,65 @@ export function buildPersonalizationSnapshot(opts?: {
       helpfulRate,
       corrections30d,
     },
-    moment: deriveMoment({
-      hour,
-      openTasks,
-      overdueTasks,
-      uncheckedHabits: uncheckedHabits.length,
-      energy: profile.currentEnergyEstimate,
-      mood: profile.moodToday,
-      focusScore,
-      focusGood: bands.focusGood,
-      peakFocusHours: profile.peakFocusHours,
-    }),
+    moment,
+    // filled below after coach/traits — placeholder satisfies type during construction
+    cognitive: null as unknown as PersonalizationSnapshot['cognitive'],
+    intelligenceContext: '',
+    memoryContext: '',
+  };
+
+  const traits = computeCognitiveTraits({ windowDays: 45 });
+  const experiments = getCognitiveExperimentState();
+  const activeCoach = getActiveCoachPolicy({ traits, snapshot: partialForCoach });
+  const trajectory = getCognitiveTrajectory({ historyLimit: 90 });
+  const contextBlock = [
+    formatCognitiveTraitsForPrompt(traits),
+    formatExperimentForPrompt(experiments),
+    formatActiveCoachForPrompt(activeCoach),
+  ].filter(Boolean).join('\n');
+
+  return {
+    ...partialForCoach,
+    cognitive: {
+      traits,
+      activeCoach,
+      trajectory,
+      experiments,
+      contextBlock,
+    },
     intelligenceContext: getIntelligenceContext({
       maxInsights: opts?.maxInsights ?? 3,
       includeToday: true,
       includeThresholds: opts?.includeThresholds ?? false,
     }),
     memoryContext: getMemoryContext(opts?.includeMemoryFacts ?? 6),
+  };
+}
+
+/**
+ * Recompute coach policy after moment/energy overrides (e.g. next-day planning).
+ * Keeps traits/trajectory; refreshes activeCoach for the new moment.
+ */
+export function refreshCognitiveOnSnapshot(snapshot: PersonalizationSnapshot): PersonalizationSnapshot {
+  if (!snapshot.cognitive) return snapshot;
+  const activeCoach = getActiveCoachPolicy({
+    traits: snapshot.cognitive.traits,
+    snapshot,
+  });
+  const experiments = snapshot.cognitive.experiments ?? getCognitiveExperimentState();
+  const contextBlock = [
+    formatCognitiveTraitsForPrompt(snapshot.cognitive.traits),
+    formatExperimentForPrompt(experiments),
+    formatActiveCoachForPrompt(activeCoach),
+  ].filter(Boolean).join('\n');
+  return {
+    ...snapshot,
+    cognitive: {
+      ...snapshot.cognitive,
+      activeCoach,
+      experiments,
+      contextBlock,
+    },
   };
 }
 
@@ -401,6 +487,14 @@ export function formatPersonalizationContext(snapshot: PersonalizationSnapshot):
     '=== FEEDBACK LOOP ===',
     `Alert fatigue: ${snapshot.feedback.alertFatigueLevel} (${snapshot.feedback.recentAlerts} alerts in 2h)`,
     `Agent helpful rate: ${helpful}; corrections in 30d: ${snapshot.feedback.corrections30d}`,
+    '',
+    // Prefer structured snapshot.cognitive (single source of truth) — never invent a second map
+    snapshot.cognitive?.contextBlock
+      || [
+        formatCognitiveTraitsForPrompt(computeCognitiveTraits({ windowDays: 45 })),
+        formatExperimentForPrompt(getCognitiveExperimentState()),
+        formatActiveCoachForPrompt(getActiveCoachPolicy({ snapshot })),
+      ].filter(Boolean).join('\n'),
     '',
     snapshot.intelligenceContext,
     snapshot.memoryContext,

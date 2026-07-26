@@ -2,6 +2,10 @@ import { getDb } from './db';
 import type { PersonalizationSnapshot } from './personalization-context';
 import type { UserIntelligenceProfile } from './intelligence';
 import type { LearnedFeedbackFact } from './feedback-learning';
+import {
+  computeCognitiveTraits,
+  type CognitiveTraitBundle,
+} from './cognitive-traits';
 
 export type SelfModelBeliefKind =
   | 'current_state'
@@ -10,7 +14,8 @@ export type SelfModelBeliefKind =
   | 'feedback_preference'
   | 'constraint'
   | 'knowledge_gap'
-  | 'reward_pattern';
+  | 'reward_pattern'
+  | 'cognitive_trait';
 
 export interface SelfModelBelief {
   id: string;
@@ -19,7 +24,7 @@ export interface SelfModelBelief {
   value: string;
   confidence: number;
   evidence: string[];
-  source: 'personalization_snapshot' | 'uil_profile' | 'memory' | 'feedback' | 'calibration' | 'activity';
+  source: 'personalization_snapshot' | 'uil_profile' | 'memory' | 'feedback' | 'calibration' | 'activity' | 'cognitive_traits';
   updatedAt: string | null;
 }
 
@@ -49,6 +54,8 @@ export interface SelfModel {
   beliefs: SelfModelBelief[];
   gaps: SelfModelGap[];
   coverage: SelfModelCoverage;
+  /** Deterministic Cognitive Self-Map traits (Tier B) */
+  cognitiveTraits: CognitiveTraitBundle;
 }
 
 export interface SelfModelGapQuestion {
@@ -177,18 +184,48 @@ function deriveGaps(snapshot: PersonalizationSnapshot, coverage: SelfModelCovera
     });
   }
 
+  if (coverage.focusSessions30d >= 3 && coverage.focusSessions30d < 8) {
+    gaps.push({
+      id: 'pressure_map_thin',
+      label: 'Pressure-dependency map needs more deadline-linked sessions',
+      reason: 'Cognitive traits improve when focus sessions are linked to tasks with due dates.',
+      suggestedQuestion: 'Which important tasks only get real attention when a deadline is close?',
+      priority: 'medium',
+    });
+  }
+
   return gaps;
+}
+
+function addCognitiveTraitBeliefs(target: SelfModelBelief[], bundle: CognitiveTraitBundle): void {
+  for (const trait of bundle.traits) {
+    if (trait.confidence <= 0 && trait.value == null) continue;
+    addBelief(target, {
+      id: `cognitive_${trait.id}`,
+      kind: 'cognitive_trait',
+      label: trait.label,
+      value: trait.valueLabel,
+      confidence: trait.confidence,
+      evidence: trait.evidence.map(ev => ev.detail).slice(0, 4),
+      source: 'cognitive_traits',
+      updatedAt: trait.updatedAt,
+    });
+  }
 }
 
 export function buildSelfModel(input: {
   snapshot: PersonalizationSnapshot;
   profile: UserIntelligenceProfile;
   feedbackFacts: LearnedFeedbackFact[];
+  cognitiveTraits?: CognitiveTraitBundle;
 }): SelfModel {
   const { snapshot, profile, feedbackFacts } = input;
   const coverage = buildCoverage(profile);
   const beliefs: SelfModelBelief[] = [];
   const facts = recentFacts(10);
+  const cognitiveTraits = input.cognitiveTraits ?? computeCognitiveTraits({ windowDays: 45 });
+
+  addCognitiveTraitBeliefs(beliefs, cognitiveTraits);
 
   addBelief(beliefs, {
     id: 'moment_mode',
@@ -295,26 +332,32 @@ export function buildSelfModel(input: {
   }
 
   const gaps = deriveGaps(snapshot, coverage);
+  const traitBoost = Math.min(0.18, cognitiveTraits.pressureProfile.confidence * 0.2);
   const confidence = Number(clamp(
     0.22 +
     Math.min(0.22, coverage.activeMemoryFacts * 0.015) +
     Math.min(0.2, coverage.feedbackEvents30d * 0.025) +
     Math.min(0.2, coverage.focusSessions30d * 0.025) +
-    Math.min(0.16, coverage.checkins14d * 0.02),
+    Math.min(0.16, coverage.checkins14d * 0.02) +
+    traitBoost,
     0.1,
     0.95,
   ).toFixed(2));
 
-  const summary = profile.currentNarrative ||
+  const daySummary = profile.currentNarrative ||
     `LifeOS is currently reading you as ${snapshot.moment.mode.replace(/_/g, ' ')} with ${snapshot.userState.energy} energy and ${profile.focusTrend} focus.`;
+  const summary = cognitiveTraits.pressureProfile.confidence >= 0.25
+    ? `${cognitiveTraits.summary} ${daySummary}`
+    : daySummary;
 
   return {
     generatedAt: snapshot.generatedAt,
     confidence,
     summary,
-    beliefs: beliefs.sort((a, b) => b.confidence - a.confidence).slice(0, 14),
+    beliefs: beliefs.sort((a, b) => b.confidence - a.confidence).slice(0, 18),
     gaps,
     coverage,
+    cognitiveTraits,
   };
 }
 

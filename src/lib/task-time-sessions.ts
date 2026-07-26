@@ -12,6 +12,7 @@ interface CandidateTask {
   task_type: string;
   course: string | null;
   estimated_minutes: number | null;
+  due_date: string | null;
   linked_sessions: number;
   avg_focus_score: number | null;
 }
@@ -77,6 +78,7 @@ function loadCandidateTasks(): CandidateTask[] {
       COALESCE(t.task_type, 'task') as task_type,
       t.course,
       t.estimated_minutes,
+      t.due_date,
       COUNT(l.id) as linked_sessions,
       AVG(l.focus_score) as avg_focus_score
     FROM tasks t
@@ -237,6 +239,7 @@ export function creditSessionTimeToTasks(input: {
           priority: task.priority,
           subject: `${task.title} (${progress.creditedMinutes}/${targetMinutes}m; ${rewardBase.reason})`,
           snapshot,
+          taskDueDate: task.due_date,
         });
         rewardCoins = reward.coins;
         db.prepare('INSERT INTO coin_ledger (amount, reason) VALUES (?, ?)').run(reward.coins, reward.ledgerReason);

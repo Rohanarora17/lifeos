@@ -137,6 +137,97 @@ function formatLlmUnavailableLine(): string {
     return '❌ LLM not configured. Use /menu for quick actions.';
 }
 
+function escapeTelegramHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+export function formatTelegramMenuMessage(snapshot = buildPersonalizationSnapshot({
+    surface: 'telegram',
+    maxInsights: 2,
+    includeMemoryFacts: 4,
+})): string {
+    const lines = [
+        `🛡️ <b>LifeOS Guardian</b>`,
+        `<i>${formatCommandMomentLine(snapshot)}</i>`,
+    ];
+
+    if (snapshot.today.plannedFocus.nextTitle) {
+        lines.push(
+            `Next planned focus: <b>${escapeTelegramHtml(snapshot.today.plannedFocus.nextTitle)}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`
+        );
+        lines.push(`Best next action: start or protect the planned block before adding more work.`);
+    } else if (snapshot.moment.mode === 'deadline_pressure') {
+        lines.push(`Best next action: open /tasks and clear the nearest deadline-relief item first.`);
+    } else if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+        lines.push(`Best next action: choose one small recovery-safe task or habit, not a full reset of the day.`);
+    } else if (snapshot.moment.mode === 'planning') {
+        lines.push(`Best next action: use /plan or send tomorrow intention, sleep/wake, and fixed constraints.`);
+    } else if (snapshot.userState.standupGoal) {
+        lines.push(`Best next action: turn today's anchor into a timed block: <b>${escapeTelegramHtml(snapshot.userState.standupGoal)}</b>.`);
+    } else {
+        lines.push(`Best next action: use /standup to give me today's anchor, then I can rank the work.`);
+    }
+
+    const context = [
+        `${snapshot.userState.energy} energy`,
+        snapshot.userState.mood ? `${snapshot.userState.mood} mood` : null,
+        snapshot.userState.nextBestFocusWindow ? `best window ${snapshot.userState.nextBestFocusWindow}` : null,
+        snapshot.feedback.alertFatigueLevel !== 'low' ? `${snapshot.feedback.alertFatigueLevel} alert fatigue` : null,
+    ].filter(Boolean);
+    if (context.length > 0) lines.push(`Context: ${context.join(' · ')}.`);
+    lines.push(`Use the buttons below; I will adapt the action to this state.`);
+    return lines.join('\n');
+}
+
+export function formatTelegramDailyReportMessage(input: {
+    today: string;
+    avgFocus: number;
+    sessions: number;
+    totalMinutes: number;
+    tasksDone: number;
+    tasksTotal: number;
+    habitsDone: number;
+    habitsTotal: number;
+    snapshot?: ReturnType<typeof buildPersonalizationSnapshot>;
+}): string {
+    const snapshot = input.snapshot ?? buildPersonalizationSnapshot({
+        surface: 'telegram',
+        maxInsights: 2,
+        includeMemoryFacts: 4,
+    });
+    const lines = [
+        `📊 <b>Daily Report — ${input.today}</b>`,
+        `<i>${formatCommandMomentLine(snapshot)}</i>`,
+        '',
+        `${focusStatusIcon(input.avgFocus)} <b>Avg Focus:</b> ${Math.round(input.avgFocus)}/100`,
+        `🛡️ <b>Sessions:</b> ${input.sessions} (${input.totalMinutes}m total)`,
+        `📋 <b>Tasks:</b> ${input.tasksDone}/${input.tasksTotal} done`,
+        `💪 <b>Habits:</b> ${input.habitsDone}/${input.habitsTotal} checked`,
+    ];
+
+    if (snapshot.today.plannedFocus.nextTitle) {
+        lines.push(``);
+        lines.push(`Next planned focus: <b>${escapeTelegramHtml(snapshot.today.plannedFocus.nextTitle)}</b>${snapshot.today.plannedFocus.nextMinutes ? ` (${snapshot.today.plannedFocus.nextMinutes}m)` : ''}.`);
+    } else if (snapshot.moment.mode === 'deadline_pressure') {
+        lines.push(``);
+        lines.push(`Next: reduce deadline pressure before optional cleanup.`);
+    } else if (snapshot.moment.mode === 'recovery' || snapshot.userState.energy === 'low' || snapshot.userState.mood === 'low') {
+        lines.push(``);
+        lines.push(`Next: keep tomorrow lighter; one small block is enough signal.`);
+    } else if (snapshot.moment.mode === 'planning') {
+        lines.push(``);
+        lines.push(`Next: send sleep/wake and tomorrow intention so the next plan is accurate.`);
+    } else if (snapshot.userState.nextBestFocusWindow) {
+        lines.push(``);
+        lines.push(`Next: use the learned ${snapshot.userState.nextBestFocusWindow} window for the next meaningful block.`);
+    }
+
+    return lines.join('\n');
+}
+
 function formatScheduleFitLine(snapshot: ReturnType<typeof buildPersonalizationSnapshot>, plannedMinutes: number): string {
     const mode = snapshot.moment.mode.replace(/_/g, ' ');
     if (snapshot.today.plannedFocus.nextTitle) {
@@ -688,7 +779,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     const cmdLower = cmd.toLowerCase();
 
     if (cmdLower === '/start' || cmdLower === '/menu') {
-        await sendTelegram(`🛡️ <b>LifeOS Guardian</b>\n\nWhat would you like to do?`, 'HTML', FULL_MENU_KEYBOARD);
+        await sendTelegram(formatTelegramMenuMessage(), 'HTML', FULL_MENU_KEYBOARD);
         return;
     }
     if (cmdLower === '/status') {
@@ -731,9 +822,17 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','todo','doing')`).get() as { total: number; done: number };
         const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
         const avgFocus = Number(sessRow.avg_focus ?? 0);
-        const emoji = focusStatusIcon(avgFocus);
         await sendTelegram(
-            `📊 <b>Daily Report — ${today}</b>\n\n${emoji} <b>Avg Focus:</b> ${Math.round(avgFocus)}/100\n🛡️ <b>Sessions:</b> ${sessRow.count} (${sessRow.total_minutes}m total)\n📋 <b>Tasks:</b> ${tasksRow.done}/${tasksRow.total} done\n💪 <b>Habits:</b> ${habitsRow.done}/${habitsRow.total} checked`,
+            formatTelegramDailyReportMessage({
+                today,
+                avgFocus,
+                sessions: sessRow.count,
+                totalMinutes: sessRow.total_minutes,
+                tasksDone: tasksRow.done ?? 0,
+                tasksTotal: tasksRow.total ?? 0,
+                habitsDone: habitsRow.done ?? 0,
+                habitsTotal: habitsRow.total ?? 0,
+            }),
             'HTML', FULL_MENU_KEYBOARD
         );
         return;
@@ -1662,7 +1761,7 @@ export async function executeAction(
         }
 
         case 'MENU':
-            await sendTelegram(replyText || `🛡️ <b>Guardian Menu</b>`, 'HTML', FULL_MENU_KEYBOARD);
+            await sendTelegram(replyText || formatTelegramMenuMessage(), 'HTML', FULL_MENU_KEYBOARD);
             break;
 
         case 'CHAT':

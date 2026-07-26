@@ -8,8 +8,18 @@ import {
   updateCalendarEvent,
 } from './google-calendar';
 import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
-import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
+import {
+  buildPersonalizationSnapshot,
+  refreshCognitiveOnSnapshot,
+  type PersonalizationSnapshot,
+} from './personalization-context';
 import { getAdaptiveRewardDecision, getAdaptiveTaskRewardBase } from './adaptive-rewards';
+import type { PlannerExperimentBias } from './cognitive-experiments';
+import {
+  getCombinedPlannerBias,
+  getVoluntaryRewardMultiplier,
+  taskMatchesCoachBias,
+} from './cognitive-active-coach';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
 
@@ -229,7 +239,7 @@ function applyPlanningStateToSnapshot(
     : snapshot.userState.energy;
   const recovery = energy === 'low' || mood === 'low';
 
-  return {
+  const next: PersonalizationSnapshot = {
     ...snapshot,
     userState: {
       ...snapshot.userState,
@@ -243,6 +253,8 @@ function applyPlanningStateToSnapshot(
       }
       : snapshot.moment,
   };
+  // Keep active coach aligned with the overridden day state (shared model, not a stale silo)
+  return refreshCognitiveOnSnapshot(next);
 }
 
 function minutesBetween(start: Date, end: Date): number {
@@ -431,7 +443,8 @@ function loadCandidateTasks(
   snapshot: PersonalizationSnapshot,
   intention: string | null,
   selectedTaskIds: number[] | undefined,
-  planDate: string
+  planDate: string,
+  experimentBias: PlannerExperimentBias & { applyToNonUrgent?: boolean; source?: string } = getCombinedPlannerBias(),
 ): CandidateTask[] {
   const db = getDb();
   const selected = selectedTaskIds && selectedTaskIds.length > 0 ? new Set(selectedTaskIds) : null;
@@ -566,6 +579,33 @@ function loadCandidateTasks(
         if (daysSinceCredit >= 3) {
           score += 7;
           reasons.push(`not touched for ${daysSinceCredit}d`);
+        }
+      }
+      if (experimentBias.active && taskMatchesCoachBias(task, experimentBias as ReturnType<typeof getCombinedPlannerBias>, planDate)) {
+        score += experimentBias.scoreBoost;
+        const source = (experimentBias as { source?: string }).source || 'experiment';
+        if (source === 'active_coach') {
+          if (experimentBias.kind === 'activation_block') {
+            reasons.push('active coach: auto activation block for non-urgent work');
+          } else if (experimentBias.kind === 'early_synthetic_deadline') {
+            reasons.push(
+              experimentBias.syntheticDueDate
+                ? `active coach: early commitment (synthetic due ${experimentBias.syntheticDueDate})`
+                : 'active coach: early commitment boost',
+            );
+          } else {
+            reasons.push('active coach rewiring target');
+          }
+        } else if (experimentBias.kind === 'activation_block') {
+          reasons.push('active light experiment: activation block target');
+        } else if (experimentBias.kind === 'early_synthetic_deadline') {
+          reasons.push(
+            experimentBias.syntheticDueDate
+              ? `active light experiment: synthetic due ${experimentBias.syntheticDueDate}`
+              : 'active light experiment: early synthetic deadline',
+          );
+        } else {
+          reasons.push('active light experiment target');
         }
       }
       if (remaining <= 0) score -= 100;
@@ -722,14 +762,58 @@ function loadTaskFeedbackBias(): Map<number, TaskFeedbackBias> {
   return bias;
 }
 
-function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapshot): SessionRule {
+function applyExperimentToRule(
+  rule: SessionRule,
+  task: CandidateTask,
+  experimentBias: PlannerExperimentBias & { applyToNonUrgent?: boolean; source?: string },
+  planDate?: string,
+): SessionRule {
+  if (!experimentBias.active) return rule;
+  if (!taskMatchesCoachBias(task, experimentBias as ReturnType<typeof getCombinedPlannerBias>, planDate)) {
+    return rule;
+  }
+
+  if (experimentBias.kind === 'activation_block' && experimentBias.preferredActivationMinutes) {
+    const minutes = clampMinutes(experimentBias.preferredActivationMinutes, 10, 25);
+    const prefix = experimentBias.source === 'active_coach'
+      ? 'Active coach auto activation block.'
+      : 'Activation block experiment.';
+    return {
+      ...rule,
+      preferredMinutes: minutes,
+      minMinutes: Math.min(rule.minMinutes, 10),
+      maxMinutes: Math.min(rule.maxMinutes, 25),
+      guidance: `${experimentBias.guidance || prefix} ${rule.guidance}`,
+    };
+  }
+
+  if (experimentBias.kind === 'early_synthetic_deadline') {
+    const prefix = experimentBias.source === 'active_coach'
+      ? 'Active coach early commitment.'
+      : 'Early synthetic deadline experiment.';
+    return {
+      ...rule,
+      guidance: `${experimentBias.guidance || prefix} ${rule.guidance}`,
+    };
+  }
+
+  return rule;
+}
+
+function deriveSessionRule(
+  task: CandidateTask,
+  snapshot: PersonalizationSnapshot,
+  experimentBias: PlannerExperimentBias & { applyToNonUrgent?: boolean; source?: string } = getCombinedPlannerBias(),
+  planDate?: string,
+): SessionRule {
   const text = `${task.title} ${task.goal_title ?? ''} ${task.task_type} ${task.course ?? ''}`.toLowerCase();
   const learned = getAdaptiveSessionMinutes();
   const energy = snapshot.userState.energy;
   const energyMultiplier = energy === 'high' ? 1.1 : energy === 'low' ? 0.8 : 1;
 
+  let rule: SessionRule;
   if (/(math|problem|academy|exercise|drill|proof)/.test(text)) {
-    return applySessionFeedbackToRule({
+    rule = applySessionFeedbackToRule({
       mode: 'problem_practice',
       preferredMinutes: clampMinutes(30 * energyMultiplier, 20, 40),
       minMinutes: 20,
@@ -738,10 +822,8 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       guidance: 'Use short, closed-loop practice blocks and review mistakes before extending.',
       tools: ['Math Academy', 'notes'],
     }, task);
-  }
-
-  if (/(paper|research|read|reading|domain|concept|google|literature|survey)/.test(text)) {
-    return applySessionFeedbackToRule({
+  } else if (/(paper|research|read|reading|domain|concept|google|literature|survey)/.test(text)) {
+    rule = applySessionFeedbackToRule({
       mode: 'research_reading',
       preferredMinutes: clampMinutes(Math.max(45, learned) * energyMultiplier, 35, 70),
       minMinutes: 30,
@@ -750,10 +832,8 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       guidance: 'Use longer exploration blocks with explicit concept capture and unclear-question follow-up.',
       tools: ['browser', 'ChatGPT', 'notes'],
     }, task);
-  }
-
-  if (/(code|build|debug|implement|ship|pr|repo|test)/.test(text)) {
-    return applySessionFeedbackToRule({
+  } else if (/(code|build|debug|implement|ship|pr|repo|test)/.test(text)) {
+    rule = applySessionFeedbackToRule({
       mode: 'coding_build',
       preferredMinutes: clampMinutes(Math.max(45, learned) * energyMultiplier, 35, 80),
       minMinutes: 30,
@@ -762,17 +842,19 @@ function deriveSessionRule(task: CandidateTask, snapshot: PersonalizationSnapsho
       guidance: 'Use build/test checkpoints and stop with the next concrete handoff written down.',
       tools: ['editor', 'terminal', 'tests'],
     }, task);
+  } else {
+    rule = applySessionFeedbackToRule({
+      mode: 'study',
+      preferredMinutes: clampMinutes(learned * energyMultiplier, 25, 60),
+      minMinutes: 20,
+      maxMinutes: 70,
+      breakMinutes: 8,
+      guidance: 'Use a focused study block and end by logging what changed in understanding.',
+      tools: ['notes'],
+    }, task);
   }
 
-  return applySessionFeedbackToRule({
-    mode: 'study',
-    preferredMinutes: clampMinutes(learned * energyMultiplier, 25, 60),
-    minMinutes: 20,
-    maxMinutes: 70,
-    breakMinutes: 8,
-    guidance: 'Use a focused study block and end by logging what changed in understanding.',
-    tools: ['notes'],
-  }, task);
+  return applyExperimentToRule(rule, task, experimentBias, planDate);
 }
 
 function applySessionFeedbackToRule(rule: SessionRule, task: CandidateTask): SessionRule {
@@ -819,6 +901,16 @@ function computeAdaptiveSessionXp(input: {
     reasons.push('finishable from linked focus-session progress');
   }
 
+  // Active-coach rewiring: non-crisis planned blocks earn slightly more XP
+  const voluntary = getVoluntaryRewardMultiplier({
+    dueDate: task.due_date,
+    snapshot,
+  });
+  if (voluntary.multiplier > 1) {
+    multiplier *= voluntary.multiplier;
+    if (voluntary.reason) reasons.push(voluntary.reason);
+  }
+
   if (snapshot.moment.mode === 'deadline_pressure' && task.priority !== 'low') {
     multiplier += 0.1;
     reasons.push('deadline-pressure day rewards concrete task progress');
@@ -830,7 +922,11 @@ function computeAdaptiveSessionXp(input: {
   }
 
   const base = (durationMinutes * 1.4) + priority + difficulty + modeBonus;
-  const xp = Math.max(20, Math.round(base * clampMinutes(multiplier, 0.8, 1.35)));
+  // IMPORTANT: do not use clampMinutes here — it snaps to 5-minute steps and
+  // would crush multipliers like 1.12 into 0/5 and wipe adaptive XP.
+  const xpCap = reasons.some(r => /rewiring bonus/i.test(r)) ? 1.55 : 1.35;
+  const cappedMultiplier = Math.max(0.8, Math.min(xpCap, multiplier));
+  const xp = Math.max(20, Math.round(base * cappedMultiplier));
   return {
     xp,
     reason: reasons.length
@@ -854,6 +950,7 @@ function computeReward(task: CandidateTask, durationMinutes: number, rule: Sessi
     priority: task.priority,
     subject: `${task.title} planned block (${durationMinutes}m; ${rule.mode}; ${rewardBase.reason})`,
     snapshot,
+    taskDueDate: task.due_date,
   });
   return {
     xp: xp.xp,
@@ -1051,7 +1148,8 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   const snapshot = applyPlanningStateToSnapshot(baseSnapshot, { mood: planMood, energy: planEnergy });
   const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
   const calendarEvents = getCalendarEvents(planDate, planDate) as CalendarEventRow[];
-  const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate);
+  const experimentBias = getCombinedPlannerBias({ snapshot, planDate });
+  const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate, experimentBias);
   const windows = buildAvailability(planDate, wakeEstimate, sleepTime, calendarEvents);
 
   const summaryParts = [
@@ -1060,6 +1158,9 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
     `${windows.length} open calendar window${windows.length === 1 ? '' : 's'}`,
     `${planEnergy} energy`,
     planMood ? `${planMood} mood` : null,
+    experimentBias.active
+      ? `${experimentBias.source || 'experiment'}: ${experimentBias.kind}`
+      : null,
   ];
 
   const planId = db.transaction(() => {
@@ -1111,8 +1212,16 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
     for (const task of candidateTasks) {
       if (!cursor || windowIndex >= windows.length) break;
       if (!shouldScheduleCandidate({ task, snapshot, selectedTaskIds: input.selectedTaskIds, planDate })) continue;
-      const rule = deriveSessionRule(task, snapshot);
+      const rule = deriveSessionRule(task, snapshot, experimentBias, planDate);
       let remaining = task.remaining_minutes;
+      // Activation path: one short ignition block for matched tasks (experiment or active coach)
+      if (
+        experimentBias.active
+        && experimentBias.kind === 'activation_block'
+        && taskMatchesCoachBias(task, experimentBias, planDate)
+      ) {
+        remaining = Math.min(remaining, experimentBias.preferredActivationMinutes || 15);
+      }
 
       while (remaining > 0 && cursor && windowIndex < windows.length) {
         const currentWindow = windows[windowIndex];
@@ -1238,11 +1347,18 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
 	    : [];
   const suggestedInputs = buildPlanningSuggestedInputs({ plan, latestCheckin, snapshot });
 
+  const readBias = getCombinedPlannerBias({ snapshot, planDate: normalizedDate });
   return {
     plan: plan ?? null,
     sessions,
     calendarEvents: getCalendarEvents(normalizedDate, normalizedDate) as CalendarEventRow[],
-    candidateTasks: loadCandidateTasks(snapshot, plan?.tomorrow_intention ?? intention, undefined, normalizedDate).slice(0, 20),
+    candidateTasks: loadCandidateTasks(
+      snapshot,
+      plan?.tomorrow_intention ?? intention,
+      undefined,
+      normalizedDate,
+      readBias,
+    ).slice(0, 20),
     personalization: {
       mode: snapshot.moment.mode,
       energy: snapshot.userState.energy,
@@ -1279,7 +1395,9 @@ export async function updatePlannedFocusSession(id: string, patch: {
     includeMemoryFacts: 4,
   });
   const task = candidateForPlannedSession({ taskId, title, durationMinutes, snapshot });
-  const rule = deriveSessionRule(task, snapshot);
+  const planDate = toSqlDateTime(plannedStart).slice(0, 10);
+  const bias = getCombinedPlannerBias({ snapshot, planDate });
+  const rule = deriveSessionRule(task, snapshot, bias, planDate);
   const reward = computeReward(task, durationMinutes, rule, snapshot);
   const pricedRule = { ...rule, rewardReason: reward.reason };
 

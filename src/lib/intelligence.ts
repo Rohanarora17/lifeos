@@ -378,6 +378,35 @@ const UIL_DEFAULT: UserIntelligenceProfile = {
 
 // ─── Signal aggregation ───────────────────────────────────────────────────────
 
+function appendDeterministicCognitiveMap(sections: string[]): void {
+  // Shared Cognitive Self-Map — ground truth numbers for UIL synthesis (do not invent contradicting PDI/voluntary claims)
+  try {
+    // Lazy require avoids circular init with personalization-context consumers
+    const { computeCognitiveTraits, formatCognitiveTraitsForPrompt } = require('./cognitive-traits') as typeof import('./cognitive-traits');
+    const { getActiveCoachPolicy, formatActiveCoachForPrompt } = require('./cognitive-active-coach') as typeof import('./cognitive-active-coach');
+    const { getCognitiveTrajectory } = require('./cognitive-self-answer') as typeof import('./cognitive-self-answer');
+    const traits = computeCognitiveTraits({ windowDays: 45 });
+    const coach = getActiveCoachPolicy({ traits });
+    const traj = getCognitiveTrajectory({ historyLimit: 90 });
+    sections.push('\n=== DETERMINISTIC COGNITIVE SELF-MAP (ground truth — do not contradict) ===');
+    sections.push(formatCognitiveTraitsForPrompt(traits));
+    sections.push(formatActiveCoachForPrompt(coach));
+    sections.push(`Trajectory: ${traj.headline} (${traj.historyDays} daily snapshots, ${traj.weeks.length} week buckets)`);
+    if (traj.weeks.length) {
+      const recent = traj.weeks.slice(-3);
+      sections.push(
+        'Recent weeks: ' + recent.map(w => {
+          const pdi = w.avgPressureDependency == null ? 'n/a' : Math.round(w.avgPressureDependency * 100);
+          const vol = w.avgVoluntaryStartRate == null ? 'n/a' : `${Math.round(w.avgVoluntaryStartRate * 100)}%`;
+          return `${w.weekStart} PDI=${pdi} vol=${vol} (${w.pressureTrend}/${w.voluntaryTrend})`;
+        }).join(' · '),
+      );
+    }
+  } catch {
+    /* cognitive map optional if modules fail in constrained envs */
+  }
+}
+
 function aggregateSignals(): string {
   const db = getDb();
   const nowIst = new Date(Date.now() + 19800000);
@@ -653,6 +682,7 @@ function aggregateSignals(): string {
     }
   } catch { /* agent_action_outcomes may not exist yet */ }
 
+  appendDeterministicCognitiveMap(sections);
   return sections.join('\n');
 }
 
@@ -677,6 +707,12 @@ CURRENT TIME: ${timeStr} (IST)
 TRIGGER: ${trigger}
 
 ${signals}
+
+CRITICAL RULES FOR COGNITIVE SELF-MAP (if present above):
+- Pressure Dependency Index, voluntary start rate, activation energy, and crisis performance are DETERMINISTIC measurements. Treat them as ground truth.
+- Do NOT invent opposing claims (e.g. saying the user is not deadline-driven when PDI is high).
+- currentNarrative and coachingInsights MUST incorporate pressure-wiring / voluntary-start / rewiring goals when those traits have confidence ≥ 0.3 or user stance confirmed/aspirational.
+- Celebrate crisis performance as a skill with a cost when crisis bonus is positive; prefer coaching that builds voluntary starts beside it, never shame.
 
 CRITICAL RULES FOR "adaptiveThresholds":
 - cognitiveLoadThreshold: Set this to the actual number of active tasks where you believe the user will genuinely start feeling overwhelmed. DO NOT arbitrarily drop this just because their current task count is low. Only lower it if you have evidence they are actively struggling.
@@ -920,6 +956,19 @@ export function getIntelligenceContext(opts?: {
     const t = p.adaptiveThresholds;
     lines.push(`\n🔧 Adaptive thresholds: drop_alert=${t.focusDropAlertScore}, load=${t.cognitiveLoadThreshold} tasks, nudge=${t.distractionAlertMinutes}min, sprint=${t.sessionDurationSweetSpot}min`);
   }
+
+  // Shared Cognitive Self-Map — same ground truth every agent/guardian path sees via UIL context
+  try {
+    const { computeCognitiveTraits, formatCognitiveTraitsForPrompt } = require('./cognitive-traits') as typeof import('./cognitive-traits');
+    const { getActiveCoachPolicy, formatActiveCoachForPrompt } = require('./cognitive-active-coach') as typeof import('./cognitive-active-coach');
+    const { getCognitiveTrajectory } = require('./cognitive-self-answer') as typeof import('./cognitive-self-answer');
+    const traits = computeCognitiveTraits({ windowDays: 45 });
+    const coach = getActiveCoachPolicy({ traits });
+    const traj = getCognitiveTrajectory({ historyLimit: 90 });
+    lines.push('\n' + formatCognitiveTraitsForPrompt(traits));
+    lines.push(formatActiveCoachForPrompt(coach));
+    lines.push(`📈 Trajectory: ${traj.headline}`);
+  } catch { /* optional */ }
 
   // Append today's screen observation summary (what they've actually been doing)
   if (includeToday) {
