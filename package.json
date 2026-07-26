@@ -7,6 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "npm run test:unit",
+    "test:unit": "node --test --test-concurrency=1 tests/unit/**/*.test.cjs",
+    "test:cognitive": "node --test --test-concurrency=1 tests/unit/cognitive-*.test.cjs",
+    "test:e2e:brain-map": "node scripts/run-brain-map-e2e.cjs",
+    "test:cognitive:all": "npm run test:cognitive && npm run test:e2e:brain-map",
+    "test:live-gates": "node scripts/verify-live-gates.cjs",
     "guardian:daemon": "node --env-file=.env scripts/lifeosd.mjs",
     "guardian:optimize": "node scripts/guardian-optimize.mjs",
     "guardian:voice-agent": "node scripts/livekit-guardian-agent.mjs",
@@ -30,7 +36,11 @@
     "verify:evening-journal-planning": "node scripts/verify-evening-journal-planning.cjs",
     "verify:rendered-adaptive-planner": "node scripts/verify-rendered-adaptive-planner.cjs",
     "verify:rendered-deadline-protect": "node scripts/verify-rendered-deadline-protect.cjs",
-    "verify:live-evening-extraction": "node scripts/verify-live-evening-extraction.cjs"
+    "verify:live-evening-extraction": "node scripts/verify-live-evening-extraction.cjs",
+    "verify:cognitive-traits": "node scripts/verify-cognitive-traits.cjs",
+    "verify:cognitive-trait-stance": "node scripts/verify-cognitive-trait-stance.cjs",
+    "verify:cognitive-experiments": "node scripts/verify-cognitive-experiments.cjs",
+    "verify:cognitive-history": "node scripts/verify-cognitive-history.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
@@ -53,6 +63,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/debounce": "^1.2.4",
