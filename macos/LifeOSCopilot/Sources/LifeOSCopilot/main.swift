@@ -101,12 +101,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             title: windowCapture.title
                         )
                         copilotLog("Vision capture uploaded")
-                    } else if windowCapture.privacyReason == "sensitive_window" {
+                    } else if windowCapture.privacyReason?.hasPrefix("sensitive_") == true {
                         try await api.sendSensitivitySkip(
                             sessionId: sessionId,
                             reason: "sensitive_window"
                         )
-                        copilotLog("Vision capture privacy-skipped")
+                        copilotLog("Vision capture privacy-skipped: \(windowCapture.privacyReason ?? "sensitive_window")")
                     } else {
                         copilotLog("Vision capture unavailable: \(windowCapture.privacyReason ?? "unknown")")
                     }

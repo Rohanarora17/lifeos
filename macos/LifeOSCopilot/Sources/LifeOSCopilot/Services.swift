@@ -33,8 +33,8 @@ final class ScreenCaptureService {
             return emptyCapture(app: "Unknown App", title: "", reason: "no_frontmost_application")
         }
         let frontmostAppName = frontmost.localizedName ?? "Unknown App"
-        if isSensitive(app: frontmostAppName, title: "") {
-            return emptyCapture(app: "Sensitive App", title: "", reason: "sensitive_window")
+        if let privacyRule = sensitiveRule(app: frontmostAppName, title: "") {
+            return emptyCapture(app: "Sensitive App", title: "", reason: privacyRule)
         }
 
         do {
@@ -61,8 +61,8 @@ final class ScreenCaptureService {
                 ?? frontmost.localizedName
                 ?? "Unknown App"
             let title = window.title ?? ""
-            if isSensitive(app: appName, title: title) {
-                return emptyCapture(app: "Sensitive App", title: "", reason: "sensitive_window")
+            if let privacyRule = sensitiveRule(app: appName, title: title) {
+                return emptyCapture(app: "Sensitive App", title: "", reason: privacyRule)
             }
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -117,11 +117,16 @@ final class ScreenCaptureService {
         return (app.localizedName ?? "Unknown App", title)
     }
 
-    private func isSensitive(app: String, title: String) -> Bool {
+    private func sensitiveRule(app: String, title: String) -> String? {
         let appValue = app.lowercased()
         let titleValue = title.lowercased()
-        return sensitiveAppPatterns.contains { appValue.contains($0) }
-            || sensitiveTitlePatterns.contains { titleValue.contains($0) }
+        if let pattern = sensitiveAppPatterns.first(where: { appValue.contains($0) }) {
+            return "sensitive_app:\(pattern)"
+        }
+        if sensitiveTitlePatterns.contains(where: { titleValue.contains($0) }) {
+            return "sensitive_call_window"
+        }
+        return nil
     }
 
     private func emptyCapture(app: String, title: String, reason: String) -> WindowCapture {
