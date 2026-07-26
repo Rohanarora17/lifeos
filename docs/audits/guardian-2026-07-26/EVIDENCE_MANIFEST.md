@@ -18,13 +18,19 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | DEVICE-CLIENT-001 | MacBook | LaunchAgent and client log metadata | 2026-07-26 | URLs summarized; log bodies not bundled |
 | DEVICE-CHROME-001 | MacBook | Chrome version and extension presence | 2026-07-26 | Tab titles and browsing history omitted |
 | ACCESS-SSH-001 | Mac Mini | SSH connection attempt | 2026-07-26 | Host retained; credentials omitted |
+| PROD-SSH-002 | Mac Mini | Commit, worktree, launchd, and capability flags | 2026-07-26 | Environment values excluded |
+| PROD-DB-001 | Mac Mini | SQLite integrity, table counts, and online backup | 2026-07-26 | Row contents excluded |
+| PROD-LOG-001 | Mac Mini | Daemon error tail and log rotation | 2026-07-26 | Tokens and URLs redacted; only a bounded tail retained |
+| PROD-FRESH-001 | Mac Mini | Maximum source timestamps | 2026-07-26 | Content and titles excluded |
 
 ## Reproduction Constraints
 
-Production API checks were intentionally read-only. No database reset, settings
-mutation, OAuth operation, calendar write, notification send, microphone
-capture, screenshot capture, or destructive route was exercised against the
-deployed database.
+Production API and database checks were read-only. The only production
+mutations were an SQLite online backup, a disposable audit copy, and truncation
+of the 17.5 GB historical daemon error log after retaining a bounded redacted
+tail. No database reset, settings mutation, OAuth operation, calendar write,
+notification send, microphone capture, screenshot capture, or destructive
+route was exercised against the deployed database.
 
 The post-repair evidence run must use a disposable audit database and generated
 fixtures before any explicitly approved real session.

@@ -7,6 +7,7 @@ Production now fails closed unless authentication is configured.
 ```dotenv
 LIFEOS_AUTH_MODE=required
 LIFEOS_API_TOKEN=<random 32-byte-or-longer secret>
+LIFEOS_ADMIN_REAUTH_TOKEN=<different random 32-byte-or-longer secret>
 LIFEOS_DEVICE_TOKEN=<different random 32-byte-or-longer secret>
 LIFEOS_ALLOWED_ORIGINS=http://100.99.194.80:3000
 LIFEOS_EXTENSION_ID=<installed Chrome extension id>
@@ -28,8 +29,8 @@ service to HTTPS before making it reachable beyond the tailnet.
   personal dashboard and Guardian data.
 - Native MacBook client: `LIFEOS_DEVICE_TOKEN`, supplied in its launchd
   environment along with `LIFEOS_SERVER_URL=http://100.99.194.80:3000`.
-- Destructive admin calls: send `X-LifeOS-Reauth-Token` with the API token in
-  addition to the authenticated session.
+- Destructive admin calls: send `X-LifeOS-Reauth-Token` with
+  `LIFEOS_ADMIN_REAUTH_TOKEN` in addition to the authenticated session.
 
 Never place either token in URLs, logs, screenshots, or audit fixtures.
 
