@@ -251,10 +251,10 @@ export async function classifyActivityBatch(
         return results;
     }
 
-    // AI Classification pass (Only for missing items)
-    const ai = getGenAI();
-
     try {
+        // AI enrichment is optional. Client configuration failures must fall
+        // through to the low-confidence deterministic result below.
+        const ai = getGenAI();
         // Process in chunks to avoid prompt limits
         const CHUNK_SIZE = 50;
         for (let i = 0; i < itemsToClassify.length; i += CHUNK_SIZE) {
