@@ -6,6 +6,7 @@ export interface ApiSecurityEnvironment {
     NODE_ENV?: string;
     LIFEOS_AUTH_MODE?: string;
     LIFEOS_API_TOKEN?: string;
+    LIFEOS_ADMIN_REAUTH_TOKEN?: string;
     LIFEOS_DEVICE_TOKEN?: string;
     LIFEOS_ALLOWED_ORIGINS?: string;
     LIFEOS_EXTENSION_ID?: string;
@@ -97,6 +98,12 @@ export function readBearerToken(authorization: string | null) {
 
 export function isDevicePath(pathname: string) {
     return DEVICE_PATHS.some(path => pathname === path || pathname.startsWith(`${path}/`));
+}
+
+export function configuredAdminReauthToken(
+    env: ApiSecurityEnvironment = process.env,
+) {
+    return env.LIFEOS_ADMIN_REAUTH_TOKEN?.trim() || env.LIFEOS_API_TOKEN?.trim();
 }
 
 export function authorizeApiRequest(

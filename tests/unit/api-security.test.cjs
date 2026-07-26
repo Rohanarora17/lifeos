@@ -7,6 +7,7 @@ const { createIsolatedDb } = require('../helpers/temp-db.cjs');
 const envLoader = createIsolatedDb('lifeos-api-security-');
 const {
   authorizeApiRequest,
+  configuredAdminReauthToken,
   constantTimeTokenEqual,
   configuredAllowedOrigins,
 } = envLoader.requireLib('api-security.ts');
@@ -101,5 +102,19 @@ describe('API security policy', () => {
     assert.equal(constantTimeTokenEqual('same', 'same'), true);
     assert.equal(constantTimeTokenEqual('short', 'longer'), false);
     assert.equal(constantTimeTokenEqual(null, 'secret'), false);
+  });
+
+  it('uses an independent admin reauthentication token when configured', () => {
+    assert.equal(
+      configuredAdminReauthToken({
+        LIFEOS_API_TOKEN: 'app-secret',
+        LIFEOS_ADMIN_REAUTH_TOKEN: 'admin-secret',
+      }),
+      'admin-secret',
+    );
+    assert.equal(
+      configuredAdminReauthToken({ LIFEOS_API_TOKEN: 'legacy-secret' }),
+      'legacy-secret',
+    );
   });
 });

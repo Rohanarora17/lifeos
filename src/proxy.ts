@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import {
     authorizeApiRequest,
+    configuredAdminReauthToken,
     constantTimeTokenEqual,
     isAllowedApiOrigin,
     LIFEOS_SESSION_COOKIE,
@@ -75,7 +76,7 @@ export default function proxy(request: NextRequest) {
         && authorization.kind !== 'development'
         && !constantTimeTokenEqual(
             request.headers.get('x-lifeos-reauth-token'),
-            process.env.LIFEOS_API_TOKEN,
+            configuredAdminReauthToken(),
         )
     ) {
         return NextResponse.json(
