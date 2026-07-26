@@ -60,6 +60,7 @@ jobs:
             SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID LIFEOS_COOKIE_SECURE'
             REQUIRED_SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID'
             SECURITY_ENV="$HOME/.config/lifeos/security.env"
+            RUNTIME_ENV="$HOME/.config/lifeos/runtime.env"
             PRESERVED_SECURITY=$(mktemp)
             for source_file in .env.local "${SECURITY_ENV}"; do
               [ -f "${source_file}" ] || continue
@@ -79,6 +80,21 @@ jobs:
               printf '\n%s\n' "${entry}" >> "${NEXT_ENV}"
             done < "${PRESERVED_SECURITY}"
             rm -f "${PRESERVED_SECURITY}"
+
+            if [ -f "${RUNTIME_ENV}" ]; then
+              while IFS= read -r entry; do
+                [ -n "${entry}" ] || continue
+                echo "${entry}" | grep -q -E '^[A-Za-z_][A-Za-z0-9_]*=.+$' || {
+                  echo "Invalid runtime environment entry"
+                  exit 1
+                }
+                key="${entry%%=*}"
+                CLEAN_ENV=$(mktemp)
+                grep -Ev "^${key}=" "${NEXT_ENV}" > "${CLEAN_ENV}" || true
+                mv "${CLEAN_ENV}" "${NEXT_ENV}"
+                printf '\n%s\n' "${entry}" >> "${NEXT_ENV}"
+              done < "${RUNTIME_ENV}"
+            fi
 
             for key in ${REQUIRED_SECURITY_KEYS}; do
               grep -q -E "^${key}=.+" "${NEXT_ENV}" || {
