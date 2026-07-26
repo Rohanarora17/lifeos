@@ -570,7 +570,6 @@ function initSchema(db: Database.Database) {
     'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)'
   );
   const defaults: Record<string, string> = {
-    gemini_api_key: '',
     github_pat: '',
     github_username: '',
     calendar_ics_url: '',

@@ -39,10 +39,6 @@ function addDays(date, days) {
   return d.toISOString().slice(0, 10);
 }
 
-function hasLiveAiConfig() {
-  return Boolean(process.env.GEMINI_API_KEY || process.env.API_KEY);
-}
-
 function textIncludes(value, patterns) {
   const lower = (value ?? '').toLowerCase();
   return patterns.some(pattern => lower.includes(pattern));
@@ -53,13 +49,12 @@ const {
   extractEveningCheckinSignalsFromText,
   resolvePlanDateFromEveningCheckin,
 } = require('../src/lib/checkin.ts');
+const { getGeminiRuntimeInfo } = require('../src/lib/ai.ts');
 const { generateNextDayPlan } = require('../src/lib/next-day-planner.ts');
 
 async function main() {
-  assert(
-    hasLiveAiConfig(),
-    'Live evening extraction verifier requires GEMINI_API_KEY or API_KEY in the environment or .env.'
-  );
+  const runtime = getGeminiRuntimeInfo();
+  assert(runtime.apiProduct === 'vertex_ai', `Expected Vertex AI Gemini runtime, got ${runtime.apiProduct}.`);
 
   const db = getDb();
   const checkinDate = '2030-07-24';
@@ -101,9 +96,9 @@ async function main() {
     extracted = await extractEveningCheckinSignalsFromText(prose);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('API key not valid') || message.includes('API_KEY_INVALID')) {
+    if (message.includes('GOOGLE_CLOUD_PROJECT') || message.includes('Could not load the default credentials')) {
       throw new Error(
-        'Live Gemini extraction reached the Developer API, but the configured GEMINI_API_KEY/API_KEY is invalid. Provide a valid key before using this verifier as completion evidence.'
+        'Live Gemini extraction requires Vertex AI ADC and GOOGLE_CLOUD_PROJECT. Run gcloud auth application-default login and set the Vertex billing project before using this verifier as completion evidence.'
       );
     }
     throw error;
@@ -155,6 +150,7 @@ async function main() {
     ok: true,
     dbPath,
     scenario: 'live Gemini evening prose extraction updates next-day planning',
+    geminiRuntime: runtime,
     checkinDate,
     planDate,
     extracted,

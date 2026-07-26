@@ -13,11 +13,12 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { registerTypescript } = require('./lib/register-ts.cjs');
 
 const root = path.resolve(__dirname, '..');
 
-function loadEnvFile() {
-  const envPath = path.join(root, '.env');
+function loadEnvFile(name) {
+  const envPath = path.join(root, name);
   if (!fs.existsSync(envPath)) return;
   for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
     const trimmed = line.trim();
@@ -30,7 +31,9 @@ function loadEnvFile() {
   }
 }
 
-loadEnvFile();
+loadEnvFile('.env');
+loadEnvFile('.env.local');
+registerTypescript(root);
 
 function mask(value) {
   if (!value) return null;
@@ -39,42 +42,32 @@ function mask(value) {
 }
 
 async function checkGemini() {
-  const key = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-  if (!key) {
-    return {
-      id: 'gemini_developer_api',
-      configured: false,
-      healthy: null,
-      detail: 'GEMINI_API_KEY / API_KEY not set — live evening extraction cannot be completion evidence.',
-    };
-  }
-
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
-      { method: 'GET' },
-    );
-    if (res.status === 200) {
-      return {
-        id: 'gemini_developer_api',
-        configured: true,
-        healthy: true,
-        detail: `Key present (${mask(key)}) and models list succeeded.`,
-      };
-    }
-    const body = await res.text();
+    const { getGeminiRuntimeInfo, getGenAI, generateWithFallback } = require('../src/lib/ai.ts');
+    const { MODEL_REALTIME_ACTIVITY } = require('../src/lib/models.ts');
+    const runtime = getGeminiRuntimeInfo();
+    const result = await generateWithFallback(getGenAI(), {
+      model: MODEL_REALTIME_ACTIVITY,
+      contents: 'Return exactly: ok',
+      config: { temperature: 0, maxOutputTokens: 128 },
+    });
+    const text = (result.text || '').trim().toLowerCase();
     return {
-      id: 'gemini_developer_api',
+      id: 'vertex_ai_gemini',
       configured: true,
-      healthy: false,
-      detail: `Key present (${mask(key)}) but API returned HTTP ${res.status}: ${body.slice(0, 180)}`,
+      healthy: text.includes('ok'),
+      detail: `Vertex AI runtime reached ${runtime.apiProduct} with ${runtime.auth} auth in project ${runtime.project}, location ${runtime.location}.`,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const missingProject = message.includes('GOOGLE_CLOUD_PROJECT');
     return {
-      id: 'gemini_developer_api',
-      configured: true,
+      id: 'vertex_ai_gemini',
+      configured: !missingProject,
       healthy: false,
-      detail: `Key present but request failed: ${error instanceof Error ? error.message : String(error)}`,
+      detail: missingProject
+        ? 'GOOGLE_CLOUD_PROJECT is missing. Configure Vertex AI ADC and a Google Cloud project before using live Gemini evidence.'
+        : `Vertex AI Gemini call failed: ${message}`,
     };
   }
 }
@@ -159,7 +152,7 @@ async function main() {
     gates,
     interpretation: {
       formalSuite: 'Required for Cognitive Self-Map claims.',
-      geminiLive: 'Optional until you want live evening prose extraction as completion evidence.',
+      geminiLive: 'Uses Vertex AI billing/auth via the shared Gemini runtime.',
       calendarLive: 'Fake CRUD is already verified; live OAuth/ICS needs real account smoke.',
     },
   };

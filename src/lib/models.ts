@@ -2,16 +2,23 @@
  * Centralized Gemini model configuration for LifeOS.
  *
  * Model assignment strategy:
- *   THINKING (gemini-2.5-pro-preview-03-25) — Reasoning / intent-parsing / deep analysis.
- *   PRO      (gemini-3.1-pro-preview)        — Long-form synthesis, reports, behavioral analysis.
- *   FLASH    (gemini-3-flash-preview)         — Real-time classification, nudges.
+ *   PRO      (gemini-3.1-pro-preview) — Planning, reasoning, and deep analysis.
+ *   VISION   (gemini-3.1-pro-preview) — Screen and multimodal interpretation.
+ *   REALTIME (gemini-3.1-flash-lite)  — Activity classification and nudges only.
+ *   VOICE    (gemini-live-2.5-flash-native-audio) — Live Guardian conversations.
  */
 
 /** Reasoning model — latest, for voice intent parsing, tutor, deep analysis */
-export const MODEL_THINKING = 'gemini-2.5-pro-preview-03-25';
+export const MODEL_THINKING = 'gemini-3.1-pro-preview';
 
 /** Deep synthesis model — for summaries, reports, behavioral analysis */
 export const MODEL_PRO = 'gemini-3.1-pro-preview';
 
-/** Fast model — for classification, nudges, real-time evaluation */
-export const MODEL_FLASH = 'gemini-3-flash-preview';
+/** Strong multimodal model — screen and screenshot understanding */
+export const MODEL_VISION = MODEL_PRO;
+
+/** Low-latency model — activity classification and distraction nudges only */
+export const MODEL_REALTIME_ACTIVITY = 'gemini-3.1-flash-lite';
+
+/** Native-audio Live API model — real-time Guardian voice conversations */
+export const MODEL_VOICE = 'gemini-live-2.5-flash-native-audio';

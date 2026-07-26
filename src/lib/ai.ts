@@ -1,84 +1,67 @@
 import { GoogleGenAI } from '@google/genai';
-import fs from 'fs';
-import path from 'path';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
 import { getIntelligenceContext } from './intelligence';
-import { MODEL_PRO, MODEL_FLASH, MODEL_THINKING } from './models';
+import { MODEL_PRO, MODEL_REALTIME_ACTIVITY, MODEL_THINKING } from './models';
 import type { PersonalizationSnapshot } from './personalization-context';
 
 
 let genAI: GoogleGenAI | null = null;
-let vertexFallbackAI: GoogleGenAI | null = null;
+let geminiRuntimeInfo: GeminiRuntimeInfo | null = null;
+let optionalGeminiUnavailableLogged = false;
 
-function resolvePrimaryApiKey(): string {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || getSetting('gemini_api_key');
-    if (!apiKey) {
+export type GeminiRuntimeInfo = {
+    apiProduct: 'vertex_ai';
+    auth: 'adc';
+    project: string;
+    location: string;
+};
+
+function resolveGeminiRuntimeInfo(): GeminiRuntimeInfo {
+    const project = process.env.GOOGLE_CLOUD_PROJECT;
+    const location = process.env.GOOGLE_CLOUD_LOCATION || 'global';
+
+    if (!project) {
         throw new Error(
-            'Gemini API configuration error: missing GEMINI_API_KEY/API_KEY (or settings.gemini_api_key).'
+            'Gemini Vertex AI configuration error: GOOGLE_CLOUD_PROJECT is required. Authenticate with ADC (for example, gcloud auth application-default login) and set the project used for Vertex AI billing.'
         );
     }
-    return apiKey;
+
+    return { apiProduct: 'vertex_ai', auth: 'adc', project, location };
 }
 
-function resolveVertexConfig() {
-    const useVertex =
-        process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
-        process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
-    const projectId =
-        process.env.GOOGLE_CLOUD_PROJECT ||
-        process.env.GCP_PROJECT_ID ||
-        getSetting('gcp_project_id');
-    const location =
-        process.env.GOOGLE_CLOUD_LOCATION ||
-        process.env.GCP_LOCATION ||
-        getSetting('gcp_location') ||
-        'us-central1';
-    const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-
-    if (!useVertex) return null;
-    if (!projectId || !credentialsPath) return null;
-    if (!projectId) {
-        return null;
+export function getGeminiRuntimeInfo(): GeminiRuntimeInfo {
+    if (!geminiRuntimeInfo) {
+        geminiRuntimeInfo = resolveGeminiRuntimeInfo();
     }
-    if (!credentialsPath) {
-        return null;
-    }
-    if (!path.isAbsolute(credentialsPath)) {
-        return null;
-    }
-    if (!fs.existsSync(credentialsPath)) {
-        return null;
-    }
-
-    return { projectId, location };
+    return { ...geminiRuntimeInfo };
 }
 
 export function getGenAI(): GoogleGenAI {
     if (!genAI) {
-        const apiKey = resolvePrimaryApiKey();
+        const runtime = getGeminiRuntimeInfo();
         genAI = new GoogleGenAI({
-            // Force Developer API as the primary lane even when Vertex env vars exist.
-            vertexai: false,
-            apiKey,
+            vertexai: true,
+            project: runtime.project,
+            location: runtime.location,
         });
-        console.log('[getGenAI] mode: developer-api-primary');
+        console.log(`[getGenAI] mode: vertex-ai-adc, project: ${runtime.project}, location: ${runtime.location}`);
     }
     return genAI;
 }
 
-function getVertexFallbackAI(): GoogleGenAI | null {
-    if (vertexFallbackAI) return vertexFallbackAI;
-    const config = resolveVertexConfig();
-    if (!config) return null;
-    vertexFallbackAI = new GoogleGenAI({
-        vertexai: true,
-        project: config.projectId,
-        location: config.location,
-    });
-    console.log(`[getVertexFallbackAI] mode: vertex-fallback, projectId: ${config.projectId}, location: ${config.location}`);
-    return vertexFallbackAI;
+/** Use only for non-critical enrichment paths with a deterministic fallback. */
+export function tryGetGenAI(): GoogleGenAI | null {
+    try {
+        return getGenAI();
+    } catch (error) {
+        if (!optionalGeminiUnavailableLogged) {
+            optionalGeminiUnavailableLogged = true;
+            console.warn('[AI] Optional Vertex AI enrichment is unavailable:', error instanceof Error ? error.message : String(error));
+        }
+        return null;
+    }
 }
 
 // Stable Vertex fallbacks when preview models are overloaded (503)
@@ -144,12 +127,11 @@ export async function generateWithFallback(
         }
     }
 
-    // Vertex fallback with stable model when primary lane fails.
-    const vertexAI = getVertexFallbackAI();
+    // Stable model fallback stays on the same Vertex AI client and billing path.
     const fallback = fallbackModel(originalModel);
-    if (!vertexAI) throw primaryErr;
-    console.warn(`[AI] primary failed for ${originalModel} — routing to Vertex fallback ${fallback}`);
-    return await vertexAI.models.generateContent({ ...params, model: fallback });
+    if (!fallback || fallback === originalModel) throw primaryErr;
+    console.warn(`[AI] primary failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
+    return await ai.models.generateContent({ ...params, model: fallback });
 }
 
 /**
@@ -176,11 +158,10 @@ export async function generateStreamWithFallback(
         }
     }
 
-    const vertexAI = getVertexFallbackAI();
     const fallback = fallbackModel(originalModel);
-    if (!vertexAI) throw primaryErr;
-    console.warn(`[AI] primary stream failed for ${originalModel} — routing to Vertex fallback ${fallback}`);
-    return await vertexAI.models.generateContentStream({ ...params, model: fallback });
+    if (!fallback || fallback === originalModel) throw primaryErr;
+    console.warn(`[AI] primary stream failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
+    return await ai.models.generateContentStream({ ...params, model: fallback });
 }
 
 // Helper to extract YouTube video ID
@@ -390,7 +371,7 @@ OUTPUT FORMAT: Return a JSON array matching this schema:
 ${sessionRules}`;
 
             const result = await generateWithFallback(ai, {
-                model: MODEL_FLASH,
+                model: MODEL_REALTIME_ACTIVITY,
                 contents: prompt,
                 config: {
                     systemInstruction: "You are a precise productivity classification engine.",
@@ -889,7 +870,7 @@ If an Implementation Intention matches their current distraction (e.g., they are
 Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized reason referencing their patterns or an intention", "triggered_intention_id": null_or_number}`;
 
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_REALTIME_ACTIVITY,
             contents: prompt,
             config: {
                 responseMimeType: 'application/json'

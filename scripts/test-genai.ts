@@ -1,12 +1,11 @@
 import { GoogleGenAI } from '@google/genai';
 
-const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
-const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
-const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const project = process.env.GOOGLE_CLOUD_PROJECT;
+const location = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 
-if (!project || !credentialsPath) {
+if (!project) {
     throw new Error(
-        'Vertex-only test requires GOOGLE_CLOUD_PROJECT (or GCP_PROJECT_ID) and GOOGLE_APPLICATION_CREDENTIALS.'
+        'Vertex-only test requires GOOGLE_CLOUD_PROJECT and ADC (for example, gcloud auth application-default login).'
     );
 }
 
@@ -14,7 +13,7 @@ const ai = new GoogleGenAI({ vertexai: true, project, location });
 async function run() {
     try {
         const result = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.1-pro-preview',
             contents: 'Say hi'
         });
         console.log(result.text);

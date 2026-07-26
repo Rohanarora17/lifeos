@@ -23,19 +23,15 @@ if (fs.existsSync(envPath)) {
     }
 }
 
-const MODEL_PRO = 'gemini-2.5-pro';
-const MODEL_FLASH = 'gemini-2.5-flash';
+const MODEL_PRO = 'gemini-3.1-pro-preview';
+const MODEL_FLASH = 'gemini-3.1-flash-lite';
 
-const GCP_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
-const GCP_LOCATION = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
-const GOOGLE_APPLICATION_CREDENTIALS = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-const USE_VERTEX =
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
+const GCP_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT;
+const GCP_LOCATION = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 
-if (!USE_VERTEX || !GCP_PROJECT_ID || !GOOGLE_APPLICATION_CREDENTIALS) {
+if (!GCP_PROJECT_ID) {
     console.error(
-        '❌ Vertex-only verification requires GOOGLE_GENAI_USE_VERTEXAI=true, GOOGLE_CLOUD_PROJECT (or GCP_PROJECT_ID), and GOOGLE_APPLICATION_CREDENTIALS.'
+        '❌ Vertex-only verification requires GOOGLE_CLOUD_PROJECT and ADC (for example, gcloud auth application-default login).'
     );
     process.exit(1);
 }
@@ -43,7 +39,7 @@ if (!USE_VERTEX || !GCP_PROJECT_ID || !GOOGLE_APPLICATION_CREDENTIALS) {
 // Mirror strict Vertex-only runtime logic from src/lib/ai.ts.
 let ai: GoogleGenAI;
 ai = new GoogleGenAI({ vertexai: true, project: GCP_PROJECT_ID, location: GCP_LOCATION });
-console.log(`[init] Using Vertex AI OAuth — project: ${GCP_PROJECT_ID}, location: ${GCP_LOCATION}`);
+console.log(`[init] Using Vertex AI ADC — project: ${GCP_PROJECT_ID}, location: ${GCP_LOCATION}`);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
