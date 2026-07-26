@@ -57,43 +57,22 @@ jobs:
             git fetch "https://x-access-token:${GH_TOKEN}@${REPO_URL#https://}" "${DEPLOY_COMMIT}"
             git checkout --detach "${DEPLOY_COMMIT}"
 
-            SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID LIFEOS_COOKIE_SECURE'
             REQUIRED_SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID'
             SECURITY_ENV="$HOME/.config/lifeos/security.env"
             RUNTIME_ENV="$HOME/.config/lifeos/runtime.env"
-            PRESERVED_SECURITY=$(mktemp)
-            for source_file in .env.local "${SECURITY_ENV}"; do
-              [ -f "${source_file}" ] || continue
-              for key in ${SECURITY_KEYS}; do
-                grep -E "^${key}=" "${source_file}" | tail -1 >> "${PRESERVED_SECURITY}" || true
-              done
-            done
-
             NEXT_ENV=$(mktemp)
-            printf '%s' "${APP_ENV}" > "${NEXT_ENV}"
-            while IFS= read -r entry; do
-              [ -n "${entry}" ] || continue
-              key="${entry%%=*}"
-              CLEAN_ENV=$(mktemp)
-              grep -Ev "^${key}=" "${NEXT_ENV}" > "${CLEAN_ENV}" || true
-              mv "${CLEAN_ENV}" "${NEXT_ENV}"
-              printf '\n%s\n' "${entry}" >> "${NEXT_ENV}"
-            done < "${PRESERVED_SECURITY}"
-            rm -f "${PRESERVED_SECURITY}"
+            printf '%s\n' "${APP_ENV}" > "${NEXT_ENV}"
+
+            if [ -f "${SECURITY_ENV}" ]; then
+              grep -E '^(LIFEOS_AUTH_MODE|LIFEOS_API_TOKEN|LIFEOS_ADMIN_REAUTH_TOKEN|LIFEOS_DEVICE_TOKEN|LIFEOS_ALLOWED_ORIGINS|LIFEOS_EXTENSION_ID|LIFEOS_COOKIE_SECURE)=.+' \
+                "${SECURITY_ENV}" >> "${NEXT_ENV}"
+            elif [ -f .env.local ]; then
+              grep -E '^(LIFEOS_AUTH_MODE|LIFEOS_API_TOKEN|LIFEOS_ADMIN_REAUTH_TOKEN|LIFEOS_DEVICE_TOKEN|LIFEOS_ALLOWED_ORIGINS|LIFEOS_EXTENSION_ID|LIFEOS_COOKIE_SECURE)=.+' \
+                .env.local >> "${NEXT_ENV}"
+            fi
 
             if [ -f "${RUNTIME_ENV}" ]; then
-              while IFS= read -r entry; do
-                [ -n "${entry}" ] || continue
-                echo "${entry}" | grep -q -E '^[A-Za-z_][A-Za-z0-9_]*=.+$' || {
-                  echo "Invalid runtime environment entry"
-                  exit 1
-                }
-                key="${entry%%=*}"
-                CLEAN_ENV=$(mktemp)
-                grep -Ev "^${key}=" "${NEXT_ENV}" > "${CLEAN_ENV}" || true
-                mv "${CLEAN_ENV}" "${NEXT_ENV}"
-                printf '\n%s\n' "${entry}" >> "${NEXT_ENV}"
-              done < "${RUNTIME_ENV}"
+              grep -E '^[A-Za-z_][A-Za-z0-9_]*=.+' "${RUNTIME_ENV}" >> "${NEXT_ENV}"
             fi
 
             for key in ${REQUIRED_SECURITY_KEYS}; do
