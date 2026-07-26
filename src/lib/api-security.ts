@@ -106,6 +106,17 @@ export function configuredAdminReauthToken(
     return env.LIFEOS_ADMIN_REAUTH_TOKEN?.trim() || env.LIFEOS_API_TOKEN?.trim();
 }
 
+export function isValidAdminReauthToken(
+    suppliedToken: string | null,
+    env: ApiSecurityEnvironment = process.env,
+) {
+    const adminToken = env.LIFEOS_ADMIN_REAUTH_TOKEN?.trim();
+    const apiToken = env.LIFEOS_API_TOKEN?.trim();
+
+    return constantTimeTokenEqual(suppliedToken, adminToken)
+        || constantTimeTokenEqual(suppliedToken, apiToken);
+}
+
 export function authorizeApiRequest(
     request: ApiSecurityRequest,
     env: ApiSecurityEnvironment = process.env,

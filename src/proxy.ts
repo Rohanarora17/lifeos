@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import {
     authorizeApiRequest,
-    configuredAdminReauthToken,
-    constantTimeTokenEqual,
+    isValidAdminReauthToken,
     isAllowedApiOrigin,
     LIFEOS_SESSION_COOKIE,
 } from '@/lib/api-security';
@@ -74,10 +73,7 @@ export default function proxy(request: NextRequest) {
         pathname.startsWith('/api/admin/')
         && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
         && authorization.kind !== 'development'
-        && !constantTimeTokenEqual(
-            request.headers.get('x-lifeos-reauth-token'),
-            configuredAdminReauthToken(),
-        )
+        && !isValidAdminReauthToken(request.headers.get('x-lifeos-reauth-token'))
     ) {
         return NextResponse.json(
             { error: 'reauthentication_required' },
