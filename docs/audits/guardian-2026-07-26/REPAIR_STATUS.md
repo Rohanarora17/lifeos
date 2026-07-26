@@ -1,6 +1,7 @@
 # Guardian Repair Status
 
-Captured after local implementation; real-device results remain pending.
+Updated after production deployment and the first MacBook real-device vision
+session on 2026-07-27.
 
 ## Implemented and Locally Verified
 
@@ -13,14 +14,19 @@ Captured after local implementation; real-device results remain pending.
 - Existing tab-group preservation and explicit Guardian grouping
 - Extension screenshot pipeline retirement
 - ScreenCaptureKit frontmost-window capture with sensitive-window exclusion
+- Session-only native vision polling through an authenticated MacBook LaunchAgent
+- Pre-capture communication-app denial plus server-side sensitive-app rejection
+- Decoded-pixel screenshot hashing and strict model-assessment validation
 - Clipboard simulation retirement and native device authentication
 - PTT in-flight cleanup, response-text preservation, one playback owner, and TTS fallback
 - `AssessmentClaimV1` freshness, sample, distinct-day, relative-date, and confirmation gates
 
 ## Still Unverified
 
-- Chrome extension reload and a real browser interval matrix
-- Screen Recording, Microphone, Accessibility, and Input Monitoring permissions
+- Full browser interval matrix across lock, sleep, restart, and network loss
+- Microphone, Accessibility, and Input Monitoring permissions
+- Benign native screenshot inference while the current always-on-top call window
+  is no longer frontmost
 - At least 60 labelled frontmost-window captures and quantitative vision gates
 - Indian-English PTT word error rate and realtime latency/interruption/reconnect gates
 - Live Vertex model discovery and Gemini Live canary promotion
@@ -33,11 +39,10 @@ Captured after local implementation; real-device results remain pending.
 
 | Priority | Finding |
 | --- | --- |
-| P0 | Production secrets and allowed origins must be configured before deploying the fail-closed auth boundary. |
 | P1 | Existing legacy ingestion routes still need parity adapters into `TelemetryEventV1` before duplicate tables can be retired. |
-| P1 | Vision inference still needs decoded-pixel perceptual hashing and strict model-output integration on every screenshot route. |
 | P1 | Realtime Gemini Live remains disabled and has no real-device promotion evidence. |
 | P1 | Claim/correction propagation must be extended from Guardian insights to planner, notifications, chat, rewards, and analytics. |
+| P1 | Vision accuracy still needs the 60-frame labelled benchmark; transport success alone does not establish accuracy. |
 | P2 | The extension iframe sidebar needs an authenticated embedded-session design; its health request is authenticated, but iframe cookie behavior is browser-policy dependent. |
 | P2 | Log rotation is deployment-triggered until a dedicated periodic launchd job is installed. |
 
@@ -60,9 +65,26 @@ SSH evidence was collected on 2026-07-26 without reading secret values.
 - Installed Chrome extension ID:
   `ojookmlbandlakahfppanbidiahfhojf`
 
-The deployed environment does not yet contain the new application, device,
-admin reauthentication, origin, or extension authentication variables. This
-blocks deployment of the fail-closed API boundary.
+### 2026-07-27 production refresh
+
+- Deployed commit reached `a3ed7c557cdbceb1541c4e30387566e2eec1ca73`;
+  later vision commits were pushed and await the same workflow verification.
+- API, device, admin reauthentication, origin, and extension security variables
+  are configured; unauthenticated and disallowed-origin probes fail closed.
+- Browser telemetry is fresh and uses `telemetry_events_v1`.
+- The MacBook `com.lifeos.copilot` LaunchAgent is running with an owner-only
+  credential file and production reports its heartbeat as connected.
+- Screen Recording is enabled for `LifeOSCopilot`.
+- A controlled session proved screenshot upload, model inference, and database
+  persistence. It also exposed a private communication-window capture.
+- The session was stopped immediately. Three derived observation rows and
+  matching server-log lines were redacted, SQLite was checkpointed/vacuumed,
+  and `PRAGMA integrity_check` remained `ok`.
+- The repaired real-device privacy regression produced two sanitized skip rows
+  and zero screenshot uploads. A forged server-side WhatsApp capture was also
+  rejected with `reason=sensitive_app`.
+- The benign inference rerun is blocked only because the current WhatsApp call
+  window remains macOS frontmost and is correctly denied before capture.
 
 ## Honest Completion Estimate
 
@@ -70,17 +92,17 @@ These percentages describe evidence-backed readiness, not feature marketing.
 
 | Area | Readiness |
 | --- | ---: |
-| Telemetry | 58% |
-| Guardian runtime | 42% |
+| Telemetry | 64% |
+| Guardian runtime | 48% |
 | Push-to-talk voice | 55% |
 | Realtime voice | 15% |
-| Vision | 45% |
+| Vision | 62% |
 | Intelligence | 38% |
 | Personalization propagation | 40% |
-| Security | 72% |
-| Deployment and operations | 48% |
+| Security | 88% |
+| Deployment and operations | 82% |
 | General product workflows | 55% |
 
-Weighted overall readiness: **47%**. The largest remaining portion is
+Weighted overall readiness: **55%**. The largest remaining portion is
 real-device validation, cross-surface integration, legacy adapter retirement,
 and the elapsed 14-day study.

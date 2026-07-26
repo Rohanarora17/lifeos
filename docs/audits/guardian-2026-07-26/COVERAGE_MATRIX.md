@@ -15,7 +15,7 @@ real-device result.
 | Chat | Evidence-aware answers, feedback persistence | Pending | Pending |
 | Extension sidebar | Timed task progress, session linkage | Pending | Pending |
 | Goals | Timed task roll-up and completion | Pending | Pending |
-| Guardian | Session lifecycle, screen context, override, reconnect | Pending | Pending |
+| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, capture transport, and sensitive-window denial passed |
 | Habits | CRUD, day boundaries | Pending | Pending |
 | Insights | Claim evidence, confidence, expiry, correction | Pending | Pending |
 | Knowledge graph | Provenance and deletion | Pending | Pending |

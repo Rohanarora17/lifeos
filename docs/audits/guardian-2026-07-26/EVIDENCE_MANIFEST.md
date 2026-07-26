@@ -22,15 +22,22 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | PROD-DB-001 | Mac Mini | SQLite integrity, table counts, and online backup | 2026-07-26 | Row contents excluded |
 | PROD-LOG-001 | Mac Mini | Daemon error tail and log rotation | 2026-07-26 | Tokens and URLs redacted; only a bounded tail retained |
 | PROD-FRESH-001 | Mac Mini | Maximum source timestamps | 2026-07-26 | Content and titles excluded |
+| DEVICE-VISION-002 | MacBook | Native LaunchAgent, heartbeat, and Screen Recording state | 2026-07-27 | Credential values, titles, and frames excluded |
+| DEVICE-PRIVACY-001 | MacBook and Mac Mini | Sensitive-window real-device regression | 2026-07-27 | Rule label and aggregate counts only; no frame or personal title retained |
+| PROD-PRIVACY-001 | Mac Mini | Server-side sensitive-app rejection probe | 2026-07-27 | Synthetic app and title only |
+| PROD-REDACT-001 | Mac Mini | Incident-row and log redaction verification | 2026-07-27 | Counts and integrity result only |
+| REPO-VISION-002 | Committed repository | Decoded-pixel hash and strict assessment tests | 2026-07-27 | Generated pixel fixtures only |
 
 ## Reproduction Constraints
 
-Production API and database checks were read-only. The only production
-mutations were an SQLite online backup, a disposable audit copy, and truncation
-of the 17.5 GB historical daemon error log after retaining a bounded redacted
-tail. No database reset, settings mutation, OAuth operation, calendar write,
-notification send, microphone capture, screenshot capture, or destructive
-route was exercised against the deployed database.
+The baseline checks were read-only apart from the recorded backup, disposable
+audit copy, and historical log truncation. On 2026-07-27, explicitly approved
+real-device Guardian sessions exercised screenshot capture and device ingestion
+against production. A private communication window was captured before the
+missing exclusion was discovered; the session was stopped immediately, derived
+database rows and matching logs were redacted, and no raw frame was persisted by
+LifeOS. Subsequent privacy tests retained only sanitized skip records and sent
+zero image uploads.
 
 The post-repair evidence run must use a disposable audit database and generated
 fixtures before any explicitly approved real session.
