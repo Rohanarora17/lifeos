@@ -1733,12 +1733,29 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
         `${s.completed_at.slice(0, 10)}: ${s.target_title} (${s.elapsed_minutes}min, score ${Math.round(s.average_focus_score)})`
       ).join('\n');
 
+      let cognitiveGrounding = '';
+      try {
+        const { formatCognitiveSelfAnswerForPrompt, isCognitiveSelfQuestion, buildCognitiveSelfAnswer } =
+          await import('./cognitive-self-answer');
+        if (isCognitiveSelfQuestion(query)) {
+          // Prefer deterministic grounded answer for self-map questions (no invented patterns)
+          const grounded = buildCognitiveSelfAnswer(query);
+          const response = grounded.plainText.replace(/\n+/g, ' ').slice(0, 400);
+          await maybeSpeakVoiceResponse(activeSessionId, response);
+          addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+          return { type: 'deep_analysis', transcript, intent, responseText: response };
+        }
+        cognitiveGrounding = formatCognitiveSelfAnswerForPrompt(query);
+      } catch { /* cognitive map optional */ }
+
       const analysisPrompt = `You are LifeOS's deep intelligence layer. Answer this exact question from the user with brutally honest, data-driven insights.
 
 USER QUESTION: "${query}"
 
 DATA YOU HAVE:
 ${contextBlock}
+
+${cognitiveGrounding}
 
 FOCUS TREND (7 days):
 ${focusTrend.join('\n')}
@@ -1752,7 +1769,7 @@ GOAL ALIGNMENT: ${goalAlignStr}
 MEMORY PATTERNS: ${memoriesStr}
 COACHING INSIGHTS: ${profile.coachingInsights?.join('; ') || 'none'}
 
-RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach.`;
+RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach. If COGNITIVE SELF-ANSWER is present, do not invent patterns that contradict it.`;
 
       const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: analysisPrompt, config: { temperature: 0.3 } });
       const response = (result.text || '').trim().replace(/[•\*\-] /g, '').replace(/\n+/g, ' ').slice(0, 300);

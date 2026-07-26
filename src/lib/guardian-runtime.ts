@@ -586,22 +586,32 @@ function fallbackSpeechText(
   const deadlinePressure = session.intentProfile?.workMode === 'urgent_sprint' || mode === 'deadline_pressure';
   const protectFocus = session.intentProfile?.workMode === 'deep_work' || mode === 'protect_focus';
   const alertFatigueHigh = snapshot?.feedback.alertFatigueLevel === 'high';
+  // Shared Cognitive Self-Map (trusted coach) — soft language only; never invent unmeasured claims
+  const pdi = snapshot?.cognitive?.traits?.pressureProfile?.pressureDependency ?? null;
+  const coachRewiring = Boolean(
+    snapshot?.cognitive?.activeCoach?.enabled
+    && !snapshot?.cognitive?.activeCoach?.suppressRewiring
+    && (pdi ?? 0) >= 0.55,
+  );
 
   switch (kind) {
     case 'block':
       if (lowCapacity) return `${site} is pulling you away. Take the smallest step back to ${session.targetTitle}.`;
       if (deadlinePressure) return `${site} can wait. Back to the deadline path: ${session.targetTitle}.`;
       if (protectFocus) return `Protect the thread. Close ${site} and return to ${session.targetTitle}.`;
+      if (coachRewiring) return `${site} is crisis-avoidance noise. Choose ${session.targetTitle} as a voluntary start, not a last-minute save.`;
       return `You are drifting to ${site}. Back to ${session.targetTitle}.`;
     case 'nudge':
       if (alertFatigueHigh) return `One quiet check: choose the tab that directly serves ${session.targetTitle}.`;
       if (lowCapacity) return `No extra pressure. Pick one small action for ${session.targetTitle}; ${remaining} minutes left.`;
       if (deadlinePressure) return `${remaining} minutes left. Do the part that reduces deadline risk first.`;
+      if (coachRewiring) return `${remaining} minutes left. Stay on ${session.targetTitle} — this is non-crisis practice, not deadline fuel.`;
       return `You are scattered. One thing. ${remaining} minutes left.`;
     case 'speak':
     default:
       if (score > policy.thresholds.flowConfirmationScore) {
         if (alertFatigueHigh || protectFocus) return `${elapsed} clean minutes. Staying quiet so you can keep the thread.`;
+        if (coachRewiring) return `${elapsed} clean minutes without deadline heat. That voluntary stretch is the rewiring signal.`;
         return `Locked in. ${elapsed} clean minutes. Keep this pace.`;
       }
       if (elapsed >= Math.floor(session.durationMinutes * 0.8)) {
