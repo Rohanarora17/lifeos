@@ -37,6 +37,7 @@
     "verify:rendered-adaptive-planner": "node scripts/verify-rendered-adaptive-planner.cjs",
     "verify:rendered-deadline-protect": "node scripts/verify-rendered-deadline-protect.cjs",
     "verify:vertex-gemini": "node scripts/verify-vertex-gemini.cjs",
+    "verify:vertex-live-voice": "node scripts/verify-vertex-live-voice.mjs",
     "verify:live-evening-extraction": "node scripts/verify-live-evening-extraction.cjs",
     "verify:cognitive-traits": "node scripts/verify-cognitive-traits.cjs",
     "verify:cognitive-trait-stance": "node scripts/verify-cognitive-trait-stance.cjs",
