@@ -18,6 +18,7 @@ function createIsolatedDb(prefix = 'lifeos-test-') {
   process.env.LIFEOS_DB_PATH = dbPath;
   process.env.LIFEOS_DISABLE_UIL_SYNTHESIS = '1';
   process.env.LIFEOS_FAKE_GOOGLE_CALENDAR = '1';
+  process.env.LIFEOS_TTS_PROVIDER = 'disabled';
 
   for (const key of Object.keys(require.cache)) {
     if (key.includes(`${path.sep}src${path.sep}lib${path.sep}`)) {

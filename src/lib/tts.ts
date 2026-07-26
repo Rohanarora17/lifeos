@@ -70,6 +70,9 @@ function getTtsAdapter(): TtsAdapter {
     return {
         name: provider,
         speak(request: SpeechRequest) {
+            if (provider === 'disabled' || process.platform !== 'darwin') {
+                return null;
+            }
             return spawn('say', ['-v', voice, request.text]);
         },
         stop() {
@@ -137,7 +140,10 @@ function processQueue() {
         return;
     }
 
-    currentProcess.on('close', () => {
+    let finished = false;
+    const finishSpeech = () => {
+        if (finished) return;
+        finished = true;
         isSpeaking = false;
         currentProcess = null;
         emitGuardianRuntimeEvent(request.sessionId, {
@@ -147,7 +153,12 @@ function processQueue() {
         });
         // slight pause between speeches
         setTimeout(() => processQueue(), 1000);
+    };
+    currentProcess.on('error', (error) => {
+        console.warn(`[TTS] ${adapter.name} playback unavailable: ${error.message}`);
+        finishSpeech();
     });
+    currentProcess.on('close', finishSpeech);
 }
 
 export function stopAllSpeech() {
