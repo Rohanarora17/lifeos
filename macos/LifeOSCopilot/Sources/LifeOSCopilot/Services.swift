@@ -168,12 +168,23 @@ final class ScreenCaptureService {
 
 @MainActor
 final class AudioRecorderService: NSObject, AVAudioRecorderDelegate {
+    static let speechThresholdDB: Float = -45
+
     private var recorder: AVAudioRecorder?
     private var outputURL: URL?
+    private var meterTimer: Timer?
+    private(set) var maximumAveragePowerDB: Float = -160
+    private(set) var meterSampleCount = 0
+
+    var detectedSpeech: Bool {
+        maximumAveragePowerDB >= Self.speechThresholdDB
+    }
 
     func start() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("lifeos-copilot-\(UUID().uuidString).m4a")
         outputURL = url
+        maximumAveragePowerDB = -160
+        meterSampleCount = 0
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 44_100,
@@ -182,10 +193,27 @@ final class AudioRecorderService: NSObject, AVAudioRecorderDelegate {
         ]
         recorder = try AVAudioRecorder(url: url, settings: settings)
         recorder?.delegate = self
-        recorder?.record()
+        recorder?.isMeteringEnabled = true
+        guard recorder?.record() == true else {
+            recorder = nil
+            outputURL = nil
+            throw NSError(
+                domain: "LifeOSCopilot.AudioRecorder",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio recording did not start"]
+            )
+        }
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.samplePower()
+            }
+        }
     }
 
     func stop() -> URL? {
+        samplePower()
+        meterTimer?.invalidate()
+        meterTimer = nil
         recorder?.stop()
         recorder = nil
         return outputURL
@@ -194,6 +222,16 @@ final class AudioRecorderService: NSObject, AVAudioRecorderDelegate {
     func cleanup(_ url: URL?) {
         guard let url else { return }
         try? FileManager.default.removeItem(at: url)
+    }
+
+    private func samplePower() {
+        guard let recorder, recorder.isRecording else { return }
+        recorder.updateMeters()
+        maximumAveragePowerDB = max(
+            maximumAveragePowerDB,
+            recorder.averagePower(forChannel: 0)
+        )
+        meterSampleCount += 1
     }
 }
 

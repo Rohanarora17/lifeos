@@ -6,6 +6,122 @@ private func copilotLog(_ message: String) {
     FileHandle.standardError.write(Data(line.utf8))
 }
 
+private func jsonOutput(_ response: [String: Any]) {
+    if let json = try? JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]) {
+        FileHandle.standardOutput.write(json)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+    }
+}
+
+private func microphoneAuthorizationLabel(_ status: AVAuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "authorized"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .notDetermined: return "not_determined"
+    @unknown default: return "unknown"
+    }
+}
+
+@MainActor
+private func runVoiceAuditIfRequested() -> Bool {
+    let arguments = CommandLine.arguments
+    let diagnosticsRequested = arguments.contains("--voice-diagnostics")
+    let recordIndex = arguments.firstIndex(of: "--record-audio-once")
+    guard diagnosticsRequested || recordIndex != nil else {
+        return false
+    }
+
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    Task { @MainActor in
+        var authorization = AVCaptureDevice.authorizationStatus(for: .audio)
+        if recordIndex != nil && authorization == .notDetermined {
+            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            authorization = granted ? .authorized : .denied
+        }
+
+        let inputs = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+
+        if diagnosticsRequested && recordIndex == nil {
+            jsonOutput([
+                "status": "ok",
+                "microphoneAuthorization": microphoneAuthorizationLabel(authorization),
+                "inputDeviceCount": inputs.count,
+                "defaultInputAvailable": AVCaptureDevice.default(for: .audio) != nil,
+            ])
+            NSApp.terminate(nil)
+            return
+        }
+
+        guard
+            let recordIndex,
+            arguments.indices.contains(recordIndex + 1)
+        else {
+            jsonOutput(["status": "invalid_arguments"])
+            NSApp.terminate(nil)
+            return
+        }
+        guard authorization == .authorized else {
+            jsonOutput([
+                "status": "permission_denied",
+                "microphoneAuthorization": microphoneAuthorizationLabel(authorization),
+            ])
+            NSApp.terminate(nil)
+            return
+        }
+
+        let outputURL = URL(fileURLWithPath: arguments[recordIndex + 1])
+        let durationIndex = arguments.firstIndex(of: "--duration")
+        let duration = durationIndex.flatMap {
+            arguments.indices.contains($0 + 1) ? Double(arguments[$0 + 1]) : nil
+        } ?? 8
+        let boundedDuration = min(max(duration, 1), 30)
+        let recorder = AudioRecorderService()
+
+        do {
+            NSSound.beep()
+            try await Task.sleep(nanoseconds: 350_000_000)
+            try recorder.start()
+            try await Task.sleep(
+                nanoseconds: UInt64(boundedDuration * 1_000_000_000)
+            )
+            guard let temporaryURL = recorder.stop() else {
+                throw NSError(
+                    domain: "LifeOSCopilot.AudioRecorder",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Recording output is unavailable"]
+                )
+            }
+            try FileManager.default.copyItem(at: temporaryURL, to: outputURL)
+            recorder.cleanup(temporaryURL)
+            let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+            jsonOutput([
+                "status": "recorded",
+                "durationSeconds": boundedDuration,
+                "bytes": attributes[.size] as? NSNumber ?? 0,
+                "microphoneAuthorization": microphoneAuthorizationLabel(authorization),
+                "maximumAveragePowerDB": recorder.maximumAveragePowerDB,
+                "meterSampleCount": recorder.meterSampleCount,
+                "speechDetected": recorder.detectedSpeech,
+            ])
+        } catch {
+            jsonOutput([
+                "status": "recording_failed",
+                "error": error.localizedDescription,
+                "microphoneAuthorization": microphoneAuthorizationLabel(authorization),
+            ])
+        }
+        NSApp.terminate(nil)
+    }
+    app.run()
+    return true
+}
+
 @MainActor
 private func runOneShotCaptureIfRequested() -> Bool {
     let arguments = CommandLine.arguments
@@ -58,10 +174,7 @@ private func runOneShotCaptureIfRequested() -> Bool {
             }
         }
 
-        if let json = try? JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]) {
-            FileHandle.standardOutput.write(json)
-            FileHandle.standardOutput.write(Data("\n".utf8))
-        }
+        jsonOutput(response)
         NSApp.terminate(nil)
     }
     app.run()
@@ -192,6 +305,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if recording {
             recording = false
             let url = recorder.stop()
+            guard recorder.detectedSpeech else {
+                recorder.cleanup(url)
+                overlay.show(
+                    callouts: [],
+                    message: "I couldn't hear speech. Check your microphone and try again."
+                )
+                return
+            }
             Task { await runGuidanceTurn(audioURL: url); recorder.cleanup(url) }
         } else {
             guard activeSessionId != nil else {
@@ -258,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-if !runOneShotCaptureIfRequested() {
+if !runVoiceAuditIfRequested() && !runOneShotCaptureIfRequested() {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
