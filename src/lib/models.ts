@@ -5,7 +5,7 @@
  *   PRO      (gemini-3.1-pro-preview) — Planning, reasoning, and deep analysis.
  *   VISION   (gemini-3.1-pro-preview) — Screen and multimodal interpretation.
  *   REALTIME (gemini-3.1-flash-lite)  — Activity classification and nudges only.
- *   VOICE    (gemini-live-2.5-flash-native-audio) — Live Guardian conversations.
+ *   VOICE    (gemini-live-2.5-flash) — Live Guardian conversations.
  */
 
 /** Reasoning model — latest, for voice intent parsing, tutor, deep analysis */
@@ -21,4 +21,4 @@ export const MODEL_VISION = MODEL_PRO;
 export const MODEL_REALTIME_ACTIVITY = 'gemini-3.1-flash-lite';
 
 /** Native-audio Live API model — real-time Guardian voice conversations */
-export const MODEL_VOICE = 'gemini-live-2.5-flash-native-audio';
+export const MODEL_VOICE = 'gemini-live-2.5-flash';
