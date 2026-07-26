@@ -297,7 +297,60 @@ export interface AnalyzeScreenshotInput {
   changeFromPrevious: ScreenVisionSignal['changeFromPrevious'];
 }
 
-export async function analyzeScreenshot(input: AnalyzeScreenshotInput): Promise<ScreenVisionSignal> {
+const ENGAGEMENT_DEPTHS = new Set<ScreenVisionSignal['engagementDepth']>([
+  'active_creation',
+  'active_learning',
+  'passive_consumption',
+  'idle',
+  'distraction',
+]);
+
+type VisionModelOutput = Pick<
+  ScreenVisionSignal,
+  | 'taskAlignment'
+  | 'engagementDepth'
+  | 'contentSummary'
+  | 'specificContent'
+  | 'distractionIndicators'
+  | 'progressIndicator'
+  | 'confidence'
+>;
+
+function boundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length <= maxLength;
+}
+
+export function parseVisionAssessment(text: string): VisionModelOutput | null {
+  try {
+    const cleaned = text.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    if (
+      typeof parsed !== 'object'
+      || parsed === null
+      || !Number.isFinite(parsed.taskAlignment)
+      || Number(parsed.taskAlignment) < 0
+      || Number(parsed.taskAlignment) > 100
+      || typeof parsed.engagementDepth !== 'string'
+      || !ENGAGEMENT_DEPTHS.has(parsed.engagementDepth as ScreenVisionSignal['engagementDepth'])
+      || !boundedString(parsed.contentSummary, 1_000)
+      || !boundedString(parsed.specificContent, 500)
+      || !boundedString(parsed.progressIndicator, 500)
+      || !Number.isFinite(parsed.confidence)
+      || Number(parsed.confidence) < 0
+      || Number(parsed.confidence) > 1
+      || !Array.isArray(parsed.distractionIndicators)
+      || parsed.distractionIndicators.length > 20
+      || !parsed.distractionIndicators.every((item) => boundedString(item, 200))
+    ) {
+      return null;
+    }
+    return parsed as VisionModelOutput;
+  } catch {
+    return null;
+  }
+}
+
+export async function analyzeScreenshot(input: AnalyzeScreenshotInput): Promise<ScreenVisionSignal | null> {
   const ai = getGenAI();
 
   const prompt = `You are analyzing a screenshot taken during a focus session.
@@ -350,33 +403,19 @@ Return ONLY the JSON object, no markdown, no explanation.`;
   });
 
   const text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  let parsed: Partial<ScreenVisionSignal>;
-  try {
-    const cleaned = text.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
-    parsed = JSON.parse(cleaned);
-  } catch {
-    // Fallback if Gemini returns malformed JSON
-    parsed = {
-      taskAlignment: 50,
-      engagementDepth: 'passive_consumption',
-      contentSummary: 'Unable to analyze screenshot.',
-      specificContent: input.windowTitle,
-      distractionIndicators: [],
-      progressIndicator: '',
-      confidence: 0.1,
-    };
-  }
+  const parsed = parseVisionAssessment(text);
+  if (!parsed) return null;
 
   return {
-    taskAlignment: Math.min(100, Math.max(0, Number(parsed.taskAlignment ?? 50))),
-    engagementDepth: parsed.engagementDepth ?? 'passive_consumption',
+    taskAlignment: parsed.taskAlignment,
+    engagementDepth: parsed.engagementDepth,
     appInFocus: input.appInFocus,
     windowTitle: input.windowTitle,
-    contentSummary: parsed.contentSummary ?? '',
-    specificContent: parsed.specificContent ?? input.windowTitle,
-    distractionIndicators: Array.isArray(parsed.distractionIndicators) ? parsed.distractionIndicators : [],
-    progressIndicator: parsed.progressIndicator ?? '',
-    confidence: Math.min(1, Math.max(0, Number(parsed.confidence ?? 0.5))),
+    contentSummary: parsed.contentSummary,
+    specificContent: parsed.specificContent,
+    distractionIndicators: parsed.distractionIndicators,
+    progressIndicator: parsed.progressIndicator,
+    confidence: parsed.confidence,
     changeFromPrevious: input.changeFromPrevious,
     capturedAt: Date.now(),
   };

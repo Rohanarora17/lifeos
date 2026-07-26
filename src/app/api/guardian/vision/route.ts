@@ -110,6 +110,13 @@ export async function POST(req: Request) {
       currentFocusScore,
       changeFromPrevious,
     });
+    if (!signal) {
+      console.warn('[Vision] Model assessment rejected by schema validation');
+      return NextResponse.json({
+        analyzed: false,
+        reason: 'invalid_assessment',
+      });
+    }
 
     // Update change detection state
     sessionVisionState.set(sessionId, {
