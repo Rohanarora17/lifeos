@@ -7,12 +7,18 @@ const { registerTypescript } = require('../../scripts/lib/register-ts.cjs');
 
 const root = path.resolve(__dirname, '../..');
 let fetchSchedulerEndpoint;
+let schedulerRunTimestamp;
+let istDateForTimestamp;
 let originalFetch;
 
 describe('scheduler endpoint client', () => {
   before(() => {
     registerTypescript(root);
-    ({ fetchSchedulerEndpoint } = require('../../src/lib/scheduler.ts'));
+    ({
+      fetchSchedulerEndpoint,
+      schedulerRunTimestamp,
+      istDateForTimestamp,
+    } = require('../../src/lib/scheduler.ts'));
     originalFetch = global.fetch;
   });
 
@@ -54,5 +60,13 @@ describe('scheduler endpoint client', () => {
       }),
       /guardian\/optimize returned 401/
     );
+  });
+
+  it('reports real UTC instants while deduplicating by the IST date', () => {
+    const instant = Date.parse('2026-07-26T22:59:00.000Z');
+    const timestamp = schedulerRunTimestamp(instant);
+    assert.equal(timestamp, '2026-07-26T22:59:00.000Z');
+    assert.equal(istDateForTimestamp(timestamp), '2026-07-27');
+    assert.equal(istDateForTimestamp('not-a-date'), null);
   });
 });

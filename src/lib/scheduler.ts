@@ -227,6 +227,16 @@ function todayIst(): string {
   return new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 }
 
+export function schedulerRunTimestamp(nowMs: number = Date.now()): string {
+  return new Date(nowMs).toISOString();
+}
+
+export function istDateForTimestamp(timestamp: string): string | null {
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed + 19800000).toISOString().slice(0, 10);
+}
+
 function tomorrowIst(): string {
   return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
 }
@@ -993,14 +1003,14 @@ function registerDailyJob(name: string, time: string, fn: () => Promise<void>) {
 
         if (now.getHours() === h && now.getMinutes() === m && !job.running) {
             // Only run once per day
-            const today = now.toISOString().slice(0, 10);
-            if (job.lastRun?.startsWith(today)) return;
+            const today = todayIst();
+            if (job.lastRun && istDateForTimestamp(job.lastRun) === today) return;
 
             job.running = true;
             console.log(`[Scheduler] Running ${name}...`);
             try {
                 await fn();
-                job.lastRun = new Date(Date.now() + 19800000).toISOString();
+                job.lastRun = schedulerRunTimestamp();
                 job.nextRun = getNextRunTime(time);
                 console.log(`[Scheduler] ${name} completed`);
             } catch (err) {
@@ -1048,7 +1058,7 @@ function registerAdaptiveEveningReminderJob(fn: () => Promise<void>) {
         try {
             await fn();
             setSetting(sentKey, today);
-            job.lastRun = new Date(Date.now() + 19800000).toISOString();
+            job.lastRun = schedulerRunTimestamp();
             job.nextRun = nextRunIsoForLocalTime(target.time);
             console.log(`[Scheduler] ${name} completed`);
         } catch (err) {
@@ -1095,7 +1105,7 @@ function registerAdaptiveNextDayPlanRefreshJob(fn: () => Promise<boolean>) {
             const didRun = await fn();
             if (didRun) {
                 setSetting(sentKey, today);
-                job.lastRun = new Date(Date.now() + 19800000).toISOString();
+                job.lastRun = schedulerRunTimestamp();
                 job.nextRun = nextRunIsoForLocalTime(target.time);
                 console.log(`[Scheduler] ${name} completed`);
             }
@@ -1132,7 +1142,7 @@ function registerIntervalJob(name: string, intervalMs: number, fn: () => Promise
             job.running = true;
             try {
                 await fn();
-                job.lastRun = new Date(Date.now() + 19800000).toISOString();
+                job.lastRun = schedulerRunTimestamp();
             } catch (err) {
                 console.error(`[Scheduler] ${name} initial run failed:`, err);
             }
@@ -1146,7 +1156,7 @@ function registerIntervalJob(name: string, intervalMs: number, fn: () => Promise
         console.log(`[Scheduler] Running ${name}...`);
         try {
             await fn();
-            job.lastRun = new Date(Date.now() + 19800000).toISOString();
+            job.lastRun = schedulerRunTimestamp();
             job.nextRun = new Date(Date.now() + intervalMs).toISOString();
             console.log(`[Scheduler] ${name} completed`);
         } catch (err) {
@@ -1209,7 +1219,7 @@ export async function triggerJob(name: string, baseUrl: string = 'http://localho
             default:
                 return { success: false, error: `Unknown job: ${name}` };
         }
-        job.lastRun = new Date(Date.now() + 19800000).toISOString();
+        job.lastRun = schedulerRunTimestamp();
         return { success: true };
     } catch (err) {
         return { success: false, error: String(err) };
