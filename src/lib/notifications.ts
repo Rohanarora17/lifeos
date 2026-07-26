@@ -3,8 +3,8 @@ import { sendTelegram, formatAlert, ALERT_KEYBOARD } from './telegram';
 import { getGuardianContext } from './guardian-runtime';
 import { getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { getAdaptiveBands } from './adaptive-bands';
-import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { tryGetGenAI, generateWithFallback } from './ai';
+import { MODEL_PRO } from './models';
 import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 import { recordExplicitFeedbackLearning } from './feedback-learning';
 
@@ -768,7 +768,8 @@ async function rewriteAlertWithAi(
     if (decision.severity === 'info' && type !== 'midday_checkin') return decision;
 
     try {
-        const ai = getGenAI();
+        const ai = tryGetGenAI();
+        if (!ai) return decision;
         const { activeSession } = getGuardianContext();
         const activeFocusScore = activeSession?.focusScoreHistory?.slice(-1)[0] ?? null;
         const personalization = buildPersonalizationSnapshot({
@@ -785,7 +786,7 @@ async function rewriteAlertWithAi(
         });
         const contextBlock = formatPersonalizationContext(personalization);
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: `Rewrite this LifeOS notification so it is specific to the user's actual day and not generic.
 
 Rules:

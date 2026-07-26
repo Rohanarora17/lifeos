@@ -6,8 +6,8 @@
 
 import { touchIntelligence } from './intelligence';
 import { getDb } from './db';
-import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { generateWithFallback, tryGetGenAI } from './ai';
+import { MODEL_PRO } from './models';
 import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 import { getActiveGuardianSession } from './guardian-runtime';
 
@@ -77,15 +77,15 @@ User (via ${surface}): ${message}
 Respond helpfully and concisely. Draw from the profile above — don't give generic advice.
 Before advising, adapt to the current moment mode. If the user is in recovery, reduce friction. If they are in deadline pressure, be concrete. If focus should be protected, keep it brief.`;
 
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) {
-    return { message: 'AI client not available — check GEMINI_API_KEY.' };
+    return { message: 'AI client not available — configure Vertex AI ADC and GOOGLE_CLOUD_PROJECT.' };
   }
 
   let responseText: string;
   try {
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: prompt,
       config: { temperature: 0.3, maxOutputTokens: 500 },
     });

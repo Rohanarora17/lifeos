@@ -1,6 +1,6 @@
 import { getDb } from './db';
-import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { generateWithFallback, tryGetGenAI } from './ai';
+import { MODEL_PRO } from './models';
 import { getIntelligenceProfile } from './intelligence';
 import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from './personalization-context';
@@ -162,7 +162,7 @@ interface ResolveWorkModeInput {
 }
 
 async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) return fallbackWorkMode(input);
 
   const {
@@ -193,7 +193,7 @@ async function resolveWorkMode(input: ResolveWorkModeInput): Promise<WorkMode> {
 
   try {
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: `You are classifying the work mode for a focus session for a specific person.
 Do NOT apply generic rules. Reason from the actual data about this person and this topic.
 

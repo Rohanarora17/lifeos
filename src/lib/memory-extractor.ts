@@ -10,8 +10,8 @@
  *   Nightly cron    → consolidateFacts()
  */
 
-import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { tryGetGenAI, generateWithFallback } from './ai';
+import { MODEL_PRO } from './models';
 import {
   insertFact,
   updateFact,
@@ -45,7 +45,7 @@ interface MemoryOp {
 // ─── LLM Extraction ──────────────────────────────────────────────────────────
 
 async function runLLMExtraction(contextText: string, source: string, topicQuery?: string): Promise<MemoryOp[]> {
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) return [];
 
   // Top-scored active facts — always included as baseline
@@ -126,7 +126,7 @@ Return ONLY a JSON array, no markdown:
 
   try {
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: prompt,
       config: { responseMimeType: 'application/json' },
     });
@@ -313,7 +313,7 @@ export async function consolidateFacts(): Promise<void> {
  * Runs in the background — failures are silently ignored.
  */
 export async function generateAndStoreEmbedding(factId: number, text: string): Promise<void> {
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) return;
 
   try {
@@ -428,7 +428,7 @@ export async function extractMemoryFromCheckin(checkin: {
 
     // For evening reflections: run a second AI call to determine if guardian response is needed tonight
     if (checkin.type === 'evening') {
-      const ai = getGenAI();
+      const ai = tryGetGenAI();
       if (ai) {
         const responsePrompt = `Analyze this evening reflection and decide if the guardian should respond tonight.
 
@@ -443,7 +443,7 @@ Return JSON ONLY:
 
         try {
           const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: responsePrompt,
             config: { responseMimeType: 'application/json' },
           });

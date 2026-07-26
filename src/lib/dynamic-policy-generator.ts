@@ -1,5 +1,5 @@
 import { getDb } from './db';
-import { getGenAI, generateWithFallback } from './ai';
+import { generateWithFallback, tryGetGenAI } from './ai';
 import { MODEL_PRO } from './models';
 import { getIntelligenceProfile } from './intelligence';
 import { getActiveGuardianPolicyBundle, validatePolicyBundle } from './guardian-optimizer';
@@ -260,9 +260,9 @@ export async function generateDynamicPolicy(
   const personalizationContext = formatPersonalizationContext(personalization);
   const feedbackSignals = loadPolicyFeedbackSignals(personalization);
 
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) {
-    console.warn('[DynamicPolicy] No AI client (check GEMINI_API_KEY) — using data-driven fallback');
+    console.warn('[DynamicPolicy] No Vertex AI client (check GOOGLE_CLOUD_PROJECT and ADC) — using data-driven fallback');
     return applyDataDrivenFallback(base, intent, uil, personalization);
   }
 

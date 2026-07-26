@@ -405,12 +405,12 @@ Rules:
 - Maximum 25 words
 - Return ONLY the sentence, no quotes, no explanation`;
 
-    const { getGenAI, generateWithFallback } = await import('./ai');
-    const { MODEL_FLASH } = await import('./models');
-    const ai = getGenAI();
+    const { tryGetGenAI, generateWithFallback } = await import('./ai');
+    const { MODEL_PRO } = await import('./models');
+    const ai = tryGetGenAI();
     if (ai) {
       const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
+        model: MODEL_PRO,
         contents: prompt,
         config: { temperature: 0.7, maxOutputTokens: 60 },
       });
