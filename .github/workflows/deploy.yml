@@ -58,23 +58,38 @@ jobs:
             git checkout --detach "${DEPLOY_COMMIT}"
 
             SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID LIFEOS_COOKIE_SECURE'
+            REQUIRED_SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID'
+            SECURITY_ENV="$HOME/.config/lifeos/security.env"
             PRESERVED_SECURITY=$(mktemp)
-            if [ -f .env.local ]; then
+            for source_file in .env.local "${SECURITY_ENV}"; do
+              [ -f "${source_file}" ] || continue
               for key in ${SECURITY_KEYS}; do
-                grep -E "^${key}=" .env.local | tail -1 >> "${PRESERVED_SECURITY}" || true
+                grep -E "^${key}=" "${source_file}" | tail -1 >> "${PRESERVED_SECURITY}" || true
               done
-            fi
+            done
 
-            printf '%s' "${APP_ENV}" > .env.local
+            NEXT_ENV=$(mktemp)
+            printf '%s' "${APP_ENV}" > "${NEXT_ENV}"
             while IFS= read -r entry; do
               [ -n "${entry}" ] || continue
               key="${entry%%=*}"
               CLEAN_ENV=$(mktemp)
-              grep -Ev "^${key}=" .env.local > "${CLEAN_ENV}" || true
-              mv "${CLEAN_ENV}" .env.local
-              printf '\n%s\n' "${entry}" >> .env.local
+              grep -Ev "^${key}=" "${NEXT_ENV}" > "${CLEAN_ENV}" || true
+              mv "${CLEAN_ENV}" "${NEXT_ENV}"
+              printf '\n%s\n' "${entry}" >> "${NEXT_ENV}"
             done < "${PRESERVED_SECURITY}"
             rm -f "${PRESERVED_SECURITY}"
+
+            for key in ${REQUIRED_SECURITY_KEYS}; do
+              grep -q -E "^${key}=.+" "${NEXT_ENV}" || {
+                echo "Required production security variable is missing: ${key}"
+                rm -f "${NEXT_ENV}"
+                exit 1
+              }
+            done
+
+            chmod 600 "${NEXT_ENV}"
+            mv "${NEXT_ENV}" .env.local
             printf '\nLIFEOS_DEPLOYED_COMMIT=%s\n' "${DEPLOY_COMMIT}" >> .env.local
             npm ci --prefer-offline
 
