@@ -57,7 +57,6 @@ jobs:
             git fetch "https://x-access-token:${GH_TOKEN}@${REPO_URL#https://}" "${DEPLOY_COMMIT}"
             git checkout --detach "${DEPLOY_COMMIT}"
 
-            REQUIRED_SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID'
             SECURITY_ENV="$HOME/.config/lifeos/security.env"
             RUNTIME_ENV="$HOME/.config/lifeos/runtime.env"
             NEXT_ENV=$(mktemp)
@@ -75,7 +74,14 @@ jobs:
               grep -E '^[A-Za-z_][A-Za-z0-9_]*=.+' "${RUNTIME_ENV}" >> "${NEXT_ENV}"
             fi
 
-            for key in ${REQUIRED_SECURITY_KEYS}; do
+            for key in \
+              LIFEOS_AUTH_MODE \
+              LIFEOS_API_TOKEN \
+              LIFEOS_ADMIN_REAUTH_TOKEN \
+              LIFEOS_DEVICE_TOKEN \
+              LIFEOS_ALLOWED_ORIGINS \
+              LIFEOS_EXTENSION_ID
+            do
               grep -q -E "^${key}=.+" "${NEXT_ENV}" || {
                 echo "Required production security variable is missing: ${key}"
                 rm -f "${NEXT_ENV}"
