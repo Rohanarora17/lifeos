@@ -1,7 +1,13 @@
 // LifeOS Guardian — Background Service Worker
-// GUARDIAN MODE ONLY — Zero passive tracking. Absolutely silent outside active sessions.
+// Low-detail intervals run during configured waking hours. Rich context is
+// restricted to an active Guardian session.
+
+importScripts('activity-state.js');
 
 const DEFAULT_API_BASE = 'http://localhost:3000/api';
+const TELEMETRY_ALARM = 'lifeos-telemetry-sample';
+const TELEMETRY_STATE_KEY = 'telemetryEventV1Current';
+const TELEMETRY_QUEUE_KEY = 'telemetryEventV1Queue';
 let API_BASE = DEFAULT_API_BASE;
 
 /** Always reads storage fresh — safe across service worker restarts. */
@@ -12,6 +18,9 @@ async function getApiBase() {
 }
 
 let guardianActive = false;
+let telemetryCurrent = undefined;
+let telemetryLoadPromise = null;
+let guardianIdleLastReportedAt = null;
 
 // Domain config — loaded from server at startup so no hardcoded lists.
 // Falls back to empty arrays on network error (fail open: server handles blocking).
@@ -20,7 +29,8 @@ let CONTEXT_SENSITIVE_DOMAINS = [];
 
 async function fetchGuardianConfig() {
     try {
-        const res = await fetch(`${API_BASE}/guardian/config`);
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${API_BASE}/guardian/config`, { headers });
         if (res.ok) {
             const cfg = await res.json();
             PRIVACY_BLOCKED_DOMAINS = cfg.privacyDomains || [];
@@ -96,12 +106,18 @@ function buildGuardianStatus() {
 
 function enableSessionCaptureAlarms() {
     chrome.alarms.create('lifeos-guardian-heartbeat', { periodInMinutes: 0.5 });
-    chrome.alarms.create('lifeos-screenshot', { periodInMinutes: 1 });
 }
 
 function disableSessionCaptureAlarms() {
     chrome.alarms.clear('lifeos-guardian-heartbeat');
     chrome.alarms.clear('lifeos-screenshot');
+}
+
+function enableTelemetryAlarm() {
+    chrome.alarms.create(TELEMETRY_ALARM, {
+        periodInMinutes: 0.5,
+        persistAcrossSessions: true,
+    });
 }
 
 // Sync config
@@ -124,12 +140,18 @@ chrome.runtime.onInstalled.addListener(() => {
         contexts: ["selection"]
     });
     chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
+    enableTelemetryAlarm();
 });
 
 chrome.runtime.onStartup.addListener(() => {
     disableSessionCaptureAlarms();
     chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
+    enableTelemetryAlarm();
+    sampleBrowserTelemetry().catch(() => { });
 });
+
+enableTelemetryAlarm();
+sampleBrowserTelemetry().catch(() => { });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "send-to-lifeos" && info.selectionText) {
@@ -177,6 +199,222 @@ async function getAuthHeaders() {
     const headers = { 'Content-Type': 'application/json' };
     if (data.apiKey) headers.Authorization = `Bearer ${data.apiKey}`;
     return headers;
+}
+
+async function loadTelemetryState() {
+    if (telemetryCurrent !== undefined) return;
+    if (telemetryLoadPromise) return telemetryLoadPromise;
+
+    telemetryLoadPromise = (async () => {
+        const stored = await chrome.storage.local.get(TELEMETRY_STATE_KEY);
+        const recovered = LifeOSActivityState.recoverPersistedInterval(
+            stored[TELEMETRY_STATE_KEY] || null,
+            Date.now(),
+        );
+        telemetryCurrent = recovered.current;
+        if (recovered.closed && recovered.closed.endedAt > recovered.closed.startedAt) {
+            await queueTelemetryInterval(recovered.closed);
+        }
+        await persistTelemetryState();
+    })();
+    await telemetryLoadPromise;
+}
+
+async function persistTelemetryState() {
+    if (telemetryCurrent) {
+        await chrome.storage.local.set({ [TELEMETRY_STATE_KEY]: telemetryCurrent });
+    } else {
+        await chrome.storage.local.remove(TELEMETRY_STATE_KEY);
+    }
+}
+
+async function telemetrySettings() {
+    const stored = await chrome.storage.local.get([
+        'deviceName',
+        'trackingWakeHour',
+        'trackingSleepHour',
+    ]);
+    return {
+        deviceId: stored.deviceName || 'MacBook',
+        wakeHour: Number.isInteger(Number(stored.trackingWakeHour))
+            ? Number(stored.trackingWakeHour)
+            : 7,
+        sleepHour: Number.isInteger(Number(stored.trackingSleepHour))
+            ? Number(stored.trackingSleepHour)
+            : 1,
+    };
+}
+
+async function queueTelemetryInterval(interval) {
+    if (!interval || interval.endedAt <= interval.startedAt) return;
+    const settings = await telemetrySettings();
+    const privacyDecision = interval.privacyBlocked ? 'redact' : 'allow';
+    const includeRichContext = Boolean(interval.sessionId) && privacyDecision === 'allow';
+    const event = {
+        version: 1,
+        eventId: interval.eventId,
+        deviceId: settings.deviceId,
+        source: 'browser_extension',
+        observedStart: new Date(interval.startedAt).toISOString(),
+        observedEnd: new Date(interval.endedAt).toISOString(),
+        state: interval.state,
+        sessionId: interval.sessionId || null,
+        application: privacyDecision === 'allow'
+            ? { name: 'Google Chrome', bundleId: 'com.google.Chrome' }
+            : null,
+        window: privacyDecision === 'allow'
+            ? {
+                id: interval.windowId == null ? null : String(interval.windowId),
+                title: includeRichContext ? interval.windowTitle || null : null,
+                focused: interval.state === 'active',
+            }
+            : null,
+        tab: privacyDecision === 'allow' && interval.tabId != null
+            ? {
+                id: interval.tabId,
+                url: includeRichContext ? interval.rawUrl || null : null,
+                domain: interval.domain || null,
+                title: includeRichContext ? interval.tabTitle || null : null,
+                lastAccessed: interval.lastAccessed || null,
+                frozen: typeof interval.frozen === 'boolean' ? interval.frozen : null,
+                groupId: interval.groupId ?? null,
+            }
+            : null,
+        group: privacyDecision === 'allow' && interval.groupId != null && interval.groupId !== -1
+            ? {
+                id: interval.groupId,
+                title: includeRichContext ? interval.groupTitle || null : null,
+                lifeosManaged: interval.groupId === sessionGroupId,
+                relevanceConfidence: null,
+            }
+            : null,
+        provenance: {
+            collector: 'lifeos-extension',
+            collectorVersion: chrome.runtime.getManifest().version,
+            adaptedFrom: null,
+        },
+        privacy: {
+            decision: privacyDecision,
+            reason: interval.privacyBlocked
+                ? 'sensitive_or_internal_page'
+                : includeRichContext
+                    ? 'guardian_focus_session'
+                    : 'waking_hours_metadata',
+        },
+    };
+
+    const stored = await chrome.storage.local.get(TELEMETRY_QUEUE_KEY);
+    const queue = Array.isArray(stored[TELEMETRY_QUEUE_KEY])
+        ? stored[TELEMETRY_QUEUE_KEY]
+        : [];
+    queue.push(event);
+    await chrome.storage.local.set({
+        [TELEMETRY_QUEUE_KEY]: queue.slice(-1_000),
+    });
+}
+
+async function flushTelemetryQueue() {
+    const stored = await chrome.storage.local.get(TELEMETRY_QUEUE_KEY);
+    const queue = Array.isArray(stored[TELEMETRY_QUEUE_KEY])
+        ? stored[TELEMETRY_QUEUE_KEY]
+        : [];
+    if (queue.length === 0) return;
+
+    try {
+        const headers = await getAuthHeaders();
+        const response = await fetch(`${API_BASE}/telemetry/events`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ events: queue.slice(0, 100) }),
+        });
+        if (!response.ok) return;
+        await chrome.storage.local.set({
+            [TELEMETRY_QUEUE_KEY]: queue.slice(100),
+        });
+    } catch {
+        // The persisted queue is retried by the next alarm or browser event.
+    }
+}
+
+async function transitionBrowserTelemetry(nextContext) {
+    await loadTelemetryState();
+    const transition = LifeOSActivityState.transitionInterval(
+        telemetryCurrent,
+        nextContext,
+        Date.now(),
+    );
+    telemetryCurrent = transition.current;
+    await persistTelemetryState();
+    if (transition.closed) await queueTelemetryInterval(transition.closed);
+    await flushTelemetryQueue();
+}
+
+async function sampleBrowserTelemetry() {
+    await getApiBase();
+    const settings = await telemetrySettings();
+    if (!LifeOSActivityState.isWithinWakingHours(
+        new Date(),
+        settings.wakeHour,
+        settings.sleepHour,
+    )) {
+        await transitionBrowserTelemetry(null);
+        return;
+    }
+
+    const idleState = await chrome.idle.queryState(60);
+    if (idleState === 'idle' || idleState === 'locked') {
+        await transitionBrowserTelemetry({
+            eventId: crypto.randomUUID(),
+            state: idleState,
+            tabId: null,
+            windowId: null,
+            url: null,
+            rawUrl: null,
+            domain: null,
+            sessionId: guardianActive ? sessionContext?.sessionId || null : null,
+            privacyBlocked: false,
+        });
+        return;
+    }
+
+    const focusedWindow = await chrome.windows.getLastFocused({ populate: true });
+    if (!focusedWindow?.focused) {
+        await transitionBrowserTelemetry({
+            eventId: crypto.randomUUID(),
+            state: 'unfocused',
+            tabId: null,
+            windowId: null,
+            url: null,
+            rawUrl: null,
+            domain: null,
+            sessionId: guardianActive ? sessionContext?.sessionId || null : null,
+            privacyBlocked: false,
+        });
+        return;
+    }
+
+    const tab = focusedWindow.tabs?.find(item => item.active);
+    if (!tab) return;
+    const domain = getUrlDomain(tab.url);
+    const privacyBlocked = isPrivacyBlocked(tab.url);
+    const groupInfo = await resolveTabGroup(tab.groupId);
+    await transitionBrowserTelemetry({
+        eventId: crypto.randomUUID(),
+        state: 'active',
+        tabId: tab.id,
+        windowId: tab.windowId,
+        url: guardianActive ? tab.url || null : domain ? `domain://${domain}` : null,
+        rawUrl: guardianActive ? tab.url || null : null,
+        domain: privacyBlocked ? null : domain,
+        tabTitle: guardianActive ? tab.title || null : null,
+        windowTitle: null,
+        lastAccessed: tab.lastAccessed || null,
+        frozen: typeof tab.frozen === 'boolean' ? tab.frozen : null,
+        groupId: tab.groupId ?? -1,
+        groupTitle: guardianActive ? groupInfo?.title || null : null,
+        sessionId: guardianActive ? sessionContext?.sessionId || null : null,
+        privacyBlocked,
+    });
 }
 
 async function refreshGuardianPersonalization() {
@@ -353,18 +591,10 @@ async function postGuardianEvent(payload, tabIdHint = null) {
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (!guardianActive) return; // HARD STOP — ZERO PROCESSING
+    await sampleBrowserTelemetry().catch(() => { });
+    if (!guardianActive) return;
     if (changeInfo.status !== 'complete') return;
     if (isPrivacyBlocked(tab.url)) return;
-
-    // Auto-group the tab into the session group if it isn't already
-    if (tab.groupId === -1 || tab.groupId !== sessionGroupId) {
-        if (sessionGroupId !== null) {
-            await addTabToSessionGroup(tabId);
-        } else {
-            await ensureSessionGroup(tabId);
-        }
-    }
 
     if (!tab.active) return; // Only track the active tab for focus scoring
     currentActiveTabId = tabId;
@@ -382,6 +612,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     }
     try {
         const tab = await chrome.tabs.get(activeInfo.tabId);
+        await sampleBrowserTelemetry().catch(() => { });
         if (isPrivacyBlocked(tab.url)) return;
         currentActiveTabId = activeInfo.tabId;
         const groupInfo = await resolveTabGroup(tab.groupId);
@@ -391,10 +622,15 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Sync when Chrome window regains focus (e.g. user Alt-Tabs back after starting a session via Telegram)
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
-    if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+    if (windowId === chrome.windows.WINDOW_ID_NONE) {
+        await sampleBrowserTelemetry().catch(() => { });
+        await flushGuardianDwell('chrome_unfocused');
+        return;
+    }
     if (!guardianActive) {
         await checkExternalSession();
     }
+    await sampleBrowserTelemetry().catch(() => { });
 });
 
 async function resolveTabGroup(groupId) {
@@ -449,19 +685,25 @@ async function addTabToSessionGroup(tabId) {
     }
 }
 
-// New tab opened during an active session → add to session group
+// Preserve user groups. Only inherit the LifeOS group from a Guardian-group
+// opener; explicit Guardian-created tabs are handled by OPEN_SESSION_TAB.
 chrome.tabs.onCreated.addListener(async (tab) => {
     if (!guardianActive) return;
-    // Give the tab a moment to settle (it may already be getting a URL)
     setTimeout(async () => {
         try {
             const fresh = await chrome.tabs.get(tab.id);
             if (isPrivacyBlocked(fresh.url)) return;
-            if (sessionGroupId !== null) {
-                await addTabToSessionGroup(fresh.id);
-            } else {
-                await ensureSessionGroup(fresh.id);
+            let openerGroupId = null;
+            if (fresh.openerTabId != null) {
+                const opener = await chrome.tabs.get(fresh.openerTabId).catch(() => null);
+                openerGroupId = opener?.groupId ?? null;
             }
+            const shouldGroup = LifeOSActivityState.shouldGroupTab({
+                currentGroupId: fresh.groupId,
+                openerGroupId,
+                sessionGroupId,
+            });
+            if (shouldGroup) await addTabToSessionGroup(fresh.id);
         } catch { /* tab may have closed immediately */ }
     }, 300);
 });
@@ -534,19 +776,68 @@ async function reportTabActivity(tabId, url, title, groupInfo) {
 // Idle detection (using chrome API)
 chrome.idle.setDetectionInterval(60); // 60 seconds
 chrome.idle.onStateChanged.addListener(async (state) => {
-    if (!guardianActive || !sessionContext?.sessionId) return; // HARD STOP
+    await sampleBrowserTelemetry().catch(() => { });
+    if (!guardianActive || !sessionContext?.sessionId) return;
 
-    const idleSeconds = (state === 'idle' || state === 'locked') ? 60 : 0;
-
-    await postGuardianEvent({
-        type: 'idle',
-        url: 'lifeos://idle',
-        title: 'User Idle State',
-        idleSeconds,
-    }, currentActiveTabId);
+    if (state === 'idle' || state === 'locked') {
+        await flushGuardianDwell(state);
+        guardianIdleLastReportedAt = Date.now() - 60_000;
+        await reportGuardianIdleDelta(state);
+    } else {
+        await reportGuardianIdleDelta('active');
+        guardianIdleLastReportedAt = null;
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tab?.id && tab.url && !isPrivacyBlocked(tab.url)) {
+            const groupInfo = await resolveTabGroup(tab.groupId);
+            await reportTabActivity(tab.id, tab.url, tab.title || '', groupInfo);
+        }
+    }
 });
 
+async function reportGuardianIdleDelta(state) {
+    if (!guardianIdleLastReportedAt || !guardianActive || !sessionContext?.sessionId) return;
+    const now = Date.now();
+    const idleSeconds = Math.max(0, Math.floor((now - guardianIdleLastReportedAt) / 1_000));
+    if (idleSeconds === 0) return;
+    guardianIdleLastReportedAt = now;
+    await postGuardianEvent({
+        type: 'idle',
+        url: `lifeos://${state}`,
+        title: state === 'locked' ? 'Device Locked' : 'User Idle State',
+        idleSeconds,
+        payload: { state },
+    }, currentActiveTabId);
+}
+
+async function flushGuardianDwell(reason) {
+    const current = activeTabs.get('current');
+    if (!current || !sessionContext?.sessionId) return;
+    activeTabs.delete('current');
+    const endedAt = Date.now();
+    const dwellSeconds = Math.max(0, Math.floor((endedAt - current.startedAt) / 1_000));
+    if (dwellSeconds === 0) return;
+    await postGuardianEvent({
+        type: 'tab',
+        url: current.url,
+        title: current.title || '',
+        dwellSeconds,
+        tabStartedAt: current.startedAt,
+        timestamp: endedAt,
+        prevUrl: current.url,
+        prevTitle: current.title || '',
+        payload: { intervalClosedBy: reason },
+    }, currentActiveTabId);
+}
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name === TELEMETRY_ALARM) {
+        await sampleBrowserTelemetry().catch(() => { });
+        if (guardianIdleLastReportedAt) {
+            const state = await chrome.idle.queryState(60).catch(() => 'idle');
+            await reportGuardianIdleDelta(state);
+        }
+        return;
+    }
     if (alarm.name === 'lifeos-guardian-poll') {
         await checkExternalSession();
         return;
@@ -576,11 +867,10 @@ async function checkExternalSession() {
             activeTabs.clear();
             enableSessionCaptureAlarms();
 
-            // Immediately track + group the currently-active tab so tracking starts now
+            // Immediately track the active tab. Existing groups remain untouched.
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0] && !isPrivacyBlocked(tabs[0].url)) {
                     currentActiveTabId = tabs[0].id;
-                    ensureSessionGroup(tabs[0].id);
                     reportTabActivity(tabs[0].id, tabs[0].url, tabs[0].title || '', null);
                 }
             });
@@ -631,7 +921,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     tab_group_title: null,
                     tab_group_color: null,
                 });
-                ensureSessionGroup(tab.id);
                 // Send initial tab event so server registers currentUrl + currentTabStartedAt.
                 // dwellSeconds=0 means no activity row is written — just URL registration.
                 if (sessionContext?.sessionId) {
@@ -715,6 +1004,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 tab_group_color: current.tab_group_color ?? null,
             }
         });
+    }
+
+    if (msg.type === 'OPEN_SESSION_TAB') {
+        if (!guardianActive || !sessionContext?.sessionId || typeof msg.url !== 'string') {
+            sendResponse({ ok: false, error: 'No active Guardian session' });
+            return true;
+        }
+        (async () => {
+            try {
+                const tab = await chrome.tabs.create({ url: msg.url, active: msg.active !== false });
+                if (tab.id == null) throw new Error('Chrome did not return a tab id');
+                if (tab.groupId !== -1) {
+                    sendResponse({ ok: true, tabId: tab.id, grouped: false });
+                    return;
+                }
+                if (sessionGroupId === null) await ensureSessionGroup(tab.id);
+                else await addTabToSessionGroup(tab.id);
+                sendResponse({ ok: true, tabId: tab.id, grouped: true });
+            } catch (error) {
+                sendResponse({ ok: false, error: String(error) });
+            }
+        })();
+        return true;
     }
 
     // Agent Loop Actions -> Passed to guardian.js content script
@@ -989,52 +1301,3 @@ function startGuardianSSE(sessionId) {
 function stopGuardianSSE() {
     if (sseSource) { sseSource.close(); sseSource = null; }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SCREENSHOTS — active-session only capture via captureVisibleTab()
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const SCREENSHOT_SENSITIVE_PATTERNS = [
-    /1password/i, /keychain/i, /bitwarden/i, /lastpass/i,
-    /chrome:\/\/password/i, /accounts\.google\.com/i,
-];
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name !== 'lifeos-screenshot') return;
-    if (!guardianActive || !sessionContext?.sessionId) return;
-
-    try {
-        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (!tab?.id || !tab.url) return;
-
-        // Skip sensitive pages
-        if (SCREENSHOT_SENSITIVE_PATTERNS.some(p => p.test(tab.url) || p.test(tab.title || ''))) return;
-        if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
-
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 50 });
-        if (!dataUrl) return;
-
-        // Convert data URL to blob
-        const base64 = dataUrl.split(',')[1];
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: 'image/jpeg' });
-
-        const form = new FormData();
-        form.append('screenshot', blob, 'screen.jpg');
-        form.append('url', tab.url);
-        form.append('title', tab.title || '');
-        form.append('source', 'extension_screenshot');
-        if (sessionContext?.sessionId) form.append('sessionId', sessionContext.sessionId);
-
-        const headers = await getAuthHeaders();
-        delete headers['Content-Type']; // let browser set multipart boundary
-        await fetch(`${API_BASE}/daemon/ingest`, { method: 'POST', body: form, headers });
-    } catch (e) {
-        // Silent fail — screenshots are best-effort
-        if (!String(e).includes('No tab') && !String(e).includes('capture')) {
-            console.warn('[Screenshot] Capture failed:', e);
-        }
-    }
-});
