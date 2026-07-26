@@ -1,52 +1,81 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import fs from 'fs';
+import path from 'path';
 
 /**
  * POST /api/admin/full-reset
- * Clears all tasks + all tracking/session/behavioral data in one shot.
- * Preserves: goals, habits (definitions), settings, knowledge graph, policy artifacts.
+ * Clears product/user data in one shot while preserving credential/auth settings.
  *
  * Body: { "confirm": "FULL_RESET" }
  * GET:  preview row counts, nothing deleted.
  */
 
 const CLEAR_TABLES = [
-  // Tasks
-  'tasks',
+  // Dependent task/session/plan data first
+  'task_recommendation_feedback',
+  'task_session_logs',
   'node_task_links',
-  // Session completions + feedback
   'session_completions',
   'session_feedback',
-  'calibration_history',
-  'energy_readings',
+  'planned_focus_sessions',
+  'daily_plans',
+  'soft_watch_commitments',
+  'tasks',
+
+  // Goals, habits, intentions, knowledge graph
+  'habit_checkins',
+  'habits',
+  'intentions',
   'goal_time_logs',
-  'weekly_plans',
-  // Guardian session data
-  'guardian_session_summaries',
+  'knowledge_edges',
+  'knowledge_nodes',
+  'goals',
+
+  // Calendar, GitHub, activity, telemetry
+  'calendar_events',
+  'github_activity',
+  'activities',
+  'domain_categories',
+  'daily_domain_aggregates',
+  'daily_scores',
+  'nudge_log',
+  'tab_switches',
+  'screen_time',
+  'screen_observations',
+  'phone_screen_time',
+  'telemetry_events_v1',
+  'session_domain_classifications',
+
+  // Guardian sessions, feedback, overrides, evaluations, and learned policies
+  'native_guidance_feedback',
+  'alerts',
   'guardian_session_reflections',
+  'guardian_session_summaries',
   'guardian_override_requests',
   'guardian_overrides',
   'guardian_event_log',
   'guardian_interventions',
   'guardian_canary_results',
   'guardian_eval_runs',
+  'guardian_promotions',
+  'guardian_artifact_versions',
+  'guardian_eval_cases',
   'guardian_semantic_profiles',
+  'guardian_sessions',
   'session_ticks',
-  'soft_watch_commitments',
-  // Screen time + activity
-  'activities',
-  'domain_categories',
-  'daily_scores',
-  'guardian_session_summaries',
-  'nudge_log',
-  'tab_switches',
-  'screen_time',
-  // Behavioral memory
+  'override_follow_ups',
+  'calibration_history',
+  'energy_readings',
+  'weekly_plans',
+  'weekly_reckonings',
+  'daily_checkins',
+
+  // Behavioral memory, personalization, intelligence, and AI state
   'behavioral_memory',
   'behavior_snapshots',
   'behavior_insights',
   'behavior_profile',
-  // AI / intelligence
   'ai_insights',
   'user_intelligence_profile',
   'mem_facts',
@@ -55,20 +84,39 @@ const CLEAR_TABLES = [
   'mem_procedures',
   'jarvis_explanations',
   'voice_turns',
-  // Alerts + gamification state
-  'alerts',
+  'telegram_turns',
+  'agent_action_outcomes',
+
+  // Gamification/user reward state
   'coin_ledger',
   'user_badges',
-  // Habit check-in history (not definitions)
-  'habit_checkins',
 ];
 
 const PRESERVED = [
-  'settings', 'goals', 'habits', 'knowledge_nodes', 'knowledge_edges',
-  'intentions', 'calendar_events', 'github_activity',
-  'rewards_store', 'badges',
-  'guardian_artifact_versions', 'guardian_eval_cases', 'guardian_promotions',
+  '_migrations',
+  'settings credentials/config',
+  'badges',
+  'rewards_store',
+  'privacy_blocked_domains',
+  'context_sensitive_domains',
 ];
+
+const TRANSIENT_SETTING_KEYS = [
+  'continuity_msg_count',
+  'continuity_msg_date',
+  'last_uil_insight_sent_at',
+  'pending_checkin_type',
+  'pending_checkin_date',
+  'standup_goal_today',
+  'standup_mood_today',
+];
+
+function createBackupPath() {
+  const backupDir = path.join(process.cwd(), 'data', 'reset-backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(backupDir, `lifeos-before-full-reset-${stamp}.db`);
+}
 
 export async function GET() {
   const db = getDb();
@@ -83,10 +131,15 @@ export async function GET() {
       counts[t] = 0;
     }
   }
+  const settingsRows = db.prepare(
+    `SELECT COUNT(*) as c FROM settings WHERE key IN (${TRANSIENT_SETTING_KEYS.map(() => '?').join(',')})`
+  ).get(...TRANSIENT_SETTING_KEYS) as { c: number };
+
   return NextResponse.json({
     message: 'Preview — POST with { "confirm": "FULL_RESET" } to execute.',
     totalRowsToDelete: total,
     breakdown: counts,
+    transientSettingsToDelete: settingsRows.c,
     preserved: PRESERVED,
   });
 }
@@ -103,6 +156,8 @@ export async function POST(req: NextRequest) {
 
     const db = getDb();
     const deleted: Record<string, number> = {};
+    const backupPath = createBackupPath();
+    await db.backup(backupPath);
 
     db.transaction(() => {
       for (const t of CLEAR_TABLES) {
@@ -110,13 +165,17 @@ export async function POST(req: NextRequest) {
           const before = (db.prepare(`SELECT COUNT(*) as c FROM ${t}`).get() as { c: number }).c;
           db.prepare(`DELETE FROM ${t}`).run();
           deleted[t] = before;
-          // Reset autoincrement for tasks
-          if (t === 'tasks') {
-            try { db.prepare(`DELETE FROM sqlite_sequence WHERE name = 'tasks'`).run(); } catch {}
-          }
+          try { db.prepare(`DELETE FROM sqlite_sequence WHERE name = ?`).run(t); } catch {}
         } catch {
           deleted[t] = 0;
         }
+      }
+      try {
+        const placeholders = TRANSIENT_SETTING_KEYS.map(() => '?').join(',');
+        const result = db.prepare(`DELETE FROM settings WHERE key IN (${placeholders})`).run(...TRANSIENT_SETTING_KEYS);
+        deleted.settings_transient_keys = result.changes;
+      } catch {
+        deleted.settings_transient_keys = 0;
       }
     })();
 
@@ -128,7 +187,8 @@ export async function POST(req: NextRequest) {
       totalDeleted: total,
       breakdown: deleted,
       preserved: PRESERVED,
-      message: `Reset complete. ${total} rows cleared. Goals, habits, settings, and knowledge graph preserved.`,
+      backupPath,
+      message: `Reset complete. ${total} rows cleared. Credential/auth settings were preserved.`,
     });
   } catch (err) {
     console.error('[full-reset] Failed:', err);
