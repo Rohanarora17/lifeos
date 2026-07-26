@@ -2,6 +2,7 @@ import AppKit
 
 final class OverlayWindow: NSWindow {
     private let overlayView = OverlayView()
+    private var dismissTask: Task<Void, Never>?
 
     init() {
         let screenFrame = NSScreen.main?.frame ?? .zero
@@ -16,13 +17,22 @@ final class OverlayWindow: NSWindow {
     }
 
     func show(callouts: [CopilotCallout], message: String?) {
+        dismissTask?.cancel()
         setFrame(NSScreen.main?.frame ?? frame, display: true)
         overlayView.update(callouts: callouts, message: message)
         orderFrontRegardless()
-        NSApp.activate(ignoringOtherApps: false)
+        dismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.hideOverlay()
+            }
+        }
     }
 
     func hideOverlay() {
+        dismissTask?.cancel()
+        dismissTask = nil
         orderOut(nil)
     }
 }
