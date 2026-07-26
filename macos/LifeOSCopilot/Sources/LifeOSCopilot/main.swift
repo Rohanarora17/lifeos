@@ -18,10 +18,24 @@ private func runOneShotCaptureIfRequested() -> Bool {
     }
 
     let outputURL = URL(fileURLWithPath: arguments[flagIndex + 1])
+    func argumentValue(after flag: String) -> String? {
+        guard
+            let index = arguments.firstIndex(of: flag),
+            arguments.indices.contains(index + 1)
+        else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+    let expectedApp = argumentValue(after: "--expect-app")
+    let expectedTitle = argumentValue(after: "--expect-title")
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     Task { @MainActor in
-        let capture = await ScreenCaptureService().captureFrontmostWindow()
+        let capture = await ScreenCaptureService().captureFrontmostWindow(
+            expectedApp: expectedApp,
+            expectedTitleContains: expectedTitle
+        )
         var response: [String: Any] = [
             "status": "skipped",
             "app": capture.app,

@@ -28,13 +28,26 @@ final class ScreenCaptureService {
         "meet.google.com", "google meet", "video call", "video meeting"
     ]
 
-    func captureFrontmostWindow() async -> WindowCapture {
+    func captureFrontmostWindow(
+        expectedApp: String? = nil,
+        expectedTitleContains: String? = nil
+    ) async -> WindowCapture {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             return emptyCapture(app: "Unknown App", title: "", reason: "no_frontmost_application")
         }
         let frontmostAppName = frontmost.localizedName ?? "Unknown App"
         if let privacyRule = sensitiveRule(app: frontmostAppName, title: "") {
             return emptyCapture(app: "Sensitive App", title: "", reason: privacyRule)
+        }
+        if
+            let expectedApp,
+            !frontmostAppName.localizedCaseInsensitiveContains(expectedApp)
+        {
+            return emptyCapture(
+                app: frontmostAppName,
+                title: "",
+                reason: "unexpected_frontmost_app"
+            )
         }
 
         do {
@@ -63,6 +76,16 @@ final class ScreenCaptureService {
             let title = window.title ?? ""
             if let privacyRule = sensitiveRule(app: appName, title: title) {
                 return emptyCapture(app: "Sensitive App", title: "", reason: privacyRule)
+            }
+            if
+                let expectedTitleContains,
+                !title.localizedCaseInsensitiveContains(expectedTitleContains)
+            {
+                return emptyCapture(
+                    app: appName,
+                    title: title,
+                    reason: "unexpected_frontmost_window"
+                )
             }
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
