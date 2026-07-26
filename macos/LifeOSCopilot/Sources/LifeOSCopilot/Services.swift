@@ -16,9 +16,16 @@ final class ScreenCaptureService {
         let privacyReason: String?
     }
 
-    private let sensitivePatterns = [
+    private let sensitiveAppPatterns = [
         "1password", "bitwarden", "lastpass", "keychain access",
-        "passwords", "authenticator", "lifeos copilot", "lifeoscopilot", "lifeos"
+        "passwords", "authenticator",
+        "whatsapp", "facetime", "messages", "signal", "telegram",
+        "zoom", "microsoft teams", "webex",
+        "lifeos copilot", "lifeoscopilot", "lifeos"
+    ]
+
+    private let sensitiveTitlePatterns = [
+        "meet.google.com", "google meet", "video call", "video meeting"
     ]
 
     func captureFrontmostWindow() async -> WindowCapture {
@@ -107,8 +114,10 @@ final class ScreenCaptureService {
     }
 
     private func isSensitive(app: String, title: String) -> Bool {
-        let value = "\(app) \(title)".lowercased()
-        return sensitivePatterns.contains { value.contains($0) }
+        let appValue = app.lowercased()
+        let titleValue = title.lowercased()
+        return sensitiveAppPatterns.contains { appValue.contains($0) }
+            || sensitiveTitlePatterns.contains { titleValue.contains($0) }
     }
 
     private func emptyCapture(app: String, title: String, reason: String) -> WindowCapture {

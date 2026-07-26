@@ -55,10 +55,28 @@ const SENSITIVE_TITLE_PATTERNS = [
 ];
 
 const SENSITIVE_FULL_APP_SKIP = ['1password 8', '1password 7', 'bitwarden', 'lastpass', 'keychain access'];
+const SENSITIVE_COMMUNICATION_APPS = [
+  'whatsapp',
+  'facetime',
+  'messages',
+  'signal',
+  'telegram',
+  'zoom',
+  'microsoft teams',
+  'webex',
+];
+const SENSITIVE_CALL_TITLE_PATTERNS = [
+  /meet\.google\.com/i,
+  /google meet/i,
+  /video call/i,
+  /video meeting/i,
+];
 
 export function isSensitiveApp(appName: string, windowTitle: string): boolean {
   const appLower = appName.toLowerCase();
   if (SENSITIVE_FULL_APP_SKIP.some((a) => appLower.includes(a))) return true;
+  if (SENSITIVE_COMMUNICATION_APPS.some((a) => appLower.includes(a))) return true;
+  if (SENSITIVE_CALL_TITLE_PATTERNS.some((pattern) => pattern.test(windowTitle))) return true;
   if (
     DEFAULT_SENSITIVE_APPS.some((a) => appLower.includes(a)) &&
     !appLower.includes('terminal') &&
