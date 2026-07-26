@@ -1,16 +1,30 @@
 # Personalization Goal Assessment
 
-Date: 2026-07-23
+Date: 2026-07-23  
+Last corrected: 2026-07-25
 
-## Goal
+## Two tiers (do not collapse)
+
+Personalization is not one percentage. Split it:
+
+| Tier | Name | Question it answers |
+| --- | --- | --- |
+| **A** | Adaptive Day OS | Does the product plan, run, notify, reward, and speak using *today’s* context instead of generic defaults? |
+| **B** | Cognitive Self-Map | Does the product map *how / why / when your brain works* (including pressure dependency), show evidence, and eventually help rewire performance? |
+
+Tier A is mostly product adaptivity. Tier B is the real north star for someone pressure-wired who wants to understand and change that wiring.
+
+---
+
+## Tier A — Adaptive Day OS
+
+### Goal
 
 LifeOS should stop behaving like every day is the same. The application and agent should make informed choices from the user's schedule, focus history, task type, mood, sleep, feedback, calendar context, rewards, and memory. Hardcoded defaults are acceptable only as cold-start fallbacks when there is not enough signal yet.
 
-This goal is finite. It is complete when the core product can repeatedly plan, run, adapt, and learn from a day without relying on generic assumptions where personalized context exists.
+This tier is finite. It is complete when the core product can repeatedly plan, run, adapt, and learn from a day without relying on generic assumptions where personalized context exists.
 
-## Completion Bar
-
-The goal is done when these checkpoints are true:
+### Completion bar
 
 1. Shared context spine: every major product and agent surface consumes a common personalization snapshot or an explicit domain policy derived from it.
 2. Time-based task model: tasks are defined by target minutes, and linked focus-session minutes complete them automatically when the accumulated target is reached.
@@ -22,85 +36,152 @@ The goal is done when these checkpoints are true:
 8. Surface audit: high-impact empty states, fallback prompts, notification copy, and agent replies are contextual whenever a personalization snapshot is available.
 9. Verification gates: TypeScript passes, targeted scenario checks pass, and hardcoded fallback audits show no major remaining generic behavior in personalized surfaces.
 
-## Current Assessment
+### Current assessment (Tier A)
 
-Overall goal status: about 87-89% complete.
+Overall Tier A status: about **87-89%** complete.
 
-Implemented product behavior: about 86-90% complete for the backend and agent paths inspected so far. The shared personalization spine is now used broadly across the scheduler, notifications, Telegram agent, analytics, rewards, memory extraction, adaptive policy generation, task linking, calendar helpers, and guardian flows.
+- Implemented product behavior: about **86-90%** for backend and agent paths.
+- Verified backend behavior: about **86-89%**.
+- User-facing hardcoded fallback cleanup: about **79-84%**.
 
-Verified backend behavior: about 86-89% complete. Isolated scenario gates prove time-target task completion, planned Guardian session start/end completion flow, recovery-day planning plus linked task completion, deadline-day planning plus linked task completion, planning-evening intake/edit/calendar sync plus linked task completion, protect-focus alert and completion behavior, evening-journal signals changing the next generated plan, next-day planning persistence, planner create/edit/cancel backend sync, calendar create/update/delete sync through the Google Calendar CRUD boundary, adaptive alert feedback learning, task recommendation feedback changing later planning choices, Guardian session feedback shortening later planning blocks, and repeated feedback being distilled into memory. This is strong backend evidence, but it is not the same as proving the full rendered application experience.
+Assessment correction on 2026-07-24: the prior 91-92% estimate was too high because it weighted isolated backend verifiers too heavily.
 
-User-facing hardcoded fallback cleanup: about 79-84% complete. Dashboard, analytics, activity, calendar, store, planner, memory, Telegram, settings, voice, reward, notification fallback copy, and major setup/error paths now have substantially more contextual behavior. Rendered smoke checks now prove the dashboard and Guardian planner expose adaptive recovery/planning state, deadline-pressure state, and protect-focus state. The remaining risk is broader: live AI extraction, live calendar sync, and a complete component-by-component fallback audit are still missing.
+Assessment correction on 2026-07-25: Tier A completeness must **not** be reported as overall personalization completeness. Tier B is separate and earlier.
 
-Assessment correction on 2026-07-24: the prior 91-92% estimate was too high because it weighted isolated backend verifiers too heavily. The user goal says the whole application and agent should feel adaptive across all layers. Current evidence proves many core mechanisms, but not every visible surface, not every final scenario criterion in each scenario, and not the live external integrations.
+### Tier A finish scenarios
 
-## Requirement Evidence Audit
+1. Recovery day  
+2. Deadline day  
+3. Planning evening  
+4. Protect-focus day  
+
+Each must demonstrate time-target completion, calendar/backend sync, adaptive reminders, personalized agent response, context-aware rewards, and a feedback/mood/sleep/journal signal that changes a later decision.
+
+### Remaining Tier A hygiene
+
+- Expand rendered smoke beyond dashboard/Guardian.
+- Rerun live evening extraction with a valid Gemini Developer API key.
+- Live Google OAuth calendar smoke.
+- Final high-impact hardcoded fallback audit.
+- Centralize adaptive empty-state helpers if drift remains.
+
+Do **not** block Tier B on 100% Tier A.
+
+---
+
+## Tier B — Cognitive Self-Map
+
+### Goal
+
+Map the user as a person, not only as a day mode:
+
+1. **Map** — durable traits: pressure dependency, activation energy, avoidance signature, voluntary start rate, crisis performance, peak windows.
+2. **Explain** — answer *how / why / when* the brain works with confidence + evidence chains.
+3. **Optimize** — after the map is trusted, actively coach rewiring toward high performance without only being able to start under crisis pressure.
+
+User identity signal (2026-07-25): works well under deadlines/pressure; wants to understand that wiring and change it over time — not shame crisis productivity, measure it and build alternatives beside it.
+
+### What exists today vs Tier B need
+
+| Layer | Exists | Tier B gap |
+| --- | --- | --- |
+| Day snapshot modes (`deadline_pressure`, …) | Yes | Weather for today, not climate of the person |
+| UIL narrative + thresholds | Yes | Regenerated story; weak causal trait graph |
+| Self-model beliefs | Partial | Thin until cognitive traits wired |
+| Archetype / heatmaps on Insights | Yes | Labels and charts, little pressure science |
+| Deterministic pressure traits | **In progress (B1)** | PDI, voluntary starts, lag, avoidance, crisis bonus |
+| Confirm/dispute identity loop | No | Needed for trust |
+| Brain Map as Insights home | No | Elevate Insights |
+| Light experiments → active rewiring | No | End goal after map trust |
+
+**Honest Tier B status (2026-07-25, after shared-spine integration):** about **90-95% of the Cognitive Self-Map spine**. Deterministic pressure traits, confirm/dispute, Insights Brain Map, light experiments, history/trends, weekly questions, active coach, **and first-class `snapshot.cognitive` + UIL ground-truth ingestion** so COM is not a silo.
+
+**Shared spine proof:** `tests/unit/cognitive-shared-spine.test.cjs` — snapshot carries structured cognitive fields; `formatPersonalizationContext` reuses them; `getIntelligenceContext` includes the same map for guardian/agents.
+
+**Verified by automated suite (not build-only):**
+- `npm run test:cognitive` — unit/integration against temp SQLite + production lib/route code
+- `npm run test:e2e:brain-map` — Playwright + real Next server on `/insights`
+
+**Recheck fixes applied:** `getNextDayPlan` now reloads candidates with coach bias; planned-session XP no longer incorrectly snaps multipliers via `clampMinutes` (that crushed adaptive XP); voluntary rewiring bonus applies to XP as well as coins; API tests assert `activeCoach` / mode toggle.
+
+**Remaining polish / live deps:**
+- Live Gemini evening extraction: requires a **valid** Developer API key (`npm run verify:live-evening-extraction` or `npm run test:live-gates`).
+- Live Google Calendar OAuth: fake CRUD verified; real-account smoke still manual (`npm run test:live-gates` reports env honestly).
+- Multi-week trajectory: code + unit tests for week buckets; sparklines fill as real days accumulate.
+
+**Self-answer path (implemented):** chat + voice deep_analysis ground on `buildCognitiveSelfAnswer` / `explainCognitiveWiring` — deterministic evidence for how/why/when questions.
+
+### Tier B phases
+
+| Phase | Name | Status |
+| --- | --- | --- |
+| B0 | Doc split Tier A vs B | Done |
+| B1 | Deterministic pressure & activation metrics | Done (`cognitive-traits`, `verify:cognitive-traits`) |
+| B2 | Hypothesis confirm/dispute + memory promotion | Done (`setCognitiveTraitStance`, `verify:cognitive-trait-stance`) |
+| B3 | Elevate Insights into Brain Map | Done (Insights Brain Map UI + confirm/dispute controls; Settings links here) |
+| B4 | Light experiments (map-first) | Done (`cognitive-experiments`, planner bias, Insights accept/decline, `verify:cognitive-experiments`) |
+| B4.5 | Active coach/rewiring (end goal after trust) | Done (`cognitive-active-coach`, planner/reward auto-rewire, Insights panel, `tests/unit/cognitive-active-coach.test.cjs`) |
+| B5 | Longitudinal trajectory + weekly reckoning | Done (history snapshots, trends, weekly cognitive question, `verify:cognitive-history`) |
+
+### Locked product decisions
+
+1. Primary traits first: **Pressure Dependency Index** + **Voluntary Start Rate**.
+2. Surface home: **elevate `/insights`** into Brain Map (not a buried Settings panel).
+3. Intervention path: **map first + light experiments**, then **active coach/rewiring** once metrics are trusted.
+4. Deterministic extractors own numbers; AI only narrates and proposes hypotheses.
+5. Never fight true deadline days when pressure is the only available fuel — log and protect performance.
+
+### Tier B finish criteria
+
+1. Open Insights and answer when/how/why you work and how pressure-dependent you are — with evidence.
+2. PDI, voluntary start rate, start lag, crisis bonus computed (or explicitly low-confidence when sparse).
+3. At least one identity hypothesis can be confirmed/disputed and changes later agent/planner language.
+4. Planner/Guardian uses COM for at least one pressure-aware or rewiring-aware choice (not only day mode).
+5. Weekly view shows pressure-dependency trajectory.
+6. Tier A scenario suite still passes.
+
+### Core traits (B1+)
+
+| Trait | Definition |
+| --- | --- |
+| Pressure Dependency Index (PDI) | How strongly first starts and focus minutes cluster near deadlines |
+| Voluntary Start Rate | Share of linked sessions started with no near deadline |
+| Activation Energy | Mean days from task create → first linked focus |
+| Avoidance Age | Mean days overdue at first focus when work goes late |
+| Crisis Performance Bonus | Focus score delta: near-deadline sessions vs calm sessions |
+
+---
+
+## Requirement evidence audit (Tier A)
 
 | Requirement | Current evidence | Status |
 | --- | --- | --- |
-| Shared context spine across major backend/agent paths | Personalization snapshot is used in planner, notifications, Telegram, rewards, analytics, memory, guardian, scheduler paths. | Strong but still needs rendered surface audit |
-| Time-based task completion | `verify:task-time-sessions`, `verify:planned-session-flow`, and all four final scenario fixtures prove credited focus minutes complete linked tasks. | Strong |
-| Next-day planning from sleep/wake/mood/energy/calendar/tasks | `verify:next-day-planner`, `verify:final-planning-evening`, `verify:final-recovery-day`, and `verify:evening-journal-planning`. | Strong backend proof |
-| Calendar/backend sync | Fake Google Calendar CRUD and planning-evening edit sync are verified. | Strong deterministic proof; live OAuth unverified |
-| Adaptive notifications | Alert feedback, deadline alerts, planned-focus suppression, evening planner, and protect-focus task reminder linking are verified. | Strong backend proof |
-| Feedback/self-model loop | Alert feedback, task recommendation feedback, Guardian session feedback, memory distillation, and deterministic evening-journal planning are verified. `verify:live-evening-extraction` now exercises the production Gemini extraction path when a valid key is configured. | Good; local live AI extraction remains unverified because the configured Developer API key is invalid |
-| Adaptive rewards | Recovery and deadline scenarios assert reward reasoning; reward pricing policy exists. | Good; not all final scenarios assert rewards |
-| Whole rendered app feels personalized | `verify:rendered-adaptive-planner` proves dashboard and Guardian planner render adaptive recovery/planning state, sleep/wake, calendar, session guidance, XP, and calendar status. `verify:rendered-deadline-protect` proves dashboard and Guardian render deadline-pressure state, urgent planned work, visible overdue pressure, deadline alert posture, and the switch into protect-focus mode from an active high-focus Guardian session. | Better but still partial; more surfaces need smoke coverage |
-| Every final scenario demonstrates every finish-criteria bullet | All four final scenarios now prove linked time completion. Some still rely on separate fixtures for full calendar CRUD, live personalized agent response, and learning feedback loops. | Partial |
+| Shared context spine across major backend/agent paths | Personalization snapshot used broadly | Strong; still needs rendered surface audit |
+| Time-based task completion | Final scenario fixtures + task-time verifier | Strong |
+| Next-day planning from sleep/wake/mood/energy/calendar/tasks | Next-day + final + evening-journal verifiers | Strong backend proof |
+| Calendar/backend sync | Fake Google Calendar CRUD | Strong deterministic; live OAuth unverified |
+| Adaptive notifications | Alert feedback, planned-focus, protect-focus | Strong backend proof |
+| Feedback/self-model loop | Multiple learning verifiers; live extraction key issues | Good; live AI extraction flaky locally |
+| Adaptive rewards | Recovery/deadline reward reasoning | Good |
+| Whole rendered app feels personalized | Dashboard + Guardian Playwright smokes | Partial |
+| Tier B cognitive traits | `cognitive-traits` extractors + self-model wiring | B1 |
 
-## Done Or Strong
+---
 
-- Shared personalization context exists and is no longer isolated to one page.
-- Notifications and alert decisions now use day-aware context instead of one-size-fits-all reminder copy.
-- Alert feedback is verified to change later notification behavior: weak feedback softens future reminders, repeated dismissals suppress low-value alerts, and feedback is written into memory.
-- Planner feedback is verified to change later planning choices: positive recommendation feedback lifts a task into the plan, negative feedback keeps the task visible but unscheduled, and candidate reasons cite the learned signal.
-- Guardian session feedback is verified to change later planning shape: similar reading blocks are shortened after the user reports they were too long and low-focus.
-- Evening journal signals are verified to change later planning: late sleep, low mood/energy, and day events move the next plan into recovery mode, prioritize lighter work, shorten the block, defer optional high-energy work, and keep the check-in linked as the plan source.
-- The live evening-prose extraction path is now factored into a reusable verifier hook. Local live proof is still not complete: on 2026-07-25 the verifier reached Gemini but failed with an invalid configured Developer API key.
-- Time-session task infrastructure exists, including logic that can link focus sessions to tasks and complete time-target tasks from accumulated minutes.
-- Time-session task completion is verified with a repeatable isolated scenario.
-- Planned Guardian sessions are verified to lock to a soft-watch commitment, complete the planned focus session, credit linked task minutes, and finish the time-target task.
-- Recovery-day, deadline-day, planning-evening, and protect-focus scenario fixtures now prove that day state changes task choice, block size, reward reasoning, reminder posture, tomorrow intake, calendar-backed edit sync, routine alert suppression, task-reminder linking, live protect-focus mode, and linked session completion. All four final fixtures now prove linked task completion inside the fixture itself.
-- Next-day planning infrastructure exists and accounts for sleep, wake, mood, energy, calendar context, task candidates, and schedule fit.
-- Next-day planning persistence, session creation, edit/cancel backend sync, adaptive task-specific session rules, and calendar conflict avoidance are verified with repeatable isolated scenarios.
-- Calendar create/update/delete sync is verified through the Google Calendar CRUD boundary using deterministic fake-calendar mode; live OAuth still needs a real-account smoke check.
-- Agent and LLM prompts now receive personalization context in several key paths.
-- Reward pricing and reward history fallback copy adapt to current mode and learned context.
-- Empty and degraded states across major visible surfaces are less generic and more tied to the user's current day, including Calendar and Activity Timeline policy states.
-- Rendered browser evidence now exists for dashboard and Guardian adaptive recovery/planning, deadline-pressure, and protect-focus states via isolated Playwright smoke tests.
-- Planner, optimizer, memory extraction, Telegram, analytics, and dashboard paths now share the same direction instead of each inventing local assumptions.
+## Done or strong (Tier A)
 
-## Remaining Work
+- Shared personalization context exists and is used across major paths.
+- Notifications, planner feedback, Guardian session feedback, and evening journal signals change later behavior.
+- Time-session task completion and planned Guardian session completion are verified.
+- Recovery, deadline, planning-evening, and protect-focus final fixtures prove linked task completion.
+- Calendar create/update/delete verified through fake Google Calendar mode.
+- Rendered smoke exists for dashboard and Guardian adaptive states.
 
-- Expand rendered/manual browser smoke checks beyond dashboard and Guardian into other high-traffic surfaces.
-- Audit whether every focus session created from the planner links cleanly back to the intended task or goal outside the final fixtures.
-- Rerun `verify:live-evening-extraction` with a valid Gemini Developer API key; deterministic extracted-signal planning is verified, and the live verifier now exists but failed locally because the configured key is invalid.
-- Consolidate any repeated local adaptive-copy helpers into shared utilities if the final audit shows drift.
-- Run a final high-impact hardcoded fallback search and either adapt or explicitly justify each remaining default.
-- Verify live calendar behavior with the user's actual Google OAuth account or documented ICS setup.
-- Add at least one rendered smoke check that proves the dashboard/planner/guardian surfaces expose the adaptive state, not only backend payloads.
+---
 
-## Finish Criteria
+## Verification commands
 
-The personalization goal can be called complete when these four scenario runs pass:
-
-1. Recovery day: low sleep or low mood produces smaller focus blocks, gentler reminders, recovery-safe rewards, and non-generic agent guidance.
-2. Deadline day: urgent work gets higher-priority scheduling, more protective notifications, stronger reward pricing, and reduced optional distractions.
-3. Planning evening: the app asks for tomorrow's intent, accounts for late sleep or schedule shifts, creates sessions, syncs them to calendar, and keeps edits consistent.
-4. Protect-focus day: the app learns the best session length and timing from past performance, then schedules and reminds around that pattern.
-
-Each scenario must demonstrate:
-
-- Time-target task completion from linked accumulated focus minutes.
-- Calendar and backend session sync after create, edit, reschedule, and delete.
-- Adaptive reminder behavior.
-- Personalized agent response using current context.
-- Reward or XP choice that reflects task effort and day context.
-- Feedback, mood, sleep, or journal signal influencing a later decision.
-
-## Verification Commands
-
-Run these before the goal is closed:
+### Tier A
 
 ```bash
 npm run verify:task-time-sessions
@@ -120,18 +201,40 @@ npm run verify:final-planning-evening
 npm run verify:final-protect-focus
 npm run verify:rendered-adaptive-planner
 npm run verify:rendered-deadline-protect
-# Requires a valid Gemini Developer API key in GEMINI_API_KEY or API_KEY.
 npm run verify:live-evening-extraction
 npx tsc --noEmit --pretty false
-git diff --check
-rg -n "No .*found|No .*yet|fallback|default|not configured|LLM is offline|manual planned-session|No tasks found" src/lib src/app src/components --glob '!**/*.js'
 ```
 
-## Suggested Remaining Commit Stack
+### Tier B (formal suite preferred)
 
-These should stay narrow and reviewable:
+```bash
+# Real runtime unit/integration (node:test + temp SQLite + production lib code)
+npm run test:cognitive
 
-1. `test: rerun live evening extraction with a valid Gemini key`
-2. `test: expand rendered smoke coverage to remaining high-traffic surfaces`
-3. `refactor: centralize adaptive empty state helpers`
-4. `docs: record final personalization completion audit`
+# Real browser e2e (Next server + Playwright Chromium on /insights Brain Map)
+npm run test:e2e:brain-map
+
+# Full cognitive gate
+npm run test:cognitive:all
+
+# Legacy ad-hoc verifiers (still valid; suite is the source of truth)
+npm run verify:cognitive-traits
+npm run verify:cognitive-trait-stance
+npm run verify:cognitive-experiments
+npm run verify:cognitive-history
+```
+
+Verification note: prior `verify:*` scripts **do** execute production code against isolated DBs (not build-only). The formal suite adds `describe`/`it` structure, API handler tests, planner coverage for both experiment kinds, and Playwright UI coverage.
+
+---
+
+## Suggested remaining commit stack
+
+1. `docs: split personalization Tier A vs Cognitive Self-Map Tier B`
+2. `feat: deterministic pressure dependency + voluntary start metrics`
+3. `feat: self-model beliefs + API exposure for cognitive traits`
+4. `test: pressure-wired vs steady-starter cognitive trait fixtures`
+5. `feat: hypothesis confirm/dispute + memory promotion` (B2)
+6. `feat: elevate Insights into Brain Map` (B3)
+7. `feat: light experiments then active rewiring coach` (B4 → B4.5)
+8. `docs: final Tier B completion audit`
