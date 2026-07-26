@@ -32,6 +32,9 @@ interface DashboardPersonalization {
   narrative: string;
   energy: 'high' | 'medium' | 'low';
   mood: 'high' | 'medium' | 'low' | null;
+  energySource: 'explicit_checkin' | 'baseline';
+  moodSource: 'explicit_checkin' | 'unknown';
+  stateUpdatedAt: string | null;
   coachingStyle: 'direct' | 'balanced' | 'gentle';
   focusTrend: 'improving' | 'declining' | 'stable';
   nextBestFocusWindow: string;
@@ -339,6 +342,7 @@ export default function DashboardPage() {
   const focusSessions: FocusSessionHistory[] = []; // Legacy section hidden — guardian history is at /guardian
   const [liveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
   const [taskCompletionNotice, setTaskCompletionNotice] = useState<string | null>(null);
+  const [stateSaving, setStateSaving] = useState(false);
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -405,6 +409,22 @@ export default function DashboardPage() {
   const cancelFocus = async () => {
     await endSession();
     fetch('/api/dashboard').then(r => r.json()).then(d => setData(d)).catch(() => {});
+  };
+
+  const updateCapacityState = async (patch: Partial<Pick<DashboardPersonalization, 'energy' | 'mood'>>) => {
+    setStateSaving(true);
+    try {
+      const res = await fetch('/api/dashboard/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return;
+      const refreshed = await fetch('/api/dashboard').then(r => r.json());
+      setData(refreshed);
+    } finally {
+      setStateSaving(false);
+    }
   };
 
   const markAllRead = async () => {
@@ -802,7 +822,37 @@ export default function DashboardPage() {
 	                  background: `${modeAccents[personalization.mode]}1f`,
                   color: modeAccents[personalization.mode],
                   border: `1px solid ${modeAccents[personalization.mode]}44`,
-                }}>{personalization.energy} energy{personalization.mood ? ` · ${personalization.mood} mood` : ''}</span>
+	                }}>{personalization.energy} energy{personalization.mood ? ` · ${personalization.mood} mood` : ''}</span>
+	              </div>
+	              <div className="flex items-center gap-2 mt-3 flex-wrap">
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                    {personalization.energySource === 'explicit_checkin' ? 'Energy logged by you' : 'Energy baseline'} · {personalization.moodSource === 'explicit_checkin' ? 'Mood logged by you' : 'Mood not logged'}
+                  </span>
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Set now:</span>
+                  {(['low', 'medium', 'high'] as const).map(value => (
+                    <button
+                      key={`energy-${value}`}
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={stateSaving || (personalization.energy === value && personalization.energySource === 'explicit_checkin')}
+                      onClick={() => updateCapacityState({ energy: value })}
+                      style={{ fontSize: 11, padding: '3px 8px' }}
+                    >
+                      {value} energy
+                    </button>
+                  ))}
+                  {(['low', 'medium', 'high'] as const).map(value => (
+                    <button
+                      key={`mood-${value}`}
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={stateSaving || (personalization.mood === value && personalization.moodSource === 'explicit_checkin')}
+                      onClick={() => updateCapacityState({ mood: value })}
+                      style={{ fontSize: 11, padding: '3px 8px' }}
+                    >
+                      {value} mood
+                    </button>
+                  ))}
 	              </div>
 	              <p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
 	                {dashboardPolicy?.primaryReason ?? formatAdaptiveSignal(personalization)}

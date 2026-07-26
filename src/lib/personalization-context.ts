@@ -73,6 +73,9 @@ export interface PersonalizationSnapshot {
     standupGoal: string | null;
     mood: 'high' | 'medium' | 'low' | null;
     energy: 'high' | 'medium' | 'low';
+    moodSource: 'explicit_checkin' | 'unknown';
+    energySource: 'explicit_checkin' | 'baseline';
+    stateUpdatedAt: string | null;
     coachingStyle: 'direct' | 'balanced' | 'gentle';
     focusTrend: 'improving' | 'declining' | 'stable';
     peakFocusHours: number[];
@@ -235,6 +238,41 @@ function getHelpfulRate(): number | null {
   }
 }
 
+type CapacityState = 'high' | 'medium' | 'low';
+
+function asCapacityState(value: string | null): CapacityState | null {
+  return value === 'high' || value === 'medium' || value === 'low' ? value : null;
+}
+
+function getExplicitTodayState(date: string): {
+  mood: CapacityState | null;
+  energy: CapacityState | null;
+  updatedAt: string | null;
+} {
+  try {
+    const rows = getDb().prepare(`
+      SELECT mood, energy, received_at
+      FROM daily_checkins
+      WHERE checkin_date = ?
+        AND (mood IN ('high', 'medium', 'low') OR energy IN ('high', 'medium', 'low'))
+      ORDER BY received_at DESC, id DESC
+    `).all(date) as Array<{ mood: string | null; energy: string | null; received_at: string | null }>;
+
+    let mood: CapacityState | null = null;
+    let energy: CapacityState | null = null;
+    let updatedAt: string | null = null;
+    for (const row of rows) {
+      mood ||= asCapacityState(row.mood);
+      energy ||= asCapacityState(row.energy);
+      updatedAt ||= row.received_at;
+      if (mood && energy) break;
+    }
+    return { mood, energy, updatedAt };
+  } catch {
+    return { mood: null, energy: null, updatedAt: null };
+  }
+}
+
 function deriveMoment(input: {
   hour: number;
   openTasks: number;
@@ -333,14 +371,17 @@ export function buildPersonalizationSnapshot(opts?: {
   `);
   const helpfulRate = getHelpfulRate();
   const plannedFocus = getPlannedFocusContext(date);
+  const explicitState = getExplicitTodayState(date);
+  const energy = explicitState.energy ?? 'medium';
+  const mood = explicitState.mood;
 
   const moment = deriveMoment({
     hour,
     openTasks,
     overdueTasks,
     uncheckedHabits: uncheckedHabits.length,
-    energy: profile.currentEnergyEstimate,
-    mood: profile.moodToday,
+    energy,
+    mood,
     focusScore,
     focusGood: bands.focusGood,
     peakFocusHours: profile.peakFocusHours,
@@ -365,8 +406,11 @@ export function buildPersonalizationSnapshot(opts?: {
     userState: {
       narrative: profile.currentNarrative,
       standupGoal: profile.standupGoalToday,
-      mood: profile.moodToday,
-      energy: profile.currentEnergyEstimate,
+      mood,
+      energy,
+      moodSource: mood ? 'explicit_checkin' : 'unknown',
+      energySource: explicitState.energy ? 'explicit_checkin' : 'baseline',
+      stateUpdatedAt: explicitState.updatedAt,
       coachingStyle: profile.preferredCoachingStyle,
       focusTrend: profile.focusTrend,
       peakFocusHours: profile.peakFocusHours,
