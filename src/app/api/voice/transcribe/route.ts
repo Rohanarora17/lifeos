@@ -15,7 +15,6 @@ async function forwardToWhisperCpp(audio: Blob | File) {
     const file = audio instanceof File ? audio : new File([audio], filename, { type: audio.type || 'audio/webm' });
 
     upstreamFormData.set('file', file, file.name);
-    upstreamFormData.set('audio', file, file.name);
 
     if (getWhisperCppMode() === 'openai') {
         upstreamFormData.set('model', process.env.WHISPER_CPP_OPENAI_MODEL || 'whisper-1');
