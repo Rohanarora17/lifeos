@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import process from 'node:process';
-import fs from 'node:fs';
-import path from 'node:path';
 import { Modality } from '@google/genai';
 import { AutoSubscribe, cli, defineAgent, llm, voice, WorkerOptions } from '@livekit/agents';
 import * as google from '@livekit/agents-plugin-google';
@@ -10,41 +8,19 @@ import { VAD } from '@livekit/agents-plugin-silero';
 import { z } from 'zod';
 
 const DEFAULT_APP_URL = 'http://127.0.0.1:3000';
-const DEFAULT_MODEL = process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-native-audio-latest';
+const DEFAULT_MODEL = process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-live-2.5-flash-native-audio';
 const DEFAULT_VOICE = process.env.LIVEKIT_GUARDIAN_VOICE || 'Aoede';
 const DEFAULT_AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || 'lifeos-guardian-agent';
 const VOICE_MODE = process.env.VOICE_MODE || 'local';
 
 function getVertexConfigOrThrow() {
-  const useVertex =
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
-  const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
-  const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
-  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
+  const project = process.env.GOOGLE_CLOUD_PROJECT;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 
-  if (!useVertex) {
-    throw new Error(
-      'Vertex AI is required for guardian voice. Set GOOGLE_GENAI_USE_VERTEXAI=true.'
-    );
-  }
   if (!project) {
     throw new Error(
-      'Vertex AI is required for guardian voice. Set GOOGLE_CLOUD_PROJECT (or legacy GCP_PROJECT_ID).'
+      'Vertex AI is required for guardian voice. Set GOOGLE_CLOUD_PROJECT and authenticate with ADC.'
     );
-  }
-  if (!credentialsPath) {
-    throw new Error(
-      'Vertex AI is required for guardian voice. Set GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON path.'
-    );
-  }
-  if (!path.isAbsolute(credentialsPath)) {
-    throw new Error(
-      `GOOGLE_APPLICATION_CREDENTIALS must be an absolute path. Got "${credentialsPath}".`
-    );
-  }
-  if (!fs.existsSync(credentialsPath)) {
-    throw new Error(`GOOGLE_APPLICATION_CREDENTIALS file not found at "${credentialsPath}".`);
   }
 
   return { project, location };
@@ -202,14 +178,11 @@ const agentDefinition = defineAgent({
     // ─── Discrete Tools ─────────────────────────────────────────────────────
 
     const getGuardianStateTool = llm.tool({
-      description: 'Get the current guardian session state including focus score, work mode, energy, active overrides, and elapsed time. Use before making decisions about interventions or overrides.',
-      parameters: z.object({
-        sessionId: z.string().optional().describe('Session ID. If omitted, uses the current session.'),
-      }),
-      execute: async ({ sessionId: sid }) => {
-        const id = sid || sessionId;
-        if (!id) return { error: 'No active session' };
-        const state = await apiGet(`/api/guardian/state?sessionId=${id}`);
+      description: 'Get the current room session state including focus score, work mode, energy, active overrides, and elapsed time. Use before making decisions about interventions or overrides.',
+      parameters: z.object({}),
+      execute: async () => {
+        if (!sessionId) return { error: 'No active session' };
+        const state = await apiGet(`/api/guardian/state?sessionId=${sessionId}`);
         return {
           focusScore: state.focusScore,
           workMode: state.intentProfile?.workMode,
@@ -218,32 +191,6 @@ const agentDefinition = defineAgent({
           blockedCount: state.blockedCount,
           overrideCount: state.overrideCount,
           activeOverrides: state.activeOverrides?.map(o => o.urlPattern),
-        };
-      },
-    });
-
-    const startSessionTool = llm.tool({
-      description: 'Start a new guardian focus session. Use when the user wants to lock in or begin focusing on a task.',
-      parameters: z.object({
-        topic: z.string().describe('What the user will focus on'),
-        durationMinutes: z.number().min(15).max(180).optional().describe('Session duration in minutes. Default 60.'),
-        mood: z.enum(['high', 'medium', 'low']).optional().describe('User energy level. Default: auto-detect.'),
-      }),
-      execute: async ({ topic, durationMinutes, mood }) => {
-        const result = await apiPost('/api/guardian/session/start', {
-          topic,
-          durationMinutes: durationMinutes || 60,
-          mood: mood || undefined,
-          source: 'voice',
-        });
-        return {
-          sessionId: result.sessionId,
-          workMode: result.intentProfile?.workMode,
-          policyVersion: result.sessionPolicy?.version,
-          duration: result.durationMinutes,
-          message: result.intentProfile
-            ? `Session started. Mode: ${result.intentProfile.workMode}, energy: ${result.intentProfile.energyAtStart}, duration: ${result.durationMinutes}min.`
-            : `Session started for "${topic}", ${result.durationMinutes} minutes.`,
         };
       },
     });
@@ -330,7 +277,6 @@ const agentDefinition = defineAgent({
       llm: realtimeModel,
       tools: {
         get_guardian_state: getGuardianStateTool,
-        start_session: startSessionTool,
         end_session: endSessionTool,
         request_override: requestOverrideTool,
         get_day_briefing: getDayBriefingTool,

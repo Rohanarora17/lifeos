@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { endGuardianSession, getGuardianSession, pauseGuardianSession, resumeGuardianSession } from '@/lib/guardian-runtime';
+import { endGuardianSession, pauseGuardianSession, resumeGuardianSession } from '@/lib/guardian-runtime';
 import { clearVoiceHistory } from '@/lib/guardian-voice';
+import { releaseGuardianVoiceLease } from '@/lib/guardian-voice-limits';
 
 export async function POST(req: Request) {
   try {
@@ -19,6 +20,7 @@ export async function POST(req: Request) {
 
     const result = endGuardianSession(sessionId);
     clearVoiceHistory(sessionId);
+    releaseGuardianVoiceLease(sessionId);
     return NextResponse.json({ success: true, session: result });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

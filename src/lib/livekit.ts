@@ -1,6 +1,5 @@
 import { AccessToken } from 'livekit-server-sdk';
-import fs from 'fs';
-import path from 'path';
+import { GUARDIAN_VOICE_TOKEN_TTL_MS } from './guardian-voice-limits';
 
 const DEFAULT_ROOM_PREFIX = 'lifeos-guardian';
 const DEFAULT_APP_URL = 'http://127.0.0.1:3000';
@@ -10,16 +9,9 @@ function normalizeRoomSegment(value: string) {
 }
 
 function hasVertexVoiceConfig() {
-  const useVertex =
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' ||
-    process.env.GOOGLE_GENAI_USE_VERTEXAI === '1';
-  const project = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID;
-  const location = process.env.GOOGLE_CLOUD_LOCATION || process.env.GCP_LOCATION || 'us-central1';
-  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-
-  if (!useVertex || !project || !location || !credentialsPath) return false;
-  if (!path.isAbsolute(credentialsPath)) return false;
-  return fs.existsSync(credentialsPath);
+  const project = process.env.GOOGLE_CLOUD_PROJECT;
+  const location = process.env.GOOGLE_CLOUD_LOCATION || 'global';
+  return Boolean(project && location);
 }
 
 export type GuardianVoiceMode = 'local' | 'google-live';
@@ -49,11 +41,19 @@ export function getLifeOSAppUrl() {
 }
 
 export function getGuardianVoiceAgentModel() {
-  return process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-2.5-flash-native-audio-latest';
+  return process.env.LIVEKIT_GUARDIAN_MODEL || 'gemini-live-2.5-flash-native-audio';
 }
 
 export function getGuardianVoiceAgentVoice() {
   return process.env.LIVEKIT_GUARDIAN_VOICE || 'Aoede';
+}
+
+export function getGuardianVoiceVertexConfig() {
+  return {
+    project: process.env.GOOGLE_CLOUD_PROJECT || '',
+    location: process.env.GOOGLE_CLOUD_LOCATION || 'global',
+    auth: 'adc' as const,
+  };
 }
 
 export function hasWhisperCppConfigured() {
@@ -108,6 +108,7 @@ export async function createGuardianVoiceToken(input: {
   const token = new AccessToken(apiKey, apiSecret, {
     identity,
     name: participantName,
+    ttl: `${Math.floor(GUARDIAN_VOICE_TOKEN_TTL_MS / 60_000)}m`,
     metadata: JSON.stringify({
       sessionId: input.sessionId,
       targetTitle: input.targetTitle || '',
