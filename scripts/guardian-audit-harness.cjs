@@ -15,6 +15,17 @@ function filesUnder(directory, name) {
   return output;
 }
 
+function sourceContains(directory, pattern) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory() && sourceContains(target, pattern)) return true;
+    if (entry.isFile() && /\.(ts|tsx)$/.test(entry.name) && pattern.test(fs.readFileSync(target, 'utf8'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8');
 }
@@ -80,6 +91,11 @@ const checks = [
       && claims.includes('sampleSize >= 20')
       && claims.includes("userStance === 'confirmed'"),
     detail: 'decision and identity thresholds are enforced',
+  },
+  {
+    id: 'model_registry_consistency',
+    passed: !sourceContains(path.join(root, 'src'), /\bMODEL_FLASH\b/),
+    detail: 'source consumers use role-specific model constants',
   },
 ];
 
