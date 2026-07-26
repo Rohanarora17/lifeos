@@ -8,6 +8,7 @@ const { createIsolatedDb } = require('../helpers/temp-db.cjs');
 const env = createIsolatedDb('lifeos-screen-vision-hash-');
 const {
   computeImageHash,
+  getChangeMagnitude,
   hammingDistance,
 } = env.requireLib('screen-vision.ts');
 
@@ -33,7 +34,7 @@ describe('screen vision perceptual hashing', () => {
     const lowHash = await computeImageHash(lowQuality);
     const highHash = await computeImageHash(highQuality);
 
-    assert.equal(lowHash, highHash);
+    assert.equal(getChangeMagnitude(lowHash, highHash), 'none');
   });
 
   it('detects a materially different pixel layout', async () => {
@@ -50,5 +51,21 @@ describe('screen vision perceptual hashing', () => {
     const horizontalHash = await computeImageHash(await jpegFromRaw(horizontal, 16, 16, 90));
 
     assert.ok(hammingDistance(verticalHash, horizontalHash) >= 24);
+  });
+
+  it('detects small text-like pixel changes without treating a static frame as changed', async () => {
+    const first = Buffer.alloc(64 * 64 * 3, 245);
+    const second = Buffer.from(first);
+    for (let y = 20; y < 24; y++) {
+      for (let x = 8; x < 42; x++) {
+        second.fill(20, (y * 64 + x) * 3, (y * 64 + x) * 3 + 3);
+      }
+    }
+
+    const firstHash = await computeImageHash(await jpegFromRaw(first, 64, 64, 90));
+    const secondHash = await computeImageHash(await jpegFromRaw(second, 64, 64, 90));
+
+    assert.equal(getChangeMagnitude(firstHash, firstHash), 'none');
+    assert.notEqual(getChangeMagnitude(secondHash, firstHash), 'none');
   });
 });

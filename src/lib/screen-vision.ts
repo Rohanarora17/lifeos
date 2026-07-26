@@ -95,20 +95,28 @@ export function isSensitiveApp(appName: string, windowTitle: string): boolean {
 // pHash-based change detection (simple luminance block hash)
 // ---------------------------------------------------------------------------
 
-// Compute a 64-bit average hash from decoded luminance pixels.
+const HASH_EDGE = 64;
+const HASH_BITS = HASH_EDGE * HASH_EDGE;
+
+// Compute a 4,096-bit average hash from decoded luminance pixels.
 export async function computeImageHash(base64Jpeg: string): Promise<string> {
   const bytes = Buffer.from(base64Jpeg, 'base64');
   const { data, info } = await sharp(bytes)
     .rotate()
     .greyscale()
-    .resize(8, 8, { fit: 'fill' })
+    .resize(HASH_EDGE, HASH_EDGE, { fit: 'fill' })
     .raw()
     .toBuffer({ resolveWithObject: true });
-  if (info.width !== 8 || info.height !== 8 || info.channels !== 1 || data.length !== 64) {
+  if (
+    info.width !== HASH_EDGE
+    || info.height !== HASH_EDGE
+    || info.channels !== 1
+    || data.length !== HASH_BITS
+  ) {
     throw new Error('Unable to decode screenshot luminance');
   }
   const samples = Array.from(data);
-  const avg = samples.reduce((a, b) => a + b, 0) / 64;
+  const avg = samples.reduce((a, b) => a + b, 0) / HASH_BITS;
   let bits = '';
   for (const v of samples) {
     bits += v >= avg ? '1' : '0';
@@ -122,7 +130,7 @@ export async function computeImageHash(base64Jpeg: string): Promise<string> {
 }
 
 export function hammingDistance(a: string, b: string): number {
-  if (a.length !== b.length) return 64;
+  if (a.length !== b.length) return Math.max(a.length, b.length) * 4;
   let dist = 0;
   for (let i = 0; i < a.length; i++) {
     const bitsA = parseInt(a[i], 16).toString(2).padStart(4, '0');
@@ -134,16 +142,16 @@ export function hammingDistance(a: string, b: string): number {
   return dist;
 }
 
-// Returns change magnitude based on hamming distance out of 64 bits
+// Returns change magnitude based on hamming distance out of 4,096 bits.
 export function getChangeMagnitude(
   currentHash: string,
   prevHash: string | null,
 ): ScreenVisionSignal['changeFromPrevious'] {
   if (!prevHash) return 'major';
   const dist = hammingDistance(currentHash, prevHash);
-  if (dist <= 3) return 'none';
-  if (dist <= 10) return 'minor';
-  if (dist <= 25) return 'moderate';
+  if (dist <= 12) return 'none';
+  if (dist <= 128) return 'minor';
+  if (dist <= 768) return 'moderate';
   return 'major';
 }
 
