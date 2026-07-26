@@ -36,6 +36,8 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | DEVICE-VISION-006 | MacBook | 40-case diverse real-application matrix on disposable database | 2026-07-27 | Aggregate labels, scores, app names, and synthetic titles only; no frames retained |
 | DEVICE-PRIVACY-002 | MacBook | Installed native expected-window and communication-app denial probes | 2026-07-27 | Rule names and aggregate results only; no frames retained |
 | AUDIT-INTEL-001 | Disposable database | Audit-session personalization contamination trace | 2026-07-27 | Unsupported narrative summarized; generated text and session contents excluded |
+| DEVICE-VOICE-002 | MacBook and Mac Mini | Native silence and fixed-phrase push-to-talk checks | 2026-07-27 | Signal level, normalized accuracy, and latency only; raw audio deleted |
+| VERTEX-VOICE-001 | MacBook and Vertex AI | Direct Gemini Live model and latency canary | 2026-07-27 | Model IDs, status, and latency only; response audio discarded |
 
 ## Reproduction Constraints
 

@@ -128,8 +128,8 @@ These percentages describe evidence-backed readiness, not feature marketing.
 | --- | ---: |
 | Telemetry | 64% |
 | Guardian runtime | 48% |
-| Push-to-talk voice | 55% |
-| Realtime voice | 15% |
+| Push-to-talk voice | 65% |
+| Realtime voice | 25% |
 | Vision | 88% |
 | Intelligence | 38% |
 | Personalization propagation | 40% |
@@ -137,6 +137,6 @@ These percentages describe evidence-backed readiness, not feature marketing.
 | Deployment and operations | 85% |
 | General product workflows | 55% |
 
-Weighted overall readiness: **60%**. The largest remaining portion is
+Weighted overall readiness: **62%**. The largest remaining portion is
 real-device validation, cross-surface integration, legacy adapter retirement,
 and the elapsed 14-day study.
