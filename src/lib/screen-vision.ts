@@ -12,7 +12,7 @@
 
 import { ScreenVisionSignal, ScreenContext, GuardianState } from './guardian-types';
 import { generateWithFallback, getGenAI } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_VISION } from './models';
 import { getDb } from './db';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { getAdaptiveBands } from './adaptive-bands';
@@ -311,7 +311,7 @@ engagementDepth definitions:
 Return ONLY the JSON object, no markdown, no explanation.`;
 
   const result = await generateWithFallback(ai, {
-    model: MODEL_FLASH,
+    model: MODEL_VISION,
     contents: [
       {
         role: 'user',
@@ -452,7 +452,7 @@ export async function generateContextNarrative(
     .join('\n');
 
   const result = await generateWithFallback(ai, {
-    model: MODEL_FLASH,
+    model: MODEL_VISION,
     contents: [
       {
         role: 'user',

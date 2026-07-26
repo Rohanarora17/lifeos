@@ -15,7 +15,7 @@
 
 import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning } from './cloud-privacy';
-import { MODEL_PRO, MODEL_FLASH } from './models';
+import { MODEL_PRO, MODEL_VISION } from './models';
 import { getGuardianSession, getActiveGuardianSession } from './guardian-runtime';
 import { getDb } from './db';
 import type { ScreenVisionSignal, ScreenContext } from './guardian-types';
@@ -315,7 +315,7 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
   const contents = [{ role: 'user', parts }];
 
   // ── Call Gemini ────────────────────────────────────────────────────────────
-  const modelToUse = hadScreenshot ? MODEL_PRO : MODEL_FLASH; // Pro for multimodal (screenshot), Flash for voice-only text
+  const modelToUse = hadScreenshot ? MODEL_VISION : MODEL_PRO;
   const result = await generateWithFallback(ai, {
     model: modelToUse,
     contents,

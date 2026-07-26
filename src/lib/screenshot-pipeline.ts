@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { getDb } from './db';
 import { getActiveGuardianSession } from './guardian-runtime';
-import { MODEL_FLASH } from './models';
+import { MODEL_VISION } from './models';
 
 const execAsync = promisify(exec);
 
@@ -145,7 +145,7 @@ Return ONLY the JSON. No markdown, no explanation.`;
 
     try {
       // generateWithFallback handles backoff (3 attempts, 4s/8s) + model fallback
-      const result = await generateWithFallback(genai, { model: MODEL_FLASH, contents });
+      const result = await generateWithFallback(genai, { model: MODEL_VISION, contents });
       let text = result.text?.trim() ?? '';
       // Strip markdown code fences if model wraps JSON
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
