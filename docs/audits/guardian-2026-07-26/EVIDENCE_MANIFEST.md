@@ -38,6 +38,13 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | AUDIT-INTEL-001 | Disposable database | Audit-session personalization contamination trace | 2026-07-27 | Unsupported narrative summarized; generated text and session contents excluded |
 | DEVICE-VOICE-002 | MacBook and Mac Mini | Native silence and fixed-phrase push-to-talk checks | 2026-07-27 | Signal level, normalized accuracy, and latency only; raw audio deleted |
 | VERTEX-VOICE-001 | MacBook and Vertex AI | Direct Gemini Live model and latency canary | 2026-07-27 | Model IDs, status, and latency only; response audio discarded |
+| DEVICE-BROWSER-001 | MacBook Chrome and Mac Mini | Real late-night active, unfocused, redacted, and bounded telemetry intervals | 2026-07-27 | URLs and titles omitted; states, privacy reasons, durations, and duplicate count only |
+| TEST-GUARDIAN-001 | Disposable database | Guardian start, browser event, persistence, state, and completion lifecycle | 2026-07-27 | Synthetic topic and aggregate result only |
+| TEST-PLANNER-001 | Disposable databases | Six task-time and next-day planner verification flows | 2026-07-27 | Synthetic task data and aggregate pass results only |
+| PROD-ROUTES-001 | Mac Mini deployment | Ten authenticated critical API read probes | 2026-07-27 | Status and latency only; response bodies excluded |
+| DEVICE-PAGES-001 | Isolated Chromium | Dashboard, activity, tasks, planner, calendar, and Guardian render checks | 2026-07-27 | Route, title, body size, and error counts only |
+| TEST-MEMORY-001 | Disposable database | Duplicate consolidation and stale-reference purge regression | 2026-07-27 | Synthetic fact IDs and pass result only |
+| TEST-GATE-001 | Committed repository | Full unit, static audit, and extension syntax gate | 2026-07-27 | 107-test and 10-check aggregate result only |
 
 ## Reproduction Constraints
 

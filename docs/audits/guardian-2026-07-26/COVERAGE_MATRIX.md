@@ -8,23 +8,23 @@ real-device result.
 
 | Surface | Primary workflows | Automation | Real device |
 | --- | --- | --- | --- |
-| Dashboard | Fresh state, provenance, corrections, recommendations | Pending | Pending |
-| Activity | Interval totals, idle/lock boundaries, source breakdown | Pending | Pending |
-| Analytics | Deterministic metrics, claim freshness | Pending | Pending |
-| Calendar | Read sync, write sync, edit/delete reconciliation | Pending | Pending |
+| Dashboard | Fresh state, provenance, corrections, recommendations | Partial: rendered page and authenticated API read | Pass: fresh browser state visible |
+| Activity | Interval totals, idle/lock boundaries, source breakdown | Partial: rendered page, API read, 18 telemetry checks | Partial: active/unfocused/redacted transitions passed |
+| Analytics | Deterministic metrics, claim freshness | Partial: authenticated insights read and claim gates | Pending |
+| Calendar | Read sync, write sync, edit/delete reconciliation | Partial: rendered read path and local planner mutations | Partial: one-way ICS read; real OAuth writes pending |
 | Chat | Evidence-aware answers, feedback persistence | Pending | Pending |
 | Extension sidebar | Timed task progress, session linkage | Pending | Pending |
 | Goals | Timed task roll-up and completion | Pending | Pending |
-| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, capture/inference, sensitive-window denial, controlled 60-frame benchmark, and 40-case real-app matrix passed |
+| Guardian | Session lifecycle, screen context, override, reconnect | Partial: lifecycle and override tests pass | Partial: heartbeat, capture/inference, browser telemetry, sensitive-window denial, controlled 60-frame benchmark, and 40-case real-app matrix passed |
 | Habits | CRUD, day boundaries | Pending | Pending |
 | Insights | Claim evidence, confidence, expiry, correction | Pending | Pending |
 | Knowledge graph | Provenance and deletion | Pending | Pending |
-| Memory | CRUD, source trace, sensitive-data handling | Pending | Pending |
-| Next-day planner | Calendar constraints, sleep adjustment, edits | Pending | Pending |
+| Memory | CRUD, source trace, sensitive-data handling | Partial: read path and consolidation integrity pass | Pending |
+| Next-day planner | Calendar constraints, sleep adjustment, edits | Partial: generation, edits, cancellation, feedback, and adaptive policy pass | Pending real-account write sync |
 | Settings | Authentication, protected mutation, capability state | Pending | Pending |
 | Store | Reward pricing and balances | Pending | Pending |
 | Study plan | Task-specific session rules | Pending | Pending |
-| Tasks | Time-target completion and linked focus sessions | Pending | Pending |
+| Tasks | Time-target completion and linked focus sessions | Pass: accumulated and planned-session completion flows | Pending full real-day task |
 
 ## API Classes
 
@@ -37,8 +37,8 @@ real-device result.
 | OAuth/calendar | 4 | State, callback binding, token storage, sync reconciliation |
 | Admin/destructive | 3 | Authentication, re-authentication, audit record, disposable DB |
 
-Route counts are classification targets and must be reconciled against the
-current 74-route inventory by the route audit script.
+The current audit script inventories 77 API route files. Class totals above
+remain classification targets and need reconciliation as route coverage expands.
 
 ## Real-Device Session Matrix
 

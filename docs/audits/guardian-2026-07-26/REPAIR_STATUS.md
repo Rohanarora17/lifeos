@@ -21,15 +21,29 @@ session on 2026-07-27.
 - Clipboard simulation retirement and native device authentication
 - PTT in-flight cleanup, response-text preservation, one playback owner, and TTS fallback
 - `AssessmentClaimV1` freshness, sample, distinct-day, relative-date, and confirmation gates
+- Real Chrome telemetry ingestion during actual late-night use, including
+  active, unfocused, redacted internal-page, and bounded sustained intervals
+- Guardian API lifecycle from session start through browser evidence persistence
+  and clean completion, including AI-unavailable fallback
+- Timed-task completion across linked focus sessions and planned-session credit
+- Next-day plan creation, update, cancellation, adaptive duration, reward, and
+  feedback policy against isolated databases
+- Authenticated production reads for dashboard, activity, tasks, planner,
+  calendar, Guardian, goals, memory, diagnostics, and analytics
+- Rendered Chromium checks for dashboard, activity, tasks, planner, calendar,
+  and Guardian with no page or console errors
+- Scheduler authentication for protected internal routes and shared
+  instrumentation/diagnostics state
+- Memory consolidation that preserves fact lineage without foreign-key failures
 
 ## Still Unverified
 
-- Full browser interval matrix across lock, sleep, restart, and network loss
+- Browser interval matrix across lock, sleep, Chrome restart, and network loss
 - Microphone, Accessibility, and Input Monitoring permissions
 - User-controlled Terminal, lock/sleep, and multi-display capture scenarios
 - Indian-English PTT word error rate and realtime latency/interruption/reconnect gates
 - Live Vertex model discovery and Gemini Live canary promotion
-- Full 18-page and current API-route Playwright workflow suite
+- The remaining 12 pages and mutation-heavy API workflows in Playwright
 - Two-way Google Calendar reconciliation against the real account
 - Cross-surface correction propagation beyond the Guardian insights boundary
 - The selected 14-day longitudinal study
@@ -49,6 +63,7 @@ session on 2026-07-27.
 | P2 | Log rotation is deployment-triggered until a dedicated periodic launchd job is installed. |
 | P2 | Deployment is not atomic: replacing `.next` while the prior process is live caused a transient `ChunkLoadError` during the benchmark. |
 | P2 | Vision assessments do not persist the actual model/version used, so fallback-free logs cannot establish per-assessment model provenance. |
+| P2 | The memory API returned approximately 254 KB in one production read and needs pagination before the fact history grows materially. |
 
 ## Mac Mini Evidence Refresh
 
@@ -120,23 +135,59 @@ SSH evidence was collected on 2026-07-26 without reading secret values.
 - Terminal, lock/sleep, and multi-display behavior remain unverified. The test
   Mac had one built-in display.
 
+### Browser, Guardian, planner, and route refresh
+
+- The unpacked Chrome extension was confirmed active from the repository
+  extension directory. Actual late-night browsing had been discarded by the
+  configured waking window even while Chrome was actively used.
+- The extension now treats planned waking hours as context rather than an
+  absolute veto: real active use is retained, while idle or locked time outside
+  that window remains untracked. Sustained use rolls into bounded one-minute
+  intervals so production freshness does not silently expire.
+- A real extension reload produced fresh canonical telemetry in production,
+  including redaction of an internal Chrome page and no duplicate event IDs.
+- Eighteen telemetry contract, state-machine, and storage checks passed.
+- Guardian start, browser event, persisted activity, state read, and completion
+  passed against an isolated database. Missing AI configuration now records a
+  neutral low-confidence observation instead of dropping the event.
+- Six planner/task verification scripts passed: accumulated timed completion,
+  next-day planning, planned-session completion, planner feedback learning,
+  session-duration learning, and adaptive calendar policy.
+- Ten critical authenticated production API reads returned HTTP 200, with
+  observed response times between 2 ms and 20 ms except the larger memory
+  payload. Six critical pages rendered in isolated Chromium with zero page or
+  console errors.
+- One-way ICS calendar sync is populated and current enough for dashboard
+  reads. Real Google Calendar writes remain blocked on completing OAuth:
+  `google_calendar_refresh_token` is absent and the production redirect URI
+  must be set to the Mac Mini URL.
+- The full local gate passed 107 unit tests, 10 of 10 static audit checks,
+  extension syntax checks, and inventories 18 pages plus 77 API routes.
+- Scheduler jobs were found running, but protected internal calls lacked the
+  API credential and diagnostics used a bundle-local registry. Both are fixed.
+  Nightly memory consolidation also had a reproducible fact-lineage foreign-key
+  failure; the repair passed isolated regression coverage.
+- Main deployments are now serialized with superseded runs cancelled. Final
+  production verification of the latest repair commit is pending.
+
 ## Honest Completion Estimate
 
 These percentages describe evidence-backed readiness, not feature marketing.
 
 | Area | Readiness |
 | --- | ---: |
-| Telemetry | 64% |
-| Guardian runtime | 48% |
+| Telemetry | 78% |
+| Guardian runtime | 62% |
 | Push-to-talk voice | 65% |
 | Realtime voice | 25% |
 | Vision | 88% |
-| Intelligence | 38% |
-| Personalization propagation | 40% |
-| Security | 88% |
-| Deployment and operations | 85% |
-| General product workflows | 55% |
+| Intelligence | 45% |
+| Personalization propagation | 43% |
+| Security | 90% |
+| Deployment and operations | 82% |
+| General product workflows | 68% |
 
-Weighted overall readiness: **62%**. The largest remaining portion is
+Weighted overall readiness: **67%**. The largest remaining portion is
 real-device validation, cross-surface integration, legacy adapter retirement,
-and the elapsed 14-day study.
+real Google Calendar writes, the remaining product workflows, and the elapsed
+14-day study.
