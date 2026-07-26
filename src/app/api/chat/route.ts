@@ -14,6 +14,11 @@ import { buildAdaptiveDashboardPolicy } from '@/lib/adaptive-dashboard-policy';
 import { getAdaptiveRewardDecision } from '@/lib/adaptive-rewards';
 import { recordAdaptiveHabitCheckin } from '@/lib/adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from '@/lib/adaptive-task-defaults';
+import {
+    buildCognitiveSelfAnswer,
+    formatCognitiveSelfAnswerForPrompt,
+    isCognitiveSelfQuestion,
+} from '@/lib/cognitive-self-answer';
 
 const tools = [{
     functionDeclarations: [
@@ -60,6 +65,17 @@ const tools = [{
                 },
                 required: ['task_title']
             }
+        },
+        {
+            name: 'explainCognitiveWiring',
+            description: 'Explain how/why/when the user works using the Cognitive Self-Map (pressure dependency, voluntary starts, activation energy, trajectory). Use when they ask why they only work under pressure, how their brain works, or similar self-model questions.',
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    query: { type: Type.STRING, description: 'The user question about their wiring or patterns' }
+                },
+                required: ['query']
+            }
         }
     ]
 }];
@@ -77,6 +93,7 @@ type ToolArgs = {
     duration_minutes?: number;
     task_title?: string;
     mood?: 'high' | 'medium' | 'low' | string;
+    query?: string;
 };
 
 type FunctionResponsePart = {
@@ -299,6 +316,20 @@ function executeTool(name: string, args: ToolArgs, personalization: Personalizat
             session,
             adaptive_reason: `${getAdaptiveSessionMinutesLabel(args.duration_minutes)} selected for ${personalization.moment.mode} mode`,
         };
+    } else if (name === 'explainCognitiveWiring') {
+        const answer = buildCognitiveSelfAnswer(args.query || 'how does my brain work');
+        return {
+            success: true,
+            focus: answer.focus,
+            title: answer.title,
+            summary: answer.summary,
+            sections: answer.sections,
+            evidence: answer.evidence,
+            next_move: answer.nextMove,
+            confidence: answer.confidence,
+            markdown: answer.markdown,
+            plain_text: answer.plainText,
+        };
     }
     throw new Error('Unknown tool');
 }
@@ -327,15 +358,35 @@ export async function POST(request: NextRequest) {
         });
         const personalizationContext = formatPersonalizationContext(personalization);
         const knowledgeContext = getKnowledgeGapSummary();
+        const lastUserText = [...messages].reverse().find(m => m.role === 'user')?.content || '';
+        const cognitiveQuestion = isCognitiveSelfQuestion(lastUserText);
+        const cognitiveGrounding = cognitiveQuestion
+            ? formatCognitiveSelfAnswerForPrompt(lastUserText)
+            : '';
+
+        // Deterministic path for self-map questions: return grounded answer without requiring LLM tool loops
+        if (cognitiveQuestion && process.env.LIFEOS_COGNITIVE_CHAT_DETERMINISTIC !== '0') {
+            const answer = buildCognitiveSelfAnswer(lastUserText);
+            touchIntelligence('chat');
+            return NextResponse.json({
+                response: answer.markdown,
+                grounded: true,
+                focus: answer.focus,
+                confidence: answer.confidence,
+                next_move: answer.nextMove,
+            });
+        }
 
         const systemInstruction = "You are Jarvis, the core intelligence engine and personal assistant of LifeOS.\\n" +
             "You have access only to typed LifeOS tools and summaries, not arbitrary SQL.\\n" +
             "Always be proactive, concise, and hold the user accountable, but adapt to today's moment mode.\\n" +
             "Never give generic productivity advice when current LifeOS context can ground the answer.\\n\\n" +
             personalizationContext + "\\n\\n" +
+            (cognitiveGrounding ? cognitiveGrounding + "\\n\\n" : "") +
             (knowledgeContext ? "Knowledge Graph:\\n" + knowledgeContext + "\\n\\n" : "") +
             "When users ask questions about their data or what to do next, use getDashboardSnapshot; it includes the adaptive dashboard policy and ranked tasks.\\n" +
             "If plannedFocus shows an upcoming planned block or weak follow-through, prioritize protecting or adjusting that schedule before suggesting unrelated new work.\\n" +
+            "When users ask how/why/when their brain works, pressure dependency, or rewiring, call explainCognitiveWiring with their question and ground on the tool result — do not invent patterns.\\n" +
             "When users ask to create a task, check a habit, or start a guardian session, use the respective tool. If the user did not name a session length, omit duration_minutes and let LifeOS pick the learned adaptive length.\\n" +
             "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain the adaptive reason naturally.";
@@ -348,6 +399,19 @@ export async function POST(request: NextRequest) {
             role: m.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: m.content }]
         }));
+
+        if (!ai) {
+            if (cognitiveQuestion) {
+                const answer = buildCognitiveSelfAnswer(lastUserText);
+                return NextResponse.json({
+                    response: answer.markdown,
+                    grounded: true,
+                    focus: answer.focus,
+                    offline: true,
+                });
+            }
+            return NextResponse.json({ error: 'AI not configured' }, { status: 503 });
+        }
 
         const MAX_TOOL_LOOPS = 5;
         let loopCount = 0;
