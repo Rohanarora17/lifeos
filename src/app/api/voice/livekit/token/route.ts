@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createGuardianVoiceToken, isLiveKitConfigured } from '@/lib/livekit';
+import {
+  createGuardianVoiceToken,
+  isGuardianVoiceAgentConfigured,
+} from '@/lib/livekit';
 import { getGuardianSession } from '@/lib/guardian-runtime';
 import { acquireGuardianVoiceLease } from '@/lib/guardian-voice-limits';
 
@@ -20,9 +23,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Voice token requests must come from this LifeOS origin' }, { status: 403 });
     }
 
-    if (!isLiveKitConfigured()) {
+    if (!isGuardianVoiceAgentConfigured()) {
       return NextResponse.json(
-        { error: 'LiveKit is not configured on this server' },
+        { error: 'Realtime Guardian voice is not fully configured on this server' },
         { status: 503 }
       );
     }

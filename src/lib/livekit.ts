@@ -60,6 +60,28 @@ export function hasWhisperCppConfigured() {
   return Boolean(process.env.WHISPER_CPP_URL);
 }
 
+export function hasPushToTalkTranscriptionConfigured() {
+  return Boolean(process.env.ELEVENLABS_API_KEY || process.env.WHISPER_CPP_URL);
+}
+
+export function getPushToTalkTranscriptionProvider() {
+  if (process.env.ELEVENLABS_API_KEY) {
+    return 'elevenlabs-scribe';
+  }
+
+  const whisperUrl = process.env.WHISPER_CPP_URL || '';
+  if (whisperUrl.includes('groq.com')) {
+    return 'groq-whisper';
+  }
+  if (whisperUrl.includes('openai.com')) {
+    return 'openai-whisper';
+  }
+  if (whisperUrl) {
+    return 'whisper.cpp-compatible';
+  }
+  return 'unconfigured';
+}
+
 export function isGuardianVoiceAgentConfigured() {
   return Boolean(
     getGuardianVoiceMode() === 'google-live' &&
@@ -78,8 +100,8 @@ export function getGuardianVoiceModeSummary() {
     return 'Cloud realtime voice via Gemini Live over LiveKit';
   }
 
-  return hasWhisperCppConfigured()
-    ? 'Local-first voice with whisper.cpp push-to-talk'
+  return hasPushToTalkTranscriptionConfigured()
+    ? `Push-to-talk transcription via ${getPushToTalkTranscriptionProvider()}`
     : `Local-first voice with push-to-talk fallback (set VOICE_MODE=google-live to enable cloud realtime)`;
 }
 

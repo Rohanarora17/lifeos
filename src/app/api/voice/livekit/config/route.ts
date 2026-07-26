@@ -13,7 +13,8 @@ import {
   getLifeOSAppUrl,
   getLiveKitAgentName,
   getLiveKitWsUrl,
-  hasWhisperCppConfigured,
+  getPushToTalkTranscriptionProvider,
+  hasPushToTalkTranscriptionConfigured,
   isGuardianVoiceAgentConfigured,
   isLiveKitConfigured,
 } from '@/lib/livekit';
@@ -33,8 +34,8 @@ export async function GET() {
         ? 'livekit-room-transport-only'
         : 'push-to-talk-fallback',
     features: {
-      interruptionHandling: true,
-      semanticTurnDetection: true,
+      interruptionHandling: realtimeConversationReady,
+      semanticTurnDetection: realtimeConversationReady,
       wakeWord: false,
     },
     agentName: getLiveKitAgentName(),
@@ -47,7 +48,8 @@ export async function GET() {
     cloudReasoningUsesRawAudio: usesCloudRawAudio(),
     realtimeConversationReady,
     guardianVoiceAgentConfigured: realtimeConversationReady,
-    pushToTalkTranscriptionConfigured: hasWhisperCppConfigured(),
+    pushToTalkTranscriptionConfigured: hasPushToTalkTranscriptionConfigured(),
+    pushToTalkTranscriptionProvider: getPushToTalkTranscriptionProvider(),
     appUrl: getLifeOSAppUrl(),
     agentModel: getGuardianVoiceAgentModel(),
     agentVoice: getGuardianVoiceAgentVoice(),
