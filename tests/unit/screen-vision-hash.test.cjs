@@ -8,6 +8,7 @@ const { createIsolatedDb } = require('../helpers/temp-db.cjs');
 const env = createIsolatedDb('lifeos-screen-vision-hash-');
 const {
   computeImageHash,
+  decideVisionAnalysis,
   getChangeMagnitude,
   hammingDistance,
 } = env.requireLib('screen-vision.ts');
@@ -67,5 +68,31 @@ describe('screen vision perceptual hashing', () => {
 
     assert.equal(getChangeMagnitude(firstHash, firstHash), 'none');
     assert.notEqual(getChangeMagnitude(secondHash, firstHash), 'none');
+  });
+
+  it('analyzes metadata changes and suppresses rapid same-window jitter', () => {
+    const metadataChange = decideVisionAnalysis({
+      pixelChange: 'none',
+      previousApp: 'Google Chrome',
+      previousWindowTitle: 'Document A',
+      appInFocus: 'Google Chrome',
+      windowTitle: 'Document B',
+      lastAnalyzedAt: 1_000,
+      now: 1_500,
+    });
+    assert.equal(metadataChange.analyze, true);
+    assert.equal(metadataChange.reason, 'metadata_changed');
+
+    const rapidJitter = decideVisionAnalysis({
+      pixelChange: 'minor',
+      previousApp: 'Google Chrome',
+      previousWindowTitle: 'Document A',
+      appInFocus: 'Google Chrome',
+      windowTitle: 'Document A',
+      lastAnalyzedAt: 1_000,
+      now: 1_500,
+    });
+    assert.equal(rapidJitter.analyze, false);
+    assert.equal(rapidJitter.reason, 'rapid_duplicate');
   });
 });

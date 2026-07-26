@@ -4,6 +4,7 @@ import {
   isSensitiveApp,
   computeImageHash,
   getChangeMagnitude,
+  decideVisionAnalysis,
   computeCaptureState,
   analyzeScreenshot,
   updateScreenContext,
@@ -20,6 +21,8 @@ import type { GuardianEvent } from '@/lib/guardian-types';
 
 interface VisionSessionState {
   lastHash: string | null;
+  lastApp: string | null;
+  lastWindowTitle: string | null;
   lastAnalyzedAt: number;
   narrativeUpdatedAt: number;
 }
@@ -79,24 +82,36 @@ export async function POST(req: Request) {
     const currentHash = await computeImageHash(base64Jpeg);
     const vState = sessionVisionState.get(sessionId) ?? {
       lastHash: null,
+      lastApp: null,
+      lastWindowTitle: null,
       lastAnalyzedAt: 0,
       narrativeUpdatedAt: 0,
     };
-    const changeFromPrevious = getChangeMagnitude(currentHash, vState.lastHash);
+    const pixelChange = getChangeMagnitude(currentHash, vState.lastHash);
+    const changeDecision = decideVisionAnalysis({
+      pixelChange,
+      previousApp: vState.lastApp,
+      previousWindowTitle: vState.lastWindowTitle,
+      appInFocus,
+      windowTitle: windowTitle ?? '',
+      lastAnalyzedAt: vState.lastAnalyzedAt,
+      now: Date.now(),
+    });
+    const changeFromPrevious = changeDecision.changeFromPrevious;
 
-    console.log(`[Vision] Change detection: ${changeFromPrevious} (prev hash: ${vState.lastHash ? 'exists' : 'none'})`);
+    console.log(`[Vision] Change detection: ${changeFromPrevious}/${changeDecision.reason} (prev hash: ${vState.lastHash ? 'exists' : 'none'})`);
 
-    // Skip Gemini analysis if screen hasn't changed meaningfully
-    if (changeFromPrevious === 'none' && vState.lastAnalyzedAt > 0) {
+    // Skip Gemini analysis if screen and window metadata have not changed meaningfully.
+    if (!changeDecision.analyze && vState.lastAnalyzedAt > 0) {
       // Still tick the session with a lightweight screen_vision event to maintain heartbeat
       const lightEvent: GuardianEvent = {
         sessionId,
         type: 'screen_vision',
         timestamp: Date.now(),
-        payload: { visionSkipped: true, reason: 'no_change' },
+        payload: { visionSkipped: true, reason: changeDecision.reason },
       };
       await tickGuardianSession(sessionId, lightEvent);
-      return NextResponse.json({ analyzed: false, reason: 'no_change' });
+      return NextResponse.json({ analyzed: false, reason: changeDecision.reason });
     }
 
     // Full Gemini Vision analysis
@@ -121,6 +136,8 @@ export async function POST(req: Request) {
     // Update change detection state
     sessionVisionState.set(sessionId, {
       lastHash: currentHash,
+      lastApp: appInFocus,
+      lastWindowTitle: windowTitle ?? '',
       lastAnalyzedAt: Date.now(),
       narrativeUpdatedAt: vState.narrativeUpdatedAt,
     });

@@ -155,6 +155,44 @@ export function getChangeMagnitude(
   return 'major';
 }
 
+export function decideVisionAnalysis(input: {
+  pixelChange: ScreenVisionSignal['changeFromPrevious'];
+  previousApp: string | null;
+  previousWindowTitle: string | null;
+  appInFocus: string;
+  windowTitle: string;
+  lastAnalyzedAt: number;
+  now: number;
+}): {
+  analyze: boolean;
+  changeFromPrevious: ScreenVisionSignal['changeFromPrevious'];
+  reason: 'changed' | 'metadata_changed' | 'no_change' | 'rapid_duplicate';
+} {
+  const hasPreviousMetadata = input.previousApp !== null || input.previousWindowTitle !== null;
+  const metadataChanged = hasPreviousMetadata && (
+    input.previousApp !== input.appInFocus
+    || input.previousWindowTitle !== input.windowTitle
+  );
+  if (metadataChanged) {
+    return {
+      analyze: true,
+      changeFromPrevious: input.pixelChange === 'none' ? 'minor' : input.pixelChange,
+      reason: 'metadata_changed',
+    };
+  }
+  if (input.pixelChange === 'none') {
+    return { analyze: false, changeFromPrevious: 'none', reason: 'no_change' };
+  }
+  if (input.pixelChange === 'minor' && input.now - input.lastAnalyzedAt < 2_000) {
+    return { analyze: false, changeFromPrevious: 'minor', reason: 'rapid_duplicate' };
+  }
+  return {
+    analyze: true,
+    changeFromPrevious: input.pixelChange,
+    reason: 'changed',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Adaptive capture rate state machine
 // ---------------------------------------------------------------------------
