@@ -15,6 +15,13 @@ let audioContext = null;
 let recordingStartTime = 0;  // ms timestamp when recording started
 const MIN_RECORDING_MS = 500; // minimum duration to capture real audio frames
 
+async function authHeaders(headers = {}) {
+  const { apiKey } = await chrome.storage.local.get('apiKey');
+  const next = new Headers(headers);
+  if (apiKey) next.set('Authorization', `Bearer ${apiKey}`);
+  return next;
+}
+
 // ── Message handler from background ──────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -142,23 +149,27 @@ async function sendAudio(sessionId) {
   console.log(`[Offscreen] Sending audio (${blobSize} bytes) to ${SERVER}`);
   chrome.runtime.sendMessage({ type: 'PTT_SENDING' });
 
-  // If truly empty (< 50 bytes = only file-level WebM header, no audio cluster at all),
-  // there is nothing the server can do with it.
-  if (blobSize < 50) {
-    console.warn(`[Offscreen] Audio blob empty (${blobSize} bytes) — mic may not have started yet`);
-    chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: 'No audio captured — try again' });
-    return;
-  }
-
-  const form = new FormData();
-  form.append('audio', blob, 'speech.webm');
-  if (sessionId) form.append('sessionId', sessionId);
-
   try {
+    // Keep all early exits inside try/finally so pttInFlight cannot get stuck.
+    if (blobSize < 50) {
+      console.warn(`[Offscreen] Audio blob empty (${blobSize} bytes) — mic may not have started yet`);
+      chrome.runtime.sendMessage({ type: 'PTT_ERROR', error: 'No audio captured — try again' });
+      return;
+    }
+
+    const form = new FormData();
+    form.append('audio', blob, 'speech.webm');
+    if (sessionId) form.append('sessionId', sessionId);
+    const headers = await authHeaders();
     const res = await fetch(`${SERVER}/api/voice/push-to-talk`, {
       method: 'POST',
       body: form,
+      headers,
     });
+    if (!res.ok) {
+      const errorBody = await res.text();
+      throw new Error(`PTT request failed (${res.status}): ${errorBody.slice(0, 200)}`);
+    }
 
     const contentType = res.headers.get('content-type') || '';
 
@@ -204,7 +215,19 @@ async function sendAudio(sessionId) {
         return;
       }
       console.log('[Offscreen] PTT response (no audio):', data);
-      chrome.runtime.sendMessage({ type: 'PTT_DONE', transcript: data.transcript });
+      if (data.responseText) {
+        chrome.runtime.sendMessage({
+          type: 'PTT_SPEAKING',
+          transcript: data.transcript,
+          responseText: data.responseText,
+        });
+        await playText(data.responseText, sessionId);
+      }
+      chrome.runtime.sendMessage({
+        type: 'PTT_DONE',
+        transcript: data.transcript,
+        responseText: data.responseText || '',
+      });
     }
   } catch (err) {
     console.error('[Offscreen] Send failed:', err);
@@ -223,17 +246,30 @@ async function playAudioUrl(url) {
 }
 
 async function playText(text, sessionId) {
+  const headers = await authHeaders({ 'Content-Type': 'application/json' });
   const res = await fetch(`${SERVER}/api/voice/tts`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ text }),
   });
   if (!res.ok) {
     console.error('[Offscreen] TTS fetch failed:', res.status);
+    await playBrowserSpeech(text);
     return;
   }
   const buffer = await res.arrayBuffer();
   await playArrayBuffer(buffer);
+}
+
+async function playBrowserSpeech(text) {
+  if (!text || !('speechSynthesis' in globalThis)) return;
+  await new Promise((resolve, reject) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = resolve;
+    utterance.onerror = event => reject(new Error(event.error || 'speech_synthesis_failed'));
+    speechSynthesis.cancel();
+    speechSynthesis.speak(utterance);
+  });
 }
 
 async function playArrayBuffer(buffer) {

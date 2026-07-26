@@ -22,6 +22,7 @@ const globalTTS = global as unknown as {
 export const speechQueue = globalTTS.speechQueue || [];
 export let isSpeaking = globalTTS.isSpeaking || false;
 export let currentProcess = globalTTS.currentProcess || null;
+const speechSuppressions = new Map<string, number>();
 
 if (process.env.NODE_ENV !== 'production') {
     globalTTS.speechQueue = speechQueue;
@@ -30,6 +31,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export async function speak(sessionId: string, text: string, priority: 'normal' | 'urgent' = 'normal', tone: string = 'neutral') {
+    if (isSpeechSuppressed(sessionId)) return;
     if (priority === 'urgent') {
         if (currentProcess) {
             currentProcess.kill('SIGTERM');
@@ -43,6 +45,22 @@ export async function speak(sessionId: string, text: string, priority: 'normal' 
     }
 
     processQueue();
+}
+
+export function suppressSpeechForRequest(sessionId: string) {
+    speechSuppressions.set(sessionId, (speechSuppressions.get(sessionId) || 0) + 1);
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        const remaining = (speechSuppressions.get(sessionId) || 1) - 1;
+        if (remaining <= 0) speechSuppressions.delete(sessionId);
+        else speechSuppressions.set(sessionId, remaining);
+    };
+}
+
+export function isSpeechSuppressed(sessionId: string) {
+    return (speechSuppressions.get(sessionId) || 0) > 0;
 }
 
 function getTtsAdapter(): TtsAdapter {

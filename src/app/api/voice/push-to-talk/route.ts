@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import { processGuardianVoiceCommand } from '@/lib/guardian-voice';
 import { transcribeAudio } from '@/lib/stt';
+import { suppressSpeechForRequest } from '@/lib/tts';
 
+const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
+const MAX_TRANSCRIPT_CHARS = 4_000;
 
 // ── TTS: ElevenLabs streaming (returns piped ReadableStream) ──────────────────
 
@@ -58,6 +61,9 @@ export async function POST(req: Request) {
             if (!(audio instanceof Blob)) {
                 return NextResponse.json({ error: 'Missing audio blob' }, { status: 400 });
             }
+            if (audio.size > MAX_AUDIO_BYTES) {
+                return NextResponse.json({ error: 'Audio payload too large' }, { status: 413 });
+            }
 
             console.log(`[PTT] Received audio: ${audio.size} bytes, type: ${audio.type}`);
             const t = await transcribeAudio(audio);
@@ -87,8 +93,17 @@ export async function POST(req: Request) {
         if (!transcript) {
             return NextResponse.json({ error: 'Missing transcript' }, { status: 400 });
         }
+        transcript = transcript.trim().slice(0, MAX_TRANSCRIPT_CHARS);
 
-        const result = await processGuardianVoiceCommand({ transcript, sessionId });
+        // The PTT response owns playback on the MacBook. Suppress the separate
+        // server/SSE speech path for this request so one answer is not spoken twice.
+        const releaseSpeech = suppressSpeechForRequest(sessionId || 'voice-assistant');
+        let result;
+        try {
+            result = await processGuardianVoiceCommand({ transcript, sessionId });
+        } finally {
+            releaseSpeech();
+        }
 
         const responseText: string | undefined =
             (result as { spokenResponse?: string; responseText?: string; response?: string }).spokenResponse ||
@@ -109,7 +124,12 @@ export async function POST(req: Request) {
             }
         }
 
-        return NextResponse.json({ success: true, transcript });
+        return NextResponse.json({
+            success: true,
+            transcript,
+            responseText: responseText || '',
+            audioAvailable: false,
+        });
     } catch (error) {
         console.error('[PTT] Error:', error);
         return NextResponse.json({ error: String(error) }, { status: 500 });
