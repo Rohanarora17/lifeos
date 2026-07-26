@@ -32,6 +32,10 @@ final class ScreenCaptureService {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             return emptyCapture(app: "Unknown App", title: "", reason: "no_frontmost_application")
         }
+        let frontmostAppName = frontmost.localizedName ?? "Unknown App"
+        if isSensitive(app: frontmostAppName, title: "") {
+            return emptyCapture(app: "Sensitive App", title: "", reason: "sensitive_window")
+        }
 
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
@@ -47,7 +51,7 @@ final class ScreenCaptureService {
                 $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
             }) else {
                 return emptyCapture(
-                    app: frontmost.localizedName ?? "Unknown App",
+                    app: frontmostAppName,
                     title: "",
                     reason: "no_frontmost_window"
                 )
@@ -91,7 +95,7 @@ final class ScreenCaptureService {
             )
         } catch {
             return emptyCapture(
-                app: frontmost.localizedName ?? "Unknown App",
+                app: frontmostAppName,
                 title: "",
                 reason: "capture_failed"
             )
