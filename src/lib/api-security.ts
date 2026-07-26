@@ -35,6 +35,7 @@ const DEVICE_PATHS = [
     '/api/guardian/events',
     '/api/guardian/state',
     '/api/extension/tasks',
+    '/api/focus-copilot/turn',
     '/api/voice/livekit/config',
     '/api/voice/livekit/token',
     '/api/voice/push-to-talk',

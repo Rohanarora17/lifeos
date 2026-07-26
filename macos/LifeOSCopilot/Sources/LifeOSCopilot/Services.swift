@@ -1,56 +1,127 @@
 import AppKit
 import AVFoundation
 import Foundation
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 @MainActor
 final class ScreenCaptureService {
-    func captureMainDisplayJpegBase64() -> String? {
-        guard let image = CGDisplayCreateImage(CGMainDisplayID()) else { return nil }
-        let bitmap = NSBitmapImageRep(cgImage: image)
-        guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.72]) else { return nil }
-        return data.base64EncodedString()
+    struct WindowCapture {
+        let base64Jpeg: String?
+        let app: String
+        let title: String
+        let width: Double
+        let height: Double
+        let cursorX: Double
+        let cursorY: Double
+        let privacyReason: String?
+    }
+
+    private let sensitivePatterns = [
+        "1password", "bitwarden", "lastpass", "keychain access",
+        "passwords", "authenticator", "lifeos copilot", "lifeoscopilot", "lifeos"
+    ]
+
+    func captureFrontmostWindow() async -> WindowCapture {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
+            return emptyCapture(app: "Unknown App", title: "", reason: "no_frontmost_application")
+        }
+
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                true,
+                onScreenWindowsOnly: true
+            )
+            let candidates = content.windows.filter { window in
+                window.owningApplication?.processID == frontmost.processIdentifier
+                    && window.frame.width >= 100
+                    && window.frame.height >= 100
+            }
+            guard let window = candidates.max(by: {
+                $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+            }) else {
+                return emptyCapture(
+                    app: frontmost.localizedName ?? "Unknown App",
+                    title: "",
+                    reason: "no_frontmost_window"
+                )
+            }
+
+            let appName = window.owningApplication?.applicationName
+                ?? frontmost.localizedName
+                ?? "Unknown App"
+            let title = window.title ?? ""
+            if isSensitive(app: appName, title: title) {
+                return emptyCapture(app: appName, title: title, reason: "sensitive_window")
+            }
+
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            let scale = min(1.0, 1_600.0 / max(window.frame.width, 1))
+            configuration.width = max(1, Int(window.frame.width * scale))
+            configuration.height = max(1, Int(window.frame.height * scale))
+            configuration.showsCursor = false
+            configuration.ignoreShadowsSingleWindow = true
+
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            )
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            let jpeg = bitmap.representation(
+                using: .jpeg,
+                properties: [.compressionFactor: 0.72]
+            )
+            let cursor = CGEvent(source: nil)?.location ?? .zero
+            return WindowCapture(
+                base64Jpeg: jpeg?.base64EncodedString(),
+                app: appName,
+                title: title,
+                width: Double(window.frame.width),
+                height: Double(window.frame.height),
+                cursorX: max(0, Double(cursor.x - window.frame.origin.x)),
+                cursorY: max(0, Double(cursor.y - window.frame.origin.y)),
+                privacyReason: nil
+            )
+        } catch {
+            return emptyCapture(
+                app: frontmost.localizedName ?? "Unknown App",
+                title: "",
+                reason: "capture_failed"
+            )
+        }
     }
 
     func frontmostApp() -> (app: String, title: String) {
-        let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown App"
-        return (app, "")
-    }
-
-    func currentScreenSize() -> (width: Double, height: Double) {
-        let frame = NSScreen.main?.frame ?? .zero
-        return (Double(frame.width), Double(frame.height))
-    }
-
-    func cursorPoint() -> (x: Double, y: Double) {
-        let point = NSEvent.mouseLocation
-        let height = NSScreen.main?.frame.height ?? 0
-        return (Double(point.x), Double(max(0, height - point.y)))
-    }
-}
-
-@MainActor
-final class ClipboardSelectionService {
-    func captureSelectedText() -> String {
-        let pasteboard = NSPasteboard.general
-        let original = pasteboard.string(forType: .string)
-
-        let source = CGEventSource(stateID: .combinedSessionState)
-        let down = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
-
-        Thread.sleep(forTimeInterval: 0.12)
-        let selected = pasteboard.string(forType: .string) ?? ""
-
-        pasteboard.clearContents()
-        if let original {
-            pasteboard.setString(original, forType: .string)
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            return ("Unknown App", "")
         }
-        return selected.trimmingCharacters(in: .whitespacesAndNewlines)
+        let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] ?? []
+        let title = windows.first {
+            ($0[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier
+                && ($0[kCGWindowLayer as String] as? Int) == 0
+        }?[kCGWindowName as String] as? String ?? ""
+        return (app.localizedName ?? "Unknown App", title)
+    }
+
+    private func isSensitive(app: String, title: String) -> Bool {
+        let value = "\(app) \(title)".lowercased()
+        return sensitivePatterns.contains { value.contains($0) }
+    }
+
+    private func emptyCapture(app: String, title: String, reason: String) -> WindowCapture {
+        WindowCapture(
+            base64Jpeg: nil,
+            app: app,
+            title: title,
+            width: 0,
+            height: 0,
+            cursorX: 0,
+            cursorY: 0,
+            privacyReason: reason
+        )
     }
 }
 
@@ -87,13 +158,29 @@ final class AudioRecorderService: NSObject, AVAudioRecorderDelegate {
 
 @MainActor
 final class LifeOSAPIClient {
-    var serverBase = URL(string: "http://localhost:3000")!
+    var serverBase: URL
+    private let deviceToken: String?
+
+    init() {
+        let environment = ProcessInfo.processInfo.environment
+        serverBase = URL(
+            string: environment["LIFEOS_SERVER_URL"] ?? "http://localhost:3000"
+        )!
+        deviceToken = environment["LIFEOS_DEVICE_TOKEN"]
+    }
+
+    private func authorize(_ request: inout URLRequest) {
+        if let deviceToken, !deviceToken.isEmpty {
+            request.addValue("Bearer \(deviceToken)", forHTTPHeaderField: "Authorization")
+        }
+    }
 
     func heartbeat() async throws -> NativeHeartbeatResponse {
         let url = serverBase.appendingPathComponent("/api/native/ingest")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: ["kind": "capture_heartbeat"])
         let (data, _) = try await URLSession.shared.data(for: request)
         return try JSONDecoder().decode(NativeHeartbeatResponse.self, from: data)
@@ -104,6 +191,7 @@ final class LifeOSAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "kind": "app_dwell",
             "sessionId": sessionId,
@@ -118,6 +206,7 @@ final class LifeOSAPIClient {
         let url = serverBase.appendingPathComponent("/api/focus-copilot/turn")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        authorize(&request)
 
         if let audioURL {
             let boundary = "LifeOSBoundary-\(UUID().uuidString)"

@@ -6,7 +6,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let api = LifeOSAPIClient()
     private let capture = ScreenCaptureService()
-    private let selection = ClipboardSelectionService()
     private let recorder = AudioRecorderService()
     private let overlay = OverlayWindow()
     private let speaker = AVSpeechSynthesizer()
@@ -20,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "LifeOS"
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Ask About Selection", action: #selector(askAboutSelection), keyEquivalent: "g"))
+        menu.addItem(NSMenuItem(title: "Ask About Window", action: #selector(askAboutWindow), keyEquivalent: "g"))
         menu.addItem(NSMenuItem(title: "Toggle Push To Talk", action: #selector(togglePushToTalk), keyEquivalent: " "))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
@@ -56,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if flags.contains([.command, .shift]), event.keyCode == 49 {
             togglePushToTalk()
         } else if flags.contains([.command, .shift]), event.charactersIgnoringModifiers?.lowercased() == "g" {
-            askAboutSelection()
+            askAboutWindow()
         } else if event.keyCode == 53 {
             overlay.hideOverlay()
         }
@@ -77,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func askAboutSelection() {
+    @objc private func askAboutWindow() {
         Task { await runGuidanceTurn(audioURL: nil) }
     }
 
@@ -109,23 +108,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let appInfo = capture.frontmostApp()
-        let selectedText = selection.captureSelectedText()
-        let screenshot = capture.captureMainDisplayJpegBase64()
-        let screenSize = capture.currentScreenSize()
-        let cursor = capture.cursorPoint()
+        let windowCapture = await capture.captureFrontmostWindow()
 
         do {
             let response = try await api.sendTurn(
                 sessionId: sessionId,
-                transcript: selectedText.isEmpty ? "Explain what I am looking at in the context of my session goal." : "Explain this selected text in context.",
+                transcript: "Explain what I am looking at in the context of my session goal.",
                 audioURL: audioURL,
-                screenshotBase64: screenshot,
-                selectedText: selectedText,
-                app: appInfo.app,
-                title: appInfo.title,
-                screenSize: screenSize,
-                cursorPoint: cursor
+                screenshotBase64: windowCapture.base64Jpeg,
+                selectedText: nil,
+                app: windowCapture.app,
+                title: windowCapture.title,
+                screenSize: (windowCapture.width, windowCapture.height),
+                cursorPoint: (windowCapture.cursorX, windowCapture.cursorY)
             )
             await MainActor.run {
                 overlay.show(callouts: response.callouts, message: response.spokenAnswer ?? response.answer)
