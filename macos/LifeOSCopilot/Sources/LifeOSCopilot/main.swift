@@ -1,6 +1,11 @@
 import AppKit
 import AVFoundation
 
+private func copilotLog(_ message: String) {
+    let line = "[LifeOSCopilot] \(message)\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -95,16 +100,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             app: windowCapture.app,
                             title: windowCapture.title
                         )
+                        copilotLog("Vision capture uploaded")
                     } else if windowCapture.privacyReason == "sensitive_window" {
                         try await api.sendSensitivitySkip(
                             sessionId: sessionId,
                             reason: "sensitive_window"
                         )
+                        copilotLog("Vision capture privacy-skipped")
+                    } else {
+                        copilotLog("Vision capture unavailable: \(windowCapture.privacyReason ?? "unknown")")
                     }
                 }
             } catch {
                 nextDelayMs = 5_000
-                print("[LifeOSCopilot] Vision loop error: \(error.localizedDescription)")
+                copilotLog("Vision loop error: \(error.localizedDescription)")
             }
 
             try? await Task.sleep(
