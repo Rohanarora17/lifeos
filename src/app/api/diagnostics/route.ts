@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 
 interface TimestampRow {
     observed_at?: string | null;
+    observed_end?: string | null;
     started_at?: string | null;
 }
 
@@ -36,8 +37,12 @@ export async function GET(request: NextRequest) {
     const scheduler = getSchedulerStatus();
     const guardian = getGuardianContext();
     const latestBrowserActivity = latestTimestamp(
-        'SELECT started_at FROM activities ORDER BY started_at DESC LIMIT 1',
-        'started_at',
+        `SELECT observed_end
+         FROM telemetry_events_v1
+         WHERE source = 'browser_extension'
+         ORDER BY observed_end DESC
+         LIMIT 1`,
+        'observed_end',
     );
     const latestScreenObservation = latestTimestamp(
         'SELECT observed_at FROM screen_observations ORDER BY observed_at DESC LIMIT 1',
