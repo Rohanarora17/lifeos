@@ -254,7 +254,11 @@ async function main() {
   if (!serverUrl || !apiToken || !deviceToken) {
     throw new Error('LIFEOS_SERVER_URL, LIFEOS_API_TOKEN, and LIFEOS_DEVICE_TOKEN are required');
   }
-  const cases = makeCases();
+  const requestedLimit = Number(process.env.LIFEOS_BENCHMARK_LIMIT ?? 0);
+  const allCases = makeCases();
+  const cases = Number.isInteger(requestedLimit) && requestedLimit > 0
+    ? allCases.slice(0, requestedLimit)
+    : allCases;
   const results = [];
   const staticResults = [];
   const startedAt = new Date().toISOString();
