@@ -3,6 +3,13 @@
 let API_BASE = 'http://localhost:3000/api';
 let APP_URL = 'http://localhost:3000';
 
+async function apiFetch(url, options = {}) {
+  const { apiKey } = await chrome.storage.local.get('apiKey');
+  const headers = new Headers(options.headers || {});
+  if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`);
+  return fetch(url, { ...options, headers });
+}
+
 chrome.storage.local.get('apiUrl', (data) => {
   if (data.apiUrl) {
     API_BASE = data.apiUrl;
@@ -164,8 +171,8 @@ async function renderFocusStarter(el) {
   let goals = [], tasks = [], insights = null;
   try {
     const [stateRes, insightsRes] = await Promise.all([
-      fetch(`${API_BASE}/guardian/state`),
-      fetch(`${API_BASE}/guardian/insights`),
+      apiFetch(`${API_BASE}/guardian/state`),
+      apiFetch(`${API_BASE}/guardian/insights`),
     ]);
     const data = await stateRes.json();
     insights = insightsRes.ok ? await insightsRes.json() : null;
@@ -244,7 +251,7 @@ async function renderFocusStarter(el) {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/guardian/session/start`, {
+      const res = await apiFetch(`${API_BASE}/guardian/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -340,7 +347,7 @@ async function loadData() {
   try {
     // Fetch dashboard data + current activity in parallel
     const [dashRes, activityInfo] = await Promise.all([
-      fetch(`${API_BASE}/dashboard`).then(r => r.json()),
+      apiFetch(`${API_BASE}/dashboard`).then(r => r.json()),
       new Promise((resolve) => chrome.runtime.sendMessage({ type: 'GET_CURRENT_ACTIVITY' }, resolve)),
     ]);
 

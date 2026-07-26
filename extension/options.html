@@ -81,6 +81,17 @@
             different computers.</p>
     </div>
 
+    <div class="group">
+        <label for="trackingWakeHour">Tracking starts (hour, 0-23)</label>
+        <input type="number" id="trackingWakeHour" min="0" max="23" step="1" />
+    </div>
+
+    <div class="group">
+        <label for="trackingSleepHour">Tracking stops (hour, 0-23)</label>
+        <input type="number" id="trackingSleepHour" min="0" max="23" step="1" />
+        <p style="font-size: 11px; color: #666;">Low-detail intervals are collected only inside this waking window.</p>
+    </div>
+
     <button id="saveBtn">Save Settings</button>
     <div id="status">Settings saved.</div>
 

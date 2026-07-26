@@ -5,6 +5,13 @@ const errorScreen = document.getElementById('error-screen');
 let API_BASE = 'http://localhost:3000/api';
 let APP_URL = 'http://localhost:3000';
 
+async function apiFetch(url, options = {}) {
+    const { apiKey } = await chrome.storage.local.get('apiKey');
+    const headers = new Headers(options.headers || {});
+    if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`);
+    return fetch(url, { ...options, headers });
+}
+
 chrome.storage.local.get('apiUrl', (data) => {
     if (data.apiUrl) {
         API_BASE = data.apiUrl;
@@ -17,7 +24,7 @@ chrome.storage.local.get('apiUrl', (data) => {
 
 async function checkHealth() {
     try {
-        const res = await fetch(`${API_BASE}/dashboard`);
+        const res = await apiFetch(`${API_BASE}/dashboard`);
         if (res.ok) {
             if (!iframe.src || iframe.src === 'about:blank' || document.location.href === iframe.src) {
                 iframe.src = APP_URL + '/extension/sidebar';
