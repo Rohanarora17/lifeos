@@ -27,6 +27,9 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | PROD-PRIVACY-001 | Mac Mini | Server-side sensitive-app rejection probe | 2026-07-27 | Synthetic app and title only |
 | PROD-REDACT-001 | Mac Mini | Incident-row and log redaction verification | 2026-07-27 | Counts and integrity result only |
 | REPO-VISION-002 | Committed repository | Decoded-pixel hash and strict assessment tests | 2026-07-27 | Generated pixel fixtures only |
+| DEVICE-VISION-003 | MacBook and Mac Mini | Bundled TextEdit capture and inference smoke test | 2026-07-27 | Synthetic document, aggregate score, and app label only; frame excluded |
+| DEVICE-TCC-001 | MacBook | Native bundle identity and Screen Recording authorization | 2026-07-27 | Bundle identifier and signing class only |
+| PROD-FRESH-002 | Mac Mini | Post-session authenticated diagnostics | 2026-07-27 | Freshness states and capability flags only |
 
 ## Reproduction Constraints
 
