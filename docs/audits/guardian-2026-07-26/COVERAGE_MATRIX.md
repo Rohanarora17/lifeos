@@ -15,7 +15,7 @@ real-device result.
 | Chat | Evidence-aware answers, feedback persistence | Pending | Pending |
 | Extension sidebar | Timed task progress, session linkage | Pending | Pending |
 | Goals | Timed task roll-up and completion | Pending | Pending |
-| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, benign capture/inference, sensitive-window denial, and controlled 60-frame vision benchmark passed |
+| Guardian | Session lifecycle, screen context, override, reconnect | Partial | Partial: heartbeat, capture/inference, sensitive-window denial, controlled 60-frame benchmark, and 40-case real-app matrix passed |
 | Habits | CRUD, day boundaries | Pending | Pending |
 | Insights | Claim evidence, confidence, expiry, correction | Pending | Pending |
 | Knowledge graph | Provenance and deletion | Pending | Pending |
@@ -61,9 +61,9 @@ current 74-route inventory by the route audit script.
 
 | Capability | Gate | Status |
 | --- | --- | --- |
-| Screen category | Macro-F1 at least 0.85 over at least 60 labelled captures | Pass on controlled synthetic corpus: 1.00 over 60 |
-| Task alignment | Mean absolute error at most 10 points | Pass on controlled synthetic corpus: 6.35 |
-| Screen privacy | Zero sensitive captures | Pass for fixture corpus and repaired denial regression |
+| Screen category | Macro-F1 at least 0.85 over at least 60 labelled captures | Pass: 1.00 over 60 controlled browser cases and 1.00 over 40 diverse real-app cases |
+| Task alignment | Mean absolute error at most 10 points | Pass: 6.35 controlled and 4.25 diverse real-app MAE |
+| Screen privacy | Zero sensitive captures | Pass: 4 of 4 communication apps denied before capture |
 | Static screen handling | Zero static screens classified as active creation | Pass: 0 over 12 exact repeats |
 | PTT transcription | Word error rate at most 15% in quiet conditions | Pending |
 | Realtime first audio | p95 at most 1.5 seconds | Pending |
@@ -72,8 +72,8 @@ current 74-route inventory by the route audit script.
 | Claim freshness | Zero expired claims driving decisions | Pending |
 | Correction retention | 100% across all listed consumers | Pending |
 
-The vision results use real ScreenCaptureKit transport and the production API,
-but controlled browser fixtures. Diverse real-application accuracy remains
+The real-app matrix uses ScreenCaptureKit and live model inference against an
+isolated database. Terminal, lock/sleep, and multi-display cases remain
 unverified.
 
 ## Longitudinal Study

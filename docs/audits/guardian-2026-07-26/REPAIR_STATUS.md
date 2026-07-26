@@ -26,7 +26,7 @@ session on 2026-07-27.
 
 - Full browser interval matrix across lock, sleep, restart, and network loss
 - Microphone, Accessibility, and Input Monitoring permissions
-- Diverse labelled real-application captures beyond the controlled browser corpus
+- User-controlled Terminal, lock/sleep, and multi-display capture scenarios
 - Indian-English PTT word error rate and realtime latency/interruption/reconnect gates
 - Live Vertex model discovery and Gemini Live canary promotion
 - Full 18-page and current API-route Playwright workflow suite
@@ -43,6 +43,7 @@ session on 2026-07-27.
 | P1 | Claim/correction propagation must be extended from Guardian insights to planner, notifications, chat, rewards, and analytics. |
 | P1 | Vision passed the controlled 60-frame benchmark, but still needs a diverse real-application matrix before population-level accuracy claims. |
 | P1 | Synthetic Guardian sessions need an enforced non-learning storage attribute or disposable database routing; descriptive session context alone does not prevent personalization contamination. |
+| P1 | A zero-row disposable run inferred a severe one-minute-abort history from rapidly ended audit sessions and used it in later decisions; audit provenance must be excluded from memory, UIL, policy, and session-intent consumers. |
 | P2 | The native app is ad-hoc signed because no Apple code-signing identity is installed; explicit binary updates can require Screen Recording reauthorization. |
 | P2 | The extension iframe sidebar needs an authenticated embedded-session design; its health request is authenticated, but iframe cookie behavior is browser-policy dependent. |
 | P2 | Log rotation is deployment-triggered until a dedicated periodic launchd job is installed. |
@@ -110,6 +111,14 @@ SSH evidence was collected on 2026-07-26 without reading secret values.
   orphaned screen/telemetry rows.
 - The final benchmark code was deployed at
   `f78e971955b5d200ec539003c11863212ce2a036`.
+- A 40-case matrix across six real applications passed with macro-F1 1.00,
+  alignment MAE 4.25, zero capture/title/schema failures, and four of four
+  communication apps denied before pixels were acquired.
+- The native app now enforces expected app/window metadata inside the
+  ScreenCaptureKit provider. The installed bundle passed a deliberate mismatch
+  probe with no frame created and its LaunchAgent remained running.
+- Terminal, lock/sleep, and multi-display behavior remain unverified. The test
+  Mac had one built-in display.
 
 ## Honest Completion Estimate
 
@@ -121,13 +130,13 @@ These percentages describe evidence-backed readiness, not feature marketing.
 | Guardian runtime | 48% |
 | Push-to-talk voice | 55% |
 | Realtime voice | 15% |
-| Vision | 78% |
+| Vision | 88% |
 | Intelligence | 38% |
 | Personalization propagation | 40% |
 | Security | 88% |
 | Deployment and operations | 85% |
 | General product workflows | 55% |
 
-Weighted overall readiness: **58%**. The largest remaining portion is
+Weighted overall readiness: **60%**. The largest remaining portion is
 real-device validation, cross-surface integration, legacy adapter retirement,
 and the elapsed 14-day study.

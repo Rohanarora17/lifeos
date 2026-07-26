@@ -33,6 +33,9 @@ text, clipboard text, calendar descriptions, or full personalization payloads.
 | DEVICE-VISION-004 | MacBook and Mac Mini | Initial 60-frame controlled native benchmark | 2026-07-27 | Aggregate metrics and synthetic labels only; no frames retained |
 | DEVICE-VISION-005 | MacBook and Mac Mini | Repaired 60-frame plus 12-repeat benchmark | 2026-07-27 | Aggregate metrics and synthetic labels only; no frames retained |
 | PROD-CLEANUP-001 | Mac Mini | Exact audit-session cleanup and SQLite verification | 2026-07-27 | Aggregate deleted-row counts and integrity result only |
+| DEVICE-VISION-006 | MacBook | 40-case diverse real-application matrix on disposable database | 2026-07-27 | Aggregate labels, scores, app names, and synthetic titles only; no frames retained |
+| DEVICE-PRIVACY-002 | MacBook | Installed native expected-window and communication-app denial probes | 2026-07-27 | Rule names and aggregate results only; no frames retained |
+| AUDIT-INTEL-001 | Disposable database | Audit-session personalization contamination trace | 2026-07-27 | Unsupported narrative summarized; generated text and session contents excluded |
 
 ## Reproduction Constraints
 

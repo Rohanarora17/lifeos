@@ -94,3 +94,47 @@ matching audit sessions and zero orphaned screen or telemetry rows.
   explicit non-learning session attribute in storage and downstream queries.
 - Make deployment atomic. Updating `.next` while the old server was running
   caused a transient `ChunkLoadError` during this run.
+
+## Diverse Real-Application Matrix
+
+A second matrix ran on 2026-07-27 against a never-before-used disposable
+database. Before capture, the native provider required the expected app and
+window title to match. A mismatch returned a skip result before ScreenCaptureKit
+acquired pixels.
+
+The final balanced corpus contained 40 labelled captures, eight for each
+category, across Cursor, Preview, QuickTime Player, Microsoft Edge, Google
+Chrome, and Brave Browser. It covered code and notes creation, interactive
+research, read-only papers, productive tutorial videos, paused/idle screens,
+and unrelated entertainment.
+
+| Measure | Result | Gate |
+| --- | ---: | --- |
+| Labelled captures | 40 | Pass |
+| Macro-F1 | 1.0000 | Pass |
+| Alignment MAE | 4.25 | Pass |
+| Per-class precision/recall | 1.0000 | Pass |
+| Capture failures | 0 | Pass |
+| App/title mismatches | 0 | Pass |
+| Invalid assessments | 0 | Pass |
+| Communication-app denials | 4 of 4 | Pass |
+| Sensitive frames produced | 0 | Pass |
+| Raw frames retained | 0 | Pass |
+
+Intermediate runs were retained as aggregate local evidence only. They exposed
+non-deterministic TextEdit, Terminal, Preview, and QuickTime window activation.
+The final matrix excludes TextEdit and Terminal from quantitative claims,
+launches each video in a fresh audit-owned QuickTime process, narrows Preview to
+one reader case, and uses isolated browser processes for the remaining labels.
+Terminal, lock/sleep transitions, and multi-display behavior remain unverified.
+The test Mac had one built-in display during collection.
+
+The installed `LifeOSCopilot.app` was updated with the pre-capture expectation
+guard. A deliberate wrong-app probe returned `unexpected_frontmost_app`, wrote
+no image, and left the LaunchAgent running.
+
+The disposable run also exposed an intelligence-boundary defect. Rapidly ended
+audit sessions caused later session decisions to describe a severe history of
+one-minute aborts, despite the database starting with zero Guardian sessions.
+Future audit sessions need an enforced non-learning provenance flag that all
+personalization and memory consumers honor.
