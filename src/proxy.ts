@@ -2,13 +2,17 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import {
     authorizeApiRequest,
+    constantTimeTokenEqual,
     isAllowedApiOrigin,
     LIFEOS_SESSION_COOKIE,
 } from '@/lib/api-security';
 
-const PUBLIC_API_PATHS = new Set(['/api/auth/session']);
+const PUBLIC_API_PATHS = new Set([
+    '/api/auth/session',
+    '/api/calendar/google/callback',
+]);
 const ALLOW_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
-const ALLOW_HEADERS = 'Content-Type, Authorization, X-LifeOS-Device-Token, X-Idempotency-Key';
+const ALLOW_HEADERS = 'Content-Type, Authorization, X-LifeOS-Device-Token, X-LifeOS-Reauth-Token, X-Idempotency-Key';
 
 function corsHeaders(request: NextRequest) {
     const requestOrigin = request.headers.get('origin');
@@ -62,6 +66,21 @@ export default function proxy(request: NextRequest) {
         return NextResponse.json(
             { error: authorization.reason },
             { status: authorization.status, headers },
+        );
+    }
+
+    if (
+        pathname.startsWith('/api/admin/')
+        && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)
+        && authorization.kind !== 'development'
+        && !constantTimeTokenEqual(
+            request.headers.get('x-lifeos-reauth-token'),
+            process.env.LIFEOS_API_TOKEN,
+        )
+    ) {
+        return NextResponse.json(
+            { error: 'reauthentication_required' },
+            { status: 403, headers },
         );
     }
 
