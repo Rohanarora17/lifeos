@@ -7,6 +7,54 @@ private func copilotLog(_ message: String) {
 }
 
 @MainActor
+private func runOneShotCaptureIfRequested() -> Bool {
+    let arguments = CommandLine.arguments
+    guard let flagIndex = arguments.firstIndex(of: "--capture-once") else {
+        return false
+    }
+    guard arguments.indices.contains(flagIndex + 1) else {
+        FileHandle.standardError.write(Data("Missing --capture-once output path\n".utf8))
+        return true
+    }
+
+    let outputURL = URL(fileURLWithPath: arguments[flagIndex + 1])
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    Task { @MainActor in
+        let capture = await ScreenCaptureService().captureFrontmostWindow()
+        var response: [String: Any] = [
+            "status": "skipped",
+            "app": capture.app,
+            "title": capture.title,
+            "privacyReason": capture.privacyReason ?? NSNull(),
+        ]
+
+        if
+            let base64Jpeg = capture.base64Jpeg,
+            let jpeg = Data(base64Encoded: base64Jpeg)
+        {
+            do {
+                try jpeg.write(to: outputURL, options: .atomic)
+                response["status"] = "captured"
+                response["width"] = capture.width
+                response["height"] = capture.height
+            } catch {
+                response["status"] = "write_failed"
+                response["error"] = error.localizedDescription
+            }
+        }
+
+        if let json = try? JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]) {
+            FileHandle.standardOutput.write(json)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+        NSApp.terminate(nil)
+    }
+    app.run()
+    return true
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let api = LifeOSAPIClient()
@@ -196,8 +244,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+if !runOneShotCaptureIfRequested() {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    app.run()
+}
