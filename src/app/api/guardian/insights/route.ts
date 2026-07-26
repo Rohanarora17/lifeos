@@ -5,6 +5,11 @@ import { getDb } from '@/lib/db';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendations';
+import {
+  buildAssessmentClaim,
+  canDriveDecision,
+  containsRelativeDateLanguage,
+} from '@/lib/assessment-claim';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,11 +42,66 @@ export async function GET() {
       } : null,
     });
     const recommendedTasks = getAdaptiveTaskRecommendations(personalization, 3);
+    const db = getDb();
+    const profileEvidence = db.prepare(`
+      SELECT
+        COUNT(*) AS sample_count,
+        COUNT(DISTINCT date(completed_at)) AS distinct_days,
+        MIN(completed_at) AS observed_start,
+        MAX(completed_at) AS observed_end
+      FROM guardian_session_summaries
+    `).get() as {
+      sample_count: number;
+      distinct_days: number;
+      observed_start: string | null;
+      observed_end: string | null;
+    };
+    const computedAt = new Date(profile.synthesizedAt || 0).toISOString();
+    const expiresAt = new Date((profile.synthesizedAt || 0) + 24 * 60 * 60 * 1_000).toISOString();
+    const commonClaim = {
+      sampleSize: profile.version === 0 ? 0 : profileEvidence.sample_count,
+      distinctDays: profile.version === 0 ? 0 : profileEvidence.distinct_days,
+      evidenceReferences: profile.version === 0
+        ? []
+        : ['guardian_session_summaries:aggregate'],
+      observationStart: profileEvidence.observed_start,
+      observationEnd: profileEvidence.observed_end,
+      computedAt,
+      expiresAt,
+      algorithmVersion: 'guardian-insights-claims-v1',
+      modelVersion: profile.version === 0 ? null : `uil-profile-v${profile.version}`,
+      userStance: 'unreviewed' as const,
+    };
+    const focusTrendClaim = buildAssessmentClaim({
+      ...commonClaim,
+      id: 'focus_trend',
+      value: profile.focusTrend,
+      valueValid: ['improving', 'declining', 'stable'].includes(profile.focusTrend),
+      strength: 'decision',
+    });
+    const focusWindowClaim = buildAssessmentClaim({
+      ...commonClaim,
+      id: 'next_best_focus_window',
+      value: profile.nextBestFocusWindow || null,
+      strength: 'decision',
+    });
+    const coachingStyleClaim = buildAssessmentClaim({
+      ...commonClaim,
+      id: 'preferred_coaching_style',
+      value: profile.preferredCoachingStyle,
+      valueValid: ['direct', 'balanced', 'gentle'].includes(profile.preferredCoachingStyle),
+      strength: 'identity',
+    });
+    const profileFresh = Date.now() < Date.parse(expiresAt);
+    const supportedNarratives = profileFresh && canDriveDecision(focusTrendClaim)
+      ? (profile.coachingInsights || [])
+        .filter(item => !containsRelativeDateLanguage(item))
+        .slice(0, 3)
+      : [];
 
     // Today's habit completion
     let habitRate: number | null = null;
     try {
-      const db = getDb();
       const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
       const row = db.prepare(`
         SELECT
@@ -77,11 +137,26 @@ export async function GET() {
     return NextResponse.json({
       session: sessionData,
       profile: {
-        coachingInsights: (profile.coachingInsights ?? []).slice(0, 3),
-        nextBestFocusWindow: profile.nextBestFocusWindow || null,
-        focusTrend: profile.focusTrend || 'stable',
-        preferredCoachingStyle: profile.preferredCoachingStyle || null,
-        weeklyProgressSummary: profile.weeklyProgressSummary || null,
+        coachingInsights: supportedNarratives,
+        nextBestFocusWindow: canDriveDecision(focusWindowClaim)
+          ? focusWindowClaim.value
+          : null,
+        focusTrend: canDriveDecision(focusTrendClaim)
+          ? focusTrendClaim.value
+          : null,
+        preferredCoachingStyle: canDriveDecision(coachingStyleClaim)
+          ? coachingStyleClaim.value
+          : null,
+        weeklyProgressSummary: profileFresh
+          && canDriveDecision(focusTrendClaim)
+          && !containsRelativeDateLanguage(profile.weeklyProgressSummary)
+            ? profile.weeklyProgressSummary
+            : null,
+        claims: {
+          focusTrend: focusTrendClaim,
+          nextBestFocusWindow: focusWindowClaim,
+          preferredCoachingStyle: coachingStyleClaim,
+        },
       },
       habits: {
         completionRate: habitRate,
