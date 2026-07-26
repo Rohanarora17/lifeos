@@ -59,6 +59,13 @@ if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
     <string>1</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LifeOS connects to your private Mac Mini server over your local Tailscale network.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>LifeOS uses the microphone only when you start push-to-talk guidance.</string>
 </dict>
