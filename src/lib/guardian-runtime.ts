@@ -5,8 +5,8 @@ import { logGoalTime } from './goal-health';
 import { propagateMastery } from './graph';
 import { speak } from './tts';
 import { getDayBriefing, generateOpeningLine, updateGuardianSemanticProfile } from './longitudinal-engine';
-import { getGenAI, classifyActivity, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { tryGetGenAI, classifyActivity, generateWithFallback } from './ai';
+import { MODEL_PRO } from './models';
 import { getActiveGuardianPolicyBundle, recordGuardianEvalRun } from './guardian-optimizer';
 import { resolveSessionIntent } from './session-intent-resolver';
 import { generateDynamicPolicy } from './dynamic-policy-generator';
@@ -385,33 +385,78 @@ function persistTick(session: GuardianState, decision: GuardianDecision) {
   }
 }
 
-function persistOverride(request: OverrideRequest, decision: OverrideDecision) {
-  try {
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO guardian_override_requests (
-        session_id,
-        url,
-        title,
-        reason,
-        requested_minutes,
-        approved,
-        decision_reason,
-        explainability
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+function overrideIdempotencyKey(request: OverrideRequest) {
+  return request.idempotencyKey || [
+    request.sessionId,
+    getDomain(request.url) || request.url,
+    request.reason.trim().toLowerCase().replace(/\s+/g, ' '),
+    Math.max(1, Math.min(30, request.requestedMinutes || 10)),
+  ].join('|');
+}
+
+type OverrideClaim =
+  | { state: 'claimed'; id: number; key: string }
+  | { state: 'completed'; decision: OverrideDecision }
+  | { state: 'in_progress' };
+
+function claimOverride(request: OverrideRequest): OverrideClaim {
+  const db = getDb();
+  const key = overrideIdempotencyKey(request);
+  const existing = db.prepare(`
+    SELECT id, decision_json
+    FROM guardian_override_requests
+    WHERE idempotency_key = ?
+  `).get(key) as { id: number; decision_json: string | null } | undefined;
+
+  if (existing?.decision_json) {
+    try {
+      return { state: 'completed', decision: JSON.parse(existing.decision_json) as OverrideDecision };
+    } catch {
+      console.warn('[GuardianRuntime] Invalid stored override decision', existing.id);
+    }
+  }
+  if (existing) return { state: 'in_progress' };
+
+  const result = db.prepare(`
+    INSERT INTO guardian_override_requests (
+      session_id, url, title, reason, requested_minutes, approved,
+      decision_reason, explainability, idempotency_key
+    ) VALUES (?, ?, ?, ?, ?, 0, 'Override review in progress', 'Awaiting bounded override review.', ?)
+  `).run(
+    request.sessionId,
+    request.url,
+    request.title || null,
+    request.reason,
+    request.requestedMinutes ?? null,
+    key,
+  );
+  return { state: 'claimed', id: Number(result.lastInsertRowid), key };
+}
+
+function finalizeOverrideClaim(id: number, request: OverrideRequest, decision: OverrideDecision) {
+  const db = getDb();
+  db.transaction(() => {
+    const outcome = db.prepare(`
+      INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, helpful)
+      VALUES (?, ?, ?, NULL)
     `).run(
-      request.sessionId,
-      request.url,
-      request.title || null,
-      request.reason,
-      request.requestedMinutes ?? null,
+      'guardian_override',
+      JSON.stringify({ sessionId: request.sessionId, url: getDomain(request.url) || request.url, requestedMinutes: request.requestedMinutes ?? null }),
+      decision.approved ? 'approved' : 'denied',
+    );
+    db.prepare(`
+      UPDATE guardian_override_requests
+      SET approved = ?, decision_reason = ?, explainability = ?, decision_json = ?, outcome_id = ?
+      WHERE id = ?
+    `).run(
       decision.approved ? 1 : 0,
       decision.reason,
-      decision.explainability
+      decision.explainability,
+      JSON.stringify(decision),
+      Number(outcome.lastInsertRowid),
+      id,
     );
-  } catch (error) {
-    console.error('[GuardianRuntime] Failed to persist override', error);
-  }
+  })();
 }
 
 function persistSessionSummary(session: GuardianState) {
@@ -521,7 +566,7 @@ async function generateSessionReflection(session: GuardianState) {
 
     const focusQuality = adaptiveFocusQuality(averageFocusScore);
 
-    const ai = getGenAI();
+    const ai = tryGetGenAI();
     if (!ai) return;
 
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
@@ -538,7 +583,7 @@ Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distract
 
 ${uilContext}`;
 
-    const result = await generateWithFallback(ai, { model: MODEL_FLASH, contents: prompt });
+    const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: prompt });
     const reflectionText = (result.text ?? '').trim().slice(0, 400);
 
     db.prepare(`
@@ -561,7 +606,7 @@ function buildSpeechText(session: GuardianState, kind: GuardianDecision['type'])
   const site = getDomain(session.currentUrl) || 'that site';
 
   const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
-  const useLLM = policy.prompts.interventionPrompt && getGenAI();
+  const useLLM = policy.prompts.interventionPrompt && tryGetGenAI();
   if (useLLM) {
     const context = buildSpeechContext(session, kind, score, elapsed, remaining, site);
     void generateLLMSpeech(session, context, kind);
@@ -773,11 +818,11 @@ async function generateLLMSpeech(
   context: string,
   kind: GuardianDecision['type'],
 ): Promise<void> {
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (!ai) return;
   try {
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: `You are a focus coach. Generate ONE short spoken sentence for the user right now. Be specific, not generic. No filler phrases. Maximum 20 words.
 
 ${context}
@@ -2231,6 +2276,18 @@ function getAdaptiveOverrideFollowUpDelayMinutes(input: {
 }
 
 export async function adjudicateOverride(request: OverrideRequest): Promise<OverrideDecision> {
+  const claim = claimOverride(request);
+  if (claim.state === 'completed') return claim.decision;
+  if (claim.state === 'in_progress') {
+    return {
+      approved: false,
+      reason: 'Override review already in progress',
+      explainability: 'The same bounded override request is already being reviewed. Wait for that decision instead of retrying it.',
+      ttlMinutes: Math.max(1, Math.min(30, request.requestedMinutes || 10)),
+      reviewedAt: nowIso(),
+    };
+  }
+
   const session = guardianSessions.get(request.sessionId);
   const requestedMinutes = Math.max(1, Math.min(30, request.requestedMinutes || 10));
   const urlDomain = getDomain(request.url) || request.url;
@@ -2283,11 +2340,11 @@ export async function adjudicateOverride(request: OverrideRequest): Promise<Over
     };
   }
 
-  const ai = getGenAI();
+  const ai = tryGetGenAI();
   if (ai) {
     try {
       const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
+        model: MODEL_PRO,
         contents: `Decide whether to approve this temporary browsing override during a hard study session. Return JSON only.
 Session target: ${session?.targetTitle || 'unknown'}
 URL: ${request.url}
@@ -2379,7 +2436,7 @@ JSON schema:
     url: request.url,
   });
 
-  persistOverride(request, decision);
+  finalizeOverrideClaim(claim.id, request, decision);
   return decision;
 }
 
@@ -2547,6 +2604,12 @@ function persistSoftWatch(c: SoftWatchCommitment) {
         source, reminder_sent_at, check_in_sent_at, status, locked_in_session_id, calendar_event_id, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        target_title = excluded.target_title,
+        goal_id = excluded.goal_id,
+        task_id = excluded.task_id,
+        intended_start_at = excluded.intended_start_at,
+        planned_minutes = excluded.planned_minutes,
+        source = excluded.source,
         status = excluded.status,
         reminder_sent_at = excluded.reminder_sent_at,
         check_in_sent_at = excluded.check_in_sent_at,
@@ -2786,8 +2849,29 @@ export function dismissSoftWatchCommitment(id: string): boolean {
   return true;
 }
 
-export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, newMinutes?: number): boolean {
-  const commitment = softWatchMap.get(id);
+function getSoftWatchCommitment(id: string): SoftWatchCommitment | null {
+  const cached = softWatchMap.get(id);
+  if (cached) return cached;
+
+  try {
+    const row = getDb().prepare(`
+      SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
+        intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
+        source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
+        status, locked_in_session_id as lockedInSessionId, calendar_event_id as calendarEventId, created_at as createdAt
+      FROM soft_watch_commitments
+      WHERE id = ?
+    `).get(id) as SoftWatchCommitment | undefined;
+    if (!row) return null;
+    softWatchMap.set(row.id, row);
+    return row;
+  } catch {
+    return null;
+  }
+}
+
+export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, newMinutes?: number, syncCalendar = true): boolean {
+  const commitment = getSoftWatchCommitment(id);
   if (!commitment) return false;
   commitment.intendedStartAt = newStartAt;
   if (newMinutes) commitment.plannedMinutes = newMinutes;
@@ -2799,12 +2883,40 @@ export function rescheduleSoftWatchCommitment(id: string, newStartAt: number, ne
   softWatchMap.set(id, commitment);
   persistSoftWatch(commitment);
   
-  if (commitment.calendarEventId) {
+  if (syncCalendar && commitment.calendarEventId) {
     const startTime = new Date(newStartAt);
     const endTime = new Date(newStartAt + commitment.plannedMinutes * 60_000);
     updateCalendarEvent(commitment.calendarEventId, { startTime, endTime }).catch(() => {});
   }
   return true;
+}
+
+export async function rescheduleSoftWatchCommitmentWithCalendar(
+  id: string,
+  newStartAt: number,
+  newMinutes?: number,
+): Promise<{ ok: boolean; calendarStatus: 'synced' | 'failed' | 'not_linked' }> {
+  const commitment = getSoftWatchCommitment(id);
+  if (!commitment || !rescheduleSoftWatchCommitment(id, newStartAt, newMinutes, false)) {
+    return { ok: false, calendarStatus: 'not_linked' };
+  }
+  if (!commitment.calendarEventId) {
+    return { ok: true, calendarStatus: 'not_linked' };
+  }
+
+  const startTime = new Date(newStartAt);
+  const endTime = new Date(newStartAt + commitment.plannedMinutes * 60_000);
+  const synced = await updateCalendarEvent(commitment.calendarEventId, { startTime, endTime });
+  try {
+    getDb().prepare(`
+      UPDATE planned_focus_sessions
+      SET calendar_status = ?, updated_at = datetime('now', 'localtime')
+      WHERE soft_watch_id = ? AND calendar_event_id = ?
+    `).run(synced ? 'synced' : 'failed', id, commitment.calendarEventId);
+  } catch {
+    // Standalone soft-watch commitments have no planned session row to update.
+  }
+  return { ok: true, calendarStatus: synced ? 'synced' : 'failed' };
 }
 
 function hydratePendingSoftWatchesForTarget(targetTitle: string) {

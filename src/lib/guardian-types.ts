@@ -125,6 +125,7 @@ export interface OverrideRequest {
   title?: string;
   reason: string;
   requestedMinutes?: number;
+  idempotencyKey?: string;
 }
 
 export interface OverrideDecision {

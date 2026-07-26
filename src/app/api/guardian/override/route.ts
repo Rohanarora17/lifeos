@@ -14,6 +14,7 @@ export async function POST(req: Request) {
       title: body.title,
       reason: body.reason,
       requestedMinutes: body.requestedMinutes,
+      idempotencyKey: req.headers.get('idempotency-key') || body.idempotencyKey,
     });
 
     return NextResponse.json({ success: true, decision });

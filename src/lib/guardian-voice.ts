@@ -1047,7 +1047,7 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
-    const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = await import('./guardian-runtime');
+    const { listSoftWatchCommitments, rescheduleSoftWatchCommitmentWithCalendar } = await import('./guardian-runtime');
     const comms = listSoftWatchCommitments();
     const search = intent.topic.toLowerCase();
     const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
@@ -1058,9 +1058,19 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
       return { type: 'intent_only', transcript, intent, responseText: resp };
     }
     
-    rescheduleSoftWatchCommitment(match.id, intent.intendedStartAt, intent.durationMinutes);
+    const rescheduled = await rescheduleSoftWatchCommitmentWithCalendar(match.id, intent.intendedStartAt, intent.durationMinutes);
+    if (!rescheduled.ok) {
+      const resp = `I couldn't reschedule ${match.targetTitle}. Please try again.`;
+      addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: resp };
+    }
     const dateStr = new Date(intent.intendedStartAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-    const resp = `Done. I've rescheduled ${match.targetTitle} to ${dateStr}. Calendar updated.`;
+    const calendarLine = rescheduled.calendarStatus === 'synced'
+      ? 'Calendar synced.'
+      : rescheduled.calendarStatus === 'failed'
+        ? 'LifeOS was updated, but calendar sync failed.'
+        : 'Saved in LifeOS; no linked calendar event was configured.';
+    const resp = `Done. I've rescheduled ${match.targetTitle} to ${dateStr}. ${calendarLine}`;
     addVoiceTurn(hKey, { role: 'model', text: resp, timestamp: Date.now(), action: intent.action });
     return { type: 'session_scheduled', transcript, intent, session: match, responseText: resp };
   }
