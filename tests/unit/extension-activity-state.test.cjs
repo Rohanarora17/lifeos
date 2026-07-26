@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   isWithinWakingHours,
   recoverPersistedInterval,
+  shouldCollectTelemetry,
   shouldGroupTab,
   transitionInterval,
 } = require('../../extension/activity-state.js');
@@ -14,6 +15,13 @@ describe('extension activity state machine', () => {
     assert.equal(isWithinWakingHours(new Date(2030, 0, 1, 8), 7, 1), true);
     assert.equal(isWithinWakingHours(new Date(2030, 0, 1, 0), 7, 1), true);
     assert.equal(isWithinWakingHours(new Date(2030, 0, 1, 3), 7, 1), false);
+  });
+
+  it('keeps observed active use outside the configured schedule', () => {
+    assert.equal(shouldCollectTelemetry(false, 'active'), true);
+    assert.equal(shouldCollectTelemetry(false, 'idle'), false);
+    assert.equal(shouldCollectTelemetry(false, 'locked'), false);
+    assert.equal(shouldCollectTelemetry(true, 'idle'), true);
   });
 
   it('closes the prior interval exactly at a focus or state transition', () => {
@@ -55,6 +63,26 @@ describe('extension activity state machine', () => {
     assert.equal(result.closed, null);
     assert.equal(result.current.startedAt, 1_000);
     assert.equal(result.current.lastObservedAt, 5_000);
+  });
+
+  it('rolls sustained activity into bounded intervals for server freshness', () => {
+    const current = {
+      eventId: 'one',
+      state: 'active',
+      tabId: 1,
+      windowId: 2,
+      url: 'domain://example.test',
+      sessionId: null,
+      startedAt: 1_000,
+      lastObservedAt: 31_000,
+    };
+    const next = { ...current, eventId: 'two' };
+    const result = transitionInterval(current, next, 61_000);
+
+    assert.equal(result.closed.eventId, 'one');
+    assert.equal(result.closed.endedAt, 61_000);
+    assert.equal(result.current.eventId, 'two');
+    assert.equal(result.current.startedAt, 61_000);
   });
 
   it('caps a service-worker gap at the last observed timestamp', () => {

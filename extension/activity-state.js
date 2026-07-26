@@ -18,11 +18,20 @@
             && left.tabId === right.tabId
             && left.url === right.url
             && left.windowId === right.windowId
-            && left.sessionId === right.sessionId;
+            && left.sessionId === right.sessionId
+            && left.outsideConfiguredHours === right.outsideConfiguredHours;
     }
 
-    function transitionInterval(current, nextContext, now) {
-        if (current && sameContext(current, nextContext)) {
+    function shouldCollectTelemetry(isWithinConfiguredHours, idleState) {
+        return isWithinConfiguredHours || idleState === 'active';
+    }
+
+    function transitionInterval(current, nextContext, now, maxIntervalMs = 60_000) {
+        if (
+            current
+            && sameContext(current, nextContext)
+            && now - current.startedAt < maxIntervalMs
+        ) {
             return {
                 closed: null,
                 current: { ...current, lastObservedAt: now },
@@ -89,6 +98,7 @@
         RELEVANCE_THRESHOLD,
         isWithinWakingHours,
         recoverPersistedInterval,
+        shouldCollectTelemetry,
         shouldGroupTab,
         transitionInterval,
     };

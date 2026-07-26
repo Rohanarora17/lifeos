@@ -299,6 +299,8 @@ async function queueTelemetryInterval(interval) {
                 ? 'sensitive_or_internal_page'
                 : includeRichContext
                     ? 'guardian_focus_session'
+                    : interval.outsideConfiguredHours
+                        ? 'active_outside_configured_hours'
                     : 'waking_hours_metadata',
         },
     };
@@ -352,16 +354,20 @@ async function transitionBrowserTelemetry(nextContext) {
 async function sampleBrowserTelemetry() {
     await getApiBase();
     const settings = await telemetrySettings();
-    if (!LifeOSActivityState.isWithinWakingHours(
+    const withinConfiguredHours = LifeOSActivityState.isWithinWakingHours(
         new Date(),
         settings.wakeHour,
         settings.sleepHour,
+    );
+    const idleState = await chrome.idle.queryState(60);
+    if (!LifeOSActivityState.shouldCollectTelemetry(
+        withinConfiguredHours,
+        idleState,
     )) {
         await transitionBrowserTelemetry(null);
         return;
     }
 
-    const idleState = await chrome.idle.queryState(60);
     if (idleState === 'idle' || idleState === 'locked') {
         await transitionBrowserTelemetry({
             eventId: crypto.randomUUID(),
@@ -373,6 +379,7 @@ async function sampleBrowserTelemetry() {
             domain: null,
             sessionId: guardianActive ? sessionContext?.sessionId || null : null,
             privacyBlocked: false,
+            outsideConfiguredHours: !withinConfiguredHours,
         });
         return;
     }
@@ -389,6 +396,7 @@ async function sampleBrowserTelemetry() {
             domain: null,
             sessionId: guardianActive ? sessionContext?.sessionId || null : null,
             privacyBlocked: false,
+            outsideConfiguredHours: !withinConfiguredHours,
         });
         return;
     }
@@ -414,6 +422,7 @@ async function sampleBrowserTelemetry() {
         groupTitle: guardianActive ? groupInfo?.title || null : null,
         sessionId: guardianActive ? sessionContext?.sessionId || null : null,
         privacyBlocked,
+        outsideConfiguredHours: !withinConfiguredHours,
     });
 }
 
