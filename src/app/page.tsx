@@ -343,12 +343,34 @@ export default function DashboardPage() {
   const [liveFocusStats] = useState({ productiveSeconds: 0, distractionSeconds: 0 });
   const [taskCompletionNotice, setTaskCompletionNotice] = useState<string | null>(null);
   const [stateSaving, setStateSaving] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/dashboard')
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(async response => {
+        if (response.status === 401) {
+          router.replace('/login?returnTo=/');
+          return null;
+        }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          throw new Error(
+            payload?.error === 'security_not_configured'
+              ? 'LifeOS authentication is not configured on this server.'
+              : 'LifeOS could not load your dashboard.',
+          );
+        }
+        return response.json();
+      })
+      .then(d => {
+        if (d) setData(d);
+      })
+      .catch(error => {
+        setDashboardError(
+          error instanceof Error ? error.message : 'LifeOS could not load your dashboard.',
+        );
+      })
+      .finally(() => setLoading(false));
     fetch('/api/alerts')
       .then(r => r.json())
       .then(d => {
@@ -360,7 +382,7 @@ export default function DashboardPage() {
       .then(r => r.json())
       .then(d => { if (!d.error) setInsights(d as InsightsData); })
       .catch(() => { });
-  }, []);
+  }, [router]);
 
   // Auto-end session when timer hits zero
   useEffect(() => {
@@ -497,8 +519,12 @@ export default function DashboardPage() {
   if (!today) {
     return (
       <div className="text-center py-20">
-        <h2 className="text-2xl font-bold mb-2">Welcome to LifeOS! 🚀</h2>
-        <p style={{ color: 'var(--text-secondary)' }}>Install the browser extension to start tracking your activity.</p>
+        <h2 className="text-2xl font-bold mb-2">
+          {dashboardError ? 'Dashboard unavailable' : 'No day data available'}
+        </h2>
+        <p style={{ color: 'var(--text-secondary)' }}>
+          {dashboardError || 'LifeOS returned no dashboard snapshot for today.'}
+        </p>
       </div>
     );
   }
