@@ -57,7 +57,24 @@ jobs:
             git fetch "https://x-access-token:${GH_TOKEN}@${REPO_URL#https://}" "${DEPLOY_COMMIT}"
             git checkout --detach "${DEPLOY_COMMIT}"
 
+            SECURITY_KEYS='LIFEOS_AUTH_MODE LIFEOS_API_TOKEN LIFEOS_ADMIN_REAUTH_TOKEN LIFEOS_DEVICE_TOKEN LIFEOS_ALLOWED_ORIGINS LIFEOS_EXTENSION_ID LIFEOS_COOKIE_SECURE'
+            PRESERVED_SECURITY=$(mktemp)
+            if [ -f .env.local ]; then
+              for key in ${SECURITY_KEYS}; do
+                grep -E "^${key}=" .env.local | tail -1 >> "${PRESERVED_SECURITY}" || true
+              done
+            fi
+
             printf '%s' "${APP_ENV}" > .env.local
+            while IFS= read -r entry; do
+              [ -n "${entry}" ] || continue
+              key="${entry%%=*}"
+              CLEAN_ENV=$(mktemp)
+              grep -Ev "^${key}=" .env.local > "${CLEAN_ENV}" || true
+              mv "${CLEAN_ENV}" .env.local
+              printf '\n%s\n' "${entry}" >> .env.local
+            done < "${PRESERVED_SECURITY}"
+            rm -f "${PRESERVED_SECURITY}"
             printf '\nLIFEOS_DEPLOYED_COMMIT=%s\n' "${DEPLOY_COMMIT}" >> .env.local
             npm ci --prefer-offline
 
