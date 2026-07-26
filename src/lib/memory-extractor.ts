@@ -16,6 +16,7 @@ import {
   insertFact,
   updateFact,
   supersedeFact,
+  supersedeFactWithExisting,
   findFactsByTopic,
   insertEpisode,
   queryRelevantFacts,
@@ -295,8 +296,7 @@ export async function consolidateFacts(): Promise<void> {
     const sorted = [...facts].sort((a, b) => b.effectiveScore - a.effectiveScore);
     const [best, ...rest] = sorted;
     for (const old of rest) {
-      if (old.id !== best.id) {
-        supersedeFact(old.id, best.content);
+      if (old.id !== best.id && supersedeFactWithExisting(old.id, best.id)) {
         merged++;
       }
     }

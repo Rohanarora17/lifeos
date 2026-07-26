@@ -300,6 +300,27 @@ export function supersedeFact(oldId: number, newContent: string, newEpisodeIds?:
 }
 
 /**
+ * Mark a fact as superseded by another existing fact.
+ * Used when consolidation finds duplicates and does not need a new version.
+ */
+export function supersedeFactWithExisting(oldId: number, replacementId: number): boolean {
+    if (oldId === replacementId) return false;
+
+    const db = getDb();
+    const replacement = db.prepare(
+        "SELECT id FROM mem_facts WHERE id = ? AND status != 'superseded'"
+    ).get(replacementId);
+    if (!replacement) return false;
+
+    const result = db.prepare(`
+      UPDATE mem_facts
+      SET status = 'superseded', superseded_by = ?
+      WHERE id = ? AND status != 'superseded'
+    `).run(replacementId, oldId);
+    return result.changes === 1;
+}
+
+/**
  * Query semantic facts with temporal decay scoring.
  * Returns facts ordered by effectiveScore descending.
  */
@@ -644,11 +665,24 @@ export function getFactCount(): number {
  * Called during nightly consolidation.
  */
 export function purgeStaleUnverifiedFacts(maxAgeDays: number = 14): number {
-    const result = getDb().prepare(`
-    DELETE FROM mem_facts
-    WHERE status = 'unverified' AND created_at < datetime('now', ?)
-  `).run(`-${maxAgeDays} days`);
-    return result.changes;
+    const db = getDb();
+    return db.transaction(() => {
+        const staleIds = db.prepare(`
+          SELECT id FROM mem_facts
+          WHERE status = 'unverified' AND created_at < datetime('now', ?)
+        `).all(`-${maxAgeDays} days`) as { id: number }[];
+        if (staleIds.length === 0) return 0;
+
+        const ids = staleIds.map(({ id }) => id);
+        const placeholders = ids.map(() => '?').join(',');
+        db.prepare(`
+          UPDATE mem_facts SET superseded_by = NULL
+          WHERE superseded_by IN (${placeholders})
+        `).run(...ids);
+        return db.prepare(`
+          DELETE FROM mem_facts WHERE id IN (${placeholders})
+        `).run(...ids).changes;
+    })();
 }
 
 /**
