@@ -121,6 +121,119 @@ interface FullAnalysis {
     adaptiveContext?: AdaptiveInsightsContext;
 }
 
+interface CognitiveTraitEvidence {
+    label: string;
+    detail: string;
+    at?: string | null;
+}
+
+interface CognitiveTraitView {
+    id: string;
+    label: string;
+    valueLabel: string;
+    value: number | null;
+    unit: string | null;
+    confidence: number;
+    trend?: 'improving' | 'worsening' | 'stable' | 'unknown';
+    userStance: 'observed' | 'confirmed' | 'disputed' | 'aspirational';
+    sampleSize: number;
+    evidence: CognitiveTraitEvidence[];
+}
+
+interface CognitiveHypothesisView {
+    id: string;
+    traitId: string;
+    claim: string;
+    why: string;
+    confidence: number;
+    evidence: string[];
+    stance: string;
+    actionHint: string;
+}
+
+interface CognitiveExperimentView {
+    id: string;
+    kind: 'early_synthetic_deadline' | 'activation_block';
+    status: string;
+    title: string;
+    rationale: string;
+    traitSignals: string[];
+    suggestedTaskTitle: string | null;
+    durationMinutes: number;
+    syntheticDueDate: string | null;
+    expiresAt: string;
+}
+
+interface ExperimentStateView {
+    active: CognitiveExperimentView | null;
+    offered: CognitiveExperimentView | null;
+    canOffer: boolean;
+    offerBlockReason: string | null;
+}
+
+interface ActiveCoachView {
+    mode: 'auto' | 'off';
+    enabled: boolean;
+    suppressRewiring: boolean;
+    activationBlocks: boolean;
+    earlyCommitmentBoost: boolean;
+    voluntaryRewardBias: number;
+    coachGuidance: string;
+    reasons: string[];
+    mapTrust: {
+        trusted: boolean;
+        reason: string;
+        confirmed: string[];
+        aspirational: string[];
+        disputed: string[];
+    };
+}
+
+interface TraitHistoryPoint {
+    date: string;
+    pressureDependency: number | null;
+    voluntaryStartRate: number | null;
+    activationEnergyDays: number | null;
+    crisisBonus: number | null;
+    confidence: number;
+}
+
+interface TrajectoryWeekView {
+    weekStart: string;
+    weekEnd: string;
+    sampleDays: number;
+    avgPressureDependency: number | null;
+    avgVoluntaryStartRate: number | null;
+    pressureTrend: string;
+    voluntaryTrend: string;
+}
+
+interface TrajectoryView {
+    headline: string;
+    enoughData: boolean;
+    historyDays: number;
+    weeks: TrajectoryWeekView[];
+}
+
+interface BrainMapPayload {
+    summary: string;
+    traits: CognitiveTraitView[];
+    hypotheses: CognitiveHypothesisView[];
+    pressureProfile: {
+        pressureDependency: number | null;
+        voluntaryStartRate: number | null;
+        crisisBonus: number | null;
+        activationEnergyDays: number | null;
+        avoidanceAgeDays: number | null;
+        confidence: number;
+    };
+    windowDays: number;
+    experiments: ExperimentStateView | null;
+    history: TraitHistoryPoint[];
+    activeCoach: ActiveCoachView | null;
+    trajectory: TrajectoryView | null;
+}
+
 // ── Goal Metrics ──
 const GOAL_METRICS = [
     { value: 'productive_minutes', label: 'Productive Minutes' },
@@ -178,11 +291,38 @@ function buildDomainEmptyCopy(kind: 'productive' | 'distraction', context?: Adap
 
 export default function InsightsPage() {
     const [data, setData] = useState<FullAnalysis | null>(null);
+    const [brainMap, setBrainMap] = useState<BrainMapPayload | null>(null);
+    const [stanceBusy, setStanceBusy] = useState<string | null>(null);
+    const [experimentBusy, setExperimentBusy] = useState(false);
+    const [expandedTrait, setExpandedTrait] = useState<string | null>(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [activeTab, setActiveTab] = useState<'overview' | 'focus' | 'consistency' | 'goals' | 'insights'>('overview');
     const [showGoalForm, setShowGoalForm] = useState(false);
     const [newGoal, setNewGoal] = useState({ title: '', type: 'daily', metric: 'productive_minutes', target_value: '', unit: 'minutes' });
+
+    const loadBrainMap = useCallback(async () => {
+        try {
+            const res = await fetch('/api/personalization/model', { cache: 'no-store' });
+            if (!res.ok) return;
+            const payload = await res.json();
+            const traits = payload.cognitiveTraits ?? payload.selfModel?.cognitiveTraits;
+            if (!traits) return;
+            setBrainMap({
+                summary: traits.summary || payload.selfModel?.summary || '',
+                traits: traits.traits || [],
+                hypotheses: traits.hypotheses || payload.hypotheses || [],
+                pressureProfile: traits.pressureProfile || payload.pressureProfile,
+                windowDays: traits.windowDays || 45,
+                experiments: payload.experiments ?? null,
+                history: traits.history || [],
+                activeCoach: payload.activeCoach ?? null,
+                trajectory: payload.trajectory ?? null,
+            });
+        } catch (e) {
+            console.error(e);
+        }
+    }, []);
 
     const loadData = useCallback(async () => {
         try {
@@ -194,9 +334,106 @@ export default function InsightsPage() {
     }, []);
 
     useEffect(() => {
-        const id = window.setTimeout(() => { void loadData(); }, 0);
+        const id = window.setTimeout(() => {
+            void loadData();
+            void loadBrainMap();
+        }, 0);
         return () => window.clearTimeout(id);
-    }, [loadData]);
+    }, [loadData, loadBrainMap]);
+
+    const setTraitStance = async (traitId: string, stance: 'confirmed' | 'disputed' | 'aspirational' | 'observed') => {
+        setStanceBusy(`${traitId}:${stance}`);
+        try {
+            const res = await fetch('/api/personalization/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ traitId, stance, action: 'set_stance' }),
+            });
+            if (res.ok) {
+                const payload = await res.json();
+                const traits = payload.cognitiveTraits ?? payload.model?.cognitiveTraits;
+                if (traits) {
+                    setBrainMap({
+                        summary: traits.summary || '',
+                        traits: traits.traits || [],
+                        hypotheses: traits.hypotheses || payload.hypotheses || [],
+                        pressureProfile: traits.pressureProfile || payload.pressureProfile,
+                        windowDays: traits.windowDays || 45,
+                        experiments: payload.experiments ?? payload.model?.experiments ?? null,
+                        history: traits.history || [],
+                        activeCoach: payload.activeCoach ?? payload.model?.activeCoach ?? null,
+                        trajectory: payload.model?.trajectory ?? payload.trajectory ?? null,
+                    });
+                } else {
+                    await loadBrainMap();
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        }
+        setStanceBusy(null);
+    };
+
+    const setCoachMode = async (mode: 'auto' | 'off') => {
+        setExperimentBusy(true);
+        try {
+            const res = await fetch('/api/personalization/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'set_active_coach_mode', mode }),
+            });
+            if (res.ok) {
+                const payload = await res.json();
+                setBrainMap(prev => prev ? {
+                    ...prev,
+                    activeCoach: payload.activeCoach ?? payload.model?.activeCoach ?? prev.activeCoach,
+                } : prev);
+            }
+        } catch (e) {
+            console.error(e);
+        }
+        setExperimentBusy(false);
+    };
+
+    const respondExperiment = async (experimentId: string, response: 'accepted' | 'declined' | 'completed' | 'cancelled') => {
+        setExperimentBusy(true);
+        try {
+            const res = await fetch('/api/personalization/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'respond_experiment', experimentId, response }),
+            });
+            if (res.ok) {
+                const payload = await res.json();
+                if (payload.model?.cognitiveTraits || payload.experiments) {
+                    const traits = payload.model?.cognitiveTraits;
+                    setBrainMap(prev => ({
+                        summary: traits?.summary || prev?.summary || '',
+                        traits: traits?.traits || prev?.traits || [],
+                        hypotheses: traits?.hypotheses || prev?.hypotheses || [],
+                        pressureProfile: traits?.pressureProfile || prev?.pressureProfile || {
+                            pressureDependency: null,
+                            voluntaryStartRate: null,
+                            crisisBonus: null,
+                            activationEnergyDays: null,
+                            avoidanceAgeDays: null,
+                            confidence: 0,
+                        },
+                        windowDays: traits?.windowDays || prev?.windowDays || 45,
+                        experiments: payload.experiments ?? payload.model?.experiments ?? null,
+                        history: traits?.history || prev?.history || [],
+                        activeCoach: payload.model?.activeCoach ?? payload.activeCoach ?? prev?.activeCoach ?? null,
+                        trajectory: payload.model?.trajectory ?? prev?.trajectory ?? null,
+                    }));
+                } else {
+                    await loadBrainMap();
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        }
+        setExperimentBusy(false);
+    };
 
     const runAnalysis = async () => {
         setIsAnalyzing(true);
@@ -259,9 +496,11 @@ export default function InsightsPage() {
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
                 <div>
-                    <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>🧠 Behavioral Intelligence</h1>
+                    <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>🧠 Brain Map</h1>
                     <p style={{ color: '#8888a0', marginTop: 4 }}>
-                        {adaptiveContext?.lensSummary || 'Learning how your focus, consistency, goals, feedback, and day context fit together'}
+                        {brainMap?.summary
+                            || adaptiveContext?.lensSummary
+                            || 'How, why, and when your brain works — pressure wiring first, then rewiring'}
                     </p>
                 </div>
                 <button onClick={runAnalysis} disabled={isAnalyzing}
@@ -269,6 +508,372 @@ export default function InsightsPage() {
                     {isAnalyzing ? '🔄 Analyzing...' : '⚡ Run Personal Analysis'}
                 </button>
             </div>
+
+            {brainMap && (
+                <div
+                    data-testid="brain-map"
+                    className="card"
+                    style={{
+                    padding: 20,
+                    marginBottom: 24,
+                    borderLeft: '4px solid #f59e0b',
+                    background: 'linear-gradient(135deg, rgba(245,158,11,0.06), rgba(102,126,234,0.05))',
+                }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+                        <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                                Cognitive Self-Map · {brainMap.windowDays}d window
+                            </div>
+                            <h2 style={{ margin: '6px 0 8px', fontWeight: 800, fontSize: 18 }}>Pressure profile</h2>
+                            <p style={{ margin: 0, color: '#c0c0d0', fontSize: 13, lineHeight: 1.65, maxWidth: 720 }}>
+                                {brainMap.summary}
+                            </p>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(110px, 1fr))', gap: 8, minWidth: 260 }}>
+                            <PressureMetric
+                                label="PDI"
+                                value={brainMap.pressureProfile.pressureDependency == null
+                                    ? '—'
+                                    : `${Math.round(brainMap.pressureProfile.pressureDependency * 100)}`}
+                                hint="Pressure dependency"
+                                hot={(brainMap.pressureProfile.pressureDependency ?? 0) >= 0.55}
+                            />
+                            <PressureMetric
+                                label="Voluntary"
+                                value={brainMap.pressureProfile.voluntaryStartRate == null
+                                    ? '—'
+                                    : `${Math.round(brainMap.pressureProfile.voluntaryStartRate * 100)}%`}
+                                hint="Non-crisis starts"
+                                hot={(brainMap.pressureProfile.voluntaryStartRate ?? 1) < 0.4}
+                            />
+                            <PressureMetric
+                                label="Activation"
+                                value={brainMap.pressureProfile.activationEnergyDays == null
+                                    ? '—'
+                                    : `${brainMap.pressureProfile.activationEnergyDays.toFixed(1)}d`}
+                                hint="Create → first focus"
+                            />
+                            <PressureMetric
+                                label="Crisis Δ"
+                                value={brainMap.pressureProfile.crisisBonus == null
+                                    ? '—'
+                                    : `${brainMap.pressureProfile.crisisBonus > 0 ? '+' : ''}${Math.round(brainMap.pressureProfile.crisisBonus)}`}
+                                hint="Focus pts near deadline"
+                                hot={(brainMap.pressureProfile.crisisBonus ?? 0) >= 8}
+                            />
+                        </div>
+                    </div>
+
+                    {(brainMap.history.length >= 2 || brainMap.trajectory) && (
+                        <div
+                            data-testid="brain-map-trajectory"
+                            style={{
+                            marginBottom: 16,
+                            padding: 12,
+                            borderRadius: 10,
+                            background: 'rgba(18,18,26,0.65)',
+                            border: '1px solid rgba(255,255,255,0.05)',
+                        }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#8888a0', marginBottom: 8, textTransform: 'uppercase' }}>
+                                Trajectory · {brainMap.history.length} daily · {brainMap.trajectory?.weeks?.length ?? 0} week bucket(s)
+                            </div>
+                            {brainMap.trajectory?.headline && (
+                                <p style={{ margin: '0 0 10px', fontSize: 12, color: '#c0c0d0', lineHeight: 1.55 }}>
+                                    {brainMap.trajectory.headline}
+                                </p>
+                            )}
+                            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                                <MiniSpark
+                                    label="PDI"
+                                    values={brainMap.history.map(h => h.pressureDependency)}
+                                    invertGood
+                                />
+                                <MiniSpark
+                                    label="Voluntary"
+                                    values={brainMap.history.map(h => h.voluntaryStartRate)}
+                                />
+                            </div>
+                            {brainMap.trajectory && brainMap.trajectory.weeks.length > 0 && (
+                                <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+                                    {brainMap.trajectory.weeks.slice(-4).map(week => (
+                                        <div key={week.weekStart} style={{ fontSize: 11, color: '#8888a0' }}>
+                                            {week.weekStart}: PDI {week.avgPressureDependency == null ? '—' : Math.round(week.avgPressureDependency * 100)}
+                                            {' · '}vol {week.avgVoluntaryStartRate == null ? '—' : `${Math.round(week.avgVoluntaryStartRate * 100)}%`}
+                                            {' · '}{week.sampleDays}d
+                                            {' · '}PDI {week.pressureTrend} / vol {week.voluntaryTrend}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: brainMap.hypotheses.length ? 16 : 0 }}>
+                        {brainMap.traits.map(trait => {
+                            const open = expandedTrait === trait.id;
+                            return (
+                                <div
+                                    key={trait.id}
+                                    data-testid={`trait-card-${trait.id}`}
+                                    style={{
+                                    padding: 14,
+                                    borderRadius: 10,
+                                    background: 'rgba(18,18,26,0.85)',
+                                    border: `1px solid ${stanceBorder(trait.userStance)}`,
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                                        <div style={{ fontSize: 12, fontWeight: 700, color: '#e8e8f0' }}>{trait.label}</div>
+                                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                            {trait.trend && trait.trend !== 'unknown' && (
+                                                <span style={{
+                                                    fontSize: 10,
+                                                    fontWeight: 700,
+                                                    color: trait.trend === 'improving' ? '#22c55e' : trait.trend === 'worsening' ? '#ef4444' : '#8888a0',
+                                                    textTransform: 'uppercase',
+                                                }}>
+                                                    {trait.trend === 'improving' ? '↑' : trait.trend === 'worsening' ? '↓' : '→'} {trait.trend}
+                                                </span>
+                                            )}
+                                            <span
+                                                data-testid={`trait-stance-${trait.id}`}
+                                                style={{ fontSize: 10, fontWeight: 700, color: stanceColor(trait.userStance), textTransform: 'uppercase' }}
+                                            >
+                                                {trait.userStance}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#c0c0d0', lineHeight: 1.5, marginBottom: 8 }}>{trait.valueLabel}</div>
+                                    <div style={{ fontSize: 11, color: '#8888a0', marginBottom: 10 }}>
+                                        conf {Math.round(trait.confidence * 100)}% · n={trait.sampleSize}
+                                    </div>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                                        {(['confirmed', 'disputed', 'aspirational'] as const).map(stance => (
+                                            <button
+                                                key={stance}
+                                                data-testid={`trait-${stance}-${trait.id}`}
+                                                disabled={stanceBusy === `${trait.id}:${stance}`}
+                                                onClick={() => void setTraitStance(trait.id, trait.userStance === stance ? 'observed' : stance)}
+                                                style={{
+                                                    fontSize: 10,
+                                                    fontWeight: 700,
+                                                    border: 'none',
+                                                    borderRadius: 6,
+                                                    padding: '4px 8px',
+                                                    cursor: 'pointer',
+                                                    background: trait.userStance === stance ? stanceColor(stance) : 'rgba(255,255,255,0.06)',
+                                                    color: trait.userStance === stance ? '#0b0b12' : '#c0c0d0',
+                                                }}
+                                            >
+                                                {stance === 'confirmed' ? 'Confirm' : stance === 'disputed' ? 'Dispute' : 'Aspire'}
+                                            </button>
+                                        ))}
+                                        <button
+                                            data-testid={`trait-evidence-${trait.id}`}
+                                            onClick={() => setExpandedTrait(open ? null : trait.id)}
+                                            style={{
+                                                fontSize: 10,
+                                                fontWeight: 700,
+                                                border: 'none',
+                                                borderRadius: 6,
+                                                padding: '4px 8px',
+                                                cursor: 'pointer',
+                                                background: 'rgba(102,126,234,0.15)',
+                                                color: '#a5b4fc',
+                                            }}
+                                        >
+                                            {open ? 'Hide evidence' : 'Evidence'}
+                                        </button>
+                                    </div>
+                                    {open && (
+                                        <div style={{ fontSize: 11, color: '#a0a0b8', lineHeight: 1.55 }}>
+                                            {trait.evidence.slice(0, 4).map((ev, i) => (
+                                                <div key={i} style={{ marginBottom: 4 }}>· {ev.detail}</div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {brainMap.activeCoach && (
+                        <div
+                            data-testid="active-coach-panel"
+                            style={{
+                                padding: 14,
+                                borderRadius: 10,
+                                marginBottom: 16,
+                                background: brainMap.activeCoach.enabled
+                                    ? 'rgba(34,197,94,0.08)'
+                                    : 'rgba(18,18,26,0.75)',
+                                border: `1px solid ${brainMap.activeCoach.enabled ? 'rgba(34,197,94,0.35)' : 'rgba(255,255,255,0.08)'}`,
+                            }}
+                        >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: brainMap.activeCoach.enabled ? '#4ade80' : '#8888a0', textTransform: 'uppercase' }}>
+                                    Active coach · {brainMap.activeCoach.mapTrust.trusted ? (brainMap.activeCoach.suppressRewiring ? 'trusted · deadline protect' : brainMap.activeCoach.enabled ? 'auto-rewiring' : 'trusted · idle') : 'awaiting map trust'}
+                                </div>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                    <button
+                                        data-testid="active-coach-on"
+                                        disabled={experimentBusy || brainMap.activeCoach.mode === 'auto'}
+                                        onClick={() => void setCoachMode('auto')}
+                                        style={hypButtonStyle(brainMap.activeCoach.mode === 'auto' ? '#22c55e' : '#8888a0')}
+                                    >
+                                        Auto
+                                    </button>
+                                    <button
+                                        data-testid="active-coach-off"
+                                        disabled={experimentBusy || brainMap.activeCoach.mode === 'off'}
+                                        onClick={() => void setCoachMode('off')}
+                                        style={hypButtonStyle(brainMap.activeCoach.mode === 'off' ? '#ef4444' : '#8888a0')}
+                                    >
+                                        Off
+                                    </button>
+                                </div>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#c0c0d0', lineHeight: 1.55 }}>
+                                {brainMap.activeCoach.coachGuidance}
+                            </div>
+                            {brainMap.activeCoach.mapTrust.trusted && (
+                                <div style={{ fontSize: 11, color: '#8888a0', marginTop: 8 }}>
+                                    Trust: {brainMap.activeCoach.mapTrust.reason}
+                                    {brainMap.activeCoach.activationBlocks ? ' · activation blocks on' : ''}
+                                    {brainMap.activeCoach.earlyCommitmentBoost ? ' · early commitment on' : ''}
+                                    {brainMap.activeCoach.voluntaryRewardBias > 0 ? ' · voluntary reward bias on' : ''}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {(brainMap.experiments?.offered || brainMap.experiments?.active) && (
+                        <div
+                            data-testid="brain-map-experiment"
+                            style={{
+                            padding: 14,
+                            borderRadius: 10,
+                            marginBottom: 16,
+                            background: 'rgba(18,18,26,0.75)',
+                            border: '1px solid rgba(245,158,11,0.35)',
+                        }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', marginBottom: 8, textTransform: 'uppercase' }}>
+                                Light experiment · map-first rewiring
+                            </div>
+                            {brainMap.experiments.active && (
+                                <div style={{ marginBottom: brainMap.experiments.offered ? 14 : 0 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: '#e8e8f0' }}>
+                                        Active: {brainMap.experiments.active.title}
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#c0c0d0', lineHeight: 1.55, margin: '6px 0' }}>
+                                        {brainMap.experiments.active.rationale}
+                                    </div>
+                                    {brainMap.experiments.active.suggestedTaskTitle && (
+                                        <div style={{ fontSize: 11, color: '#8888a0', marginBottom: 8 }}>
+                                            Target: {brainMap.experiments.active.suggestedTaskTitle}
+                                            {brainMap.experiments.active.syntheticDueDate
+                                                ? ` · synthetic due ${brainMap.experiments.active.syntheticDueDate}`
+                                                : ` · ${brainMap.experiments.active.durationMinutes}m`}
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        <button
+                                            disabled={experimentBusy}
+                                            onClick={() => void respondExperiment(brainMap.experiments!.active!.id, 'completed')}
+                                            style={hypButtonStyle('#22c55e')}
+                                        >
+                                            Mark complete
+                                        </button>
+                                        <button
+                                            disabled={experimentBusy}
+                                            onClick={() => void respondExperiment(brainMap.experiments!.active!.id, 'cancelled')}
+                                            style={hypButtonStyle('#8888a0')}
+                                        >
+                                            Cancel experiment
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {brainMap.experiments.offered && (
+                                <div>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: '#e8e8f0' }}>
+                                        Offered: {brainMap.experiments.offered.title}
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#c0c0d0', lineHeight: 1.55, margin: '6px 0' }}>
+                                        {brainMap.experiments.offered.rationale}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: '#8888a0', marginBottom: 8 }}>
+                                        {(brainMap.experiments.offered.traitSignals || []).join(' · ')}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        <button
+                                            data-testid="experiment-accept"
+                                            disabled={experimentBusy}
+                                            onClick={() => void respondExperiment(brainMap.experiments!.offered!.id, 'accepted')}
+                                            style={hypButtonStyle('#f59e0b')}
+                                        >
+                                            Accept experiment
+                                        </button>
+                                        <button
+                                            data-testid="experiment-decline"
+                                            disabled={experimentBusy}
+                                            onClick={() => void respondExperiment(brainMap.experiments!.offered!.id, 'declined')}
+                                            style={hypButtonStyle('#8888a0')}
+                                        >
+                                            Not now
+                                        </button>
+                                    </div>
+                                    <div style={{ fontSize: 11, color: '#6b6b80', marginTop: 8 }}>
+                                        Declining leaves planner behavior unchanged. True deadline days still use pressure as fuel.
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {brainMap.hypotheses.length > 0 && (
+                        <div style={{
+                            padding: 14,
+                            borderRadius: 10,
+                            background: 'rgba(18,18,26,0.7)',
+                            border: '1px solid rgba(168,85,247,0.25)',
+                        }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', marginBottom: 8, textTransform: 'uppercase' }}>
+                                Open hypotheses — confirm what feels true
+                            </div>
+                            {brainMap.hypotheses.map(hyp => (
+                                <div key={hyp.id} style={{ marginBottom: 12 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e8e8f0', marginBottom: 4 }}>{hyp.claim}</div>
+                                    <div style={{ fontSize: 12, color: '#8888a0', marginBottom: 6 }}>{hyp.why}</div>
+                                    <div style={{ fontSize: 11, color: '#a0a0b8', marginBottom: 8 }}>{hyp.actionHint}</div>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        <button
+                                            disabled={!!stanceBusy}
+                                            onClick={() => void setTraitStance(hyp.traitId, 'confirmed')}
+                                            style={hypButtonStyle('#22c55e')}
+                                        >
+                                            That&apos;s me
+                                        </button>
+                                        <button
+                                            disabled={!!stanceBusy}
+                                            onClick={() => void setTraitStance(hyp.traitId, 'disputed')}
+                                            style={hypButtonStyle('#ef4444')}
+                                        >
+                                            Not quite
+                                        </button>
+                                        <button
+                                            disabled={!!stanceBusy}
+                                            onClick={() => void setTraitStance(hyp.traitId, 'aspirational')}
+                                            style={hypButtonStyle('#a855f7')}
+                                        >
+                                            I want to change this
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {adaptiveContext && (
                 <div className="card" style={{
@@ -786,6 +1391,92 @@ export default function InsightsPage() {
 }
 
 // ── Sub-components ──
+
+function stanceColor(stance: string): string {
+    if (stance === 'confirmed') return '#22c55e';
+    if (stance === 'disputed') return '#ef4444';
+    if (stance === 'aspirational') return '#a855f7';
+    return '#8888a0';
+}
+
+function stanceBorder(stance: string): string {
+    if (stance === 'confirmed') return 'rgba(34,197,94,0.35)';
+    if (stance === 'disputed') return 'rgba(239,68,68,0.35)';
+    if (stance === 'aspirational') return 'rgba(168,85,247,0.35)';
+    return 'rgba(255,255,255,0.06)';
+}
+
+function hypButtonStyle(color: string): Record<string, string | number> {
+    return {
+        fontSize: 11,
+        fontWeight: 700,
+        border: 'none',
+        borderRadius: 6,
+        padding: '5px 10px',
+        cursor: 'pointer',
+        background: `${color}22`,
+        color,
+    };
+}
+
+function PressureMetric({ label, value, hint, hot = false }: { label: string; value: string; hint: string; hot?: boolean }) {
+    return (
+        <div style={{
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: hot ? 'rgba(239,68,68,0.08)' : 'rgba(18,18,26,0.9)',
+            border: hot ? '1px solid rgba(239,68,68,0.25)' : '1px solid rgba(255,255,255,0.05)',
+        }}>
+            <div style={{ fontSize: 10, color: '#8888a0', fontWeight: 700, textTransform: 'uppercase' }}>{label}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: hot ? '#fca5a5' : '#e8e8f0', marginTop: 2 }}>{value}</div>
+            <div style={{ fontSize: 10, color: '#6b6b80', marginTop: 2 }}>{hint}</div>
+        </div>
+    );
+}
+
+function MiniSpark({
+    label,
+    values,
+    invertGood = false,
+}: {
+    label: string;
+    values: Array<number | null>;
+    invertGood?: boolean;
+}) {
+    const nums = values.filter((v): v is number => v != null && Number.isFinite(v));
+    if (nums.length < 2) return null;
+    const max = Math.max(...nums, 0.01);
+    const first = nums[0];
+    const last = nums[nums.length - 1];
+    const rising = last > first + 0.02;
+    const falling = last < first - 0.02;
+    const good = invertGood ? falling : rising;
+    const bad = invertGood ? rising : falling;
+    return (
+        <div style={{ minWidth: 140 }}>
+            <div style={{ fontSize: 10, color: '#8888a0', fontWeight: 700, marginBottom: 6 }}>{label}</div>
+            <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 36 }}>
+                {nums.map((v, i) => (
+                    <div
+                        key={i}
+                        title={String(v)}
+                        style={{
+                            width: 8,
+                            height: `${Math.max(8, (v / max) * 36)}px`,
+                            borderRadius: 2,
+                            background: i === nums.length - 1
+                                ? (bad ? '#ef4444' : good ? '#22c55e' : '#667eea')
+                                : 'rgba(102,126,234,0.45)',
+                        }}
+                    />
+                ))}
+            </div>
+            <div style={{ fontSize: 10, color: '#6b6b80', marginTop: 4 }}>
+                {Math.round(first * 100)} → {Math.round(last * 100)}
+            </div>
+        </div>
+    );
+}
 
 function ScoreCard({ label, value, max, color, icon, sub }: { label: string; value: number; max: number; color: string; icon: string; sub: string }) {
     return (

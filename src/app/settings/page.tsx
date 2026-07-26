@@ -357,6 +357,13 @@ export default function SettingsPage() {
                                     <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                                         {selfModel.summary}
                                     </p>
+                                    <a
+                                        href="/insights"
+                                        className="text-xs font-semibold inline-block mt-2"
+                                        style={{ color: '#a5b4fc' }}
+                                    >
+                                        Open full Brain Map on Insights →
+                                    </a>
                                 </div>
                                 <div className="text-right text-xs" style={{ color: 'var(--text-muted)' }}>
                                     Model confidence
