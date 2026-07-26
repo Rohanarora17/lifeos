@@ -16,6 +16,7 @@ import { MODEL_VISION } from './models';
 import { getDb } from './db';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { getAdaptiveBands } from './adaptive-bands';
+import sharp from 'sharp';
 
 // ---------------------------------------------------------------------------
 // MacBook client connection tracking
@@ -94,18 +95,19 @@ export function isSensitiveApp(appName: string, windowTitle: string): boolean {
 // pHash-based change detection (simple luminance block hash)
 // ---------------------------------------------------------------------------
 
-// Compute a 64-bit perceptual hash as a hex string from base64 JPEG.
-// Uses luminance of 8×8 DCT-lite blocks (average hash variant — good enough for change detection).
-export function computeImageHash(base64Jpeg: string): string {
-  // Decode base64 to bytes
+// Compute a 64-bit average hash from decoded luminance pixels.
+export async function computeImageHash(base64Jpeg: string): Promise<string> {
   const bytes = Buffer.from(base64Jpeg, 'base64');
-  // Sample 64 evenly-spaced bytes as a proxy for luminance distribution
-  // (real pHash would require image decoding; this lightweight approach catches meaningful changes)
-  const step = Math.max(1, Math.floor(bytes.length / 64));
-  const samples: number[] = [];
-  for (let i = 0; i < 64; i++) {
-    samples.push(bytes[i * step] ?? 0);
+  const { data, info } = await sharp(bytes)
+    .rotate()
+    .greyscale()
+    .resize(8, 8, { fit: 'fill' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  if (info.width !== 8 || info.height !== 8 || info.channels !== 1 || data.length !== 64) {
+    throw new Error('Unable to decode screenshot luminance');
   }
+  const samples = Array.from(data);
   const avg = samples.reduce((a, b) => a + b, 0) / 64;
   let bits = '';
   for (const v of samples) {

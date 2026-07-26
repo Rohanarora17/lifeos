@@ -76,7 +76,7 @@ export async function POST(req: Request) {
     const currentFocusScore = session.focusScoreHistory.at(-1) ?? 50;
 
     // Change detection
-    const currentHash = computeImageHash(base64Jpeg);
+    const currentHash = await computeImageHash(base64Jpeg);
     const vState = sessionVisionState.get(sessionId) ?? {
       lastHash: null,
       lastAnalyzedAt: 0,
