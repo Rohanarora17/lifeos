@@ -1,6 +1,6 @@
 import { getGenAI, generateWithFallback } from './ai';
 import { canUseCloudTextReasoning, sanitizeTranscriptForCloud } from './cloud-privacy';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 
 export async function parseLockInIntent(transcript: string, _userId: string = 'default') {
     const ai = getGenAI();
@@ -26,7 +26,7 @@ JSON Schema:
 
     try {
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH || 'gemini-2.5-flash',
+            model: MODEL_PRO,
             contents: prompt,
             config: {
                 systemInstruction: "You are Jarvis, extracting structured intent from voice transcripts.",

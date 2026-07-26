@@ -7,7 +7,7 @@
 
 import { getDb } from './db';
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 import { computeEnergyComposite } from './energy-composite';
 import { classifyEnergy } from './adaptive-bands';
 import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
@@ -250,7 +250,7 @@ Respond ONLY with valid JSON (no markdown):
 
     try {
         const res = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' },
         });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
-import { MODEL_FLASH } from '@/lib/models';
+import { MODEL_PRO } from '@/lib/models';
 import { buildPersonalizationSnapshot, formatPersonalizationContext } from '@/lib/personalization-context';
 import { buildAdaptiveTaskDefaults } from '@/lib/adaptive-task-defaults';
 
@@ -52,7 +52,7 @@ Return JSON matching this schema:
 }`;
 
         const result = await generateWithFallback(ai, {
-            model: MODEL_FLASH,
+            model: MODEL_PRO,
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',

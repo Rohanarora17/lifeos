@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getGenAI, generateWithFallback } from '@/lib/ai';
-import { MODEL_FLASH } from '@/lib/models';
+import { MODEL_PRO } from '@/lib/models';
 import { buildPersonalizationSnapshot, formatPersonalizationContext, type PersonalizationSnapshot } from '@/lib/personalization-context';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 
@@ -316,7 +316,7 @@ CRITICAL RULES:
 
         try {
             const result = await generateWithFallback(ai, {
-                model: MODEL_FLASH,
+                model: MODEL_PRO,
                 contents: prompt,
                 config: {
                     responseMimeType: 'application/json'

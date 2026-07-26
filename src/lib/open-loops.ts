@@ -5,7 +5,7 @@ import { getDb } from './db';
 import { sendTelegram } from './telegram';
 import { getIntelligenceContext } from './intelligence';
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 
 export interface OpenLoop {
   type: 'goal' | 'task' | 'topic';
@@ -142,7 +142,7 @@ Rules:
 - Return ONLY the message text, no explanation`;
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 400 },
     });
@@ -221,7 +221,7 @@ Write a monthly pattern letter that:
 Max 350 words. Direct. Specific. No filler.`;
 
     const result = await generateWithFallback(ai, {
-      model: MODEL_FLASH,
+      model: MODEL_PRO,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 700 },
     });

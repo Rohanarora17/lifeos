@@ -5,7 +5,7 @@ import { getDb, setSetting, getSetting } from './db';
 import { sendTelegram } from './telegram';
 import { extractMemoryFromCheckin } from './memory-extractor';
 import { getGenAI, generateWithFallback } from './ai';
-import { MODEL_FLASH } from './models';
+import { MODEL_PRO } from './models';
 import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { generateNextDayPlan } from './next-day-planner';
 import { getFeedbackLearningSummary } from './feedback-learning';
@@ -242,7 +242,7 @@ export async function sendMorningCheckin(): Promise<void> {
     const ai = getGenAI();
     if (ai) {
       const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
+        model: MODEL_PRO,
         contents: `Generate a personalized morning check-in message for this user. Be direct, specific, and brief. Reference their actual goals, patterns, or yesterday's outcomes if relevant. Maximum 45 words. End with the adaptive question below, preserving its intent. Do not use a fixed good-morning template; adapt to today's mode, energy, workload, and likely focus window.
 
 Adaptive question to ask because ${adaptiveQuestion?.reason ?? 'the model needs a fresh daily anchor'}:
@@ -387,7 +387,7 @@ If nothing relevant for a field, return null for that field.`;
 export async function extractEveningCheckinSignalsFromText(text: string): Promise<EveningCheckinSignals> {
   const ai = getGenAI();
   const result = await generateWithFallback(ai, {
-    model: MODEL_FLASH,
+    model: MODEL_PRO,
     contents: buildEveningSignalExtractionPrompt(text),
     config: { temperature: 0.1, maxOutputTokens: 200 },
   });
@@ -423,7 +423,7 @@ export async function handleMorningCheckinResponse(text: string): Promise<void> 
     const intelligenceContext = getIntelligenceContext({ maxInsights: 1, includeToday: true });
     if (ai) {
       const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
+        model: MODEL_PRO,
         contents: `The user just answered their morning check-in. They said: "${text}" (likelihood: ${likelihoodScore ?? 'unknown'}/10). Respond in 1-2 short sentences as a focus coach. Be specific to their commitment. If likelihood is low (<=4), suggest making it smaller. If high (>=8), hold them accountable. If medium, acknowledge and set a time. Reference their goals if possible.
 
 ${intelligenceContext}
@@ -473,7 +473,7 @@ export async function handleEveningReflectionResponse(text: string): Promise<voi
     const ai = getGenAI();
     if (ai) {
       const result = await generateWithFallback(ai, {
-        model: MODEL_FLASH,
+        model: MODEL_PRO,
         contents: `The user just shared their evening reflection. Respond in one short sentence acknowledging what they shared. Be warm but direct. Maximum 20 words. No generic phrases.
 
 Their reflection: "${text.slice(0, 200)}"
