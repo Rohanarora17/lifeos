@@ -34,9 +34,38 @@ interface ScheduledJob {
     running: boolean;
 }
 
-const jobs: Map<string, ScheduledJob> = new Map();
-const timers: Map<string, ReturnType<typeof setInterval>> = new Map();
-let initialized = false;
+const schedulerGlobal = globalThis as typeof globalThis & {
+  lifeosSchedulerState?: {
+    jobs: Map<string, ScheduledJob>;
+    timers: Map<string, ReturnType<typeof setInterval>>;
+    initialized: boolean;
+  };
+};
+const schedulerState = schedulerGlobal.lifeosSchedulerState ?? {
+  jobs: new Map<string, ScheduledJob>(),
+  timers: new Map<string, ReturnType<typeof setInterval>>(),
+  initialized: false,
+};
+schedulerGlobal.lifeosSchedulerState = schedulerState;
+const jobs = schedulerState.jobs;
+const timers = schedulerState.timers;
+
+export async function fetchSchedulerEndpoint(
+  url: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = process.env.LIFEOS_API_TOKEN?.trim();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  const response = await fetch(url, { ...init, headers });
+  if (!response.ok) {
+    throw new Error(
+      `Scheduler endpoint failed: ${new URL(url).pathname} returned ${response.status}`
+    );
+  }
+  return response;
+}
 
 function buildSchedulerSnapshot() {
   const activeSession = getActiveGuardianSession();
@@ -450,15 +479,15 @@ function registerAdaptiveDailyTimeJob(
  * Safe to call multiple times — will only initialize once.
  */
 export function initScheduler(baseUrl: string = 'http://localhost:3000') {
-    if (initialized) return;
-    initialized = true;
+    if (schedulerState.initialized) return;
+    schedulerState.initialized = true;
 
     console.log('[Scheduler] Initializing LifeOS cron jobs...');
 
     // Morning brief — runs at a user override when present, otherwise learned from recent starts.
     const morningTime = configuredOrInferredTime('morning_brief_time', '08:00', inferMorningTime);
     registerDailyJob('morning_brief', morningTime, async () => {
-        await fetch(`${baseUrl}/api/summary?type=morning`);
+        await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=morning`);
         // Also send morning brief to Telegram
         try {
             const db = getDb();
@@ -506,7 +535,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Daily summary — follows the adaptive evening reflection instead of a fixed clock time.
     registerAdaptiveDailyTimeJob('daily_summary', resolveDailySummaryTime(), async () => {
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-        await fetch(`${baseUrl}/api/summary?type=daily&date=${today}`);
+        await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=daily&date=${today}`);
         // Also send daily report to Telegram
         try {
             const db = getDb();
@@ -540,7 +569,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Deep analysis — runs daily at 23:30
     registerDailyJob('deep_analysis', '23:30', async () => {
         await runAdaptiveSchedulerJob('deep_analysis', async () => {
-          await fetch(`${baseUrl}/api/behavior`, {
+          await fetchSchedulerEndpoint(`${baseUrl}/api/behavior`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: '{}',
@@ -552,7 +581,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerDailyJob('monthly_correlation', '01:00', async () => {
         const today = new Date();
         if (today.getDate() === 1) { // Only run on the 1st of the month
-            await fetch(`${baseUrl}/api/analytics/insights`, { method: 'POST' });
+            await fetchSchedulerEndpoint(`${baseUrl}/api/analytics/insights`, { method: 'POST' });
         }
     });
 
@@ -560,19 +589,19 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerIntervalJob('github_sync', 2 * 60 * 60 * 1000, async () => {
         const pat = getSetting('github_pat');
         if (!pat) return;
-        await fetch(`${baseUrl}/api/github`, { method: 'POST' });
+        await fetchSchedulerEndpoint(`${baseUrl}/api/github`, { method: 'POST' });
     });
 
     // Calendar sync — runs every 4 hours if ICS URL is configured
     registerIntervalJob('calendar_sync', 4 * 60 * 60 * 1000, async () => {
         const icsUrl = getSetting('calendar_ics_url');
         if (!icsUrl) return;
-        await fetch(`${baseUrl}/api/calendar`, { method: 'POST' });
+        await fetchSchedulerEndpoint(`${baseUrl}/api/calendar`, { method: 'POST' });
     });
 
     // Screen time collection — runs every 30 minutes
     registerIntervalJob('screen_time', 30 * 60 * 1000, async () => {
-        await fetch(`${baseUrl}/api/screentime`, {
+        await fetchSchedulerEndpoint(`${baseUrl}/api/screentime`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: '{}',
@@ -582,7 +611,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     // Alert engine — runs every 5 minutes, checks for triggers
     registerIntervalJob('alert_engine', 5 * 60 * 1000, async () => {
         await runAdaptiveSchedulerJob('alert_engine', async () => {
-            await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+            await fetchSchedulerEndpoint(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
         });
     });
 
@@ -613,7 +642,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Achievement engine - runs every 10 minutes
     registerIntervalJob('achievement_engine', 10 * 60 * 1000, async () => {
-        await fetch(`${baseUrl}/api/gamification/engine`, { method: 'POST' });
+        await fetchSchedulerEndpoint(`${baseUrl}/api/gamification/engine`, { method: 'POST' });
     });
 
     // Weekly review — Sunday evening, aligned to the current evening reflection window.
@@ -625,7 +654,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     }), async () => {
         const dayOfWeek = new Date().getDay();
         if (dayOfWeek === 0) { // Sunday
-            await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
+            await fetchSchedulerEndpoint(`${baseUrl}/api/weekly`, { method: 'POST' });
             // Also send rich weekly HTML email
             try {
                 const { sendWeeklyEmail } = await import('./notifications');
@@ -736,7 +765,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Nightly Database Backup — runs every day at 03:00
     registerDailyJob('db_backup', '03:00', async () => {
-        await fetch(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
+        await fetchSchedulerEndpoint(`${baseUrl}/api/cron?action=backup`, { method: 'POST' });
     });
 
     // Log rotation — runs nightly at 04:00, keeps logs under 10 MB each
@@ -785,7 +814,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     // Guardian policy optimization — runs nightly at 03:30, off hot path, skipped during active sessions
     registerDailyJob('guardian_optimize', '03:30', async () => {
-        const res = await fetch(`${baseUrl}/api/guardian/optimize`, { method: 'POST' });
+        const res = await fetchSchedulerEndpoint(`${baseUrl}/api/guardian/optimize`, { method: 'POST' });
         if (res.status === 409) {
             console.log('[Scheduler] guardian_optimize skipped — active session in progress');
         } else if (!res.ok) {
@@ -797,7 +826,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     registerDailyJob('data_archiving', '02:00', async () => {
         const dayOfWeek = new Date().getDay();
         if (dayOfWeek === 0) { // Sunday
-            await fetch(`${baseUrl}/api/cron?action=archive`, { method: 'POST' });
+            await fetchSchedulerEndpoint(`${baseUrl}/api/cron?action=archive`, { method: 'POST' });
         }
     });
 
@@ -1154,28 +1183,28 @@ export async function triggerJob(name: string, baseUrl: string = 'http://localho
     try {
         switch (name) {
             case 'morning_brief':
-                await fetch(`${baseUrl}/api/summary?type=morning`);
+                await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=morning`);
                 break;
             case 'daily_summary':
-                await fetch(`${baseUrl}/api/summary?type=daily&date=${new Date(Date.now() + 19800000).toISOString().slice(0, 10)}`);
+                await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=daily&date=${new Date(Date.now() + 19800000).toISOString().slice(0, 10)}`);
                 break;
             case 'deep_analysis':
-                await fetch(`${baseUrl}/api/behavior`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/behavior`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
                 break;
             case 'github_sync':
-                await fetch(`${baseUrl}/api/github`, { method: 'POST' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/github`, { method: 'POST' });
                 break;
             case 'calendar_sync':
-                await fetch(`${baseUrl}/api/calendar`, { method: 'POST' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/calendar`, { method: 'POST' });
                 break;
             case 'screen_time':
-                await fetch(`${baseUrl}/api/screentime`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/screentime`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
                 break;
             case 'alert_engine':
-                await fetch(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/alerts/engine`, { method: 'POST' });
                 break;
             case 'weekly_review':
-                await fetch(`${baseUrl}/api/weekly`, { method: 'POST' });
+                await fetchSchedulerEndpoint(`${baseUrl}/api/weekly`, { method: 'POST' });
                 break;
             default:
                 return { success: false, error: `Unknown job: ${name}` };
@@ -1195,7 +1224,7 @@ export function getSchedulerStatus(): {
     jobs: ScheduledJob[];
 } {
     return {
-        initialized,
+        initialized: schedulerState.initialized,
         jobs: Array.from(jobs.values()),
     };
 }
