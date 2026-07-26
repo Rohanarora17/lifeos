@@ -23,13 +23,44 @@ export interface SyncResult {
     errors: string[];
 }
 
+const CALENDAR_SYNC_MAX_AGE_MS = 15 * 60_000;
+let calendarSyncInFlight: Promise<SyncResult> | null = null;
+
+function latestCalendarSyncAgeMs(): number | null {
+    const row = getDb().prepare(`
+        SELECT MAX(synced_at) as synced_at
+        FROM calendar_events
+    `).get() as { synced_at: string | null } | undefined;
+    if (!row?.synced_at) return null;
+
+    const parsed = Date.parse(`${row.synced_at.replace(' ', 'T')}Z`);
+    return Number.isFinite(parsed) ? Date.now() - parsed : null;
+}
+
+/**
+ * Refresh the read-only ICS mirror before a schedule view when it is stale.
+ * Concurrent dashboard and calendar reads share a single fetch.
+ */
+export async function syncCalendarIfStale(maxAgeMs = CALENDAR_SYNC_MAX_AGE_MS): Promise<SyncResult | null> {
+    if (!getSetting('calendar_ics_url')) return null;
+
+    const ageMs = latestCalendarSyncAgeMs();
+    if (ageMs !== null && ageMs >= 0 && ageMs < maxAgeMs) return null;
+
+    if (!calendarSyncInFlight) {
+        calendarSyncInFlight = syncCalendarFromICS().finally(() => {
+            calendarSyncInFlight = null;
+        });
+    }
+    return calendarSyncInFlight;
+}
+
 /**
  * Sync calendar events from a Google Calendar ICS feed URL.
  */
 export async function syncCalendarFromICS(): Promise<SyncResult> {
     const icsUrl = getSetting('calendar_ics_url');
-    console.log('[Calendar] Starting sync. ICS URL configured:', !!icsUrl);
-    console.log('[Calendar] ICS URL:', icsUrl);
+    console.log('[Calendar] Starting ICS sync. URL configured:', !!icsUrl);
 
     if (!icsUrl) {
         return { synced: 0, total: 0, errors: ['Calendar ICS URL not configured'] };
@@ -41,7 +72,8 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         console.log('[Calendar] Fetching ICS from url...');
         const res = await fetch(icsUrl, {
             headers: { 'User-Agent': 'LifeOS/1.0' },
-            next: { revalidate: 0 }
+            next: { revalidate: 0 },
+            signal: AbortSignal.timeout(10_000),
         });
 
         console.log('[Calendar] Fetch response status:', res.status, res.statusText);
@@ -81,7 +113,7 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         let eventCount = 0;
 
         for (const ev of events) {
-            let instances: { start: Date, end: Date }[] = [];
+            const instances: { start: Date, end: Date }[] = [];
 
             const evStart = new Date(ev.startTime);
             const evEnd = new Date(ev.endTime || ev.startTime);
@@ -89,8 +121,6 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
 
             if (ev.rrule) {
                 try {
-                    // Create RRule from string with explicit dtstart
-                    const rruleObj = rrulestr(ev.rrule, { forceset: true });
                     // NOTE: Node-rrule uses the dtstart provided in the options mapping, but rrulestr can take it from string or it assumes current date. 
                     // Better to parse with our known start date to fix bounds.
                     const rruleWithStart = rrulestr(`DTSTART:${formatDateToICS(evStart)}\n${ev.rrule}`);
@@ -120,7 +150,7 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                     );
                     eventCount++;
                     result.synced++;
-                } catch (e) {
+                } catch {
                     // Ignore individual upsert collisions quietly
                 }
             }

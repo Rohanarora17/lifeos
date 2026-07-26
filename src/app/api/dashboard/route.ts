@@ -12,12 +12,15 @@ import { getAdaptiveTaskRecommendations } from '@/lib/adaptive-task-recommendati
 import { buildAdaptiveDashboardPolicy } from '@/lib/adaptive-dashboard-policy';
 import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
+import { syncCalendarIfStale } from '@/lib/calendar';
 
 // GET: Dashboard overview data
 export async function GET() {
   try {
     const db = getDb();
     const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+
+    await syncCalendarIfStale();
 
     const activityStats = getDailyActivityStats(db, today);
 

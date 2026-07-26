@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { syncCalendarFromICS, getTodayEvents, getUpcomingEvents, getCalendarEvents } from '@/lib/calendar';
+import { syncCalendarFromICS, syncCalendarIfStale, getTodayEvents, getUpcomingEvents, getCalendarEvents } from '@/lib/calendar';
 import { buildAdaptiveCalendarPolicy } from '@/lib/adaptive-calendar-policy';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 
@@ -8,6 +8,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action') || 'today';
     const view = action === 'upcoming' ? 'upcoming' : 'today';
+    await syncCalendarIfStale();
     const snapshot = buildPersonalizationSnapshot({
         surface: 'scheduler',
         maxInsights: 2,
