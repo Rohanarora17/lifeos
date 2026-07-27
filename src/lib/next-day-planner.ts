@@ -1359,6 +1359,13 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         if (existingCandidate) {
           matchingTask = existingCandidate;
           finalTaskId = existingCandidate.id;
+          // Synchronize existing task's target focus minutes with the AI planned session block duration
+          try {
+            db.prepare('UPDATE tasks SET estimated_minutes = ?, due_date = ? WHERE id = ?')
+              .run(spec.durationMinutes, planDate, finalTaskId);
+          } catch { /* non-critical */ }
+          matchingTask.estimated_minutes = spec.durationMinutes;
+          matchingTask.remaining_minutes = spec.durationMinutes;
         } else {
           // Auto-materialize task card in `tasks` table so it appears in /tasks
           const maxPos = db.prepare(
@@ -1469,7 +1476,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           durationMinutes: row.duration_minutes,
         });
 
-        if (input.syncCalendar) {
+        if (input.syncCalendar || isCalendarConfigured()) {
           const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
           db.prepare(`
             UPDATE planned_focus_sessions
@@ -1720,7 +1727,19 @@ export async function updatePlannedFocusSession(id: string, patch: {
     `).run(title, taskId, plannedStart.getTime(), durationMinutes, status, existing.soft_watch_id);
   }
 
-  if (patch.syncCalendar) {
+  // Synchronize linked task card in `tasks` table so /tasks reflects title, estimate, and due date
+  if (taskId && taskId > 0) {
+    try {
+      db.prepare(`
+        UPDATE tasks
+        SET title = ?, estimated_minutes = ?, due_date = ?
+        WHERE id = ?
+      `).run(title, durationMinutes, planDate, taskId);
+    } catch { /* non-critical */ }
+  }
+
+  const shouldSyncCalendar = patch.syncCalendar !== false && (patch.syncCalendar || isCalendarConfigured() || !!existing.calendar_event_id);
+  if (shouldSyncCalendar) {
     const description = `LifeOS next-day plan\n${pricedRule.guidance}\nReward: ${reward.xp} XP / ${reward.coins} coins\n${reward.reason}`;
     if (existing.calendar_event_id) {
       const ok = await updateCalendarEvent(existing.calendar_event_id, {
