@@ -480,7 +480,7 @@ function loadCandidateTasks(
   `).all(learnedEstimate) as Array<Omit<CandidateTask, 'remaining_minutes' | 'score' | 'reason'>>;
 
   const energy = snapshot.userState.energy;
-  return rows
+  const candidateTasks = rows
     .map((task) => {
       const target = Math.max(15, Math.round(Number(task.estimated_minutes || learnedEstimate)));
       const credited = Math.round(Number(task.credited_minutes || 0));
