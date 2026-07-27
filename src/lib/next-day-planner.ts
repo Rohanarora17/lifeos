@@ -22,7 +22,7 @@ import {
   getVoluntaryRewardMultiplier,
   taskMatchesCoachBias,
 } from './cognitive-active-coach';
-import { tryGetGenAI, generateWithFallback } from './ai';
+import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
@@ -52,15 +52,12 @@ async function synthesizePlanWithLLM(input: {
   calendarEvents: CalendarEventRow[];
   candidateTasks: CandidateTask[];
   snapshot: PersonalizationSnapshot;
-}): Promise<LLMPlannedSessionSpec[] | null> {
-  const ai = tryGetGenAI();
-  if (!ai) return null;
+}): Promise<LLMPlannedSessionSpec[]> {
+  const ai = getGenAI();
+  const uilContext = getIntelligenceContext({ maxInsights: 3, includeToday: true, includeThresholds: true });
+  const personalizationContext = formatPersonalizationContext(input.snapshot);
 
-  try {
-    const uilContext = getIntelligenceContext({ maxInsights: 3, includeToday: true, includeThresholds: true });
-    const personalizationContext = formatPersonalizationContext(input.snapshot);
-
-    const prompt = `You are the LifeOS AI Next-Day Planning Engine.
+  const prompt = `You are the LifeOS AI Next-Day Planning Engine.
 Your job is to read the user's natural language intention, evening notes, class schedule, and unified cognitive profile, then synthesize an intelligent, highly realistic focus session schedule for tomorrow.
 
 DATE: ${input.planDate}
@@ -102,26 +99,27 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
   ]
 }`;
 
-    const res = await generateWithFallback(ai, {
-      model: MODEL_PRO,
-      contents: prompt,
-      config: {
-        systemInstruction: 'You are a precise, context-aware focus session scheduling engine.',
-        responseMimeType: 'application/json',
-      },
-    });
+  const res = await generateWithFallback(ai, {
+    model: MODEL_PRO,
+    contents: prompt,
+    config: {
+      systemInstruction: 'You are a precise, context-aware focus session scheduling engine.',
+      responseMimeType: 'application/json',
+    },
+  });
 
-    const text = (res.text || '').trim();
-    if (!text) return null;
-    const parsed = JSON.parse(text) as { reasoning?: string; sessions?: LLMPlannedSessionSpec[] };
-    if (Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
-      console.log(`[LLM Planner] Successfully synthesized ${parsed.sessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
-      return parsed.sessions;
-    }
-  } catch (err) {
-    console.warn('[LLM Planner] AI synthesis failed, falling back to deterministic scheduling:', err instanceof Error ? err.message : String(err));
+  const text = (res.text || '').trim();
+  if (!text) {
+    throw new Error('AI Next-Day Planning Engine returned empty output.');
   }
-  return null;
+
+  const parsed = JSON.parse(text) as { reasoning?: string; sessions?: LLMPlannedSessionSpec[] };
+  if (!Array.isArray(parsed.sessions) || parsed.sessions.length === 0) {
+    throw new Error('AI Next-Day Planning Engine returned 0 planned sessions.');
+  }
+
+  console.log(`[LLM Planner] Successfully synthesized ${parsed.sessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
+  return parsed.sessions;
 }
 
 interface CandidateTask {
@@ -1339,226 +1337,112 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   })();
 
   if (input.regenerate !== false) {
-    let llmSessions: LLMPlannedSessionSpec[] | null = null;
-    if (intention || eveningNotes) {
-      llmSessions = await synthesizePlanWithLLM({
-        planDate,
-        intention,
-        eveningNotes,
-        sleepTime,
-        wakeEstimate,
-        calendarEvents,
-        candidateTasks,
-        snapshot,
+    const llmSessions = await synthesizePlanWithLLM({
+      planDate,
+      intention,
+      eveningNotes,
+      sleepTime,
+      wakeEstimate,
+      calendarEvents,
+      candidateTasks,
+      snapshot,
+    });
+
+    for (const spec of llmSessions) {
+      const matchingTask = candidateTasks.find(t => t.id === spec.taskId) || candidateTasks[0] || {
+        id: -1,
+        title: spec.title,
+        status: 'todo',
+        priority: 'high',
+        task_type: spec.sessionType || 'study',
+        course: null,
+        goal_id: null,
+        goal_title: null,
+        energy_required: snapshot.userState.energy,
+        estimated_minutes: spec.durationMinutes,
+        credited_minutes: 0,
+        linked_sessions: 0,
+        avg_focus_score: null,
+        last_credited_at: null,
+        remaining_minutes: spec.durationMinutes,
+        session_feedback_duration_delta: 0,
+        session_feedback_reason: null,
+        due_date: planDate,
+        score: 100,
+        reason: spec.reason || 'synthesized from natural language intention',
+      };
+
+      const rule: SessionRule = {
+        mode: spec.sessionType || 'study',
+        preferredMinutes: spec.durationMinutes,
+        minMinutes: 15,
+        maxMinutes: 120,
+        breakMinutes: 10,
+        guidance: spec.reason || 'AI scheduled focus block',
+        tools: ['notes'],
+      };
+
+      const reward = computeReward(matchingTask, spec.durationMinutes, rule, snapshot);
+      const pricedRule = { ...rule, rewardReason: reward.reason, taskReason: spec.reason };
+      const sessionId = `pfs_${randomUUID()}`;
+      const softWatchId = `nextday_${sessionId}`;
+
+      const row: PlannedFocusSession = {
+        id: sessionId,
+        plan_id: planId,
+        task_id: matchingTask.id > 0 ? matchingTask.id : null,
+        title: spec.title || matchingTask.title,
+        planned_start: spec.startIso,
+        planned_end: spec.endIso,
+        duration_minutes: spec.durationMinutes,
+        session_type: rule.mode,
+        rule_json: serializeRule(pricedRule, matchingTask),
+        reward_xp: reward.xp,
+        reward_coins: reward.coins,
+        calendar_event_id: null,
+        calendar_status: 'not_configured',
+        soft_watch_id: softWatchId,
+        status: 'planned',
+      };
+
+      db.prepare(`
+        INSERT INTO planned_focus_sessions (
+          id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
+          session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
+      `).run(
+        row.id,
+        row.plan_id,
+        row.task_id,
+        row.title,
+        row.planned_start,
+        row.planned_end,
+        row.duration_minutes,
+        row.session_type,
+        row.rule_json,
+        row.reward_xp,
+        row.reward_coins,
+        row.calendar_status,
+        row.soft_watch_id
+      );
+
+      insertSoftWatch({
+        id: softWatchId,
+        title: row.title,
+        taskId: matchingTask.id > 0 ? matchingTask.id : null,
+        goalId: matchingTask.goal_id,
+        start: new Date(spec.startIso),
+        durationMinutes: row.duration_minutes,
       });
-    }
 
-    if (llmSessions && llmSessions.length > 0) {
-      for (const spec of llmSessions) {
-        const matchingTask = candidateTasks.find(t => t.id === spec.taskId) || candidateTasks[0] || {
-          id: -1,
-          title: spec.title,
-          status: 'todo',
-          priority: 'high',
-          task_type: spec.sessionType || 'study',
-          course: null,
-          goal_id: null,
-          goal_title: null,
-          energy_required: snapshot.userState.energy,
-          estimated_minutes: spec.durationMinutes,
-          credited_minutes: 0,
-          linked_sessions: 0,
-          avg_focus_score: null,
-          last_credited_at: null,
-          remaining_minutes: spec.durationMinutes,
-          session_feedback_duration_delta: 0,
-          session_feedback_reason: null,
-          due_date: planDate,
-          score: 100,
-          reason: spec.reason || 'synthesized from natural language intention',
-        };
-
-        const rule: SessionRule = {
-          mode: spec.sessionType || 'study',
-          preferredMinutes: spec.durationMinutes,
-          minMinutes: 15,
-          maxMinutes: 120,
-          breakMinutes: 10,
-          guidance: spec.reason || 'AI scheduled focus block',
-          tools: ['notes'],
-        };
-
-        const reward = computeReward(matchingTask, spec.durationMinutes, rule, snapshot);
-        const pricedRule = { ...rule, rewardReason: reward.reason, taskReason: spec.reason };
-        const sessionId = `pfs_${randomUUID()}`;
-        const softWatchId = `nextday_${sessionId}`;
-
-        const row: PlannedFocusSession = {
-          id: sessionId,
-          plan_id: planId,
-          task_id: matchingTask.id > 0 ? matchingTask.id : null,
-          title: spec.title || matchingTask.title,
-          planned_start: spec.startIso,
-          planned_end: spec.endIso,
-          duration_minutes: spec.durationMinutes,
-          session_type: rule.mode,
-          rule_json: serializeRule(pricedRule, matchingTask),
-          reward_xp: reward.xp,
-          reward_coins: reward.coins,
-          calendar_event_id: null,
-          calendar_status: 'not_configured',
-          soft_watch_id: softWatchId,
-          status: 'planned',
-        };
-
+      if (input.syncCalendar) {
+        const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
         db.prepare(`
-          INSERT INTO planned_focus_sessions (
-            id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-            session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
-        `).run(
-          row.id,
-          row.plan_id,
-          row.task_id,
-          row.title,
-          row.planned_start,
-          row.planned_end,
-          row.duration_minutes,
-          row.session_type,
-          row.rule_json,
-          row.reward_xp,
-          row.reward_coins,
-          row.calendar_status,
-          row.soft_watch_id
-        );
-
-        insertSoftWatch({
-          id: softWatchId,
-          title: row.title,
-          taskId: matchingTask.id > 0 ? matchingTask.id : null,
-          goalId: matchingTask.goal_id,
-          start: new Date(spec.startIso),
-          durationMinutes: row.duration_minutes,
-        });
-
-        if (input.syncCalendar) {
-          const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
-          db.prepare(`
-            UPDATE planned_focus_sessions
-            SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
-            WHERE id = ?
-          `).run(calendar.eventId, calendar.status, row.id);
-        }
+          UPDATE planned_focus_sessions
+          SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
+          WHERE id = ?
+        `).run(calendar.eventId, calendar.status, row.id);
       }
-    } else {
-      let windowIndex = 0;
-      let cursor = windows[0]?.start ? new Date(windows[0].start) : null;
-
-    for (const task of candidateTasks) {
-      if (!cursor || windowIndex >= windows.length) break;
-      if (!shouldScheduleCandidate({ task, snapshot, selectedTaskIds: input.selectedTaskIds, planDate })) continue;
-      const rule = deriveSessionRule(task, snapshot, experimentBias, planDate);
-      let remaining = task.remaining_minutes;
-      // Activation path: one short ignition block for matched tasks (experiment or active coach)
-      if (
-        experimentBias.active
-        && experimentBias.kind === 'activation_block'
-        && taskMatchesCoachBias(task, experimentBias, planDate)
-      ) {
-        remaining = Math.min(remaining, experimentBias.preferredActivationMinutes || 15);
-      }
-
-      while (remaining > 0 && cursor && windowIndex < windows.length) {
-        const currentWindow = windows[windowIndex];
-        if (cursor < currentWindow.start) cursor = new Date(currentWindow.start);
-        const available = minutesBetween(cursor, currentWindow.end);
-        if (available < rule.minMinutes) {
-          windowIndex += 1;
-          cursor = windows[windowIndex]?.start ? new Date(windows[windowIndex].start) : null;
-          continue;
-        }
-
-        const duration = Math.min(rule.preferredMinutes, remaining, available);
-        const roundedDuration = clampMinutes(duration, Math.min(rule.minMinutes, available), Math.min(rule.maxMinutes, available));
-        const start = new Date(cursor);
-        const end = new Date(start.getTime() + roundedDuration * 60000);
-        const reward = computeReward(task, roundedDuration, rule, snapshot);
-        const pricedRule = { ...rule, rewardReason: reward.reason };
-        const sessionId = `pfs_${randomUUID()}`;
-        const softWatchId = `nextday_${sessionId}`;
-        const row: PlannedFocusSession = {
-          id: sessionId,
-          plan_id: planId,
-          task_id: task.id > 0 ? task.id : null,
-          title: task.title,
-          planned_start: toSqlDateTime(start),
-          planned_end: toSqlDateTime(end),
-          duration_minutes: roundedDuration,
-          session_type: rule.mode,
-          rule_json: serializeRule(pricedRule, task),
-          reward_xp: reward.xp,
-          reward_coins: reward.coins,
-          calendar_event_id: null,
-          calendar_status: 'not_configured',
-          soft_watch_id: softWatchId,
-          status: 'planned',
-        };
-
-        db.prepare(`
-          INSERT INTO planned_focus_sessions (
-            id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-            session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
-        `).run(
-          row.id,
-          row.plan_id,
-          row.task_id,
-          row.title,
-          row.planned_start,
-          row.planned_end,
-          row.duration_minutes,
-          row.session_type,
-          row.rule_json,
-          row.reward_xp,
-          row.reward_coins,
-          row.calendar_status,
-          row.soft_watch_id
-        );
-        insertSoftWatch({
-          id: softWatchId,
-          title: row.title,
-          taskId: task.id > 0 ? task.id : null,
-          goalId: task.goal_id,
-          start,
-          durationMinutes: row.duration_minutes,
-        });
-
-        if (input.syncCalendar) {
-          const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
-          db.prepare(`
-            UPDATE planned_focus_sessions
-            SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
-            WHERE id = ?
-          `).run(calendar.eventId, calendar.status, row.id);
-          insertSoftWatch({
-            id: softWatchId,
-            title: row.title,
-            taskId: row.task_id,
-            goalId: task.goal_id,
-            start,
-            durationMinutes: row.duration_minutes,
-            calendarEventId: calendar.eventId,
-          });
-        }
-
-        remaining -= roundedDuration;
-        cursor = new Date(end.getTime() + rule.breakMinutes * 60000);
-        if (minutesBetween(cursor, currentWindow.end) < rule.minMinutes) {
-          windowIndex += 1;
-          cursor = windows[windowIndex]?.start ? new Date(windows[windowIndex].start) : null;
-        }
-      }
-    }
     }
   }
 
