@@ -21,12 +21,13 @@ function useFakeCalendar(): boolean {
   return process.env.LIFEOS_FAKE_GOOGLE_CALENDAR === '1' || process.env.LIFEOS_FAKE_GOOGLE_CALENDAR === 'true';
 }
 
-export function getOAuth2Client() {
-  return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+export function getOAuth2Client(redirectUri?: string) {
+  const uri = redirectUri || process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/calendar/google/callback';
+  return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, uri);
 }
 
-export function getAuthUrl(state?: string): string {
-  const auth = getOAuth2Client();
+export function getAuthUrl(state?: string, redirectUri?: string): string {
+  const auth = getOAuth2Client(redirectUri);
   return auth.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
@@ -41,8 +42,8 @@ export function getAuthUrl(state?: string): string {
 /**
  * Exchange auth code for tokens and store refresh token in DB.
  */
-export async function handleOAuthCallback(code: string): Promise<void> {
-  const auth = getOAuth2Client();
+export async function handleOAuthCallback(code: string, redirectUri?: string): Promise<void> {
+  const auth = getOAuth2Client(redirectUri);
   const { tokens } = await auth.getToken(code);
   auth.setCredentials(tokens);
   if (tokens.refresh_token) {

@@ -4,11 +4,22 @@ import { getAuthUrl } from '@/lib/google-calendar';
 // GET: Redirect user to Google OAuth consent screen
 export async function GET(req: NextRequest) {
   const state = crypto.randomUUID();
-  const url = getAuthUrl(state);
+  const origin = req.nextUrl.origin;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${origin}/api/calendar/google/callback`;
+  const url = getAuthUrl(state, redirectUri);
   const response = NextResponse.redirect(url);
   response.cookies.set({
     name: 'lifeos_google_oauth_state',
     value: state,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.nextUrl.protocol === 'https:',
+    path: '/api/calendar/google/callback',
+    maxAge: 10 * 60,
+  });
+  response.cookies.set({
+    name: 'lifeos_google_oauth_redirect_uri',
+    value: redirectUri,
     httpOnly: true,
     sameSite: 'lax',
     secure: req.nextUrl.protocol === 'https:',
