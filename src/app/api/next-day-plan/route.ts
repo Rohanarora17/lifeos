@@ -3,6 +3,7 @@ import {
   cancelPlannedFocusSession,
   generateNextDayPlan,
   getNextDayPlan,
+  syncAllPlannedSessionsToCalendar,
   updatePlannedFocusSession,
   type NextDayPlanInput,
 } from '@/lib/next-day-planner';
@@ -33,6 +34,17 @@ export async function POST(req: Request) {
       regenerate: body.regenerate,
     });
     return NextResponse.json({ success: true, ...payload });
+  } catch (error) {
+    return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const date = url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10);
+    const result = await syncAllPlannedSessionsToCalendar(date);
+    return NextResponse.json({ success: true, ...result });
   } catch (error) {
     return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
   }

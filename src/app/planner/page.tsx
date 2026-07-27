@@ -284,6 +284,7 @@ export default function PlannerPage() {
         setData(payload);
         setSleepTime(payload.plan?.sleep_time || payload.suggestedInputs.sleepTime);
         setWakeEstimate(payload.plan?.wake_estimate || payload.suggestedInputs.wakeEstimate);
+        if (payload.calendarConfigured) setSyncCalendar(true);
         if (payload.plan) {
             setMood(payload.plan.mood || payload.suggestedInputs.mood || payload.personalization.mood || 'medium');
             setEnergy(payload.plan.energy || payload.suggestedInputs.energy || payload.personalization.energy || 'medium');
@@ -413,6 +414,28 @@ export default function PlannerPage() {
         });
     };
 
+    const [syncingCalendar, setSyncingCalendar] = useState(false);
+    const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+    const triggerCalendarSync = async () => {
+        setSyncingCalendar(true);
+        setSyncNotice(null);
+        try {
+            const res = await fetch(`/api/next-day-plan?date=${date}`, { method: 'PUT' });
+            const result = await res.json() as { success: boolean; configured: boolean; syncedCount?: number; authUrl?: string; message: string };
+            if (result.authUrl) {
+                window.location.href = result.authUrl;
+                return;
+            }
+            setSyncNotice(result.message);
+            await loadPlan(date);
+        } catch {
+            setSyncNotice('Failed to sync calendar.');
+        } finally {
+            setSyncingCalendar(false);
+        }
+    };
+
     return (
         <div className="max-w-[1180px] mx-auto animate-fade-in">
             <div className="flex items-start justify-between gap-4 mb-6">
@@ -430,11 +453,33 @@ export default function PlannerPage() {
                         onChange={event => setDate(event.target.value)}
                         style={{ width: 152 }}
                     />
+                    <button
+                        className="btn btn-primary btn-sm flex items-center gap-1"
+                        onClick={() => void triggerCalendarSync()}
+                        disabled={loading || syncingCalendar}
+                        title="Push planned focus sessions to Google Calendar"
+                    >
+                        📅 {syncingCalendar ? 'Syncing...' : 'Sync to Calendar'}
+                    </button>
                     <button className="btn btn-ghost btn-sm" onClick={() => void loadPlan(date)} disabled={loading}>
                         Refresh
                     </button>
                 </div>
             </div>
+
+            {syncNotice && (
+                <div
+                    className="mb-4 p-3 rounded-lg flex items-center justify-between text-xs font-medium"
+                    style={{
+                        background: 'rgba(59,130,246,0.12)',
+                        border: '1px solid rgba(59,130,246,0.3)',
+                        color: 'var(--text-primary)',
+                    }}
+                >
+                    <span>{syncNotice}</span>
+                    <button onClick={() => setSyncNotice(null)} className="ml-2 text-xs opacity-70 hover:opacity-100">✕</button>
+                </div>
+            )}
 
             {loading || !data ? (
                 <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 48 }}>
@@ -545,48 +590,56 @@ export default function PlannerPage() {
                                 <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{selectedIds.size} selected · {formatDuration(selectedMinutes)}</span>
                             </div>
                             <div className="space-y-2">
-                                {data.candidateTasks.length === 0 ? (
-                                    <div className="text-sm" style={{ color: 'var(--text-muted)' }}>{buildTaskPoolEmptyMessage(data, energy, mood)}</div>
-                                ) : data.candidateTasks.map(task => (
-                                    <button
-                                        key={task.id}
-                                        onClick={() => toggleTask(task.id)}
-                                        className="w-full text-left"
-                                        style={{
-                                            padding: '10px 11px',
-                                            borderRadius: 8,
-                                            border: `1px solid ${selectedIds.has(task.id) ? 'rgba(59,130,246,0.55)' : 'var(--border)'}`,
-                                            background: selectedIds.has(task.id) ? 'rgba(59,130,246,0.10)' : 'var(--bg-secondary)',
-                                        }}
-                                    >
-                                        <div className="flex items-start justify-between gap-2">
-                                            <div style={{ minWidth: 0 }}>
-                                                <div className="text-sm font-semibold truncate">{task.title}</div>
-                                                <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                                                    {task.reason}
-                                                </div>
+                                {(() => {
+                                    const realCandidateTasks = data.candidateTasks.filter(task => task.id > 0);
+                                    if (realCandidateTasks.length === 0) {
+                                        return (
+                                            <div className="text-xs p-3 rounded-lg" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                                                No active tasks in your pool. The AI engine will synthesize tomorrow's focus blocks directly from your <strong>Tomorrow Intention</strong> and calendar schedule.
                                             </div>
-                                            <span style={pillStyle('var(--accent-blue)', 'var(--accent-blue-glow)')}>{task.remaining_minutes}m left</span>
-                                        </div>
-                                        <div className="flex gap-2 mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
-                                            <span>{task.priority}</span>
-                                            <span>{task.energy_required} energy</span>
-                                            <span>{task.task_type}</span>
-                                            {task.course && <span>{task.course}</span>}
-                                            <span>{task.credited_minutes}/{task.estimated_minutes}m</span>
-                                        </div>
-                                        <div className="flex flex-wrap gap-2 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                                            <span>score {Math.round(task.score)}</span>
-                                            <span>{task.linked_sessions} linked session{task.linked_sessions === 1 ? '' : 's'}</span>
-                                            {task.avg_focus_score !== null && (
-                                                <span>{Math.round(task.avg_focus_score)} avg focus</span>
-                                            )}
-                                            {task.last_credited_at && (
-                                                <span>last touched {new Date(task.last_credited_at).toLocaleDateString()}</span>
-                                            )}
-                                        </div>
-                                    </button>
-                                ))}
+                                        );
+                                    }
+                                    return realCandidateTasks.map(task => (
+                                        <button
+                                            key={task.id}
+                                            onClick={() => toggleTask(task.id)}
+                                            className="w-full text-left"
+                                            style={{
+                                                padding: '10px 11px',
+                                                borderRadius: 8,
+                                                border: `1px solid ${selectedIds.has(task.id) ? 'rgba(59,130,246,0.55)' : 'var(--border)'}`,
+                                                background: selectedIds.has(task.id) ? 'rgba(59,130,246,0.10)' : 'var(--bg-secondary)',
+                                            }}
+                                        >
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div style={{ minWidth: 0 }}>
+                                                    <div className="text-sm font-semibold truncate">{task.title}</div>
+                                                    <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                                                        {task.reason}
+                                                    </div>
+                                                </div>
+                                                <span style={pillStyle('var(--accent-blue)', 'var(--accent-blue-glow)')}>{task.remaining_minutes}m left</span>
+                                            </div>
+                                            <div className="flex gap-2 mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                                <span>{task.priority}</span>
+                                                <span>{task.energy_required} energy</span>
+                                                <span>{task.task_type}</span>
+                                                {task.course && <span>{task.course}</span>}
+                                                <span>{task.credited_minutes}/{task.estimated_minutes}m</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2 mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                                <span>score {Math.round(task.score)}</span>
+                                                <span>{task.linked_sessions} linked session{task.linked_sessions === 1 ? '' : 's'}</span>
+                                                {task.avg_focus_score !== null && (
+                                                    <span>{Math.round(task.avg_focus_score)} avg focus</span>
+                                                )}
+                                                {task.last_credited_at && (
+                                                    <span>last touched {new Date(task.last_credited_at).toLocaleDateString()}</span>
+                                                )}
+                                            </div>
+                                        </button>
+                                    ));
+                                })()}
                             </div>
                         </div>
                     </section>
@@ -705,33 +758,66 @@ export default function PlannerPage() {
                                                         ))}
                                                     </div>
                                                 </div>
+                                                <div className="space-y-2.5 min-w-[160px]">
+                                                    <div>
+                                                        <label className="text-[10px] font-bold uppercase tracking-wide block mb-1" style={{ color: 'var(--text-muted)' }}>Start Time</label>
+                                                        <input
+                                                            className="input text-xs w-full"
+                                                            type="datetime-local"
+                                                            value={dateTimeLocalValue(session.planned_start)}
+                                                            onChange={event => {
+                                                                const start = new Date(event.target.value);
+                                                                const end = new Date(start.getTime() + session.duration_minutes * 60000);
+                                                                void updateSession(session, { plannedStart: start.toISOString(), plannedEnd: end.toISOString() });
+                                                            }}
+                                                            disabled={cancelled || savingId === session.id}
+                                                        />
+                                                    </div>
 
-                                                <div className="space-y-2">
-                                                    <input
-                                                        className="input"
-                                                        type="datetime-local"
-                                                        value={dateTimeLocalValue(session.planned_start)}
-                                                        onChange={event => {
-                                                            const start = new Date(event.target.value);
-                                                            const end = new Date(start.getTime() + session.duration_minutes * 60000);
-                                                            void updateSession(session, { plannedStart: start.toISOString(), plannedEnd: end.toISOString() });
-                                                        }}
-                                                        disabled={cancelled || savingId === session.id}
-                                                    />
-                                                    <select
-                                                        className="input"
-                                                        value={session.status}
-                                                        onChange={event => void updateSession(session, { status: event.target.value as PlannedFocusSession['status'] })}
-                                                        disabled={savingId === session.id}
-                                                    >
-                                                        {statusOptions.map(option => <option key={option} value={option}>{option}</option>)}
-                                                    </select>
+                                                    <div>
+                                                        <label className="text-[10px] font-bold uppercase tracking-wide block mb-1" style={{ color: 'var(--text-muted)' }}>Duration</label>
+                                                        <select
+                                                            className="input text-xs w-full"
+                                                            value={session.duration_minutes}
+                                                            onChange={event => {
+                                                                const newDuration = parseInt(event.target.value, 10);
+                                                                const start = new Date(session.planned_start);
+                                                                const end = new Date(start.getTime() + newDuration * 60000);
+                                                                void updateSession(session, { plannedStart: start.toISOString(), plannedEnd: end.toISOString() });
+                                                            }}
+                                                            disabled={cancelled || savingId === session.id}
+                                                        >
+                                                            <option value={15}>15m block</option>
+                                                            <option value={20}>20m block</option>
+                                                            <option value={30}>30m block</option>
+                                                            <option value={45}>45m block</option>
+                                                            <option value={60}>60m (1h) block</option>
+                                                            <option value={75}>75m block</option>
+                                                            <option value={90}>90m (1.5h) block</option>
+                                                            <option value={120}>120m (2h) block</option>
+                                                            <option value={150}>150m (2.5h) block</option>
+                                                            <option value={180}>180m (3h) block</option>
+                                                        </select>
+                                                    </div>
+
+                                                    <div>
+                                                        <label className="text-[10px] font-bold uppercase tracking-wide block mb-1" style={{ color: 'var(--text-muted)' }}>Status</label>
+                                                        <select
+                                                            className="input text-xs w-full"
+                                                            value={session.status}
+                                                            onChange={event => void updateSession(session, { status: event.target.value as PlannedFocusSession['status'] })}
+                                                            disabled={savingId === session.id}
+                                                        >
+                                                            {statusOptions.map(option => <option key={option} value={option}>{option}</option>)}
+                                                        </select>
+                                                    </div>
+
                                                     <button
-                                                        className="btn btn-ghost btn-sm w-full justify-center"
+                                                        className="btn btn-ghost btn-sm w-full justify-center text-xs mt-1"
                                                         onClick={() => void cancelSession(session)}
                                                         disabled={savingId === session.id || cancelled}
                                                     >
-                                                        {savingId === session.id ? 'Saving...' : 'Cancel'}
+                                                        {savingId === session.id ? 'Saving...' : 'Cancel Session'}
                                                     </button>
                                                 </div>
                                             </div>

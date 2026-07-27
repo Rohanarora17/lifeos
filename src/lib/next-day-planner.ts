@@ -1802,14 +1802,14 @@ export async function cancelPlannedFocusSession(id: string, syncCalendar = true)
   const existing = db.prepare('SELECT * FROM planned_focus_sessions WHERE id = ?').get(id) as PlannedFocusSession | undefined;
   if (!existing) return false;
 
-  if (existing.soft_watch_id) {
-    db.prepare("UPDATE soft_watch_commitments SET status = 'dismissed' WHERE id = ? AND status = 'pending'").run(existing.soft_watch_id);
-  }
-
   let calendarStatus = existing.calendar_status;
   if (syncCalendar && existing.calendar_event_id) {
     const ok = await deleteCalendarEvent(existing.calendar_event_id);
     calendarStatus = ok ? 'deleted' : 'failed';
+  }
+
+  if (existing.soft_watch_id) {
+    db.prepare("UPDATE soft_watch_commitments SET status = 'dismissed' WHERE id = ?").run(existing.soft_watch_id);
   }
 
   db.prepare(`
@@ -1817,5 +1817,82 @@ export async function cancelPlannedFocusSession(id: string, syncCalendar = true)
     SET status = 'cancelled', calendar_status = ?, updated_at = datetime('now', 'localtime')
     WHERE id = ?
   `).run(calendarStatus, id);
+
   return true;
+}
+
+export async function syncAllPlannedSessionsToCalendar(planDate = normalizeDate()): Promise<{
+  configured: boolean;
+  syncedCount: number;
+  authUrl?: string;
+  message: string;
+}> {
+  const db = getDb();
+  const normalizedDate = normalizeDate(planDate);
+  const plan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(normalizedDate) as { id: number } | undefined;
+
+  if (!plan) {
+    return {
+      configured: isCalendarConfigured(),
+      syncedCount: 0,
+      message: `No plan found for ${normalizedDate}. Please generate a plan first.`,
+    };
+  }
+
+  const sessions = db.prepare(`
+    SELECT * FROM planned_focus_sessions
+    WHERE plan_id = ? AND status != 'cancelled'
+  `).all(plan.id) as PlannedFocusSession[];
+
+  if (sessions.length === 0) {
+    return {
+      configured: isCalendarConfigured(),
+      syncedCount: 0,
+      message: 'No sessions to sync for this date.',
+    };
+  }
+
+  if (!isCalendarConfigured()) {
+    return {
+      configured: false,
+      syncedCount: 0,
+      authUrl: '/api/calendar/google/auth',
+      message: 'Google Calendar is not connected yet. Click to connect your account.',
+    };
+  }
+
+  const snapshot = buildPersonalizationSnapshot({
+    surface: 'scheduler',
+    maxInsights: 2,
+    includeMemoryFacts: 3,
+  });
+
+  let syncedCount = 0;
+  for (const session of sessions) {
+    const rule: SessionRule = {
+      mode: (session.session_type as SessionRule['mode']) || 'study',
+      preferredMinutes: session.duration_minutes,
+      minMinutes: 15,
+      maxMinutes: 120,
+      breakMinutes: 10,
+      guidance: 'Personalized focus block',
+      tools: ['notes'],
+      ...(() => { try { return JSON.parse(session.rule_json); } catch { return {}; } })(),
+    };
+    const calendar = await syncSessionCalendar(session, rule, snapshot);
+    if (calendar.eventId) {
+      db.prepare(`
+        UPDATE planned_focus_sessions
+        SET calendar_event_id = ?, calendar_status = 'created', updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `).run(calendar.eventId, session.id);
+      syncedCount++;
+    }
+  }
+
+  return {
+    configured: true,
+    syncedCount,
+    message: `Successfully synced ${syncedCount} focus session block${syncedCount === 1 ? '' : 's'} to Google Calendar!`,
+  };
 }

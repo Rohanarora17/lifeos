@@ -380,6 +380,29 @@ export default function TasksPage() {
 
     const dayCompletedTasks = selectedDay ? completedTasks.filter(t => t.completed_date === selectedDay) : [];
 
+    const [syncingCalendar, setSyncingCalendar] = useState(false);
+    const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+    const triggerCalendarSync = async () => {
+        setSyncingCalendar(true);
+        setSyncNotice(null);
+        try {
+            const today = new Date().toISOString().slice(0, 10);
+            const res = await fetch(`/api/next-day-plan?date=${today}`, { method: 'PUT' });
+            const result = await res.json() as { success: boolean; configured: boolean; syncedCount?: number; authUrl?: string; message: string };
+            if (result.authUrl) {
+                window.location.href = result.authUrl;
+                return;
+            }
+            setSyncNotice(result.message);
+            fetchTasks();
+        } catch {
+            setSyncNotice('Failed to sync calendar.');
+        } finally {
+            setSyncingCalendar(false);
+        }
+    };
+
     return (
         <div className="animate-fade-in">
             {/* Header */}
@@ -391,6 +414,14 @@ export default function TasksPage() {
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button
+                        className="btn btn-primary btn-sm flex items-center gap-1"
+                        onClick={() => void triggerCalendarSync()}
+                        disabled={syncingCalendar}
+                        title="Push planned focus sessions to Google Calendar"
+                    >
+                        📅 {syncingCalendar ? 'Syncing...' : 'Sync to Calendar'}
+                    </button>
                     {!showHistory && (
                         <button
                             className="btn btn-ghost"
@@ -411,6 +442,20 @@ export default function TasksPage() {
                     </button>
                 </div>
             </div>
+
+            {syncNotice && (
+                <div
+                    className="mb-4 p-3 rounded-lg flex items-center justify-between text-xs font-medium animate-fade-in"
+                    style={{
+                        background: 'rgba(59,130,246,0.12)',
+                        border: '1px solid rgba(59,130,246,0.3)',
+                        color: 'var(--text-primary)',
+                    }}
+                >
+                    <span>{syncNotice}</span>
+                    <button onClick={() => setSyncNotice(null)} className="ml-2 text-xs opacity-70 hover:opacity-100">✕</button>
+                </div>
+            )}
 
             {showHistory ? (
                 <div>
@@ -611,8 +656,11 @@ export default function TasksPage() {
                                                 </div>
                                                 <button
                                                     onClick={() => deleteTask(task.id)}
-                                                    className="text-xs opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
+                                                    className="text-xs opacity-60 hover:opacity-100 transition-opacity flex-shrink-0 px-1.5 py-0.5 rounded"
                                                     style={{ color: 'var(--text-muted)' }}
+                                                    onMouseOver={e => e.currentTarget.style.color = 'var(--accent-red)'}
+                                                    onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}
+                                                    title="Delete task"
                                                 >✕</button>
                                             </div>
 
