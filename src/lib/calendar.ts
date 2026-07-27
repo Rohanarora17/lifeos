@@ -98,11 +98,13 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         }
 
         const db = getDb();
+        const syncBatchTime = new Date().toISOString();
+
         const upsert = db.prepare(`
         INSERT INTO calendar_events (id, title, description, start_time, end_time, location, synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-            title = ?, description = ?, start_time = ?, end_time = ?, location = ?, synced_at = datetime('now')
+            title = ?, description = ?, start_time = ?, end_time = ?, location = ?, synced_at = ?
         `);
 
         const today = new Date();
@@ -145,8 +147,8 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                 try {
                     const instanceId = `${ev.uid}_${instance.start.toISOString()}`;
                     upsert.run(
-                        instanceId, ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location,
-                        ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location
+                        instanceId, ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location, syncBatchTime,
+                        ev.title, ev.description, instance.start.toISOString(), instance.end.toISOString(), ev.location, syncBatchTime
                     );
                     eventCount++;
                     result.synced++;
@@ -155,6 +157,14 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                 }
             }
         }
+
+        // Purge events within window that were deleted from Google Calendar (not updated in this sync batch)
+        const deleteStmt = db.prepare(`
+            DELETE FROM calendar_events
+            WHERE start_time >= ? AND start_time <= ? AND (synced_at IS NULL OR synced_at != ?)
+        `);
+        const deletedInfo = deleteStmt.run(windowStart.toISOString(), windowEnd.toISOString(), syncBatchTime);
+        console.log(`[Calendar] Purged ${deletedInfo.changes} deleted events from calendar window [${windowStart.toISOString()} to ${windowEnd.toISOString()}]`);
 
         result.total = eventCount;
 
