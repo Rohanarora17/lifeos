@@ -13,7 +13,8 @@ export async function GET(req: NextRequest) {
             const goals = db.prepare(
                 `SELECT g.id, g.title, COUNT(kn.id) as node_count
                  FROM goals g LEFT JOIN knowledge_nodes kn ON kn.goal_id = g.id
-                 WHERE g.active = 1 GROUP BY g.id ORDER BY g.created_at DESC`
+                 WHERE g.active = 1 AND (g.archived = 0 OR g.archived IS NULL)
+                 GROUP BY g.id ORDER BY g.created_at DESC`
             ).all();
             return NextResponse.json({ goals });
         }
@@ -94,7 +95,8 @@ export async function POST(req: NextRequest) {
 
             // Create prerequisite edges
             for (const concept of concepts) {
-                const prereqs: string[] = (concept as any).prerequisite_titles || (concept as any).prerequisites || [];
+                const conceptWithPrereqs = concept as typeof concept & { prerequisite_titles?: string[]; prerequisites?: string[] };
+                const prereqs: string[] = conceptWithPrereqs.prerequisite_titles || conceptWithPrereqs.prerequisites || [];
                 if (prereqs.length > 0) {
                     for (const prereqTitle of prereqs) {
                         const fromId = nodeIdMap[prereqTitle];
@@ -104,7 +106,7 @@ export async function POST(req: NextRequest) {
                                 db.prepare(
                                     `INSERT OR IGNORE INTO knowledge_edges (from_node_id, to_node_id, edge_type, weight) VALUES (?, ?, 'prerequisite', 0.7)`
                                 ).run(fromId, toId);
-                            } catch (e) { /* ignore duplicate */ }
+                            } catch { /* ignore duplicate */ }
                         }
                     }
                 }

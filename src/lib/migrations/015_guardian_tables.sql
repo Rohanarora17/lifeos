@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS node_task_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   node_id INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
   task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
-  study_session_id INTEGER REFERENCES focus_sessions(id) ON DELETE SET NULL,
+  study_session_id INTEGER,
   contribution REAL NOT NULL DEFAULT 0.4 CHECK(contribution > 0.0 AND contribution <= 1.0)
 );
 

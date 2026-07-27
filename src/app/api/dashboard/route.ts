@@ -148,7 +148,7 @@ export async function GET() {
       SELECT g.id, g.title, g.deadline, g.category,
         (SELECT COUNT(*) FROM tasks WHERE goal_id = g.id) as total_tasks,
         (SELECT COUNT(*) FROM tasks WHERE goal_id = g.id AND status = 'done') as done_tasks
-      FROM goals g WHERE g.active = 1
+      FROM goals g WHERE g.active = 1 AND (g.archived = 0 OR g.archived IS NULL)
       ORDER BY g.created_at DESC LIMIT 3
     `).all() as {
       id: number;

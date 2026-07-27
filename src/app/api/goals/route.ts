@@ -308,16 +308,43 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ ok: true });
 }
 
-// DELETE — Delete goal (unlinks tasks/habits but doesn't delete them)
+// DELETE — Delete goal and its goal-owned graph/planning records.
+// Tasks and habits are kept, but unlinked from the goal.
 export async function DELETE(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
+    try {
+        const { searchParams } = new URL(request.url);
+        const rawId = searchParams.get('id');
+        const id = rawId ? Number.parseInt(rawId, 10) : 0;
+        if (!Number.isFinite(id) || id <= 0) return NextResponse.json({ error: 'valid id required' }, { status: 400 });
 
-    const db = getDb();
-    // Unlink tasks and habits before deleting
-    db.prepare('UPDATE tasks SET goal_id = NULL WHERE goal_id = ?').run(id);
-    db.prepare('UPDATE habits SET goal_id = NULL WHERE goal_id = ?').run(id);
-    db.prepare('DELETE FROM goals WHERE id = ?').run(id);
-    return NextResponse.json({ ok: true });
+        const db = getDb();
+        let deleted = 0;
+
+        db.transaction(() => {
+            // Keep user tasks/habits, but remove their goal association.
+            db.prepare('UPDATE tasks SET goal_id = NULL WHERE goal_id = ?').run(id);
+            db.prepare('UPDATE habits SET goal_id = NULL WHERE goal_id = ?').run(id);
+
+            // Goal-owned records should disappear with the goal.
+            db.prepare('DELETE FROM node_task_links WHERE node_id IN (SELECT id FROM knowledge_nodes WHERE goal_id = ?)').run(id);
+            db.prepare(`
+                DELETE FROM knowledge_edges
+                WHERE from_node_id IN (SELECT id FROM knowledge_nodes WHERE goal_id = ?)
+                   OR to_node_id IN (SELECT id FROM knowledge_nodes WHERE goal_id = ?)
+            `).run(id, id);
+            db.prepare('DELETE FROM knowledge_nodes WHERE goal_id = ?').run(id);
+            db.prepare('DELETE FROM intentions WHERE goal_id = ?').run(id);
+            db.prepare('DELETE FROM goal_time_logs WHERE goal_id = ?').run(id);
+            try { db.prepare('UPDATE daily_checkins SET inferred_goal_id = NULL WHERE inferred_goal_id = ?').run(id); } catch {}
+
+            const result = db.prepare('DELETE FROM goals WHERE id = ?').run(id);
+            deleted = result.changes;
+        })();
+
+        if (deleted === 0) return NextResponse.json({ error: 'goal not found' }, { status: 404 });
+        return NextResponse.json({ ok: true, deleted });
+    } catch (error) {
+        console.error('Goal DELETE error:', error);
+        return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
 }

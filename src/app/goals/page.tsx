@@ -186,6 +186,7 @@ export default function GoalsPage() {
     const [allHabits, setAllHabits] = useState<HabitOption[]>([]);
     const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
     const [editingGoalTitle, setEditingGoalTitle] = useState('');
+    const [deleteError, setDeleteError] = useState('');
 
     // Form state
     const [title, setTitle] = useState('');
@@ -236,9 +237,15 @@ export default function GoalsPage() {
     };
 
     const deleteGoal = async (id: number) => {
-        await fetch(`/api/goals?id=${id}`, { method: 'DELETE' });
-        fetchGoals();
-        fetchUnlinked();
+        setDeleteError('');
+        const res = await fetch(`/api/goals?id=${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({})) as { error?: string };
+            setDeleteError(data.error || 'Failed to delete goal');
+            return;
+        }
+        await fetchGoals();
+        await fetchUnlinked();
     };
 
     const saveGoalTitle = async (id: number) => {
@@ -340,6 +347,15 @@ export default function GoalsPage() {
                     </p>
                 </div>
             </div>
+
+            {deleteError && (
+                <div
+                    className="mb-4 rounded-lg border px-4 py-3 text-sm"
+                    style={{ borderColor: 'rgba(239, 68, 68, 0.45)', color: 'var(--accent-red)', background: 'rgba(239, 68, 68, 0.08)' }}
+                >
+                    {deleteError}
+                </div>
+            )}
 
             {/* Goals List */}
             <div className="space-y-4">
