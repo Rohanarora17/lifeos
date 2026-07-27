@@ -1352,28 +1352,59 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
 
     if (llmSessions && llmSessions.length > 0) {
       for (const spec of llmSessions) {
-        const matchingTask = candidateTasks.find(t => t.id === spec.taskId) || candidateTasks[0] || {
-          id: -1,
-          title: spec.title,
-          status: 'todo',
-          priority: 'high',
-          task_type: spec.sessionType || 'study',
-          course: null,
-          goal_id: null,
-          goal_title: null,
-          energy_required: snapshot.userState.energy,
-          estimated_minutes: spec.durationMinutes,
-          credited_minutes: 0,
-          linked_sessions: 0,
-          avg_focus_score: null,
-          last_credited_at: null,
-          remaining_minutes: spec.durationMinutes,
-          session_feedback_duration_delta: 0,
-          session_feedback_reason: null,
-          due_date: planDate,
-          score: 100,
-          reason: spec.reason || 'synthesized from natural language intention',
-        };
+        let finalTaskId: number | null = null;
+        let matchingTask: CandidateTask;
+
+        const existingCandidate = candidateTasks.find(t => t.id === spec.taskId && t.id > 0);
+        if (existingCandidate) {
+          matchingTask = existingCandidate;
+          finalTaskId = existingCandidate.id;
+        } else {
+          // Auto-materialize task card in `tasks` table so it appears in /tasks
+          const maxPos = db.prepare(
+            'SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM tasks WHERE status = ?'
+          ).get('todo') as { next_pos: number };
+
+          const stmt = db.prepare(`
+            INSERT INTO tasks (
+              title, description, status, due_date, task_type, position, priority, estimated_minutes, energy_required
+            ) VALUES (?, ?, 'todo', ?, ?, ?, 'high', ?, ?)
+          `);
+
+          const res = stmt.run(
+            spec.title,
+            spec.reason || 'Synthesized from next-day planner intention',
+            planDate,
+            spec.sessionType || 'study',
+            maxPos.next_pos,
+            spec.durationMinutes,
+            snapshot.userState.energy
+          );
+
+          finalTaskId = Number(res.lastInsertRowid);
+          matchingTask = {
+            id: finalTaskId,
+            title: spec.title,
+            status: 'todo',
+            priority: 'high',
+            task_type: spec.sessionType || 'study',
+            course: null,
+            goal_id: null,
+            goal_title: null,
+            energy_required: snapshot.userState.energy,
+            estimated_minutes: spec.durationMinutes,
+            credited_minutes: 0,
+            linked_sessions: 0,
+            avg_focus_score: null,
+            last_credited_at: null,
+            remaining_minutes: spec.durationMinutes,
+            session_feedback_duration_delta: 0,
+            session_feedback_reason: null,
+            due_date: planDate,
+            score: 100,
+            reason: spec.reason || 'synthesized from natural language intention',
+          };
+        }
 
         const rule: SessionRule = {
           mode: spec.sessionType || 'study',
@@ -1393,7 +1424,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         const row: PlannedFocusSession = {
           id: sessionId,
           plan_id: planId,
-          task_id: matchingTask.id > 0 ? matchingTask.id : null,
+          task_id: finalTaskId,
           title: spec.title || matchingTask.title,
           planned_start: spec.startIso,
           planned_end: spec.endIso,
@@ -1483,10 +1514,34 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           const sessionId = `pfs_${randomUUID()}`;
           const softWatchId = `nextday_${sessionId}`;
 
+          let fallbackTaskId: number | null = task.id > 0 ? task.id : null;
+          if (!fallbackTaskId) {
+            const maxPos = db.prepare(
+              'SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM tasks WHERE status = ?'
+            ).get('todo') as { next_pos: number };
+
+            const stmt = db.prepare(`
+              INSERT INTO tasks (
+                title, description, status, due_date, task_type, position, priority, estimated_minutes, energy_required
+              ) VALUES (?, ?, 'todo', ?, ?, ?, 'high', ?, ?)
+            `);
+
+            const res = stmt.run(
+              task.title,
+              'Derived from next-day planner intention',
+              planDate,
+              task.task_type || 'study',
+              maxPos.next_pos,
+              task.estimated_minutes,
+              snapshot.userState.energy
+            );
+            fallbackTaskId = Number(res.lastInsertRowid);
+          }
+
           const row: PlannedFocusSession = {
             id: sessionId,
             plan_id: planId,
-            task_id: task.id > 0 ? task.id : null,
+            task_id: fallbackTaskId,
             title: task.title,
             planned_start: toSqlDateTime(start),
             planned_end: toSqlDateTime(end),
