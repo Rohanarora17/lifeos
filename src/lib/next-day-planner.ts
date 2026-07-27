@@ -11,8 +11,10 @@ import { getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import {
   buildPersonalizationSnapshot,
   refreshCognitiveOnSnapshot,
+  formatPersonalizationContext,
   type PersonalizationSnapshot,
 } from './personalization-context';
+import { getIntelligenceContext } from './intelligence';
 import { getAdaptiveRewardDecision, getAdaptiveTaskRewardBase } from './adaptive-rewards';
 import type { PlannerExperimentBias } from './cognitive-experiments';
 import {
@@ -20,6 +22,8 @@ import {
   getVoluntaryRewardMultiplier,
   taskMatchesCoachBias,
 } from './cognitive-active-coach';
+import { tryGetGenAI, generateWithFallback } from './ai';
+import { MODEL_PRO } from './models';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
 
@@ -27,6 +31,97 @@ interface CalendarEventRow {
   title: string;
   start_time: string;
   end_time: string;
+}
+
+interface LLMPlannedSessionSpec {
+  title: string;
+  startIso: string;
+  endIso: string;
+  durationMinutes: number;
+  sessionType?: 'problem_practice' | 'research_reading' | 'coding_build' | 'study';
+  reason?: string;
+  taskId?: number | null;
+}
+
+async function synthesizePlanWithLLM(input: {
+  planDate: string;
+  intention: string | null;
+  eveningNotes: string | null;
+  sleepTime: string;
+  wakeEstimate: string;
+  calendarEvents: CalendarEventRow[];
+  candidateTasks: CandidateTask[];
+  snapshot: PersonalizationSnapshot;
+}): Promise<LLMPlannedSessionSpec[] | null> {
+  const ai = tryGetGenAI();
+  if (!ai) return null;
+
+  try {
+    const uilContext = getIntelligenceContext({ maxInsights: 3, includeToday: true, includeThresholds: true });
+    const personalizationContext = formatPersonalizationContext(input.snapshot);
+
+    const prompt = `You are the LifeOS AI Next-Day Planning Engine.
+Your job is to read the user's natural language intention, evening notes, class schedule, and unified cognitive profile, then synthesize an intelligent, highly realistic focus session schedule for tomorrow.
+
+DATE: ${input.planDate}
+USER SLEEP WINDOW: Sleep around ${input.sleepTime}, Wake around ${input.wakeEstimate}.
+USER INTENTION FOR TOMORROW: "${input.intention || 'None'}"
+EVENING NOTES / TODAY'S REFLECTION: "${input.eveningNotes || 'None'}"
+
+=== UNIFIED INTELLIGENCE LAYER (SHARED COGNITIVE MODEL) ===
+${personalizationContext}
+
+${uilContext}
+
+=== FIXED CALENDAR COMMITMENTS (DO NOT OVERLAP WITH THESE) ===
+${input.calendarEvents.length > 0 ? input.calendarEvents.map(e => `- ${e.title}: ${e.start_time} to ${e.end_time}`).join('\n') : '- No fixed calendar commitments'}
+
+=== CANDIDATE TASKS / WORKLOAD ===
+${input.candidateTasks.map(t => `- [ID:${t.id}] ${t.title} (${t.remaining_minutes}m target, ${t.priority} priority, ${t.reason})`).join('\n')}
+
+CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
+1. Parse the user's intention and notes carefully for specific time constraints, preferences, or routines (e.g. "free at 11pm", "work 11pm to 2am", "study in morning gaps", "gym at 8 then dinner").
+2. DO NOT schedule sessions during times the user said they are busy, tired, at the gym, or eating dinner.
+3. If the user explicitly requested late-night work (e.g. 11pm to 2am) or morning gaps, YOU MUST schedule sessions during those exact requested time windows!
+4. Align session placement with the Shared Cognitive Model's peak focus hours, learned energy patterns, and risk thresholds.
+5. Do not overlap with fixed calendar commitments or sleep hours.
+6. All startIso and endIso timestamps MUST be ISO 8601 strings in IST timezone (+05:30), format: YYYY-MM-DDTHH:mm:ss.000+05:30.
+7. Return ONLY a valid JSON object matching this schema:
+{
+  "reasoning": "Brief 1-2 sentence explanation of how you parsed the natural language intention and placed sessions",
+  "sessions": [
+    {
+      "taskId": <candidate task ID as integer or null>,
+      "title": "<session title>",
+      "startIso": "<ISO timestamp>",
+      "endIso": "<ISO timestamp>",
+      "durationMinutes": <integer>,
+      "sessionType": "study|problem_practice|research_reading|coding_build",
+      "reason": "<specific reason referencing user request, e.g. Requested late-night 11pm-2am study block after gym & dinner>"
+    }
+  ]
+}`;
+
+    const res = await generateWithFallback(ai, {
+      model: MODEL_PRO,
+      contents: prompt,
+      config: {
+        systemInstruction: 'You are a precise, context-aware focus session scheduling engine.',
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const text = (res.text || '').trim();
+    if (!text) return null;
+    const parsed = JSON.parse(text) as { reasoning?: string; sessions?: LLMPlannedSessionSpec[] };
+    if (Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
+      console.log(`[LLM Planner] Successfully synthesized ${parsed.sessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
+      return parsed.sessions;
+    }
+  } catch (err) {
+    console.warn('[LLM Planner] AI synthesis failed, falling back to deterministic scheduling:', err instanceof Error ? err.message : String(err));
+  }
+  return null;
 }
 
 interface CandidateTask {
@@ -1244,8 +1339,120 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   })();
 
   if (input.regenerate !== false) {
-    let windowIndex = 0;
-    let cursor = windows[0]?.start ? new Date(windows[0].start) : null;
+    let llmSessions: LLMPlannedSessionSpec[] | null = null;
+    if (intention || eveningNotes) {
+      llmSessions = await synthesizePlanWithLLM({
+        planDate,
+        intention,
+        eveningNotes,
+        sleepTime,
+        wakeEstimate,
+        calendarEvents,
+        candidateTasks,
+        snapshot,
+      });
+    }
+
+    if (llmSessions && llmSessions.length > 0) {
+      for (const spec of llmSessions) {
+        const matchingTask = candidateTasks.find(t => t.id === spec.taskId) || candidateTasks[0] || {
+          id: -1,
+          title: spec.title,
+          status: 'todo',
+          priority: 'high',
+          task_type: spec.sessionType || 'study',
+          course: null,
+          goal_id: null,
+          goal_title: null,
+          energy_required: snapshot.userState.energy,
+          estimated_minutes: spec.durationMinutes,
+          credited_minutes: 0,
+          linked_sessions: 0,
+          avg_focus_score: null,
+          last_credited_at: null,
+          remaining_minutes: spec.durationMinutes,
+          session_feedback_duration_delta: 0,
+          session_feedback_reason: null,
+          due_date: planDate,
+          score: 100,
+          reason: spec.reason || 'synthesized from natural language intention',
+        };
+
+        const rule: SessionRule = {
+          mode: spec.sessionType || 'study',
+          preferredMinutes: spec.durationMinutes,
+          minMinutes: 15,
+          maxMinutes: 120,
+          breakMinutes: 10,
+          guidance: spec.reason || 'AI scheduled focus block',
+          tools: ['notes'],
+        };
+
+        const reward = computeReward(matchingTask, spec.durationMinutes, rule, snapshot);
+        const pricedRule = { ...rule, rewardReason: reward.reason, taskReason: spec.reason };
+        const sessionId = `pfs_${randomUUID()}`;
+        const softWatchId = `nextday_${sessionId}`;
+
+        const row: PlannedFocusSession = {
+          id: sessionId,
+          plan_id: planId,
+          task_id: matchingTask.id > 0 ? matchingTask.id : null,
+          title: spec.title || matchingTask.title,
+          planned_start: spec.startIso,
+          planned_end: spec.endIso,
+          duration_minutes: spec.durationMinutes,
+          session_type: rule.mode,
+          rule_json: serializeRule(pricedRule, matchingTask),
+          reward_xp: reward.xp,
+          reward_coins: reward.coins,
+          calendar_event_id: null,
+          calendar_status: 'not_configured',
+          soft_watch_id: softWatchId,
+          status: 'planned',
+        };
+
+        db.prepare(`
+          INSERT INTO planned_focus_sessions (
+            id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
+            session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
+        `).run(
+          row.id,
+          row.plan_id,
+          row.task_id,
+          row.title,
+          row.planned_start,
+          row.planned_end,
+          row.duration_minutes,
+          row.session_type,
+          row.rule_json,
+          row.reward_xp,
+          row.reward_coins,
+          row.calendar_status,
+          row.soft_watch_id
+        );
+
+        insertSoftWatch({
+          id: softWatchId,
+          title: row.title,
+          taskId: matchingTask.id > 0 ? matchingTask.id : null,
+          goalId: matchingTask.goal_id,
+          start: new Date(spec.startIso),
+          durationMinutes: row.duration_minutes,
+        });
+
+        if (input.syncCalendar) {
+          const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
+          db.prepare(`
+            UPDATE planned_focus_sessions
+            SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
+            WHERE id = ?
+          `).run(calendar.eventId, calendar.status, row.id);
+        }
+      }
+    } else {
+      let windowIndex = 0;
+      let cursor = windows[0]?.start ? new Date(windows[0].start) : null;
 
     for (const task of candidateTasks) {
       if (!cursor || windowIndex >= windows.length) break;
@@ -1351,6 +1558,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           cursor = windows[windowIndex]?.start ? new Date(windows[windowIndex].start) : null;
         }
       }
+    }
     }
   }
 
