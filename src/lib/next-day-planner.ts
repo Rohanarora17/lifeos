@@ -1485,6 +1485,24 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           `).run(calendar.eventId, calendar.status, row.id);
         }
       }
+
+      // Aggregate total planned focus duration per task for this plan and update tasks table
+      const taskSums = db.prepare(`
+        SELECT task_id, SUM(duration_minutes) as total_planned
+        FROM planned_focus_sessions
+        WHERE plan_id = ? AND task_id IS NOT NULL AND task_id > 0 AND status != 'cancelled'
+        GROUP BY task_id
+      `).all(planId) as Array<{ task_id: number; total_planned: number }>;
+
+      for (const item of taskSums) {
+        try {
+          db.prepare(`
+            UPDATE tasks
+            SET estimated_minutes = ?, due_date = ?
+            WHERE id = ?
+          `).run(item.total_planned, planDate, item.task_id);
+        } catch { /* non-critical */ }
+      }
     } else {
       let windowIndex = 0;
       let cursor = windows[0]?.start ? new Date(windows[0].start) : null;
