@@ -607,35 +607,47 @@ export default function GoalsPage() {
                 {/* New goal form */}
                 {showNewGoal ? (
                     <div className="card space-y-3" style={{ padding: '1.25rem' }}>
-                        <input
-                            className="input w-full font-medium"
-                            placeholder={buildGoalTitlePlaceholder(personalization)}
-                            value={title}
-                            onChange={e => setTitle(e.target.value)}
-                            autoFocus
-                        />
-                        <input
-                            className="input w-full text-sm"
-                            placeholder={buildGoalDescriptionPlaceholder(personalization)}
-                            value={description}
-                            onChange={e => setDescription(e.target.value)}
-                        />
-                        <div className="grid grid-cols-2 gap-3">
-                            <select className="input text-sm" value={category} onChange={(e) => setCategory(e.target.value)}>
-                                <option value="productivity">🔧 Productivity</option>
-                                <option value="learning">📚 Learning</option>
-                                <option value="health">💪 Health</option>
-                                <option value="finance">💰 Finance</option>
-                                <option value="other">🌟 Other</option>
-                            </select>
+                        <div>
+                            <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Goal Title *</label>
                             <input
-                                type="date"
-                                className="input text-sm"
-                                value={deadline}
-                                onChange={e => setDeadline(e.target.value)}
-                                aria-label={buildGoalDeadlineLabel(personalization)}
-                                title={buildGoalDeadlineLabel(personalization)}
+                                className="input w-full font-medium"
+                                placeholder={buildGoalTitlePlaceholder(personalization)}
+                                value={title}
+                                onChange={e => setTitle(e.target.value)}
+                                autoFocus
                             />
+                        </div>
+                        <div>
+                            <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Description (optional)</label>
+                            <input
+                                className="input w-full text-sm"
+                                placeholder={buildGoalDescriptionPlaceholder(personalization)}
+                                value={description}
+                                onChange={e => setDescription(e.target.value)}
+                            />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Category</label>
+                                <select className="input text-sm w-full" value={category} onChange={(e) => setCategory(e.target.value)}>
+                                    <option value="productivity">🔧 Productivity</option>
+                                    <option value="learning">📚 Learning</option>
+                                    <option value="health">💪 Health</option>
+                                    <option value="finance">💰 Finance</option>
+                                    <option value="other">🌟 Other</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Deadline</label>
+                                <input
+                                    type="date"
+                                    className="input text-sm w-full"
+                                    value={deadline}
+                                    onChange={e => setDeadline(e.target.value)}
+                                    aria-label={buildGoalDeadlineLabel(personalization)}
+                                    title={buildGoalDeadlineLabel(personalization)}
+                                />
+                            </div>
                         </div>
                         <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                             {buildGoalDeadlineLabel(personalization)}
