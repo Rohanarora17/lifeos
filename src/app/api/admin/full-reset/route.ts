@@ -29,8 +29,8 @@ const CLEAR_TABLES = [
   'intentions',
   'goal_time_logs',
   'knowledge_edges',
-  'knowledge_nodes',
   'goals',
+  'knowledge_nodes',
 
   // Calendar, GitHub, activity, telemetry
   'calendar_events',
@@ -90,13 +90,13 @@ const CLEAR_TABLES = [
   // Gamification/user reward state
   'coin_ledger',
   'user_badges',
+  'badges',
+  'rewards_store',
 ];
 
 const PRESERVED = [
   '_migrations',
   'settings credentials/config',
-  'badges',
-  'rewards_store',
   'privacy_blocked_domains',
   'context_sensitive_domains',
 ];
@@ -118,6 +118,10 @@ function createBackupPath() {
   return path.join(backupDir, `lifeos-before-full-reset-${stamp}.db`);
 }
 
+function isMissingTableError(error: unknown) {
+  return error instanceof Error && /no such table/i.test(error.message);
+}
+
 export async function GET() {
   const db = getDb();
   const counts: Record<string, number> = {};
@@ -127,7 +131,10 @@ export async function GET() {
       const row = db.prepare(`SELECT COUNT(*) as c FROM ${t}`).get() as { c: number };
       counts[t] = row.c;
       total += row.c;
-    } catch {
+    } catch (error) {
+      if (!isMissingTableError(error)) {
+        throw error;
+      }
       counts[t] = 0;
     }
   }
@@ -166,7 +173,10 @@ export async function POST(req: NextRequest) {
           db.prepare(`DELETE FROM ${t}`).run();
           deleted[t] = before;
           try { db.prepare(`DELETE FROM sqlite_sequence WHERE name = ?`).run(t); } catch {}
-        } catch {
+        } catch (error) {
+          if (!isMissingTableError(error)) {
+            throw new Error(`Failed to clear ${t}: ${error instanceof Error ? error.message : String(error)}`);
+          }
           deleted[t] = 0;
         }
       }
