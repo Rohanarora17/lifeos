@@ -8,7 +8,6 @@ const envLoader = createIsolatedDb('lifeos-api-security-');
 const {
   authorizeApiRequest,
   configuredAdminReauthToken,
-  isValidAdminReauthToken,
   constantTimeTokenEqual,
   configuredAllowedOrigins,
 } = envLoader.requireLib('api-security.ts');
@@ -116,30 +115,6 @@ describe('API security policy', () => {
     assert.equal(
       configuredAdminReauthToken({ LIFEOS_API_TOKEN: 'legacy-secret' }),
       'legacy-secret',
-    );
-  });
-
-  it('accepts the app token as an admin reauthentication fallback', () => {
-    assert.equal(
-      isValidAdminReauthToken('admin-secret', {
-        LIFEOS_API_TOKEN: 'app-secret',
-        LIFEOS_ADMIN_REAUTH_TOKEN: 'admin-secret',
-      }),
-      true,
-    );
-    assert.equal(
-      isValidAdminReauthToken('app-secret', {
-        LIFEOS_API_TOKEN: 'app-secret',
-        LIFEOS_ADMIN_REAUTH_TOKEN: 'admin-secret',
-      }),
-      true,
-    );
-    assert.equal(
-      isValidAdminReauthToken('wrong-secret', {
-        LIFEOS_API_TOKEN: 'app-secret',
-        LIFEOS_ADMIN_REAUTH_TOKEN: 'admin-secret',
-      }),
-      false,
     );
   });
 });
