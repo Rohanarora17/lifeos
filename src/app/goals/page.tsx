@@ -606,9 +606,15 @@ export default function GoalsPage() {
 
                 {/* New goal form */}
                 {showNewGoal ? (
-                    <div className="card space-y-3" style={{ padding: '1.25rem' }}>
+                    <div className="card space-y-4" style={{ padding: '1.25rem' }}>
+                        <div className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                            Create Goal Context
+                        </div>
+
                         <div>
-                            <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Goal Title *</label>
+                            <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-primary)' }}>
+                                Goal Title *
+                            </label>
                             <input
                                 className="input w-full font-medium"
                                 placeholder={buildGoalTitlePlaceholder(personalization)}
@@ -617,18 +623,31 @@ export default function GoalsPage() {
                                 autoFocus
                             />
                         </div>
+
                         <div>
-                            <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Description (optional)</label>
-                            <input
+                            <div className="flex items-center justify-between mb-1">
+                                <label className="text-xs font-semibold block" style={{ color: 'var(--text-primary)' }}>
+                                    Tomorrow Inheritance & Focus
+                                </label>
+                                <span className="text-[11px]" style={{ color: 'var(--accent-purple)' }}>
+                                    {buildGoalDescriptionPlaceholder(personalization)}
+                                </span>
+                            </div>
+                            <textarea
                                 className="input w-full text-sm"
                                 placeholder={buildGoalDescriptionPlaceholder(personalization)}
                                 value={description}
                                 onChange={e => setDescription(e.target.value)}
+                                rows={3}
+                                style={{ resize: 'vertical' }}
                             />
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
-                                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Category</label>
+                                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-primary)' }}>
+                                    Category
+                                </label>
                                 <select className="input text-sm w-full" value={category} onChange={(e) => setCategory(e.target.value)}>
                                     <option value="productivity">🔧 Productivity</option>
                                     <option value="learning">📚 Learning</option>
@@ -637,8 +656,13 @@ export default function GoalsPage() {
                                     <option value="other">🌟 Other</option>
                                 </select>
                             </div>
+
                             <div>
-                                <label className="text-xs font-semibold block mb-1" style={{ color: 'var(--text-secondary)' }}>Deadline</label>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-xs font-semibold block" style={{ color: 'var(--text-primary)' }}>
+                                        Target Date / Deadline
+                                    </label>
+                                </div>
                                 <input
                                     type="date"
                                     className="input text-sm w-full"
@@ -647,11 +671,12 @@ export default function GoalsPage() {
                                     aria-label={buildGoalDeadlineLabel(personalization)}
                                     title={buildGoalDeadlineLabel(personalization)}
                                 />
+                                <div className="text-[11px] mt-1" style={{ color: 'var(--accent-blue)' }}>
+                                    {buildGoalDeadlineLabel(personalization)}
+                                </div>
                             </div>
                         </div>
-                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                            {buildGoalDeadlineLabel(personalization)}
-                        </div>
+
                         <div className="flex justify-end gap-2 pt-2 border-t border-[#333]">
                             <button className="btn btn-ghost btn-sm" onClick={() => setShowNewGoal(false)}>Cancel</button>
                             <button className="btn btn-primary btn-sm" onClick={addGoal}>Create Goal</button>
