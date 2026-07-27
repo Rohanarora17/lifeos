@@ -625,6 +625,44 @@ function loadCandidateTasks(
     .filter(task => task.remaining_minutes > 0)
     .filter(task => !selected || selected.has(task.id))
     .sort((a, b) => b.score - a.score);
+
+  if (candidateTasks.length === 0 && intention && intention.trim().length > 0) {
+    const cleanIntention = intention.trim();
+    let estimatedMinutes = learnedEstimate;
+    const hourMatch = cleanIntention.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)/i);
+    const minMatch = cleanIntention.match(/(\d+)\s*(?:minutes?|mins?|m)/i);
+    if (hourMatch) {
+      estimatedMinutes = Math.round(parseFloat(hourMatch[1]) * 60);
+    } else if (minMatch) {
+      estimatedMinutes = parseInt(minMatch[1], 10);
+    }
+    estimatedMinutes = Math.max(15, Math.min(240, estimatedMinutes));
+
+    candidateTasks.push({
+      id: -1,
+      title: cleanIntention.length > 70 ? cleanIntention.slice(0, 67) + '...' : cleanIntention,
+      status: 'todo',
+      priority: 'high',
+      task_type: 'study',
+      course: null,
+      goal_id: null,
+      goal_title: null,
+      energy_required: energy,
+      estimated_minutes: estimatedMinutes,
+      credited_minutes: 0,
+      linked_sessions: 0,
+      avg_focus_score: null,
+      last_credited_at: null,
+      remaining_minutes: estimatedMinutes,
+      session_feedback_duration_delta: 0,
+      session_feedback_reason: null,
+      due_date: planDate,
+      score: 100,
+      reason: `derived from tomorrow intention (${estimatedMinutes}m target)`,
+    });
+  }
+
+  return candidateTasks;
 }
 
 function shouldScheduleCandidate(input: {
@@ -1244,7 +1282,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         const row: PlannedFocusSession = {
           id: sessionId,
           plan_id: planId,
-          task_id: task.id,
+          task_id: task.id > 0 ? task.id : null,
           title: task.title,
           planned_start: toSqlDateTime(start),
           planned_end: toSqlDateTime(end),
@@ -1282,7 +1320,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         insertSoftWatch({
           id: softWatchId,
           title: row.title,
-          taskId: row.task_id,
+          taskId: task.id > 0 ? task.id : null,
           goalId: task.goal_id,
           start,
           durationMinutes: row.duration_minutes,

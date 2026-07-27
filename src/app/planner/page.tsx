@@ -533,7 +533,7 @@ export default function PlannerPage() {
                             <button
                                 className="btn btn-primary w-full mt-4 justify-center"
                                 onClick={() => void generatePlan()}
-                                disabled={generating || selectedIds.size === 0}
+                                disabled={generating || (data.candidateTasks.length > 0 && selectedIds.size === 0 && !tomorrowIntention.trim())}
                             >
                                 {generating ? 'Generating...' : data.plan ? 'Regenerate Tomorrow' : 'Generate Tomorrow'}
                             </button>
