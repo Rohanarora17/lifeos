@@ -396,21 +396,129 @@ export async function extractEveningCheckinSignalsFromText(text: string): Promis
   return parseEveningCheckinSignals(cleaned);
 }
 
+export interface MorningCheckinSignals {
+  wakeEstimate: string | null;
+  sleepTime: string | null;
+  mood: CheckinSignalLevel | null;
+  energy: CheckinSignalLevel | null;
+  dayEvents: string | null;
+  commitment: string | null;
+  likelihoodScore: number | null;
+}
+
+function buildMorningSignalExtractionPrompt(text: string): string {
+  return `Extract morning check-in, mood, energy, and sleep signals from this text. Return JSON only, no markdown.
+
+Response: "${text}"
+
+Return: {
+  "wakeEstimate": "HH:MM in 24h format if stated (e.g. '08:00'), or null",
+  "sleepTime": "HH:MM in 24h format if stated or derived from sleep duration, or null",
+  "mood": "low, medium, high, or null",
+  "energy": "low, medium, high, or null (e.g. score 7/10 -> 'medium' or 'high')",
+  "dayEvents": "notes about breakfast, classes, sleep quality, or physical state",
+  "commitment": "main commitment stated or null",
+  "likelihoodScore": number 1-10 or null
+}`;
+}
+
+export async function extractMorningCheckinSignalsFromText(text: string): Promise<MorningCheckinSignals> {
+  try {
+    const ai = getGenAI();
+    if (!ai) throw new Error('AI unavailable');
+    const result = await generateWithFallback(ai, {
+      model: MODEL_PRO,
+      contents: buildMorningSignalExtractionPrompt(text),
+      config: { temperature: 0.1, maxOutputTokens: 250 },
+    });
+    const raw = result.text ?? '';
+    const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+    const parsed = JSON.parse(cleaned) as Partial<MorningCheckinSignals>;
+    const scoreMatch = text.match(/\b([1-9]|10)\b/);
+    const score = parsed.likelihoodScore ?? (scoreMatch ? parseInt(scoreMatch[1]) : null);
+    return {
+      wakeEstimate: normalizeExtractedTime(parsed.wakeEstimate),
+      sleepTime: normalizeExtractedTime(parsed.sleepTime),
+      mood: normalizeSignalLevel(parsed.mood),
+      energy: normalizeSignalLevel(parsed.energy),
+      dayEvents: normalizeShortText(parsed.dayEvents),
+      commitment: normalizeShortText(parsed.commitment) || text.trim(),
+      likelihoodScore: score,
+    };
+  } catch {
+    const scoreMatch = text.match(/\b([1-9]|10)\b/);
+    return {
+      wakeEstimate: text.match(/\b([0-1]?[0-9]|2[0-3]):([0-5][0-9])\b/)?.[0] ?? null,
+      sleepTime: null,
+      mood: null,
+      energy: null,
+      dayEvents: text.slice(0, 300),
+      commitment: text.trim(),
+      likelihoodScore: scoreMatch ? parseInt(scoreMatch[1]) : null,
+    };
+  }
+}
+
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
   const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
+  const signals = await extractMorningCheckinSignalsFromText(text);
 
-  // Parse: look for a number 1-10 in the text for likelihood score
-  const scoreMatch = text.match(/\b([1-9]|10)\b/);
-  const likelihoodScore = scoreMatch ? parseInt(scoreMatch[1]) : null;
-
-  // The rest is the commitment (full text)
-  const commitment = text.trim();
+  const likelihoodScore = signals.likelihoodScore;
+  const commitment = signals.commitment || text.trim();
 
   const db = getDb();
-  db.prepare(`
-    INSERT INTO daily_checkins (checkin_date, checkin_type, commitment, likelihood_score, raw_transcript)
-    VALUES (?, 'morning', ?, ?, ?)
-  `).run(today, commitment, likelihoodScore, text);
+  const existing = db.prepare(
+    "SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'morning'"
+  ).get(today) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE daily_checkins SET
+        commitment = ?,
+        likelihood_score = COALESCE(?, likelihood_score),
+        raw_transcript = COALESCE(raw_transcript, '') || CHAR(10) || CHAR(10) || ?,
+        wake_estimate = COALESCE(?, wake_estimate),
+        sleep_time = COALESCE(?, sleep_time),
+        mood = COALESCE(?, mood),
+        energy = COALESCE(?, energy),
+        day_events = COALESCE(?, day_events)
+      WHERE id = ?
+    `).run(
+      commitment,
+      likelihoodScore,
+      text,
+      signals.wakeEstimate,
+      signals.sleepTime,
+      signals.mood,
+      signals.energy,
+      signals.dayEvents,
+      existing.id
+    );
+  } else {
+    db.prepare(`
+      INSERT INTO daily_checkins (
+        checkin_date, checkin_type, commitment, likelihood_score, raw_transcript,
+        wake_estimate, sleep_time, mood, energy, day_events
+      )
+      VALUES (?, 'morning', ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      today,
+      commitment,
+      likelihoodScore,
+      text,
+      signals.wakeEstimate,
+      signals.sleepTime,
+      signals.mood,
+      signals.energy,
+      signals.dayEvents
+    );
+  }
+
+  if (signals.mood) setSetting('standup_mood_today', signals.mood);
+  if (commitment && commitment.length > 3 && !/^(hi|hey|hello|morning)$/i.test(commitment)) {
+    setSetting('standup_goal_today', commitment);
+    setSetting('standup_goal_date', today);
+  }
 
   // Clear pending state
   setSetting(PENDING_CHECKIN_KEY, '');
@@ -424,12 +532,20 @@ export async function handleMorningCheckinResponse(text: string): Promise<void> 
     if (ai) {
       const result = await generateWithFallback(ai, {
         model: MODEL_PRO,
-        contents: `The user just answered their morning check-in. They said: "${text}" (likelihood: ${likelihoodScore ?? 'unknown'}/10). Respond in 1-2 short sentences as a focus coach. Be specific to their commitment. If likelihood is low (<=4), suggest making it smaller. If high (>=8), hold them accountable. If medium, acknowledge and set a time. Reference their goals if possible.
+        contents: `The user just answered their morning check-in: "${text}".
+Extracted details:
+- Wake estimate: ${signals.wakeEstimate ?? 'unknown'}
+- Sleep time/duration: ${signals.sleepTime ?? 'unknown'}
+- Energy/Mood: ${signals.energy ?? signals.mood ?? 'medium'}
+- Likelihood rating: ${likelihoodScore ?? 'unknown'}/10
+- Commitment: ${commitment}
+
+Respond in 1-2 short sentences as a supportive, sharp focus coach. Acknowledge how they are feeling/waking up and validate their commitment for today. Keep it direct and warm.
 
 ${intelligenceContext}
 
 Return ONLY the response. No quotes.`,
-        config: { temperature: 0.7, maxOutputTokens: 60 },
+        config: { temperature: 0.7, maxOutputTokens: 70 },
       });
       const generated = result.text?.trim();
       if (generated && generated.length > 5) response = generated;
@@ -446,7 +562,7 @@ Return ONLY the response. No quotes.`,
   // Extract memory in background
   void extractMemoryFromCheckin({ type: 'morning', commitment, likelihoodScore, rawTranscript: text, date: today });
 
-  console.log(`[Checkin] Morning check-in recorded. Score: ${likelihoodScore}, commitment: ${commitment?.slice(0, 50)}`);
+  console.log(`[Checkin] Morning check-in recorded. Score: ${likelihoodScore}, wake: ${signals.wakeEstimate}, mood: ${signals.mood}, commitment: ${commitment?.slice(0, 50)}`);
 }
 
 export async function handleEveningReflectionResponse(text: string): Promise<void> {

@@ -161,9 +161,17 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
 
-            // Check if there's a pending check-in response
+            // Check if there's a pending check-in response or morning checkin text
             const pendingCheckin = getPendingCheckinType();
-            if (pendingCheckin === 'morning') {
+            const nowIstHour = new Date(Date.now() + 19800000).getUTCHours();
+            const isMorningText = !text.startsWith('/') && (
+                pendingCheckin === 'morning' || (
+                    nowIstHour >= 4 && nowIstHour <= 12 &&
+                    /\b(woke|slept|rate|morning|breakfast|hours|class|attending)\b/i.test(text)
+                )
+            );
+
+            if (isMorningText) {
                 await handleMorningCheckinResponse(body.message.text);
                 return NextResponse.json({ ok: true });
             }
