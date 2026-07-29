@@ -188,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let capture = ScreenCaptureService()
     private let recorder = AudioRecorderService()
     private let overlay = OverlayWindow()
+    private let classificationPrompt = ClassificationPromptController()
     private let speaker = AVSpeechSynthesizer()
 
     private var activeSessionId: String?
@@ -208,6 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installHotkeys()
         Task { await pollHeartbeatLoop() }
         Task { await visionCaptureLoop() }
+        Task { await classificationAskLoop() }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.flushAppDwellIfActive()
@@ -371,11 +373,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let next = capture.frontmostApp()
         let elapsed = Int(Date().timeIntervalSince(currentAppStartedAt))
         if elapsed >= 5 {
-            try? await api.sendAppDwell(sessionId: sessionId, app: currentApp, title: currentTitle, durationSeconds: elapsed)
+            if let response = try? await api.sendAppDwell(
+                sessionId: sessionId,
+                app: currentApp,
+                title: currentTitle,
+                durationSeconds: elapsed
+            ), response.needsUserAsk == true || response.asked == true {
+                // Server created a pending ask — pull it for the on-screen popup immediately
+                await presentPendingClassificationAsk()
+            }
         }
         currentApp = next.app
         currentTitle = next.title
         currentAppStartedAt = Date()
+    }
+
+    /// Poll for pending native-app classification asks and show clickable popup.
+    private func classificationAskLoop() async {
+        while true {
+            if activeSessionId != nil {
+                await presentPendingClassificationAsk()
+            } else if classificationPrompt.isVisible {
+                await MainActor.run { classificationPrompt.hide() }
+            }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+        }
+    }
+
+    private func presentPendingClassificationAsk() async {
+        do {
+            let response = try await api.fetchClassificationAsk()
+            guard response.ok, let pending = response.pending else {
+                if classificationPrompt.isVisible {
+                    await MainActor.run { classificationPrompt.hide() }
+                }
+                return
+            }
+            await MainActor.run {
+                classificationPrompt.show(
+                    app: pending.app,
+                    sessionTitle: pending.sessionTargetTitle,
+                    reason: "Is this productive for your focus session? (privacy: content not shown)"
+                ) { [weak self] category in
+                    Task { @MainActor in
+                        await self?.submitClassificationChoice(category)
+                    }
+                }
+            }
+        } catch {
+            copilotLog("Classification ask poll failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func submitClassificationChoice(_ category: String) async {
+        do {
+            let result = try await api.resolveClassificationAsk(category: category)
+            let label = result.ok
+                ? "Saved: \(result.app ?? "app") → \(category)"
+                : (result.error ?? "Could not save classification")
+            await MainActor.run {
+                overlay.show(callouts: [], message: label)
+            }
+            copilotLog("Classification resolved: \(category) ok=\(result.ok)")
+        } catch {
+            await MainActor.run {
+                overlay.show(callouts: [], message: "Failed to save classification")
+            }
+            copilotLog("Classification resolve failed: \(error.localizedDescription)")
+        }
     }
 }
 

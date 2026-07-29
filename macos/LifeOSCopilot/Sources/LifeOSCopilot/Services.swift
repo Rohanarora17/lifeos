@@ -333,7 +333,7 @@ final class LifeOSAPIClient {
         _ = try await responseData(for: request)
     }
 
-    func sendAppDwell(sessionId: String, app: String, title: String, durationSeconds: Int) async throws {
+    func sendAppDwell(sessionId: String, app: String, title: String, durationSeconds: Int) async throws -> NativeIngestResponse {
         let url = serverBase.appendingPathComponent("/api/native/ingest")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -346,7 +346,30 @@ final class LifeOSAPIClient {
             "windowTitle": title,
             "durationSeconds": durationSeconds
         ])
-        _ = try await responseData(for: request)
+        let data = try await responseData(for: request)
+        return try JSONDecoder().decode(NativeIngestResponse.self, from: data)
+    }
+
+    func fetchClassificationAsk() async throws -> ClassificationAskResponse {
+        let url = serverBase.appendingPathComponent("/api/native/classification-ask")
+        var request = URLRequest(url: url)
+        authorize(&request)
+        let data = try await responseData(for: request)
+        return try JSONDecoder().decode(ClassificationAskResponse.self, from: data)
+    }
+
+    func resolveClassificationAsk(category: String) async throws -> ClassificationResolveResponse {
+        let url = serverBase.appendingPathComponent("/api/native/classification-ask")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "category": category,
+            "source": "activity_ui"
+        ])
+        let data = try await responseData(for: request)
+        return try JSONDecoder().decode(ClassificationResolveResponse.self, from: data)
     }
 
     func sendTurn(sessionId: String, transcript: String?, audioURL: URL?, screenshotBase64: String?, selectedText: String?, app: String, title: String, screenSize: (width: Double, height: Double), cursorPoint: (x: Double, y: Double)) async throws -> CopilotTurnResponse {

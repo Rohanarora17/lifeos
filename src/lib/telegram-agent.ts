@@ -775,9 +775,17 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     }
 
     // Slash command dispatch
-    // Telegram menu / group chats often send "/morning@MyBot" — strip bot suffix on the command token.
-    const cmd = text.trim().replace(/^(\/[a-z0-9_]+)@[^\s]+/i, '$1');
-    const cmdLower = cmd.toLowerCase();
+    // Normalize: trim, strip zero-width chars, allow "\tasks" typo, strip @BotName suffix.
+    const cmd = text
+        .trim()
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/^\\+/, '/') // user sometimes types \task instead of /task
+        .replace(/^(\/[a-z0-9_]+)@[^\s]+/i, '$1');
+    let cmdLower = cmd.toLowerCase();
+    // Aliases
+    if (cmdLower === '/task') cmdLower = '/tasks';
+    if (cmdLower === '/reviews') cmdLower = '/review';
+    if (cmdLower === '/end') cmdLower = '/endsession';
 
     if (cmdLower === '/start' || cmdLower === '/menu') {
         await sendTelegram(formatTelegramMenuMessage(), 'HTML', FULL_MENU_KEYBOARD);

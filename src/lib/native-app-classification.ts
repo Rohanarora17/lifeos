@@ -388,19 +388,17 @@ export async function maybeAskNativeCategory(input: {
     ],
   ];
 
-  const sent = await sendTelegram(
+  // Primary UX: on-screen LifeOS Copilot popup (polls GET /api/native/classification-ask).
+  // Telegram is a secondary channel if the bot is configured.
+  void sendTelegram(
     `📱 <b>${escapeHtml(input.app)}</b> during <b>${escapeHtml(topic)}</b>\n\n` +
-      `I cannot see the content (privacy). Is this productive for the session, neutral, or a distraction?\n\n` +
-      `<i>${escapeHtml(input.classify.reason)}</i>\n\n` +
-      `Reply <code>productive</code> / <code>neutral</code> / <code>distraction</code> or tap a button. I will remember.`,
+      `Also showing an on-screen prompt. Is this productive, neutral, or a distraction?\n\n` +
+      `<i>${escapeHtml(input.classify.reason)}</i>`,
     'HTML',
     keyboard,
-  );
+  ).catch(() => { /* non-fatal — copilot popup is primary */ });
 
-  if (!sent) {
-    writePendingAsk(null);
-    return { asked: false };
-  }
+  // Pending state stays even if Telegram fails — copilot will still poll it.
   return { asked: true };
 }
 

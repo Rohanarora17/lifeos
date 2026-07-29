@@ -32,6 +32,7 @@ export interface ApiAuthorization {
 const DEVICE_PATHS = [
     '/api/daemon/ingest',
     '/api/native/ingest',
+    '/api/native/classification-ask',
     '/api/guardian/vision',
     '/api/guardian/events',
     '/api/guardian/state',

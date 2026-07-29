@@ -6,6 +6,7 @@ const COMMANDS = [
   { command: 'menu', description: 'Show main menu with all buttons' },
   { command: 'status', description: 'Current session status and energy' },
   { command: 'tasks', description: "Today's ranked tasks" },
+  { command: 'task', description: 'Alias for /tasks' },
   { command: 'habits', description: "Today's habit check-ins" },
   { command: 'goals', description: 'Goal health status' },
   { command: 'plan', description: 'Tomorrow adaptive plan' },

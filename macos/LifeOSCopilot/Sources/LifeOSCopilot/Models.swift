@@ -46,5 +46,32 @@ struct NativeIngestResponse: Codable {
     let ok: Bool
     let stored: String?
     let category: String?
+    let needsUserAsk: Bool?
+    let asked: Bool?
+    let error: String?
+}
+
+struct ClassificationAskPending: Codable {
+    let app: String
+    let sessionId: String
+    let sessionTargetTitle: String
+    let preferenceDomain: String?
+    let activityCount: Int?
+    let askedAt: Double?
+    let expiresAt: Double?
+}
+
+struct ClassificationAskResponse: Codable {
+    let ok: Bool
+    let pending: ClassificationAskPending?
+    let error: String?
+}
+
+struct ClassificationResolveResponse: Codable {
+    let ok: Bool
+    let app: String?
+    let category: String?
+    let updated: Int?
+    let message: String?
     let error: String?
 }

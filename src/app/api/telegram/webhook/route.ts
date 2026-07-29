@@ -168,15 +168,19 @@ export async function POST(request: Request) {
                 console.warn('[Webhook] native category ask handling failed:', err);
             }
 
+            // Slash commands always win over pending conversational intercepts
+            // (evening check-in / weekly reckoning previously swallowed /review /tasks).
+            const isSlashCommand = /^\s*[/\\][a-zA-Z]/.test(text);
+
             // Pending session context — user replied with context after being prompted
             const pendingSessionRaw = getSetting('pending_session_context');
-            if (pendingSessionRaw) {
+            if (pendingSessionRaw && !isSlashCommand) {
                 await handlePendingSessionContext(text, pendingSessionRaw);
                 return NextResponse.json({ ok: true });
             }
 
             // Weekly reckoning response
-            if (getSetting('pending_weekly_reckoning') === 'true') {
+            if (getSetting('pending_weekly_reckoning') === 'true' && !isSlashCommand) {
                 await handleWeeklyReckoningResponse(text);
                 return NextResponse.json({ ok: true });
             }
@@ -205,7 +209,7 @@ export async function POST(request: Request) {
                 text.trim().split(/\s+/).length >= 2 &&
                 /\b(woke|slept|rate|breakfast|hours|class|attending|commitment|likelihood)\b/i.test(text)
             );
-            const isMorningText = !text.startsWith('/') && (
+            const isMorningText = !isSlashCommand && (
                 pendingCheckin === 'morning' || looksLikeMorningAnswer
             );
 
@@ -213,14 +217,15 @@ export async function POST(request: Request) {
                 await handleMorningCheckinResponse(body.message.text);
                 return NextResponse.json({ ok: true });
             }
-            if (pendingCheckin === 'evening') {
+            // CRITICAL: must not swallow /review /tasks /status while evening is pending
+            if (pendingCheckin === 'evening' && !isSlashCommand) {
                 await handleEveningReflectionResponse(body.message.text);
                 return NextResponse.json({ ok: true });
             }
 
             // Check if user is replying to an override follow-up
             const recentFollowUp = getRecentUnansweredFollowUp();
-            if (recentFollowUp) {
+            if (recentFollowUp && !isSlashCommand) {
                 await handleOverrideFollowupResponse(body.message.text, recentFollowUp.id);
                 return NextResponse.json({ ok: true });
             }
