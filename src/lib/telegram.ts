@@ -34,9 +34,17 @@ function getTelegramSnapshot(): PersonalizationSnapshot | null {
   }
 }
 
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function modeLine(snapshot: PersonalizationSnapshot | null): string | null {
   if (!snapshot) return null;
-  return `<i>${MODE_LABEL[snapshot.moment.mode]} · ${snapshot.userState.energy} energy · ${snapshot.moment.guidance}</i>`;
+  const guidance = escapeTelegramHtml(String(snapshot.moment.guidance || ''));
+  return `<i>${MODE_LABEL[snapshot.moment.mode]} · ${snapshot.userState.energy} energy · ${guidance}</i>`;
 }
 
 function scoreEmoji(score: number, snapshot: PersonalizationSnapshot | null, kind: 'focus' | 'day'): string {
@@ -259,17 +267,18 @@ export function buildClassifyKeyboard(actId: number): InlineKeyboard {
 
 /** Build a keyboard with up to 3 task-start chips. */
 export function buildTaskChipsKeyboard(tasks: Array<{ id: number; title: string }>): InlineKeyboard {
+  // Telegram rejects keyboards that contain an empty row — never push [] as a row.
   const chips = tasks.slice(0, 3).map(t => ({
-    text: t.title.length > 20 ? t.title.slice(0, 18) + '…' : t.title,
+    text: (t.title.length > 20 ? t.title.slice(0, 18) + '…' : t.title).slice(0, 64),
     callback_data: `task:start:${t.id}`,
   }));
-  return [
-    chips,
-    [
-      { text: '🎯 Custom Topic', callback_data: 'action:new_session' },
-      { text: '📊 Status', callback_data: 'action:status' },
-    ],
-  ];
+  const rows: InlineKeyboard = [];
+  if (chips.length > 0) rows.push(chips);
+  rows.push([
+    { text: '🎯 Custom Topic', callback_data: 'action:new_session' },
+    { text: '📊 Status', callback_data: 'action:status' },
+  ]);
+  return rows;
 }
 
 /**
@@ -814,8 +823,11 @@ export function formatTasksList(
       else if (days <= 3) dueBadge = ` ⚠️ in ${days}d`;
       else dueBadge = ` · in ${days}d`;
     }
-    const reasonTag = t.priority_reason ? `\n   <i>${t.priority_reason}</i>` : '';
-    return `${rankTag}${courseTag}${t.title}${typeTag}${dueBadge}${reasonTag}`;
+    const reasonRaw = t.priority_reason || (t as { reason?: string }).reason;
+    const reasonTag = reasonRaw ? `\n   <i>${escapeTelegramHtml(String(reasonRaw))}</i>` : '';
+    const safeTitle = escapeTelegramHtml(String(t.title || 'Untitled'));
+    const safeCourse = t.course ? `[${escapeTelegramHtml(String(t.course))}] ` : '';
+    return `${rankTag}${safeCourse}${safeTitle}${typeTag}${dueBadge}${reasonTag}`;
     }),
   ].filter(line => line !== null) as string[];
 

@@ -588,9 +588,38 @@ function fetchTasksData() {
         const { computeEnergyComposite } = require('./energy-composite') as typeof import('./energy-composite');
         const { rankTasksForSession } = require('./session-task-ranker') as typeof import('./session-task-ranker');
         const energy = computeEnergyComposite();
-        return rankTasksForSession(energy.composite_score, 6);
-    } catch {
-        return [];
+        const ranked = rankTasksForSession(energy.composite_score, 6);
+        // Normalize field names for formatTasksList (expects priority_reason)
+        return ranked.map((t) => ({
+            ...t,
+            priority_reason: (t as { priority_reason?: string | null; reason?: string }).priority_reason
+                ?? (t as { reason?: string }).reason
+                ?? null,
+        }));
+    } catch (err) {
+        console.error('[TelegramAgent] rankTasksForSession failed, falling back to SQL:', err);
+        try {
+            const db = getDb();
+            return db.prepare(`
+                SELECT id, title, status, priority, task_type, course, due_date, due_time,
+                       priority_rank, priority_reason
+                FROM tasks
+                WHERE status NOT IN ('done', 'cancelled')
+                ORDER BY
+                  CASE WHEN priority_rank IS NULL THEN 1 ELSE 0 END,
+                  priority_rank ASC,
+                  CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+                  due_date ASC
+                LIMIT 8
+            `).all() as Array<{
+                id: number; title: string; status: string; priority?: string;
+                task_type?: string; course?: string | null; due_date?: string | null;
+                due_time?: string | null; priority_rank?: number | null; priority_reason?: string | null;
+            }>;
+        } catch (sqlErr) {
+            console.error('[TelegramAgent] tasks SQL fallback failed:', sqlErr);
+            return [];
+        }
     }
 }
 
@@ -1451,8 +1480,26 @@ export async function executeAction(
         }
 
         case 'SHOW_TASKS': {
-            const tasks = fetchTasksData();
-            await sendTelegram(formatTasksList(tasks), 'HTML', buildTaskChipsKeyboard(tasks.map(t => ({ id: t.id, title: t.title }))));
+            try {
+                const tasks = fetchTasksData();
+                const text = formatTasksList(tasks);
+                const keyboard = buildTaskChipsKeyboard(tasks.map(t => ({ id: t.id, title: t.title })));
+                const sent = await sendTelegram(text, 'HTML', keyboard);
+                if (!sent) {
+                    // Fallback without keyboard / HTML if Telegram rejects payload
+                    const plain = tasks.length === 0
+                        ? 'No open tasks. Create one with /addtask Title here'
+                        : tasks.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
+                    await sendTelegram(`📋 <b>Tasks</b>\n\n${plain}`, 'HTML', FULL_MENU_KEYBOARD);
+                }
+            } catch (err) {
+                console.error('[TelegramAgent] SHOW_TASKS failed:', err);
+                await sendTelegram(
+                    `⚠️ Could not load tasks: ${(err as Error).message}\nTry /addtask or the web Tasks page.`,
+                    'HTML',
+                    FULL_MENU_KEYBOARD,
+                );
+            }
             break;
         }
 
