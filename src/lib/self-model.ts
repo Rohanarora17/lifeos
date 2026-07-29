@@ -119,14 +119,22 @@ function addBelief(target: SelfModelBelief[], belief: SelfModelBelief): void {
 }
 
 function buildCoverage(profile: UserIntelligenceProfile): SelfModelCoverage {
+  // Lazy import avoids circular deps with intelligence/personalization in tests
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { lookbackStartDate, getHistoryStartDate } = require('./history-epoch') as typeof import('./history-epoch');
+  const epoch = getHistoryStartDate();
+  const d14 = lookbackStartDate(14);
+  const d30 = lookbackStartDate(30);
+  const d45 = lookbackStartDate(45);
+
   return {
-    semanticFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE status != 'superseded'`),
-    activeMemoryFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE status = 'active'`),
-    feedbackFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE source = 'feedback_learning' AND status != 'superseded'`),
-    feedbackEvents30d: getCount(`SELECT COUNT(*) as c FROM agent_action_outcomes WHERE created_at >= datetime('now', '-30 days') AND helpful IS NOT NULL`),
-    checkins14d: getCount(`SELECT COUNT(*) as c FROM daily_checkins WHERE checkin_date >= date('now', '-14 days')`),
-    focusSessions30d: getCount(`SELECT COUNT(*) as c FROM guardian_session_summaries WHERE COALESCE(completed_at, started_at) >= datetime('now', '-30 days')`),
-    calibrationSessions: getCount(`SELECT COUNT(*) as c FROM session_feedback WHERE created_at >= datetime('now', '-45 days')`),
+    semanticFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE status != 'superseded' AND date(COALESCE(created_at, updated_at, '1970-01-01')) >= ?`, [epoch]),
+    activeMemoryFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE status = 'active' AND date(COALESCE(created_at, updated_at, '1970-01-01')) >= ?`, [epoch]),
+    feedbackFacts: getCount(`SELECT COUNT(*) as c FROM mem_facts WHERE source = 'feedback_learning' AND status != 'superseded' AND date(COALESCE(created_at, updated_at, '1970-01-01')) >= ?`, [epoch]),
+    feedbackEvents30d: getCount(`SELECT COUNT(*) as c FROM agent_action_outcomes WHERE helpful IS NOT NULL AND date(created_at) >= ?`, [d30]),
+    checkins14d: getCount(`SELECT COUNT(*) as c FROM daily_checkins WHERE checkin_date >= ?`, [d14]),
+    focusSessions30d: getCount(`SELECT COUNT(*) as c FROM guardian_session_summaries WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?`, [d30]),
+    calibrationSessions: getCount(`SELECT COUNT(*) as c FROM session_feedback WHERE date(created_at) >= ?`, [d45]),
     latestUilVersion: profile.version,
   };
 }

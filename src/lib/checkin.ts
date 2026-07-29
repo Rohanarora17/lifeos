@@ -11,6 +11,7 @@ import { generateNextDayPlan } from './next-day-planner';
 import { getFeedbackLearningSummary } from './feedback-learning';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { buildSelfModel, selectSelfModelQuestion, type SelfModelGapQuestion } from './self-model';
+import { ensureHistoryStartDate } from './history-epoch';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
 
@@ -205,24 +206,36 @@ function buildMorningFallbackMessage(input: {
 
 // ─── Send Functions ──────────────────────────────────────────────────────────
 
-export async function sendMorningCheckin(): Promise<void> {
+export type CheckinSendResult =
+  | 'sent'
+  | 'already_pending'
+  | 'already_completed'
+  | 'send_failed';
+
+export async function sendMorningCheckin(options: { force?: boolean } = {}): Promise<CheckinSendResult> {
   const today = todayIst();
+  const force = options.force === true;
 
-  // Check 1: already sent today (pending state) — user hasn't replied yet
-  const pendingDate = getSetting(PENDING_CHECKIN_DATE_KEY);
-  if (pendingDate === today) {
-    console.log('[Checkin] Morning check-in already sent today (pending), skipping.');
-    return;
-  }
-
-  // Check 2: already answered today (DB record)
+  // Check 1: already answered today (DB record)
   const db = getDb();
   const existing = db.prepare(
     "SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'morning'"
   ).get(today) as { id: number } | undefined;
   if (existing) {
     console.log('[Checkin] Morning check-in already completed today, skipping.');
-    return;
+    return 'already_completed';
+  }
+
+  // Check 2: already sent today (pending state) — user hasn't replied yet
+  // Scheduler path skips; manual /morning can re-open with force.
+  const pendingDate = getSetting(PENDING_CHECKIN_DATE_KEY);
+  const pendingType = getSetting(PENDING_CHECKIN_KEY);
+  if (!force && pendingDate === today) {
+    console.log('[Checkin] Morning check-in already sent today (pending), skipping.');
+    return 'already_pending';
+  }
+  if (force && pendingDate === today && pendingType === 'morning') {
+    // Keep pending open, but still re-send the prompt so the user gets feedback.
   }
 
   // Claim the slot BEFORE the async LLM call — prevents concurrent restarts from both firing
@@ -272,23 +285,40 @@ Return ONLY the message text. No quotes.`,
     setSetting(PENDING_CHECKIN_KEY, 'morning');
     setSetting(PENDING_CHECKIN_SENT_AT_KEY, Date.now().toString());
     console.log('[Checkin] Morning check-in sent.');
-  } else {
-    // Send failed — clear the claim so it can retry
+    return 'sent';
+  }
+
+  // Send failed — clear the claim so it can retry (unless another pending check-in was open)
+  if (!(force && pendingDate === today && pendingType === 'morning')) {
     setSetting(PENDING_CHECKIN_DATE_KEY, '');
   }
+  return 'send_failed';
 }
 
-export async function sendEveningReflection(): Promise<void> {
+export async function sendEveningReflection(options: { force?: boolean } = {}): Promise<CheckinSendResult> {
   const today = todayIst();
+  const force = options.force === true;
 
-  // Don't send if already sent today
+  // Don't send if already completed today (unless force re-opens the prompt after complete)
   const db = getDb();
   const existing = db.prepare(
     "SELECT id FROM daily_checkins WHERE checkin_date = ? AND checkin_type = 'evening'"
   ).get(today) as { id: number } | undefined;
-  if (existing) {
+  if (existing && !force) {
     console.log('[Checkin] Evening reflection already sent today, skipping.');
-    return;
+    return 'already_completed';
+  }
+  if (existing && force) {
+    // Manual /journal after complete: tell caller, do not wipe completed record.
+    return 'already_completed';
+  }
+
+  // Pending evening already open — scheduler skips; force re-sends the questions.
+  const pendingDate = getSetting(PENDING_CHECKIN_DATE_KEY);
+  const pendingType = getSetting(PENDING_CHECKIN_KEY);
+  if (!force && pendingDate === today && pendingType === 'evening') {
+    console.log('[Checkin] Evening reflection already pending today, skipping.');
+    return 'already_pending';
   }
 
   const snapshot = buildPersonalizationSnapshot({
@@ -306,7 +336,9 @@ export async function sendEveningReflection(): Promise<void> {
     setSetting(PENDING_CHECKIN_DATE_KEY, today);
     setSetting(PENDING_CHECKIN_SENT_AT_KEY, Date.now().toString());
     console.log('[Checkin] Evening reflection sent.');
+    return 'sent';
   }
+  return 'send_failed';
 }
 
 // ─── Response Handlers ───────────────────────────────────────────────────────
@@ -461,6 +493,8 @@ export async function extractMorningCheckinSignalsFromText(text: string): Promis
 
 export async function handleMorningCheckinResponse(text: string): Promise<void> {
   const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
+  // First intentional engagement pins the coaching history epoch if unset
+  ensureHistoryStartDate(today);
   const signals = await extractMorningCheckinSignalsFromText(text);
 
   const likelihoodScore = signals.likelihoodScore;
@@ -567,6 +601,7 @@ Return ONLY the response. No quotes.`,
 
 export async function handleEveningReflectionResponse(text: string): Promise<void> {
   const today = getSetting(PENDING_CHECKIN_DATE_KEY) || todayIst();
+  ensureHistoryStartDate(today);
 
   // Look for tomorrow score (1-10) at the end of the response
   const scoreMatch = text.match(/\b([1-9]|10)\b[^\d]*$/);

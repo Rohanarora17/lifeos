@@ -6,6 +6,7 @@ import { sendTelegram } from './telegram';
 import { getIntelligenceContext } from './intelligence';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import { daysSinceInHistory, getHistoryStartDate, isInCurrentHistory } from './history-epoch';
 
 export interface OpenLoop {
   type: 'goal' | 'task' | 'topic';
@@ -23,12 +24,14 @@ export interface OpenLoop {
 export function getOpenLoops(): OpenLoop[] {
   const db = getDb();
   const loops: OpenLoop[] = [];
+  const historyStart = getHistoryStartDate();
 
-  // Goals that are active but have sessions in last 30 days (and not touched in 3+ days)
+  // Goals engaged in this history run, idle 3+ days (no pre-epoch guilt)
   const goals = db.prepare(`
     SELECT
       g.title,
       g.active,
+      g.created_at,
       g.updated_at,
       MAX(s.completed_at) as last_session_at,
       COUNT(s.session_id) as session_count,
@@ -36,23 +39,26 @@ export function getOpenLoops(): OpenLoop[] {
       AVG(s.elapsed_minutes) as avg_minutes
     FROM goals g
     LEFT JOIN guardian_session_summaries s ON s.target_title LIKE '%' || g.title || '%'
-      AND s.completed_at >= datetime('now', '-30 days')
+      AND date(COALESCE(s.completed_at, s.started_at), 'localtime') >= ?
     WHERE g.active = 1
     GROUP BY g.id
     HAVING session_count > 0
     ORDER BY last_session_at ASC
-  `).all() as Array<{
-    title: string; active: number; updated_at: string;
+  `).all(historyStart) as Array<{
+    title: string; active: number; created_at: string; updated_at: string;
     last_session_at: string; session_count: number;
     avg_score: number; avg_minutes: number;
   }>;
 
   for (const g of goals) {
     if (!g.last_session_at) continue;
-    const daysAgo = Math.floor(
-      (Date.now() - new Date(g.last_session_at).getTime()) / (24 * 3600 * 1000)
-    );
-    if (daysAgo >= 3) {
+    if (!isInCurrentHistory({
+      createdAt: g.created_at,
+      updatedAt: g.updated_at,
+      lastTouchedAt: g.last_session_at,
+    })) continue;
+    const daysAgo = daysSinceInHistory(g.last_session_at);
+    if (daysAgo !== null && daysAgo >= 3) {
       loops.push({
         type: 'goal',
         title: g.title,
@@ -65,26 +71,31 @@ export function getOpenLoops(): OpenLoop[] {
     }
   }
 
-  // Tasks that are in-progress or pending but not completed
+  // Tasks that are in-progress in this history run
   const tasks = db.prepare(`
     SELECT
       t.title,
       t.status,
+      t.created_at,
       t.updated_at,
       (julianday('now') - julianday(t.updated_at)) as days_since_update
     FROM tasks t
     WHERE t.status IN ('doing', 'today', 'this_week', 'next')
-      AND t.updated_at >= datetime('now', '-30 days')
+      AND date(COALESCE(t.updated_at, t.created_at)) >= ?
     ORDER BY days_since_update DESC
     LIMIT 10
-  `).all() as Array<{ title: string; status: string; updated_at: string; days_since_update: number }>;
+  `).all(historyStart) as Array<{
+    title: string; status: string; created_at: string; updated_at: string; days_since_update: number;
+  }>;
 
   for (const t of tasks) {
-    if (t.days_since_update >= 5) {
+    if (!isInCurrentHistory({ createdAt: t.created_at, updatedAt: t.updated_at })) continue;
+    const daysAgo = daysSinceInHistory(t.updated_at ?? t.created_at);
+    if (daysAgo !== null && daysAgo >= 5) {
       loops.push({
         type: 'task',
         title: t.title,
-        lastTouchedDaysAgo: Math.floor(t.days_since_update),
+        lastTouchedDaysAgo: daysAgo,
         sessionCount: 0,
         status: t.status,
       });

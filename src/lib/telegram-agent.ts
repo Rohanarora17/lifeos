@@ -775,7 +775,8 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     }
 
     // Slash command dispatch
-    const cmd = text.trim();
+    // Telegram menu / group chats often send "/morning@MyBot" — strip bot suffix on the command token.
+    const cmd = text.trim().replace(/^(\/[a-z0-9_]+)@[^\s]+/i, '$1');
     const cmdLower = cmd.toLowerCase();
 
     if (cmdLower === '/start' || cmdLower === '/menu') {
@@ -888,14 +889,46 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await executeAction('END_SESSION', '', {});
         return;
     }
-    if (cmdLower === '/reflect') {
+    if (cmdLower === '/reflect' || cmdLower === '/journal') {
         const { sendEveningReflection } = require('./checkin') as typeof import('./checkin');
-        await sendEveningReflection();
+        const result = await sendEveningReflection({ force: true });
+        if (result === 'already_completed') {
+            await sendTelegram('✅ Evening journal already logged today. Send another note anytime and I will treat it as a follow-up.', 'HTML', FULL_MENU_KEYBOARD);
+        } else if (result === 'send_failed') {
+            await sendTelegram('⚠️ Could not send the evening journal prompt. Try again in a moment.', 'HTML', FULL_MENU_KEYBOARD);
+        }
         return;
     }
     if (cmdLower === '/morning') {
         const { sendMorningCheckin } = require('./checkin') as typeof import('./checkin');
-        await sendMorningCheckin();
+        const result = await sendMorningCheckin({ force: true });
+        if (result === 'already_completed') {
+            await sendTelegram('✅ Morning check-in already logged today. Reply with updates anytime if something changed.', 'HTML', FULL_MENU_KEYBOARD);
+        } else if (result === 'already_pending') {
+            await sendTelegram('🌅 Morning check-in is already open — reply with your commitment (and likelihood 1–10).', 'HTML', FULL_MENU_KEYBOARD);
+        } else if (result === 'send_failed') {
+            await sendTelegram('⚠️ Could not send the morning check-in. Try again in a moment.', 'HTML', FULL_MENU_KEYBOARD);
+        }
+        return;
+    }
+    // /freshstart [YYYY-MM-DD] — pin coaching history so pre-epoch data is ignored
+    if (cmdLower === '/freshstart' || cmdLower.startsWith('/freshstart ')) {
+        const { setHistoryStartDate, getHistoryEpochInfo } = require('./history-epoch') as typeof import('./history-epoch');
+        const arg = cmd.slice('/freshstart'.length).trim();
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(arg) ? arg : undefined;
+        try {
+            const info = date ? setHistoryStartDate(date) : setHistoryStartDate();
+            const { touchIntelligence } = require('./intelligence') as typeof import('./intelligence');
+            touchIntelligence('fresh_start');
+            await sendTelegram(
+                `🌱 <b>Fresh start set.</b>\nHistory epoch: <b>${info.startDate}</b> (day ${info.dayIndex}).\n\nPre-epoch goals, sessions, and old “you did nothing” narratives are ignored. Coaching only uses data from this date forward.`,
+                'HTML',
+                FULL_MENU_KEYBOARD,
+            );
+            void getHistoryEpochInfo();
+        } catch (err) {
+            await sendTelegram(`⚠️ Could not set fresh start: ${(err as Error).message}`, 'HTML');
+        }
         return;
     }
     // /addtask <title>
@@ -965,6 +998,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await sendTelegram(
             `🛡️ <b>LifeOS Commands</b>\n\n` +
             `<b>Sessions</b>\n/session &lt;topic&gt; — Start focus session\n/endsession — End current session\n/status — Current session status\n\n` +
+            `<b>Check-ins</b>\n/morning — Morning check-in\n/journal — Evening journal (/reflect also works)\n/freshstart — Start coaching history from today (ignore pre-epoch past)\n\n` +
             `<b>View</b>\n/tasks — Today's ranked tasks\n/habits — Habit check-ins\n/goals — Goal health status\n/plan — Tomorrow plan\n/standup — Standup brief\n/review — Pending reviews\n/report — Daily report\n/calibration — Model accuracy\n\n` +
             `<b>Create</b>\n/addtask &lt;title&gt;\n/addgoal &lt;title&gt;\n/addhabit &lt;name&gt;\n\n` +
             `<b>Delete</b>\n/deletetask &lt;search&gt;\n/deletehabit &lt;search&gt;\n\n` +
@@ -1205,17 +1239,26 @@ export async function executeAction(
                 break;
             }
             
-            const { listSoftWatchCommitments, rescheduleSoftWatchCommitment } = require('./guardian-runtime') as typeof import('./guardian-runtime');
+            const { listSoftWatchCommitments, rescheduleSoftWatchCommitmentWithCalendar } = require('./guardian-runtime') as typeof import('./guardian-runtime');
             const comms = listSoftWatchCommitments();
             const match = comms.find(c => c.targetTitle.toLowerCase().includes(search));
             if (!match) {
                 await sendTelegram(formatTelegramLookupMiss('session', search), 'HTML', FULL_MENU_KEYBOARD);
                 break;
             }
-            rescheduleSoftWatchCommitment(match.id, startAt, payload.durationMinutes as number | undefined);
+            const rescheduled = await rescheduleSoftWatchCommitmentWithCalendar(match.id, startAt, payload.durationMinutes as number | undefined);
+            if (!rescheduled.ok) {
+                await sendTelegram(`Could not reschedule <b>${match.targetTitle}</b>. Please try again.`, 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
             if (replyText) {
                 const dates = new Date(startAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-                await sendTelegram(`✅ Rescheduled <b>${match.targetTitle}</b> to ${dates}.`, 'HTML', FULL_MENU_KEYBOARD);
+                const calendarLine = rescheduled.calendarStatus === 'synced'
+                    ? ' Calendar synced.'
+                    : rescheduled.calendarStatus === 'failed'
+                        ? ' LifeOS updated, but calendar sync failed.'
+                        : ' Saved in LifeOS; no linked calendar event.';
+                await sendTelegram(`✅ Rescheduled <b>${match.targetTitle}</b> to ${dates}.${calendarLine}`, 'HTML', FULL_MENU_KEYBOARD);
             }
             break;
         }
@@ -1358,14 +1401,18 @@ export async function executeAction(
         }
 
         case 'LOG_STANDUP': {
-            const goal = payload.goal as string | undefined;
+            const rawGoal = (payload.goal as string | undefined)?.trim();
             const mood = payload.mood as string | undefined;
-            if (!goal) { await sendTelegram('What is your goal for today?', ''); break; }
+            const isGreeting = rawGoal && /^(hi|hey|hello|good morning|morning|greetings|yo|sup)$/i.test(rawGoal);
+            if (!rawGoal || isGreeting) {
+              await sendTelegram('What is your main focus goal for today? (e.g. "Finish ZK proofs chapter" or "Complete 3 DSA problems")', 'HTML', FULL_MENU_KEYBOARD);
+              break;
+            }
             const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-            setSetting('standup_goal_today', goal);
+            setSetting('standup_goal_today', rawGoal);
             setSetting('standup_goal_date', today);
             if (mood) setSetting('standup_mood_today', mood);
-            await sendTelegram(`✅ ${replyText || `Today's goal set: <b>${goal}</b>`}`, 'HTML', FULL_MENU_KEYBOARD);
+            await sendTelegram(`✅ ${replyText || `Today's goal set: <b>${rawGoal}</b>`}`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
 
@@ -1598,6 +1645,8 @@ export async function executeAction(
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!task) { await sendTelegram(formatTelegramLookupMiss('task', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM tasks WHERE id = ?`).run(task.id);
+            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            db.prepare('UPDATE daily_scores SET ai_morning_brief = NULL WHERE date = ?').run(today);
             await sendTelegram(`🗑️ Deleted task: <b>${task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }
@@ -1628,6 +1677,8 @@ export async function executeAction(
             const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!goal) { await sendTelegram(formatTelegramLookupMiss('goal', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM goals WHERE id = ?`).run(goal.id);
+            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            db.prepare('UPDATE daily_scores SET ai_morning_brief = NULL WHERE date = ?').run(today);
             await sendTelegram(`🗑️ Deleted goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
         }

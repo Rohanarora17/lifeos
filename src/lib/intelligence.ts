@@ -4,6 +4,14 @@ import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import { getMemoryContext } from './memory';
 import { getAdaptiveBands, classifyCognitiveLoad, classifyGoalHealth, classifyFocus } from './adaptive-bands';
+import {
+  formatHistoryEpochContext,
+  getHistoryEpochInfo,
+  getHistoryStartDate,
+  historyStartEpochMs,
+  isInCurrentHistory,
+  lookbackStartDate,
+} from './history-epoch';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -411,10 +419,13 @@ function aggregateSignals(): string {
   const db = getDb();
   const nowIst = new Date(Date.now() + 19800000);
   const today = nowIst.toISOString().slice(0, 10);
-  const fortnight = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
-  const sections: string[] = [];
+  const epoch = getHistoryStartDate();
+  const fortnight = lookbackStartDate(14, today);
+  const monthStart = lookbackStartDate(30, today);
+  const epochInfo = getHistoryEpochInfo();
+  const sections: string[] = [formatHistoryEpochContext()];
 
-  // Guardian sessions
+  // Guardian sessions (post-epoch only)
   try {
     const rows = db.prepare(`
       SELECT target_title, goal_title, mood, elapsed_minutes, average_focus_score,
@@ -422,13 +433,17 @@ function aggregateSignals(): string {
              strftime('%H', started_at, 'localtime') as hour,
              date(completed_at, 'localtime') as day
       FROM guardian_session_summaries
+      WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?
       ORDER BY completed_at DESC LIMIT 30
-    `).all() as Array<Record<string, unknown>>;
+    `).all(epoch) as Array<Record<string, unknown>>;
     if (rows.length) {
-      sections.push('=== GUARDIAN SESSIONS (last 30) ===');
+      sections.push('\n=== GUARDIAN SESSIONS (this run) ===');
       for (const s of rows) {
         sections.push(`[${s.day} ${s.hour}:00] "${s.target_title}" — ${s.elapsed_minutes}min, score=${Math.round(Number(s.average_focus_score))}, mood=${s.mood ?? 'unknown'}, blocks=${s.blocked_count}`);
       }
+    } else if (epochInfo.isFreshStart) {
+      sections.push('\n=== GUARDIAN SESSIONS ===');
+      sections.push('No focus sessions yet in this run. That is early-days, not multi-week avoidance.');
     }
   } catch { /* */ }
 
@@ -438,9 +453,9 @@ function aggregateSignals(): string {
       SELECT CAST(strftime('%H', started_at, 'localtime') AS INTEGER) as hour,
              ROUND(AVG(average_focus_score)) as avg_score, COUNT(*) as count
       FROM guardian_session_summaries
-      WHERE completed_at >= datetime('now', '-30 days')
+      WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?
       GROUP BY hour ORDER BY hour
-    `).all() as Array<{ hour: number; avg_score: number; count: number }>;
+    `).all(monthStart) as Array<{ hour: number; avg_score: number; count: number }>;
     if (rows.length) {
       sections.push('\n=== HOURLY FOCUS HEATMAP ===');
       sections.push(rows.map(r => `${String(r.hour).padStart(2, '0')}:00 → score=${r.avg_score}, n=${r.count}`).join(' | '));
@@ -456,31 +471,42 @@ function aggregateSignals(): string {
     }
   } catch { /* */ }
 
-  // Goals + task completion
+  // Goals + task completion — only goals engaged in this history run
   try {
     const rows = db.prepare(`
-      SELECT g.title, g.deadline,
+      SELECT g.id, g.title, g.deadline, g.created_at, g.updated_at,
              COUNT(t.id) as total, SUM(CASE WHEN t.status='done' THEN 1 ELSE 0 END) as done,
-             COUNT(CASE WHEN t.due_date < date('now') AND t.status != 'done' THEN 1 END) as overdue
+             COUNT(CASE WHEN t.due_date < date('now') AND t.status != 'done' AND t.created_at >= ? THEN 1 END) as overdue
       FROM goals g LEFT JOIN tasks t ON t.goal_id = g.id
       WHERE g.active = 1 GROUP BY g.id
-    `).all() as Array<Record<string, unknown>>;
-    if (rows.length) {
-      sections.push('\n=== ACTIVE GOALS ===');
-      for (const g of rows) {
+    `).all(epoch) as Array<Record<string, unknown>>;
+    const inScope = rows.filter(g => isInCurrentHistory({
+      createdAt: String(g.created_at ?? ''),
+      updatedAt: String(g.updated_at ?? ''),
+    }));
+    if (inScope.length) {
+      sections.push('\n=== ACTIVE GOALS (this run) ===');
+      for (const g of inScope) {
         const pct = Number(g.total) > 0 ? Math.round((Number(g.done) / Number(g.total)) * 100) : 0;
         sections.push(`"${g.title}" ${pct}% done (${g.done}/${g.total} tasks, ${g.overdue} overdue)${g.deadline ? ` deadline=${g.deadline}` : ''}`);
       }
+    } else {
+      sections.push('\n=== ACTIVE GOALS ===');
+      sections.push(epochInfo.isFreshStart
+        ? 'No goals created in this run yet. Do not lecture about pre-epoch goals.'
+        : 'No in-scope active goals for this history epoch.');
     }
   } catch { /* */ }
 
-  // Overdue / avoided tasks
+  // Overdue / avoided tasks (created or updated post-epoch only)
   try {
     const rows = db.prepare(`
       SELECT title, julianday('now') - julianday(due_date) as days_overdue
-      FROM tasks WHERE status != 'done' AND due_date < date('now')
+      FROM tasks
+      WHERE status != 'done' AND due_date < date('now')
+        AND (date(created_at) >= ? OR date(COALESCE(updated_at, created_at)) >= ?)
       ORDER BY days_overdue DESC LIMIT 8
-    `).all() as Array<{ title: string; days_overdue: number }>;
+    `).all(epoch, epoch) as Array<{ title: string; days_overdue: number }>;
     if (rows.length) {
       sections.push('\n=== OVERDUE/AVOIDED TASKS ===');
       sections.push(rows.map(r => `"${r.title}" (${Math.round(r.days_overdue)}d overdue)`).join(', '));
@@ -504,15 +530,16 @@ function aggregateSignals(): string {
     }
   } catch { /* */ }
 
-  // Domain activity
+  // Domain activity (post-epoch lookback)
   try {
     const rows = db.prepare(`
       SELECT domain, category, ROUND(SUM(duration_seconds)/60) as mins
-      FROM activities WHERE started_at >= datetime('now','-14 days') AND domain != ''
+      FROM activities
+      WHERE date(started_at) >= ? AND domain != ''
       GROUP BY domain, category ORDER BY mins DESC LIMIT 15
-    `).all() as Array<{ domain: string; category: string; mins: number }>;
+    `).all(fortnight) as Array<{ domain: string; category: string; mins: number }>;
     if (rows.length) {
-      sections.push('\n=== BROWSING PATTERNS (14d) ===');
+      sections.push('\n=== BROWSING PATTERNS (this run lookback) ===');
       sections.push(rows.map(r => `${r.domain}(${r.category},${r.mins}min)`).join(', '));
     }
   } catch { /* */ }
@@ -575,15 +602,16 @@ function aggregateSignals(): string {
 
   // ── Task 9: New signals ────────────────────────────────────────────────────
 
-  // Sleep pattern from recent evening check-ins
+  // Sleep pattern from recent evening check-ins (post-epoch)
   try {
     const sleepRows = db.prepare(`
       SELECT sleep_time, wake_estimate, mood, energy, day_events, tomorrow_intention
       FROM daily_checkins
       WHERE checkin_type = 'evening'
+        AND checkin_date >= ?
         AND (sleep_time IS NOT NULL OR mood IS NOT NULL OR energy IS NOT NULL OR day_events IS NOT NULL)
       ORDER BY checkin_date DESC LIMIT 14
-    `).all() as Array<{
+    `).all(epoch) as Array<{
       sleep_time: string | null;
       wake_estimate: string | null;
       mood: string | null;
@@ -626,9 +654,10 @@ function aggregateSignals(): string {
       SELECT dc.checkin_date, dc.tomorrow_intention
       FROM daily_checkins dc
       WHERE dc.checkin_type = 'evening'
+        AND dc.checkin_date >= ?
         AND dc.tomorrow_intention IS NOT NULL
       ORDER BY dc.checkin_date DESC LIMIT 14
-    `).all() as Array<{ checkin_date: string; tomorrow_intention: string }>;
+    `).all(epoch) as Array<{ checkin_date: string; tomorrow_intention: string }>;
 
     let fulfilled = 0;
     for (const row of intentionRows) {
@@ -707,6 +736,12 @@ CURRENT TIME: ${timeStr} (IST)
 TRIGGER: ${trigger}
 
 ${signals}
+
+CRITICAL RULES FOR HISTORY EPOCH:
+- Coaching history starts on the HISTORY EPOCH date above. Ignore pre-epoch inactivity.
+- Never say the user "did nothing for weeks/months" based on data before the epoch.
+- If this is a fresh start (day ≤ 7) and post-epoch sessions/tasks are sparse, write an early-days narrative — not stalled/avoidance guilt about old goals.
+- Pre-epoch goals must not appear as active stalled goals unless re-engaged after the epoch.
 
 CRITICAL RULES FOR COGNITIVE SELF-MAP (if present above):
 - Pressure Dependency Index, voluntary start rate, activation energy, and crisis performance are DETERMINISTIC measurements. Treat them as ground truth.
@@ -842,8 +877,46 @@ Return ONLY valid JSON (no markdown, no explanation):
  * Get the current intelligence profile. Always returns immediately.
  * Loads from memory cache → DB → triggers background synthesis if stale.
  */
+function isProfilePreHistory(p: UserIntelligenceProfile): boolean {
+  const synthesizedAt = p.synthesizedAt || 0;
+  if (!synthesizedAt) return true;
+  return synthesizedAt < historyStartEpochMs();
+}
+
+function freshStartDefaultProfile(): UserIntelligenceProfile {
+  const info = getHistoryEpochInfo();
+  return {
+    ...UIL_DEFAULT,
+    version: 0,
+    synthesizedAt: 0,
+    trigger: 'fresh_start_epoch',
+    currentNarrative: info.isFreshStart
+      ? `Day ${info.dayIndex} of the current LifeOS run (history starts ${info.startDate}). Sparse data means early days — not long-term avoidance of old goals.`
+      : `Coaching history starts ${info.startDate}. Use only post-epoch evidence.`,
+    coachingInsights: [
+      `History epoch ${info.startDate} — ignore pre-epoch inactivity narratives.`,
+      info.isFreshStart
+        ? 'Prefer one small concrete next action over guilt about the past.'
+        : 'Judge progress only against post-epoch check-ins, sessions, and plans.',
+    ],
+    avoidancePatterns: [],
+    frictionTopics: [],
+    goalMomentum: {},
+    activeGoalsSummary: [],
+    weeklyProgressSummary: info.isFreshStart
+      ? `Fresh start day ${info.dayIndex}: no multi-week inactivity judgment.`
+      : `Progress measured since ${info.startDate}.`,
+  };
+}
+
 export function getIntelligenceProfile(): UserIntelligenceProfile {
-  if (uilProfile && Date.now() - uilCacheTs < UIL_CACHE_TTL) return uilProfile;
+  if (uilProfile && Date.now() - uilCacheTs < UIL_CACHE_TTL) {
+    if (isProfilePreHistory(uilProfile)) {
+      if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
+      return freshStartDefaultProfile();
+    }
+    return uilProfile;
+  }
 
   // Try DB
   try {
@@ -851,6 +924,12 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
     const row = db.prepare(`SELECT profile_json FROM user_intelligence_profile ORDER BY version DESC LIMIT 1`).get() as { profile_json: string } | undefined;
     if (row?.profile_json) {
       const p = JSON.parse(row.profile_json) as UserIntelligenceProfile;
+      if (isProfilePreHistory(p)) {
+        uilProfile = null;
+        uilCacheTs = 0;
+        if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
+        return freshStartDefaultProfile();
+      }
       uilProfile = p;
       uilCacheTs = Date.now();
       const staleMs = Date.now() - (p.synthesizedAt || 0);
@@ -860,7 +939,7 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
   } catch { /* */ }
 
   if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('initial');
-  return { ...UIL_DEFAULT };
+  return freshStartDefaultProfile();
 }
 
 /**
@@ -911,7 +990,10 @@ export function getIntelligenceContext(opts?: {
   const ageMin = p.synthesizedAt ? Math.round((Date.now() - p.synthesizedAt) / 60000) : null;
   const ageStr = ageMin !== null ? ` (updated ${ageMin}min ago, v${p.version})` : '';
 
-  const lines: string[] = [`=== USER INTELLIGENCE PROFILE${ageStr} ===`];
+  const lines: string[] = [
+    `=== USER INTELLIGENCE PROFILE${ageStr} ===`,
+    formatHistoryEpochContext(),
+  ];
 
   if (p.currentNarrative) lines.push(`\n📌 ${p.currentNarrative}`);
 

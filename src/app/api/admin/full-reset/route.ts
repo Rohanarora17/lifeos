@@ -5,10 +5,16 @@ import path from 'path';
 
 /**
  * POST /api/admin/full-reset
- * Clears product/user data in one shot while preserving credential/auth settings.
+ * Clears product/user history in one shot while preserving credential/auth
+ * and domain-policy configuration.
  *
  * Body: { "confirm": "FULL_RESET" }
  * GET:  preview row counts, nothing deleted.
+ *
+ * After wipe:
+ *  - history_start_date is pinned to today (IST)
+ *  - mem_facts FTS is rebuilt empty
+ *  - default badges + rewards catalog are reseeded
  */
 
 const CLEAR_TABLES = [
@@ -53,7 +59,7 @@ const CLEAR_TABLES = [
   'guardian_session_reflections',
   'guardian_session_summaries',
   'guardian_override_requests',
-  'guardian_overrides',
+  'guardian_overrides', // may not exist on all installs
   'guardian_event_log',
   'guardian_interventions',
   'guardian_canary_results',
@@ -63,6 +69,8 @@ const CLEAR_TABLES = [
   'guardian_eval_cases',
   'guardian_semantic_profiles',
   'guardian_sessions',
+  'guardian_voice_daily_usage',
+  'guardian_voice_leases',
   'session_ticks',
   'override_follow_ups',
   'calibration_history',
@@ -70,6 +78,7 @@ const CLEAR_TABLES = [
   'weekly_plans',
   'weekly_reckonings',
   'daily_checkins',
+  'focus_sessions', // legacy table (migration 003); no-op if absent
 
   // Behavioral memory, personalization, intelligence, and AI state
   'behavioral_memory',
@@ -87,29 +96,63 @@ const CLEAR_TABLES = [
   'telegram_turns',
   'agent_action_outcomes',
 
-  // Gamification/user reward state
+  // Gamification/user reward state (+ catalog; reseeded after wipe)
   'coin_ledger',
   'user_badges',
   'badges',
   'rewards_store',
 ];
 
+/** Runtime / history keys wiped; credentials and schedule config stay. */
+const TRANSIENT_SETTING_KEYS = [
+  // Continuity + UIL pacing
+  'continuity_msg_count',
+  'continuity_msg_date',
+  'last_uil_insight_sent_at',
+  'last_classify_review_session_id',
+  'streak_cliff_sent_date',
+
+  // Check-in pending state
+  'pending_checkin_type',
+  'pending_checkin_date',
+  'pending_checkin_sent_at',
+
+  // Standup / day anchors
+  'standup_goal_today',
+  'standup_mood_today',
+  'standup_goal_date',
+
+  // Telegram intercept state
+  'telegram_awaiting_feedback_session',
+  'pending_session_context',
+  'pending_weekly_reckoning',
+  'pending_weekly_reckoning_date',
+
+  // Scheduler "already sent today" dedupe
+  'scheduler_evening_reminder_last_sent_date',
+  'scheduler_next_day_plan_refresh_last_sent_date',
+
+  // Learned cognitive / experiment history (not credentials)
+  'cognitive_trait_history_v1',
+  'cognitive_trait_stances',
+  'cognitive_experiments_v1',
+
+  // Epoch is rewritten to today after wipe (delete first so we always re-pin)
+  'history_start_date',
+];
+
 const PRESERVED = [
   '_migrations',
-  'settings credentials/config',
+  'settings credentials/config (tokens, times, domain lists, calendar, XP knobs)',
   'privacy_blocked_domains',
   'context_sensitive_domains',
 ];
 
-const TRANSIENT_SETTING_KEYS = [
-  'continuity_msg_count',
-  'continuity_msg_date',
-  'last_uil_insight_sent_at',
-  'pending_checkin_type',
-  'pending_checkin_date',
-  'standup_goal_today',
-  'standup_mood_today',
-];
+const IST_OFFSET_MS = 19_800_000;
+
+function todayIst(): string {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
 
 function createBackupPath() {
   const backupDir = path.join(process.cwd(), 'data', 'reset-backups');
@@ -120,6 +163,50 @@ function createBackupPath() {
 
 function isMissingTableError(error: unknown) {
   return error instanceof Error && /no such table/i.test(error.message);
+}
+
+function rebuildMemFactsFts(db: ReturnType<typeof getDb>): string {
+  try {
+    // Content-sync FTS: rebuild from (now empty) mem_facts
+    db.exec(`INSERT INTO mem_facts_fts(mem_facts_fts) VALUES('rebuild')`);
+    return 'rebuilt';
+  } catch (error) {
+    if (isMissingTableError(error)) return 'absent';
+    // Fallback: try delete-all if rebuild unsupported
+    try {
+      db.prepare('DELETE FROM mem_facts_fts').run();
+      return 'deleted';
+    } catch (inner) {
+      return `skipped: ${inner instanceof Error ? inner.message : String(inner)}`;
+    }
+  }
+}
+
+function reseedGamificationCatalog(db: ReturnType<typeof getDb>): { badges: number; rewards: number } {
+  // Same seeds as migrations/008_gamification.sql
+  const badgeResult = db.prepare(`
+    INSERT OR IGNORE INTO badges (id, name, description, icon, metric, target) VALUES
+      (1, 'First Steps', 'Complete your first task', '👶', 'tasks_done', 1),
+      (2, 'Task Warrior', 'Complete 50 tasks', '⚔️', 'tasks_done', 50),
+      (3, 'Executioner', 'Complete 500 tasks', '🥷', 'tasks_done', 500),
+      (4, 'Getting Consistent', 'Reach a 7-day habit streak', '🔥', 'streak_days', 7),
+      (5, 'Unbreakable', 'Reach a 30-day habit streak', '💎', 'streak_days', 30),
+      (6, 'Deep Worker', 'Complete 10 Pomodoro sessions', '🧠', 'focus_sessions', 10),
+      (7, 'Monk Mode', 'Complete 100 Pomodoro sessions', '🧘', 'focus_sessions', 100)
+  `).run();
+
+  const rewardResult = db.prepare(`
+    INSERT OR IGNORE INTO rewards_store (id, title, cost, icon) VALUES
+      (1, '1 Hour Guilt-Free Gaming', 1000, '🎮'),
+      (2, 'Watch a Movie', 1500, '🍿'),
+      (3, 'Buy a Coffee out', 500, '☕'),
+      (4, 'Skip a Chore', 2000, '🧹')
+  `).run();
+
+  return {
+    badges: badgeResult.changes,
+    rewards: rewardResult.changes,
+  };
 }
 
 export async function GET() {
@@ -147,6 +234,12 @@ export async function GET() {
     totalRowsToDelete: total,
     breakdown: counts,
     transientSettingsToDelete: settingsRows.c,
+    transientSettingKeys: TRANSIENT_SETTING_KEYS,
+    postReset: {
+      history_start_date: todayIst(),
+      reseed_badges_rewards: true,
+      rebuild_mem_facts_fts: true,
+    },
     preserved: PRESERVED,
   });
 }
@@ -162,9 +255,11 @@ export async function POST(req: NextRequest) {
     }
 
     const db = getDb();
-    const deleted: Record<string, number> = {};
+    const deleted: Record<string, number | string> = {};
     const backupPath = createBackupPath();
     await db.backup(backupPath);
+
+    const epoch = todayIst();
 
     db.transaction(() => {
       for (const t of CLEAR_TABLES) {
@@ -172,7 +267,9 @@ export async function POST(req: NextRequest) {
           const before = (db.prepare(`SELECT COUNT(*) as c FROM ${t}`).get() as { c: number }).c;
           db.prepare(`DELETE FROM ${t}`).run();
           deleted[t] = before;
-          try { db.prepare(`DELETE FROM sqlite_sequence WHERE name = ?`).run(t); } catch {}
+          try {
+            db.prepare(`DELETE FROM sqlite_sequence WHERE name = ?`).run(t);
+          } catch { /* no autoincrement */ }
         } catch (error) {
           if (!isMissingTableError(error)) {
             throw new Error(`Failed to clear ${t}: ${error instanceof Error ? error.message : String(error)}`);
@@ -180,6 +277,7 @@ export async function POST(req: NextRequest) {
           deleted[t] = 0;
         }
       }
+
       try {
         const placeholders = TRANSIENT_SETTING_KEYS.map(() => '?').join(',');
         const result = db.prepare(`DELETE FROM settings WHERE key IN (${placeholders})`).run(...TRANSIENT_SETTING_KEYS);
@@ -187,18 +285,33 @@ export async function POST(req: NextRequest) {
       } catch {
         deleted.settings_transient_keys = 0;
       }
+
+      // Fresh coaching history starts today (IST)
+      db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('history_start_date', ?)`).run(epoch);
+      deleted.history_start_date_set = epoch;
+
+      deleted.mem_facts_fts = rebuildMemFactsFts(db);
+
+      try {
+        const seeded = reseedGamificationCatalog(db);
+        deleted.badges_reseeded = seeded.badges;
+        deleted.rewards_reseeded = seeded.rewards;
+      } catch (error) {
+        deleted.gamification_reseed = `failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
     })();
 
-    const total = Object.values(deleted).reduce((a, b) => a + b, 0);
-    console.log(`[full-reset] Cleared ${total} rows across ${CLEAR_TABLES.length} tables`);
+    const total = Object.values(deleted).reduce<number>((a, v) => a + (typeof v === 'number' ? v : 0), 0);
+    console.log(`[full-reset] Cleared ${total} rows across ${CLEAR_TABLES.length} tables; history_start_date=${epoch}`);
 
     return NextResponse.json({
       success: true,
       totalDeleted: total,
       breakdown: deleted,
       preserved: PRESERVED,
+      history_start_date: epoch,
       backupPath,
-      message: `Reset complete. ${total} rows cleared. Credential/auth settings were preserved.`,
+      message: `Reset complete. ${total} history rows cleared. Config settings preserved. History epoch set to ${epoch}.`,
     });
   } catch (err) {
     console.error('[full-reset] Failed:', err);

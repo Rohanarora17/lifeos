@@ -7,6 +7,7 @@ import { getRecentObservations } from './screenshot-pipeline';
 import { getTodayPhoneScreenTime } from './phone-screen-time';
 import { getAdaptiveBands } from './adaptive-bands';
 import { buildPersonalizationSnapshot } from './personalization-context';
+import { daysSinceInHistory, getHistoryStartDate, isInCurrentHistory } from './history-epoch';
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -103,24 +104,29 @@ function getContinuityState(): ContinuityState {
     WHERE date(observed_at) = ?
   `).get(today) as { first: string | null };
 
-  // Last session
+  const historyStart = getHistoryStartDate();
+
+  // Last session (this history run only)
   const lastSession = db.prepare(`
     SELECT completed_at FROM guardian_session_summaries
+    WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?
     ORDER BY completed_at DESC LIMIT 1
-  `).get() as { completed_at: string } | undefined;
+  `).get(historyStart) as { completed_at: string } | undefined;
 
   let lastSessionDaysAgo = 999;
   if (lastSession) {
-    lastSessionDaysAgo = Math.floor((now.getTime() - new Date(lastSession.completed_at).getTime()) / (24 * 3600 * 1000));
+    const days = daysSinceInHistory(lastSession.completed_at, now);
+    lastSessionDaysAgo = days ?? 999;
   }
 
-  // Current streak: consecutive days with at least 1 session in last 10 days
+  // Current streak: consecutive days with at least 1 session since epoch (cap 10d lookback)
   const sessionDays = db.prepare(`
     SELECT DISTINCT date(completed_at) as day
     FROM guardian_session_summaries
-    WHERE completed_at >= datetime('now', '-10 days')
+    WHERE date(completed_at) >= ?
+      AND completed_at >= datetime('now', '-10 days')
     ORDER BY day DESC
-  `).all() as Array<{ day: string }>;
+  `).all(historyStart) as Array<{ day: string }>;
 
   let streakDay = 0;
   const todayStr = today;
@@ -142,19 +148,28 @@ function getContinuityState(): ContinuityState {
     WHERE checkin_date = ? AND checkin_type = 'morning' LIMIT 1
   `).get(today) as { commitment: string; likelihood_score: number } | undefined;
 
-  // Active goals last touched
+  // Active goals last touched — only goals in the current history run
   const goals = db.prepare(`
-    SELECT title, updated_at FROM goals
-    WHERE active = 1 LIMIT 10
-  `).all() as Array<{ title: string; updated_at: string }>;
-
+    SELECT title, created_at, updated_at FROM goals
+    WHERE active = 1 LIMIT 20
+  `).all() as Array<{ title: string; created_at: string | null; updated_at: string | null }>;
 
   const activeGoalLastTouchedDaysAgo: Record<string, number> = {};
   for (const g of goals) {
-    if (g.updated_at) {
-      activeGoalLastTouchedDaysAgo[g.title] = Math.floor(
-        (now.getTime() - new Date(g.updated_at).getTime()) / (24 * 3600 * 1000)
-      );
+    if (!isInCurrentHistory({ createdAt: g.created_at, updatedAt: g.updated_at })) {
+      continue; // pre-epoch goal not re-engaged this run
+    }
+    const lastSessionOnGoal = db.prepare(`
+      SELECT completed_at FROM guardian_session_summaries
+      WHERE target_title LIKE ?
+        AND date(COALESCE(completed_at, started_at), 'localtime') >= ?
+      ORDER BY completed_at DESC LIMIT 1
+    `).get(`%${g.title}%`, historyStart) as { completed_at: string } | undefined;
+
+    const touchAt = lastSessionOnGoal?.completed_at || g.updated_at || g.created_at;
+    const days = daysSinceInHistory(touchAt, now);
+    if (days !== null) {
+      activeGoalLastTouchedDaysAgo[g.title] = days;
     }
   }
 

@@ -161,14 +161,32 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
 
+            // Bare check-in triggers (not answers) — start the flow instead of treating as a reply
+            const bareTrigger = text.trim().toLowerCase().replace(/^(\/[a-z0-9_]+)@[^\s]+/i, '$1');
+            if (
+                bareTrigger === 'morning' || bareTrigger === '/morning' ||
+                bareTrigger === 'journal' || bareTrigger === '/journal' ||
+                bareTrigger === 'reflect' || bareTrigger === '/reflect' ||
+                bareTrigger === 'evening journal'
+            ) {
+                const mapped =
+                    bareTrigger === 'morning' || bareTrigger === '/morning' ? '/morning' :
+                    '/journal';
+                await handleTelegramCommand(mapped);
+                return NextResponse.json({ ok: true });
+            }
+
             // Check if there's a pending check-in response or morning checkin text
             const pendingCheckin = getPendingCheckinType();
             const nowIstHour = new Date(Date.now() + 19800000).getUTCHours();
+            // Require more than a bare trigger word so "morning" alone starts check-in, not answers it
+            const looksLikeMorningAnswer = (
+                nowIstHour >= 4 && nowIstHour <= 12 &&
+                text.trim().split(/\s+/).length >= 2 &&
+                /\b(woke|slept|rate|breakfast|hours|class|attending|commitment|likelihood)\b/i.test(text)
+            );
             const isMorningText = !text.startsWith('/') && (
-                pendingCheckin === 'morning' || (
-                    nowIstHour >= 4 && nowIstHour <= 12 &&
-                    /\b(woke|slept|rate|morning|breakfast|hours|class|attending)\b/i.test(text)
-                )
+                pendingCheckin === 'morning' || looksLikeMorningAnswer
             );
 
             if (isMorningText) {

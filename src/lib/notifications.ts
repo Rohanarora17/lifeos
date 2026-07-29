@@ -176,7 +176,7 @@ function getTodayMicroContext(): {
     const db = getDb();
     const nowIst = getIstNow();
     const date = nowIst.toISOString().slice(0, 10);
-    const hour = nowIst.getHours();
+    const hour = nowIst.getUTCHours();
     const tomorrow = new Date(nowIst);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     const tomorrowDate = tomorrow.toISOString().slice(0, 10);
@@ -1346,7 +1346,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
 
         // 3. Habit Streak at Risk — runs in wake-relative adaptive windows
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-        const hour = new Date(Date.now() + 19800000).getHours();
+        const hour = new Date(Date.now() + 19800000).getUTCHours();
 
         if (alertWindows.habitHours.includes(hour)) {
             const uncheckedHabits = db.prepare(`
@@ -1420,23 +1420,28 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             if (sent) triggered.push('goal_deadline');
         }
 
-        // 6. Self-Efficacy Drop
+        // 6. Self-Efficacy Drop — only tasks created in this history run / lookback
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { lookbackStartDate, getHistoryEpochInfo } = require('./history-epoch') as typeof import('./history-epoch');
+        const efficacySince = lookbackStartDate(14);
+        const epochInfo = getHistoryEpochInfo();
         const efficacy = db.prepare(`
       SELECT 
         COUNT(CASE WHEN status = 'done' THEN 1 END) as completed,
         COUNT(*) as total
       FROM tasks 
       WHERE status IN ('todo', 'doing', 'done')
-      AND created_at >= datetime('now', '-14 days')
-    `).get() as { completed: number; total: number };
+      AND date(created_at) >= ?
+    `).get(efficacySince) as { completed: number; total: number };
 
-        if (efficacy.total >= 5) {
+        // Don't shame early-run / sparse task history as multi-week efficacy collapse
+        if (efficacy.total >= 5 && !epochInfo.isFreshStart) {
             const rate = Math.round((efficacy.completed / efficacy.total) * 100);
             const localBands = getAdaptiveBands();
             if (rate < localBands.focusPoor) {
                 const sent = await sendAlert(
                     'efficacy_drop',
-                    `Your task completion rate is ${rate}% over the last 14 days. ${thresholds.efficacyAdvice || 'Focus on completing small tasks to rebuild confidence.'}`,
+                    `Your task completion rate is ${rate}% since ${efficacySince}. ${thresholds.efficacyAdvice || 'Focus on completing small tasks to rebuild confidence.'}`,
                     'warning'
                 );
                 if (sent) triggered.push('efficacy_drop');
