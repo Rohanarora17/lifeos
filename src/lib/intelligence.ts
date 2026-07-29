@@ -545,6 +545,20 @@ function aggregateSignals(): string {
     }
   } catch { /* */ }
 
+  // Native app user labels (shared domain_categories prefs from ask-loop / activity UI)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { listNativeAppPreferences } = require('./native-app-classification') as typeof import('./native-app-classification');
+    const prefs = listNativeAppPreferences(12);
+    if (prefs.length) {
+      sections.push('\n=== NATIVE APP PREFERENCES (user-labeled) ===');
+      sections.push(
+        prefs.map((p) => `${p.appKey}=${p.category}`).join(', '),
+      );
+      sections.push('Treat these as ground truth for native dwell classification; do not invent opposite labels.');
+    }
+  } catch { /* optional */ }
+
   // Voice turns
   try {
     const rows = db.prepare(`SELECT role, text FROM voice_turns ORDER BY created_at DESC LIMIT 25`).all() as Array<{ role: string; text: string }>;

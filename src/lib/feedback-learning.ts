@@ -20,7 +20,7 @@ export type ExplicitFeedback =
   | 'retry';
 
 export interface FeedbackLearningInput {
-  source: 'coach_response' | 'task_recommendation' | 'alert' | 'native_guidance' | 'behavior_insight' | 'session_feedback';
+  source: 'coach_response' | 'task_recommendation' | 'alert' | 'native_guidance' | 'native_classification' | 'behavior_insight' | 'session_feedback';
   feedback: ExplicitFeedback;
   surface?: string | null;
   momentMode?: string | null;

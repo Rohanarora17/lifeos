@@ -5,6 +5,10 @@ import { extractDomain } from '@/lib/categories';
 import { getActiveGuardianSession } from '@/lib/guardian-runtime';
 import { buildAdaptiveActivityPolicy } from '@/lib/adaptive-activity-policy';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import {
+    saveNativeAppPreference,
+    toActivityCategory,
+} from '@/lib/native-app-classification';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -88,7 +92,13 @@ export async function GET(request: NextRequest) {
         query += ' ORDER BY started_at DESC LIMIT ? OFFSET ?';
         params.push(limit, offset);
 
-        const activities = db.prepare(query).all(...params);
+        const rawActivities = db.prepare(query).all(...params) as Array<Record<string, unknown> & { category?: string }>;
+        // Normalize legacy native categories so the UI select always shows productive|neutral|distraction
+        const activities = rawActivities.map((act) => ({
+            ...act,
+            category: toActivityCategory(act.category),
+            raw_category: act.category,
+        }));
 
         let stats = null;
         if (date) {
@@ -117,10 +127,14 @@ export async function GET(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
     try {
         const body = await request.json();
-        const { id, category } = body;
+        const { id, category: rawCategory } = body;
+        const category = toActivityCategory(rawCategory);
 
-        if (!id || !category) {
+        if (!id || !rawCategory) {
             return NextResponse.json({ error: 'Missing id or category' }, { status: 400 });
+        }
+        if (!['productive', 'neutral', 'distraction'].includes(category)) {
+            return NextResponse.json({ error: 'category must be productive, neutral, or distraction' }, { status: 400 });
         }
 
         const db = getDb();
@@ -129,7 +143,7 @@ export async function PATCH(request: NextRequest) {
         db.prepare('UPDATE activities SET category = ? WHERE id = ?').run(category, id);
 
         // 2. Fetch the updated activity to inject a rule into memory
-        const activity = db.prepare('SELECT domain, url, youtube_video_id, title FROM activities WHERE id = ?').get(id) as any;
+        const activity = db.prepare('SELECT domain, url, youtube_video_id, title, device_name, subcategory FROM activities WHERE id = ?').get(id) as any;
 
         if (activity) {
             const { learnMemory } = require('@/lib/behavior');
@@ -151,6 +165,31 @@ export async function PATCH(request: NextRequest) {
 
             // Store in behavioral_memory so AI considers it in future summaries/context
             learnMemory('user_preference', memoryContent, 'classification_override');
+
+            // Native apps: shared preference + intelligence refresh
+            if (
+                activity.device_name === 'LifeOS Native Copilot' ||
+                activity.subcategory === 'native_app' ||
+                (typeof activity.url === 'string' && activity.url.startsWith('native://'))
+            ) {
+                const appName = activity.domain || activity.title || 'Unknown App';
+                saveNativeAppPreference(appName, category, `user correct via activity UI`);
+                try {
+                    const { recordExplicitFeedbackLearning } = require('@/lib/feedback-learning') as typeof import('@/lib/feedback-learning');
+                    const { touchIntelligence } = require('@/lib/intelligence') as typeof import('@/lib/intelligence');
+                    recordExplicitFeedbackLearning({
+                        source: 'native_classification',
+                        feedback: category === 'distraction' ? 'wrong' : category === 'productive' ? 'helpful' : 'dismissed',
+                        surface: 'activity_ui',
+                        reason: `Activity UI labeled native app ${appName} as ${category}`,
+                        subject: appName,
+                        metadata: { category, activityId: id },
+                    });
+                    touchIntelligence('native_app_classification_ui');
+                } catch (err) {
+                    console.warn('[activity PATCH] intelligence hook failed:', err);
+                }
+            }
 
             // 3. Update domain_categories cache — closes the feedback loop permanently
             // User overrides use confidence 1.0 so they always win over AI (0.9) and seeds (0.8)

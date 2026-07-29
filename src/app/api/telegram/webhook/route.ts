@@ -148,6 +148,26 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
 
+            // Native app classification ask — only consume clear short answers so
+            // longer messages still reach the agent / check-in handlers.
+            try {
+                const {
+                    getPendingNativeCategoryAsk,
+                    parseNativeCategoryAnswer,
+                    resolveNativeCategoryAsk,
+                } = require('@/lib/native-app-classification') as typeof import('@/lib/native-app-classification');
+                if (getPendingNativeCategoryAsk()) {
+                    const answer = parseNativeCategoryAnswer(text);
+                    if (answer) {
+                        const result = resolveNativeCategoryAsk(answer, 'telegram_text');
+                        await sendTelegram(result.message, 'HTML', FULL_MENU_KEYBOARD);
+                        return NextResponse.json({ ok: true });
+                    }
+                }
+            } catch (err) {
+                console.warn('[Webhook] native category ask handling failed:', err);
+            }
+
             // Pending session context — user replied with context after being prompted
             const pendingSessionRaw = getSetting('pending_session_context');
             if (pendingSessionRaw) {
@@ -299,6 +319,14 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
             await handleSessionCallback(rest);
         } else if (type === 'classify') {
             await handleClassifyCallback(rest);
+        } else if (type === 'native_cat') {
+            const {
+                resolveNativeCategoryAsk,
+                toActivityCategory,
+            } = require('@/lib/native-app-classification') as typeof import('@/lib/native-app-classification');
+            const category = toActivityCategory(rest);
+            const result = resolveNativeCategoryAsk(category, 'telegram_callback');
+            await sendTelegram(result.message, 'HTML', FULL_MENU_KEYBOARD);
         } else {
             await sendTelegram(`Unknown callback type: ${type}`, '', FULL_MENU_KEYBOARD);
         }

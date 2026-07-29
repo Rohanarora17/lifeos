@@ -5,28 +5,22 @@ import { touchIntelligence } from '@/lib/intelligence';
 import { recordExplicitFeedbackLearning, type ExplicitFeedback } from '@/lib/feedback-learning';
 import type { NativeIngestPayload } from '@/lib/focus-copilot-types';
 import type { GuardianEvent } from '@/lib/guardian-types';
+import {
+  classifyNativeAppActivity,
+  maybeAskNativeCategory,
+} from '@/lib/native-app-classification';
 
 function clampConfidence(value: unknown): number {
   return Math.max(0, Math.min(1, typeof value === 'number' ? value : 0.7));
 }
 
-function classifyNativeApp(app = '', title = '', fallback?: NativeIngestPayload['category']) {
+function attentionForActivityCategory(
+  category: string,
+  fallback?: NativeIngestPayload['attentionQuality'],
+) {
   if (fallback) return fallback;
-  const appLower = app.toLowerCase();
-  const titleLower = title.toLowerCase();
-  if (['cursor', 'code', 'xcode', 'intellij', 'pycharm', 'webstorm', 'terminal', 'iterm', 'warp'].some((token) => appLower.includes(token))) return 'deep_work';
-  if (['preview', 'zotero', 'skim', 'books'].some((token) => appLower.includes(token))) return 'deep_work';
-  if (['slack', 'discord', 'teams', 'zoom', 'facetime'].some((token) => appLower.includes(token))) return 'communication';
-  if (['youtube', 'netflix', 'instagram', 'twitter', 'x.com', 'reddit', 'tiktok'].some((token) => appLower.includes(token) || titleLower.includes(token))) return 'distraction';
-  if (['chrome', 'safari', 'brave', 'firefox', 'arc'].some((token) => appLower.includes(token))) return 'consumption';
-  return 'shallow_work';
-}
-
-function attentionForCategory(category: string, fallback?: NativeIngestPayload['attentionQuality']) {
-  if (fallback) return fallback;
-  if (category === 'deep_work' || category === 'shallow_work' || category === 'communication') return 'focused';
+  if (category === 'productive') return 'focused';
   if (category === 'distraction') return 'distracted';
-  if (category === 'idle') return 'idle';
   return 'consuming';
 }
 
@@ -54,18 +48,36 @@ export async function POST(req: Request) {
 
       const app = body.appInFocus || 'Unknown App';
       const title = body.windowTitle || '';
-      const category = classifyNativeApp(app, title, body.category);
+      const classified = classifyNativeAppActivity({
+        app,
+        title,
+        clientCategory: body.category ?? null,
+        sessionActive: true,
+        sessionTargetTitle: activeSession.targetTitle,
+      });
+
+      const activityCategory = classified.activityCategory;
       const startedAt = body.startedAt || new Date(Date.now() - durationSeconds * 1000).toISOString();
       const inferred = {
         source: 'native_copilot',
         app,
         title,
         sessionId,
-        category,
-        confidence: body.confidence ?? 0.7,
+        internal: classified.internal,
+        category: activityCategory,
+        activityCategory,
+        confidence: classified.confidence,
+        needsUserAsk: classified.needsUserAsk,
+        reason: classified.reason,
+        preferenceDomain: classified.preferenceDomain,
+        classifySource: classified.source,
       };
 
-      db.prepare(`
+      const confidenceLabel =
+        classified.confidence >= 0.85 ? 'high' :
+        classified.confidence >= 0.55 ? 'medium' : 'low';
+
+      const result = db.prepare(`
         INSERT INTO activities
           (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, classification_confidence, device_name)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -73,14 +85,16 @@ export async function POST(req: Request) {
         `native://${encodeURIComponent(app)}`,
         app,
         title || app,
-        category === 'deep_work' ? 'productive' : category,
+        activityCategory,
         'native_app',
         startedAt,
         durationSeconds,
         JSON.stringify(inferred),
-        'medium',
+        confidenceLabel,
         'LifeOS Native Copilot',
       );
+
+      const activityId = Number(result.lastInsertRowid);
 
       const event: GuardianEvent = {
         sessionId,
@@ -90,18 +104,69 @@ export async function POST(req: Request) {
         domain: `native:${app.toLowerCase()}`,
         title: title || app,
         dwellSeconds: durationSeconds,
-        payload: { kind: body.kind, appInFocus: app, windowTitle: title, category, metadata: body.metadata ?? {} },
+        payload: {
+          kind: body.kind,
+          appInFocus: app,
+          windowTitle: title,
+          category: activityCategory,
+          internal: classified.internal,
+          needsUserAsk: classified.needsUserAsk,
+          metadata: body.metadata ?? {},
+        },
       };
       await tickGuardianSession(sessionId, event);
       touchIntelligence('native_app_dwell');
-      return NextResponse.json({ ok: true, stored: 'activities', category });
+
+      let asked = false;
+      if (classified.needsUserAsk && activityId > 0) {
+        try {
+          const askResult = await maybeAskNativeCategory({
+            app,
+            activityId,
+            sessionId,
+            sessionTargetTitle: activeSession.targetTitle || 'focus session',
+            classify: classified,
+          });
+          asked = askResult.asked;
+        } catch (err) {
+          console.warn('[native/ingest] ask loop failed:', err);
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        stored: 'activities',
+        category: activityCategory,
+        internal: classified.internal,
+        needsUserAsk: classified.needsUserAsk,
+        asked,
+        confidence: classified.confidence,
+      });
     }
 
     if (body.kind === 'observation_summary' || body.kind === 'sensitivity_skip') {
       const app = body.appInFocus || 'Unknown App';
       const title = body.windowTitle || '';
-      const category = body.kind === 'sensitivity_skip' ? 'idle' : classifyNativeApp(app, title, body.category);
-      const attention = attentionForCategory(category, body.attentionQuality);
+      const classified = body.kind === 'sensitivity_skip'
+        ? {
+            internal: 'idle' as const,
+            activityCategory: 'neutral' as const,
+            confidence: 0.9,
+            needsUserAsk: false,
+            reason: 'privacy skip',
+            preferenceDomain: `native:${app.toLowerCase()}`,
+            source: 'rules' as const,
+          }
+        : classifyNativeAppActivity({
+            app,
+            title,
+            clientCategory: body.category ?? null,
+            sessionActive: true,
+            sessionTargetTitle: activeSession.targetTitle,
+          });
+
+      const activityCategory = classified.activityCategory;
+      const attention = attentionForActivityCategory(activityCategory, body.attentionQuality);
       const activity = body.kind === 'sensitivity_skip'
         ? `Native capture skipped: ${body.reason || 'sensitive context'}`
         : (body.specificContent || `${app}: ${title}`.slice(0, 220));
@@ -115,14 +180,19 @@ export async function POST(req: Request) {
         app,
         title,
         activity,
-        category,
+        activityCategory,
         'native_app',
         attention,
         body.specificContent || title || app,
-        body.productiveForGoals ? 1 : 0,
-        clampConfidence(body.confidence),
+        (body.productiveForGoals || activityCategory === 'productive') ? 1 : 0,
+        clampConfidence(body.confidence ?? classified.confidence),
         sessionId,
-        JSON.stringify({ kind: body.kind, reason: body.reason ?? null, metadata: body.metadata ?? {} }),
+        JSON.stringify({
+          kind: body.kind,
+          reason: body.reason ?? classified.reason,
+          internal: classified.internal,
+          metadata: body.metadata ?? {},
+        }),
       );
 
       const event: GuardianEvent = {
@@ -132,11 +202,18 @@ export async function POST(req: Request) {
         url: `native://${encodeURIComponent(app)}`,
         domain: `native:${app.toLowerCase()}`,
         title: title || app,
-        payload: { kind: body.kind, appInFocus: app, windowTitle: title, category, attentionQuality: attention, metadata: body.metadata ?? {} },
+        payload: {
+          kind: body.kind,
+          appInFocus: app,
+          windowTitle: title,
+          category: activityCategory,
+          attentionQuality: attention,
+          metadata: body.metadata ?? {},
+        },
       };
       await tickGuardianSession(sessionId, event);
       touchIntelligence(body.kind === 'sensitivity_skip' ? 'native_sensitivity_skip' : 'native_screen_observation');
-      return NextResponse.json({ ok: true, stored: 'screen_observations', category });
+      return NextResponse.json({ ok: true, stored: 'screen_observations', category: activityCategory });
     }
 
     if (body.kind === 'overlay_feedback') {

@@ -206,6 +206,16 @@ export function getDailyActivityStats(db: Database, dateString: string) {
     const midnight = new Date(midnightObj.getTime() + midnightObj.getTimezoneOffset() * 60000 - sysOffset).getTime();
 
     for (const a of activities) {
+        // Normalize legacy native labels (shallow_work, communication, …) into 3 buckets
+        const rawCat = String(a.category || 'neutral').toLowerCase();
+        if (rawCat === 'deep_work' || rawCat === 'productive') a.category = 'productive';
+        else if (rawCat === 'distraction') a.category = 'distraction';
+        else if (
+            rawCat === 'neutral' || rawCat === 'communication' || rawCat === 'consumption' ||
+            rawCat === 'shallow_work' || rawCat === 'idle' || rawCat === 'browsing'
+        ) a.category = 'neutral';
+        else a.category = 'neutral';
+
         const start = new Date(a.started_at).getTime();
         let end = a.ended_at ? new Date(a.ended_at).getTime() : start + (a.duration_seconds * 1000);
         if (start === end) end += 1000; // Give it 1 second if empty

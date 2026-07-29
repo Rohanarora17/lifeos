@@ -154,6 +154,9 @@ const TRANSIENT_SETTING_KEYS = [
   'cognitive_trait_stances',
   'cognitive_experiments_v1',
 
+  // Native app classification ask state
+  'pending_native_category_ask',
+
   // Epoch is rewritten to today after wipe (delete first so we always re-pin)
   'history_start_date',
 ];
