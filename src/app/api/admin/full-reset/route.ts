@@ -8,6 +8,11 @@ import path from 'path';
  * Clears product/user history in one shot while preserving credential/auth
  * and domain-policy configuration.
  *
+ * Auth (enforced by src/proxy.ts for all /api/* in production):
+ *   Authorization: Bearer $LIFEOS_API_TOKEN
+ *   X-LifeOS-Reauth-Token: $LIFEOS_ADMIN_REAUTH_TOKEN   # or LIFEOS_API_TOKEN if admin token unset
+ *     (required for POST/PUT/PATCH/DELETE under /api/admin/*)
+ *
  * Body: { "confirm": "FULL_RESET" }
  * GET:  preview row counts, nothing deleted.
  *
@@ -15,6 +20,18 @@ import path from 'path';
  *  - history_start_date is pinned to today (IST)
  *  - mem_facts FTS is rebuilt empty
  *  - default badges + rewards catalog are reseeded
+ *
+ * Example (on Mac Mini, after deploy):
+ *   # Preview
+ *   curl -s http://localhost:3000/api/admin/full-reset \
+ *     -H "Authorization: Bearer $LIFEOS_API_TOKEN"
+ *
+ *   # Execute
+ *   curl -s -X POST http://localhost:3000/api/admin/full-reset \
+ *     -H "Authorization: Bearer $LIFEOS_API_TOKEN" \
+ *     -H "X-LifeOS-Reauth-Token: ${LIFEOS_ADMIN_REAUTH_TOKEN:-$LIFEOS_API_TOKEN}" \
+ *     -H "Content-Type: application/json" \
+ *     -d '{"confirm":"FULL_RESET"}'
  */
 
 const CLEAR_TABLES = [
@@ -230,7 +247,11 @@ export async function GET() {
   ).get(...TRANSIENT_SETTING_KEYS) as { c: number };
 
   return NextResponse.json({
-    message: 'Preview — POST with { "confirm": "FULL_RESET" } to execute.',
+    message: 'Preview — POST with { "confirm": "FULL_RESET" } to execute. Requires Authorization Bearer + X-LifeOS-Reauth-Token on POST.',
+    auth: {
+      get: 'Authorization: Bearer $LIFEOS_API_TOKEN',
+      post: 'Authorization: Bearer $LIFEOS_API_TOKEN and X-LifeOS-Reauth-Token: $LIFEOS_ADMIN_REAUTH_TOKEN (or LIFEOS_API_TOKEN)',
+    },
     totalRowsToDelete: total,
     breakdown: counts,
     transientSettingsToDelete: settingsRows.c,
