@@ -184,6 +184,21 @@ export async function GET() {
       recommendedSessionMinutes,
     });
 
+    // Early-run gate: do not present invented peak windows / coaching as "learned"
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getLearningPhaseState, learningPhaseUiCopy } = require('@/lib/history-epoch') as typeof import('@/lib/history-epoch');
+    const learningPhase = getLearningPhaseState();
+    const learningUi = learningPhaseUiCopy(learningPhase);
+    if (learningPhase.active) {
+      personalization.userState.nextBestFocusWindow = '';
+      personalization.userState.coachingStyle = 'balanced';
+      if (dashboardPolicy.sessionReason.includes('learned')) {
+        dashboardPolicy.sessionReason = learningUi.focusSprintSuffix
+          ? `default ${recommendedSessionMinutes}m until enough sessions this run`
+          : dashboardPolicy.sessionReason;
+      }
+    }
+
     return NextResponse.json({
       today: {
         date: today,
@@ -236,6 +251,9 @@ export async function GET() {
         helpfulRate: personalization.feedback.helpfulRate,
         corrections30d: personalization.feedback.corrections30d,
         activeSessionTarget: personalization.activeSession?.targetTitle ?? null,
+        learningPhase: learningPhase.active,
+        learningPhaseLabel: learningPhase.label,
+        learningPhaseReason: learningPhase.reason,
       },
     });
   } catch (error) {

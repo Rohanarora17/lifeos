@@ -43,6 +43,10 @@ interface DashboardPersonalization {
   helpfulRate: number | null;
   corrections30d: number;
   activeSessionTarget: string | null;
+  /** True when history epoch is early and <2 post-epoch sessions — show defaults not "learned" claims */
+  learningPhase?: boolean;
+  learningPhaseLabel?: string;
+  learningPhaseReason?: string;
 }
 
 interface DashboardData {
@@ -905,19 +909,37 @@ export default function DashboardPage() {
             </div>
 
 	            <div>
-	              <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>Adaptive Defaults</p>
+	              <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+                  Adaptive Defaults
+                  {personalization.learningPhase && (
+                    <span className="ml-2 font-normal" style={{ color: 'var(--text-muted)' }}>(learning)</span>
+                  )}
+                </p>
 	              <div className="space-y-2 text-sm">
                 <div className="flex items-center justify-between gap-3">
 	                  <span style={{ color: 'var(--text-muted)' }}>Focus sprint</span>
-	                  <strong>{formatTime(dashboardPolicy?.sessionMinutes ?? personalization.recommendedSessionMinutes)}</strong>
+	                  <strong>
+                      {formatDurationLabel(dashboardPolicy?.sessionMinutes ?? personalization.recommendedSessionMinutes)}
+                      {personalization.learningPhase ? (
+                        <span className="font-normal ml-1" style={{ color: 'var(--text-muted)' }}>default</span>
+                      ) : null}
+                    </strong>
 	                </div>
                 <div className="flex items-center justify-between gap-3">
                   <span style={{ color: 'var(--text-muted)' }}>Best window</span>
-                  <strong className="text-right">{personalization.nextBestFocusWindow || 'learning'}</strong>
+                  <strong className="text-right">
+                    {personalization.learningPhase || !personalization.nextBestFocusWindow
+                      ? 'learning — no session data yet'
+                      : personalization.nextBestFocusWindow}
+                  </strong>
                 </div>
                 <div className="flex items-center justify-between gap-3">
 	                  <span style={{ color: 'var(--text-muted)' }}>Coaching</span>
-	                  <strong>{personalization.coachingStyle}</strong>
+	                  <strong>
+                      {personalization.learningPhase
+                        ? 'balanced (learning)'
+                        : personalization.coachingStyle}
+                    </strong>
 	                </div>
 	                {dashboardPolicy && (
 	                  <div className="flex items-center justify-between gap-3">
@@ -926,6 +948,11 @@ export default function DashboardPage() {
 	                  </div>
 	                )}
 	              </div>
+                {personalization.learningPhase && personalization.learningPhaseReason && (
+                  <p className="text-[11px] mt-2 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                    {personalization.learningPhaseReason}
+                  </p>
+                )}
 	            </div>
 
             <div>

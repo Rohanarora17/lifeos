@@ -1,6 +1,7 @@
 import { getIntelligenceProfile } from './intelligence';
 import { getDb } from './db';
 import type { PersonalizationSnapshot } from './personalization-context';
+import { getLearningPhaseState } from './history-epoch';
 
 function recentSessionMedianMinutes(): number | null {
   try {
@@ -37,6 +38,15 @@ export function getAdaptiveSessionMinuteDecision(
       minutes: Math.max(5, Math.min(240, Math.round(explicit))),
       reason: 'using the duration you explicitly asked for',
       source: 'explicit',
+    };
+  }
+
+  const learning = getLearningPhaseState();
+  if (learning.active) {
+    return {
+      minutes: 45,
+      reason: `default 45m while learning (${learning.postEpochSessions} sessions this run) — not a learned sprint yet`,
+      source: 'adaptive',
     };
   }
 

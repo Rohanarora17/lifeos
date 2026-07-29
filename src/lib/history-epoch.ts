@@ -222,3 +222,83 @@ export function formatHistoryEpochContext(): string {
 export function historyStartEpochMs(): number {
   return Date.parse(`${getHistoryStartDate()}T00:00:00Z`);
 }
+
+export type LearningPhaseState = {
+  /** True when the run is early and there is not enough post-epoch evidence to claim "learned" defaults. */
+  active: boolean;
+  dayIndex: number;
+  startDate: string;
+  postEpochSessions: number;
+  postEpochCheckins: number;
+  /** Short UI label */
+  label: string;
+  reason: string;
+};
+
+/**
+ * Early-run gate: avoid presenting invented peak windows / coaching as "learned"
+ * until there is real post-epoch session evidence (or the first week has passed
+ * with at least one session).
+ */
+export function getLearningPhaseState(): LearningPhaseState {
+  const info = getHistoryEpochInfo();
+  const epoch = info.startDate;
+  let postEpochSessions = 0;
+  let postEpochCheckins = 0;
+
+  try {
+    const db = getDb();
+    postEpochSessions = (db.prepare(`
+      SELECT COUNT(*) as c FROM guardian_session_summaries
+      WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?
+    `).get(epoch) as { c: number }).c;
+  } catch { /* */ }
+
+  try {
+    const db = getDb();
+    postEpochCheckins = (db.prepare(`
+      SELECT COUNT(*) as c FROM daily_checkins WHERE checkin_date >= ?
+    `).get(epoch) as { c: number }).c;
+  } catch { /* */ }
+
+  // Need 2+ real focus sessions before treating windows/sprint as learned.
+  // Within the first 7 days, zero or one session stays in learning mode.
+  const active = postEpochSessions < 2 && (info.isFreshStart || postEpochSessions === 0);
+
+  return {
+    active,
+    dayIndex: info.dayIndex,
+    startDate: info.startDate,
+    postEpochSessions,
+    postEpochCheckins,
+    label: active ? 'learning' : 'learned',
+    reason: active
+      ? postEpochSessions === 0
+        ? `Day ${info.dayIndex} of this run — no focus sessions yet since ${epoch}. Showing defaults, not invented history.`
+        : `Day ${info.dayIndex} of this run — only ${postEpochSessions} focus session since ${epoch}. Still learning.`
+      : `Enough post-epoch sessions (${postEpochSessions}) to use learned adaptive defaults.`,
+  };
+}
+
+/** UI copy when Adaptive Defaults should not claim learned insight. */
+export function learningPhaseUiCopy(learning = getLearningPhaseState()): {
+  focusSprintSuffix: string;
+  bestWindow: string;
+  coaching: string;
+  notificationsNote: string | null;
+} {
+  if (!learning.active) {
+    return {
+      focusSprintSuffix: '',
+      bestWindow: '',
+      coaching: '',
+      notificationsNote: null,
+    };
+  }
+  return {
+    focusSprintSuffix: 'default',
+    bestWindow: 'learning — no session data yet',
+    coaching: 'balanced (learning)',
+    notificationsNote: learning.reason,
+  };
+}

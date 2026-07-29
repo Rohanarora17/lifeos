@@ -8,6 +8,7 @@ import {
   formatHistoryEpochContext,
   getHistoryEpochInfo,
   getHistoryStartDate,
+  getLearningPhaseState,
   historyStartEpochMs,
   isInCurrentHistory,
   lookbackStartDate,
@@ -855,16 +856,18 @@ Return ONLY valid JSON (no markdown, no explanation):
       weeklyProgressSummary: raw.weeklyProgressSummary ?? prev.weeklyProgressSummary,
     };
 
-    // Persist
+    const guarded = applyLearningPhaseGuards(profile);
+
+    // Persist the guarded profile so invented "learned" windows are not stored as truth
     try {
       const db = getDb();
-      db.prepare(`INSERT INTO user_intelligence_profile (profile_json, version, synthesized_at, trigger) VALUES (?, ?, datetime('now'), ?)`).run(JSON.stringify(profile), profile.version, trigger);
+      db.prepare(`INSERT INTO user_intelligence_profile (profile_json, version, synthesized_at, trigger) VALUES (?, ?, datetime('now'), ?)`).run(JSON.stringify(guarded), guarded.version, trigger);
       // Keep only last 20 versions
       db.prepare(`DELETE FROM user_intelligence_profile WHERE id NOT IN (SELECT id FROM user_intelligence_profile ORDER BY version DESC LIMIT 20)`).run();
     } catch { /* */ }
 
-    console.log(`[UIL] Profile v${profile.version} synthesized (${trigger}): trend=${profile.focusTrend}, coaching_style=${profile.preferredCoachingStyle}`);
-    return profile;
+    console.log(`[UIL] Profile v${guarded.version} synthesized (${trigger}): trend=${guarded.focusTrend}, coaching_style=${guarded.preferredCoachingStyle}`);
+    return guarded;
   } catch (err) {
     console.error('[UIL] Synthesis failed:', err);
     return null;
@@ -885,27 +888,81 @@ function isProfilePreHistory(p: UserIntelligenceProfile): boolean {
 
 function freshStartDefaultProfile(): UserIntelligenceProfile {
   const info = getHistoryEpochInfo();
+  const learning = getLearningPhaseState();
   return {
     ...UIL_DEFAULT,
     version: 0,
     synthesizedAt: 0,
     trigger: 'fresh_start_epoch',
-    currentNarrative: info.isFreshStart
-      ? `Day ${info.dayIndex} of the current LifeOS run (history starts ${info.startDate}). Sparse data means early days — not long-term avoidance of old goals.`
-      : `Coaching history starts ${info.startDate}. Use only post-epoch evidence.`,
-    coachingInsights: [
-      `History epoch ${info.startDate} — ignore pre-epoch inactivity narratives.`,
-      info.isFreshStart
-        ? 'Prefer one small concrete next action over guilt about the past.'
-        : 'Judge progress only against post-epoch check-ins, sessions, and plans.',
-    ],
+    optimalSessionMinutes: 45,
+    preferredCoachingStyle: 'balanced',
+    peakFocusHours: [],
+    nextBestFocusWindow: '',
+    adaptiveThresholds: {
+      ...UIL_DEFAULT.adaptiveThresholds,
+      sessionDurationSweetSpot: 45,
+    },
+    currentNarrative: learning.active
+      ? `Day ${info.dayIndex} of this LifeOS run (starts ${info.startDate}). Learning phase — not enough focus sessions to claim peaks, sprints, or coaching style yet.`
+      : info.isFreshStart
+        ? `Day ${info.dayIndex} of the current LifeOS run (history starts ${info.startDate}). Sparse data means early days — not long-term avoidance of old goals.`
+        : `Coaching history starts ${info.startDate}. Use only post-epoch evidence.`,
+    coachingInsights: learning.active
+      ? [
+          'Adaptive Defaults show learning/default until 2+ focus sessions exist this run.',
+          'Log morning/evening check-ins and complete a real session before trusting peak windows.',
+        ]
+      : [
+          `History epoch ${info.startDate} — ignore pre-epoch inactivity narratives.`,
+          info.isFreshStart
+            ? 'Prefer one small concrete next action over guilt about the past.'
+            : 'Judge progress only against post-epoch check-ins, sessions, and plans.',
+        ],
     avoidancePatterns: [],
     frictionTopics: [],
     goalMomentum: {},
     activeGoalsSummary: [],
-    weeklyProgressSummary: info.isFreshStart
-      ? `Fresh start day ${info.dayIndex}: no multi-week inactivity judgment.`
-      : `Progress measured since ${info.startDate}.`,
+    weeklyProgressSummary: learning.active
+      ? `Learning phase day ${info.dayIndex}: ${learning.postEpochSessions} sessions this run.`
+      : info.isFreshStart
+        ? `Fresh start day ${info.dayIndex}: no multi-week inactivity judgment.`
+        : `Progress measured since ${info.startDate}.`,
+  };
+}
+
+/**
+ * When still learning (fresh epoch, <2 post-epoch sessions), strip invented
+ * "learned" UIL fields so the dashboard does not show fake peak windows.
+ */
+function applyLearningPhaseGuards(profile: UserIntelligenceProfile): UserIntelligenceProfile {
+  const learning = getLearningPhaseState();
+  if (!learning.active) return profile;
+
+  const style = String(profile.preferredCoachingStyle || 'balanced').toLowerCase();
+  const simpleStyle = (['direct', 'balanced', 'gentle'] as const).includes(style as 'direct')
+    ? (style as 'direct' | 'balanced' | 'gentle')
+    : 'balanced';
+
+  return {
+    ...profile,
+    preferredCoachingStyle: simpleStyle === 'direct' || simpleStyle === 'gentle' ? 'balanced' : simpleStyle,
+    nextBestFocusWindow: '',
+    peakFocusHours: [],
+    optimalSessionMinutes: 45,
+    adaptiveThresholds: {
+      ...profile.adaptiveThresholds,
+      sessionDurationSweetSpot: 45,
+    },
+    currentNarrative: profile.currentNarrative?.includes('Learning phase')
+      ? profile.currentNarrative
+      : `Day ${learning.dayIndex} of this run — learning phase (${learning.postEpochSessions} focus sessions since ${learning.startDate}). Defaults only until more sessions land.`,
+    coachingInsights: [
+      'Learning phase: Adaptive Defaults are not yet evidence-based.',
+      ...(profile.coachingInsights || []).filter(line =>
+        !/peak|window|burnout|academic load|midday gap/i.test(line)
+      ).slice(0, 2),
+    ].slice(0, 3),
+    weeklyProgressSummary: `Learning phase: ${learning.postEpochSessions} sessions, ${learning.postEpochCheckins} check-ins since ${learning.startDate}.`,
   };
 }
 
@@ -913,9 +970,9 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
   if (uilProfile && Date.now() - uilCacheTs < UIL_CACHE_TTL) {
     if (isProfilePreHistory(uilProfile)) {
       if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
-      return freshStartDefaultProfile();
+      return applyLearningPhaseGuards(freshStartDefaultProfile());
     }
-    return uilProfile;
+    return applyLearningPhaseGuards(uilProfile);
   }
 
   // Try DB
@@ -928,18 +985,18 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
         uilProfile = null;
         uilCacheTs = 0;
         if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
-        return freshStartDefaultProfile();
+        return applyLearningPhaseGuards(freshStartDefaultProfile());
       }
       uilProfile = p;
       uilCacheTs = Date.now();
       const staleMs = Date.now() - (p.synthesizedAt || 0);
       if (staleMs > UIL_CACHE_TTL && !uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('cache_stale');
-      return p;
+      return applyLearningPhaseGuards(p);
     }
   } catch { /* */ }
 
   if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('initial');
-  return freshStartDefaultProfile();
+  return applyLearningPhaseGuards(freshStartDefaultProfile());
 }
 
 /**
