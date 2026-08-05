@@ -46,12 +46,20 @@ import { getAutomaticityScore, getStreakCount } from './scoring';
 import { getAdaptiveSessionMinuteDecision, getAdaptiveSessionMinutes } from './adaptive-command-defaults';
 import { getAdaptiveBands } from './adaptive-bands';
 import { getTaskTimeProgress } from './task-time-sessions';
+import {
+  assertGuardianClientReady,
+  getGuardianClientReadiness,
+} from './guardian-client-status';
+import { getSessionActivityEvidenceCount, getSessionScoringIntervals } from './session-activity';
+
+export { VisionClientUnavailableError } from './guardian-client-status';
 
 // guardian-runtime is the single owner of live session state.
 // Routes ingest input and render output, but do not mutate session state directly.
 const globalGuardian = global as unknown as {
   guardianSessions?: Map<string, GuardianState>;
   guardianIntervals?: Map<string, ReturnType<typeof setInterval>>;
+  guardianClientWatchdogs?: Map<string, ReturnType<typeof setInterval>>;
   guardianCommands?: Map<string, GuardianCommand[]>;
   softWatchMap?: Map<string, SoftWatchCommitment>;
   softWatchCheckerInterval?: ReturnType<typeof setInterval>;
@@ -112,6 +120,7 @@ export function getAdaptiveVisionAlignmentThresholds(): {
 
 const guardianSessions = globalGuardian.guardianSessions || new Map<string, GuardianState>();
 const guardianIntervals = globalGuardian.guardianIntervals || new Map<string, ReturnType<typeof setInterval>>();
+const guardianClientWatchdogs = globalGuardian.guardianClientWatchdogs || new Map<string, ReturnType<typeof setInterval>>();
 const guardianCommands = globalGuardian.guardianCommands || new Map<string, GuardianCommand[]>();
 const softWatchMap = globalGuardian.softWatchMap || new Map<string, SoftWatchCommitment>();
 // sessionId → Google Calendar event ID (fire-and-forget, best-effort)
@@ -120,6 +129,7 @@ const calendarEventIds = globalGuardian.calendarEventIds || new Map<string, stri
 // Always pin maps on global so they survive hot-reloads (dev) and module re-evaluations (prod).
 globalGuardian.guardianSessions = guardianSessions;
 globalGuardian.guardianIntervals = guardianIntervals;
+globalGuardian.guardianClientWatchdogs = guardianClientWatchdogs;
 globalGuardian.guardianCommands = guardianCommands;
 globalGuardian.softWatchMap = softWatchMap;
 globalGuardian.calendarEventIds = calendarEventIds;
@@ -201,6 +211,13 @@ function queryPersonalBestFocusScore(): number | null {
   }
 }
 
+function activeSessionElapsedMs(session: GuardianState, now = Date.now()) {
+  const currentPauseMs = session.state === 'BREAK' && session.pausedAt
+    ? Math.max(0, now - session.pausedAt)
+    : 0;
+  return Math.max(0, now - session.startedAt - session.totalPausedMs - currentPauseMs);
+}
+
 function createSessionState(input: {
   sessionId: string;
   durationMinutes: number;
@@ -212,6 +229,7 @@ function createSessionState(input: {
   conceptNodeName?: string | null;
   personalBestFocusScore?: number | null;
   energyComposite?: number | null;
+  startRequestId?: string | null;
 }): GuardianState {
   return {
     sessionId: input.sessionId,
@@ -226,7 +244,7 @@ function createSessionState(input: {
     endsAt: Date.now() + input.durationMinutes * 60_000,
     tick: 0,
     tabEventLog: [],
-    focusScoreHistory: [100],
+    focusScoreHistory: [],
     blockedCount: 0,
     overrideCount: 0,
     currentUrl: '',
@@ -246,6 +264,10 @@ function createSessionState(input: {
     intentProfile: null,
     sessionPolicy: null,
     screenContext: null,
+    pauseReason: null,
+    pausedAt: null,
+    totalPausedMs: 0,
+    startRequestId: input.startRequestId ?? null,
   };
 }
 
@@ -255,18 +277,25 @@ function restoreSessionsFromDb() {
     const db = getDb();
     const rows = db.prepare(`
       SELECT session_id, target_title, goal_id, goal_title, concept_node_name,
-             started_at, duration_minutes, mood
+             started_at, duration_minutes, mood, state, start_request_id,
+             pause_reason, paused_at, total_paused_ms
       FROM guardian_sessions
-      WHERE state = 'ACTIVE'
+      WHERE state IN ('ACTIVE','BREAK')
     `).all() as Array<{
       session_id: string; target_title: string; goal_id: string | null;
       goal_title: string | null; concept_node_name: string | null;
-      started_at: number; duration_minutes: number; mood: string | null;
+      started_at: number; duration_minutes: number; mood: string | null; state: 'ACTIVE' | 'BREAK';
+      start_request_id: string | null; pause_reason: 'client_unavailable' | 'manual' | null;
+      paused_at: number | null; total_paused_ms: number;
     }>;
 
     for (const row of rows) {
-      const endsAt = row.started_at + row.duration_minutes * 60_000;
-      if (endsAt <= Date.now()) {
+      const completedPauseMs = Number(row.total_paused_ms || 0);
+      const currentPauseMs = row.state === 'BREAK' && row.paused_at
+        ? Math.max(0, Date.now() - row.paused_at)
+        : 0;
+      const endsAt = row.started_at + row.duration_minutes * 60_000 + completedPauseMs + currentPauseMs;
+      if (row.state !== 'BREAK' && endsAt <= Date.now()) {
         // Session expired while server was down — mark complete
         db.prepare(`UPDATE guardian_sessions SET state = 'COMPLETE' WHERE session_id = ?`).run(row.session_id);
         continue;
@@ -281,10 +310,15 @@ function restoreSessionsFromDb() {
         goalId: row.goal_id,
         goalTitle: row.goal_title,
         conceptNodeName: row.concept_node_name,
+        startRequestId: row.start_request_id,
       });
       // Preserve original timing so the countdown is accurate
       session.startedAt = row.started_at;
       session.endsAt = endsAt;
+      session.state = row.state;
+      session.pauseReason = row.pause_reason;
+      session.pausedAt = row.paused_at;
+      session.totalPausedMs = Number(row.total_paused_ms || 0);
 
       guardianSessions.set(row.session_id, session);
       console.log('[guardian] Restored session from DB:', row.session_id, row.target_title);
@@ -294,6 +328,13 @@ function restoreSessionsFromDb() {
           void tickGuardianSession(row.session_id, { sessionId: row.session_id, type: 'heartbeat', timestamp: Date.now() });
         }, 30_000);
         guardianIntervals.set(row.session_id, timer);
+      }
+      if (!guardianClientWatchdogs.has(row.session_id)) {
+        const watchdog = setInterval(() => {
+          const live = guardianSessions.get(row.session_id);
+          if (live && (live.state === 'ACTIVE' || live.state === 'BREAK')) synchronizeClientPauseState(live);
+        }, 1_000);
+        guardianClientWatchdogs.set(row.session_id, watchdog);
       }
     }
   } catch (err) {
@@ -350,6 +391,11 @@ function clearHeartbeat(sessionId: string) {
   if (timer) {
     clearInterval(timer);
     guardianIntervals.delete(sessionId);
+  }
+  const watchdog = guardianClientWatchdogs.get(sessionId);
+  if (watchdog) {
+    clearInterval(watchdog);
+    guardianClientWatchdogs.delete(sessionId);
   }
 }
 
@@ -462,7 +508,7 @@ function finalizeOverrideClaim(id: number, request: OverrideRequest, decision: O
 function persistSessionSummary(session: GuardianState) {
   try {
     const db = getDb();
-    const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+    const elapsedMinutes = Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000));
     const focusScores = session.focusScoreHistory.length > 0 ? session.focusScoreHistory : [100];
     const averageFocusScore = focusScores.reduce((sum, score) => sum + score, 0) / focusScores.length;
     const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
@@ -470,17 +516,13 @@ function persistSessionSummary(session: GuardianState) {
     let distractionEvents = 0;
     let productiveEvents = 0;
     let neutralEvents = 0;
-
-    for (const event of session.tabEventLog) {
-      if (!isContinuityEvent(event)) continue;
-      const classification = getEventClassification(session, event);
-      if (classification === 'distraction') {
+    const canonicalIntervals = getSessionScoringIntervals(session.sessionId);
+    for (const interval of canonicalIntervals) {
+      if (!interval.scoreEligible) continue;
+      if (interval.category === 'distraction') {
         distractionEvents += 1;
-        const domain = getEventDomainKey(event);
-        if (domain) {
-          domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
-        }
-      } else if (classification === 'on_topic') {
+        if (interval.domain) domainCounts.set(interval.domain, (domainCounts.get(interval.domain) || 0) + 1);
+      } else if (interval.category === 'productive') {
         productiveEvents += 1;
       } else {
         neutralEvents += 1;
@@ -509,8 +551,9 @@ function persistSessionSummary(session: GuardianState) {
         distraction_events,
         productive_events,
         neutral_events,
-        dominant_distraction_domain
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dominant_distraction_domain,
+        completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         target_title = excluded.target_title,
         goal_title = excluded.goal_title,
@@ -527,7 +570,7 @@ function persistSessionSummary(session: GuardianState) {
         productive_events = excluded.productive_events,
         neutral_events = excluded.neutral_events,
         dominant_distraction_domain = excluded.dominant_distraction_domain,
-        completed_at = datetime('now', 'localtime')
+        completed_at = excluded.completed_at
     `).run(
       session.sessionId,
       session.targetTitle,
@@ -544,7 +587,8 @@ function persistSessionSummary(session: GuardianState) {
       distractionEvents,
       productiveEvents,
       neutralEvents,
-      dominantDistractionDomain
+      dominantDistractionDomain,
+      nowIso(),
     );
 
     updateGuardianSemanticProfile('default');
@@ -559,10 +603,9 @@ async function generateSessionReflection(session: GuardianState) {
     const focusScores = session.focusScoreHistory.length > 0 ? session.focusScoreHistory : [100];
     const averageFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
     const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
-    const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
-    const distractionCount = session.tabEventLog.filter(
-      (e) => isContinuityEvent(e) && getEventClassification(session, e) === 'distraction'
-    ).length;
+    const elapsedMinutes = Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000));
+    const distractionCount = getSessionScoringIntervals(session.sessionId)
+      .filter(interval => interval.scoreEligible && interval.category === 'distraction').length;
 
     const focusQuality = adaptiveFocusQuality(averageFocusScore);
 
@@ -570,8 +613,12 @@ async function generateSessionReflection(session: GuardianState) {
     if (!ai) return;
 
     const uilContext = getIntelligenceContext({ maxInsights: 2, includeToday: true });
-    const nowLocal = new Date(Date.now() + 19800000); // IST offset
-    const currentTimeStr = nowLocal.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const currentTimeStr = new Date().toLocaleTimeString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
 
     const prompt = `You are the LifeOS guardian reflecting on a just-completed study session. Write 2–3 concise sentences (max 60 words total) as a personal coach speaking directly to the user. Be honest, specific, and reference their patterns. No filler phrases.
 
@@ -587,13 +634,13 @@ ${uilContext}`;
     const reflectionText = (result.text ?? '').trim().slice(0, 400);
 
     db.prepare(`
-      INSERT INTO guardian_session_reflections (session_id, reflection_text, focus_quality)
-      VALUES (?, ?, ?)
+      INSERT INTO guardian_session_reflections (session_id, reflection_text, focus_quality, generated_at)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         reflection_text = excluded.reflection_text,
         focus_quality = excluded.focus_quality,
-        generated_at = datetime('now', 'localtime')
-    `).run(session.sessionId, reflectionText, focusQuality.quality);
+        generated_at = excluded.generated_at
+    `).run(session.sessionId, reflectionText, focusQuality.quality, nowIso());
   } catch (error) {
     console.error('[GuardianRuntime] Failed to generate session reflection', error);
   }
@@ -601,7 +648,7 @@ ${uilContext}`;
 
 function buildSpeechText(session: GuardianState, kind: GuardianDecision['type']): string {
   const score = session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? 100;
-  const elapsed = Math.max(1, Math.floor((Date.now() - session.startedAt) / 60000));
+  const elapsed = Math.max(1, Math.floor(activeSessionElapsedMs(session) / 60000));
   const remaining = Math.max(0, session.durationMinutes - elapsed);
   const site = getDomain(session.currentUrl) || 'that site';
 
@@ -765,7 +812,7 @@ function buildSessionMilestonePolicy(input: {
         sessionId: input.session.sessionId,
         targetTitle: input.session.targetTitle,
         focusScore: input.focusScore,
-        elapsedMinutes: Math.max(0, Math.round((Date.now() - input.session.startedAt) / 60_000)),
+        elapsedMinutes: Math.max(0, Math.round(activeSessionElapsedMs(input.session) / 60_000)),
       },
     });
 
@@ -921,7 +968,7 @@ function emitExpiredOverrideCommands(session: GuardianState) {
 
 function buildInterventionPolicy(session: GuardianState, source: 'block' | 'override_expired'): GuardianInterventionPolicy {
   const focusScore = session.focusScoreHistory.at(-1) ?? null;
-  const elapsedMinutes = Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000));
+  const elapsedMinutes = Math.max(0, Math.round(activeSessionElapsedMs(session) / 60_000));
   const snapshot = buildPersonalizationSnapshot({
     surface: 'intervention',
     maxInsights: 2,
@@ -1233,7 +1280,7 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
     }
   }
 
-  const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
+  const elapsed = Math.floor(activeSessionElapsedMs(session) / 60000);
   const milestonePolicy = buildSessionMilestonePolicy({ session, focusScore, lowEnergy, inFlow });
   if (
     milestonePolicy.shouldEmitMidpoint &&
@@ -1423,13 +1470,65 @@ export function getGuardianSession(sessionId: string) {
   return session ? cloneSession(session) : null;
 }
 
+function synchronizeClientPauseState(session: GuardianState) {
+  const readiness = getGuardianClientReadiness();
+  if (!readiness.ready && session.state === 'ACTIVE') {
+    session.state = 'BREAK';
+    session.pauseReason = 'client_unavailable';
+    session.pausedAt = Date.now();
+    getDb().prepare(`
+      UPDATE guardian_sessions
+      SET state = 'BREAK', pause_reason = 'client_unavailable', paused_at = ?
+      WHERE session_id = ?
+    `).run(session.pausedAt, session.sessionId);
+    emitSessionEvent(session.sessionId, {
+      type: 'session_state', state: 'BREAK', pauseReason: session.pauseReason,
+      explainability: `Guardian auto-paused because the MacBook vision client is ${readiness.reason}.`,
+    });
+  } else if (readiness.ready && session.state === 'BREAK' && session.pauseReason === 'client_unavailable') {
+    const pausedFor = Math.max(0, Date.now() - (session.pausedAt ?? Date.now()));
+    session.totalPausedMs += pausedFor;
+    session.endsAt += pausedFor;
+    session.state = 'ACTIVE';
+    session.pauseReason = null;
+    session.pausedAt = null;
+    getDb().prepare(`
+      UPDATE guardian_sessions
+      SET state = 'ACTIVE', pause_reason = NULL, paused_at = NULL, total_paused_ms = ?
+      WHERE session_id = ?
+    `).run(session.totalPausedMs, session.sessionId);
+    emitSessionEvent(session.sessionId, {
+      type: 'session_state', state: 'ACTIVE', pauseReason: null,
+      explainability: 'Guardian resumed after verified MacBook capture returned.',
+    });
+  }
+}
+
 export function getActiveGuardianSession(): GuardianState | null {
   if (guardianSessions.size === 0) restoreSessionsFromDb();
   const active = Array.from(guardianSessions.values()).find(s => s.state === 'ACTIVE' || s.state === 'BREAK');
+  if (active) synchronizeClientPauseState(active);
   return active ? cloneSession(active) : null;
 }
 
 export function startGuardianSession(input: GuardianStartRequest): GuardianState {
+  if (input.startRequestId) {
+    const live = Array.from(guardianSessions.values()).find(
+      session => session.startRequestId === input.startRequestId && (session.state === 'ACTIVE' || session.state === 'BREAK'),
+    );
+    if (live) return cloneSession(live);
+    const existing = getDb().prepare(`
+      SELECT session_id FROM guardian_sessions
+      WHERE start_request_id = ? AND state IN ('ACTIVE','BREAK')
+      LIMIT 1
+    `).get(input.startRequestId) as { session_id: string } | undefined;
+    if (existing) {
+      if (guardianSessions.size === 0) restoreSessionsFromDb();
+      const restored = guardianSessions.get(existing.session_id);
+      if (restored) return cloneSession(restored);
+    }
+  }
+  assertGuardianClientReady();
   const sessionId = randomId('session');
   const startSnapshot = buildPersonalizationSnapshot({
     surface: 'intervention',
@@ -1457,6 +1556,7 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     conceptNodeName: input.conceptNodeName || input.topic || null,
     personalBestFocusScore: queryPersonalBestFocusScore(),
     energyComposite: energyComponents.composite_score,
+    startRequestId: input.startRequestId ?? null,
   });
 
   guardianSessions.set(sessionId, session);
@@ -1496,14 +1596,15 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   try {
     getDb().prepare(`
       INSERT OR IGNORE INTO guardian_sessions
-        (session_id, target_title, goal_id, goal_title, concept_node_name, started_at, duration_minutes, mood)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (session_id, target_title, goal_id, goal_title, concept_node_name, started_at, duration_minutes, mood, start_request_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sessionId, targetTitle,
       input.goalId || null, input.goalTitle || null,
       input.conceptNodeName || input.topic || null,
       session.startedAt, durationMinutes,
-      input.mood || null
+      input.mood || null,
+      input.startRequestId ?? null,
     );
   } catch (err) {
     console.error('[guardian] Failed to persist session to DB:', err);
@@ -1561,6 +1662,11 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     void tickGuardianSession(sessionId, { sessionId, type: 'heartbeat', timestamp: Date.now() });
   }, 30_000);
   guardianIntervals.set(sessionId, timer);
+  const watchdog = setInterval(() => {
+    const live = guardianSessions.get(sessionId);
+    if (live && (live.state === 'ACTIVE' || live.state === 'BREAK')) synchronizeClientPauseState(live);
+  }, 1_000);
+  guardianClientWatchdogs.set(sessionId, watchdog);
 
   return cloneSession(session);
 }
@@ -1569,47 +1675,43 @@ export function endGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   if (!session) return null;
 
-  // Flush the final tab's dwell time — the last page visited never gets a navigate-away event,
-  // so its duration would otherwise be lost entirely. Fire-and-forget, non-blocking.
-  if (
-    session.currentUrl &&
-    !session.currentUrl.startsWith('chrome://') &&
-    session.currentTabStartedAt
-  ) {
-    const finalDwellSeconds = Math.round((Date.now() - session.currentTabStartedAt) / 1000);
-    if (finalDwellSeconds > 5) {
-      const finalUrl = session.currentUrl;
-      const finalTitle = session.currentTitle;
-      const finalTarget = session.targetTitle;
-      const tabStartedAt = session.currentTabStartedAt; // capture before async
-      void (async () => {
-        try {
-          let domain = '';
-          try { domain = new URL(finalUrl).hostname.replace(/^www\./, ''); } catch { return; }
-          const classification = await classifyActivity(finalUrl, finalTitle, domain, undefined);
-          // Use the exact tab activation time — no retrocomputation drift
-          const startedAt = new Date(tabStartedAt).toISOString();
-          getDb().prepare(`
-            INSERT INTO activities (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, device_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(finalUrl, domain, finalTitle, classification.category, classification.subcategory, startedAt, finalDwellSeconds, JSON.stringify({ ...classification, sessionTarget: finalTarget }), 'LifeOS Guardian');
-        } catch (err) {
-          console.warn('[guardian] Failed to log final tab dwell:', err);
-        }
-      })();
-    }
+  const hasVerifiedEvidence = getSessionActivityEvidenceCount(sessionId) > 0;
+  if (hasVerifiedEvidence && session.focusScoreHistory.length === 0) {
+    const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
+    const finalSupportedScore = computeFocusScore(
+      session,
+      policy,
+      session.energyComposite,
+      getSessionScoringIntervals(sessionId),
+    );
+    session.focusScoreHistory.push(finalSupportedScore.score);
   }
 
   session.state = 'COMPLETE';
   clearHeartbeat(sessionId);
-  persistSessionSummary(session);
+  if (hasVerifiedEvidence) persistSessionSummary(session);
 
   // Mark persistent session record as complete
   try {
     getDb().prepare(`UPDATE guardian_sessions SET state = 'COMPLETE' WHERE session_id = ?`).run(sessionId);
   } catch { /* non-fatal */ }
 
-  const elapsedMinutes = Math.max(1, Math.round((Date.now() - session.startedAt) / 60000));
+  if (!hasVerifiedEvidence) {
+    emitSessionEvent(sessionId, {
+      type: 'session_end',
+      summary: {
+        sessionId,
+        elapsedMinutes: 0,
+        focusScore: null,
+        targetTitle: session.targetTitle,
+        evidenceStatus: 'unverified',
+      },
+      explainability: 'Session ended without verified activity, so no score or personalization evidence was created.',
+    });
+    return cloneSession(session);
+  }
+
+  const elapsedMinutes = Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000));
 
   syncPlannedFocusSessionOutcome(sessionId, session.targetTitle, elapsedMinutes);
 
@@ -1831,7 +1933,7 @@ export function endGuardianSession(sessionId: string) {
     type: 'session_end',
     summary: {
       sessionId,
-      elapsedMinutes: Math.max(1, Math.round((Date.now() - session.startedAt) / 60000)),
+      elapsedMinutes: Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000)),
       focusScore: session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? 100,
       blockedCount: session.blockedCount,
       overrideCount: session.overrideCount,
@@ -1958,15 +2060,27 @@ async function sendSessionClassifyReview(sessionId: string) {
   }
 }
 
-export function pauseGuardianSession(sessionId: string) {
+export function pauseGuardianSession(
+  sessionId: string,
+  reason: 'manual' | 'presence_unconfirmed' = 'manual',
+) {
   const session = guardianSessions.get(sessionId);
   if (!session) return null;
+  const alreadyPausedAt = session.state === 'BREAK' ? session.pausedAt : null;
   session.state = 'BREAK';
+  session.pauseReason = reason;
+  session.pausedAt = alreadyPausedAt ?? Date.now();
+  try {
+    getDb().prepare(`UPDATE guardian_sessions SET state = 'BREAK', pause_reason = ?, paused_at = ? WHERE session_id = ?`)
+      .run(reason, session.pausedAt, sessionId);
+  } catch { /* non-fatal */ }
   emitSessionEvent(sessionId, {
     type: 'session_state',
     state: session.state,
     sessionId,
-    explainability: 'Guardian session is paused and the runtime will ignore active-session interventions.',
+    explainability: reason === 'presence_unconfirmed'
+      ? 'Guardian auto-paused because the presence check was not answered within 60 seconds. The uncertain interval is unscored.'
+      : 'Guardian session is paused and the runtime will ignore active-session interventions.',
   });
   return cloneSession(session);
 }
@@ -1974,7 +2088,16 @@ export function pauseGuardianSession(sessionId: string) {
 export function resumeGuardianSession(sessionId: string) {
   const session = guardianSessions.get(sessionId);
   if (!session) return null;
+  const pausedFor = Math.max(0, Date.now() - (session.pausedAt ?? Date.now()));
+  session.totalPausedMs += pausedFor;
+  session.endsAt += pausedFor;
   session.state = 'ACTIVE';
+  session.pauseReason = null;
+  session.pausedAt = null;
+  try {
+    getDb().prepare(`UPDATE guardian_sessions SET state = 'ACTIVE', pause_reason = NULL, paused_at = NULL, total_paused_ms = ? WHERE session_id = ?`)
+      .run(session.totalPausedMs, sessionId);
+  } catch { /* non-fatal */ }
   emitSessionEvent(sessionId, {
     type: 'session_state',
     state: session.state,
@@ -2084,7 +2207,7 @@ export function appendGuardianEvent(event: GuardianEvent): GuardianState | null 
               }
               // Re-emit an updated focus score so the dashboard reflects the correction.
               const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
-              const updated = computeFocusScore(live, policy);
+              const updated = computeFocusScore(live, policy, live.energyComposite, getSessionScoringIntervals(live.sessionId));
               if (live.focusScoreHistory.length > 0) {
                 live.focusScoreHistory[live.focusScoreHistory.length - 1] = updated.score;
               }
@@ -2163,9 +2286,10 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
   }
   const session = guardianSessions.get(sessionId);
   const sourceEventType = inputEvent?.type ?? 'system';
+  if (session) synchronizeClientPauseState(session);
   if (!session || session.state !== 'ACTIVE') {
     return {
-      session: null,
+      session: session ? cloneSession(session) : null,
       decision: finalizeDecision(
         sessionId,
         { type: 'silence', reason: 'Session not active', explainability: 'The runtime ignored the tick because the session is missing or not active.' },
@@ -2193,11 +2317,23 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
     appendGuardianEvent(inputEvent);
   }
 
+  if (getSessionActivityEvidenceCount(sessionId) === 0) {
+    return {
+      session: cloneSession(session),
+      decision: finalizeDecision(sessionId, {
+        type: 'silence',
+        reason: 'Waiting for verified activity',
+        explainability: 'No score is produced until a canonical score-eligible activity interval exists.',
+      }, sourceEventType),
+      commands: consumeGuardianCommands(sessionId),
+    };
+  }
+
   emitExpiredOverrideCommands(session);
 
   session.tick += 1;
   const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
-  const focus = computeFocusScore(session, policy, session.energyComposite);
+  const focus = computeFocusScore(session, policy, session.energyComposite, getSessionScoringIntervals(sessionId));
   session.focusScoreHistory.push(focus.score);
 
   emitSessionEvent(sessionId, {
@@ -2210,7 +2346,7 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
 
   emitSessionEvent(sessionId, {
     type: 'session_stats',
-    elapsed: Math.max(1, Math.round((Date.now() - session.startedAt) / 1000)),
+    elapsed: Math.max(1, Math.round(activeSessionElapsedMs(session) / 1000)),
     onTopicTime: focus.onTopicSeconds,
     distractions: focus.distractionCount,
     blockedCount: session.blockedCount,
@@ -2244,7 +2380,7 @@ function getAdaptiveOverrideFollowUpDelayMinutes(input: {
       sessionId: input.session.sessionId,
       targetTitle: input.session.targetTitle,
       focusScore: input.session.focusScoreHistory.at(-1) ?? null,
-      elapsedMinutes: Math.max(0, Math.round((Date.now() - input.session.startedAt) / 60_000)),
+      elapsedMinutes: Math.max(0, Math.round(activeSessionElapsedMs(input.session) / 60_000)),
     } : null,
   });
   const classification = classifyUrlForGuardian(input.request.url, input.session?.sessionClassificationCache, Boolean(input.session));
@@ -2457,7 +2593,7 @@ export function getGuardianContext() {
     ...task,
     time_progress: getTaskTimeProgress(task.id),
   }));
-  const activeSession = listGuardianSessions().find((session) => session.state === 'ACTIVE') || null;
+  const activeSession = getActiveGuardianSession();
   // Consume pending speech (read-once) so the dashboard can speak it via Web Speech API.
   const pendingSpeech = activeSession ? consumePendingSpeech(activeSession.sessionId) : null;
   return {

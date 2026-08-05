@@ -449,7 +449,7 @@ function lookupRecentClassification(url: string, domain: string, youtubeVideoId?
 
         let query = `
             SELECT category, subcategory, ai_classification 
-            FROM activities 
+            FROM effective_activities
             WHERE 
         `;
         const params: string[] = [];
@@ -772,7 +772,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
                 SELECT 
                     SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) * 1.0 / 
                     MAX(SUM(duration_seconds), 1) as baseline_ratio
-                FROM activities WHERE date(started_at, 'localtime') = date('now')
+                FROM effective_activities WHERE date(started_at, 'localtime') = date('now')
             `).get() as { baseline_ratio: number };
 
             // Calculate short-term EMA (last 30 minutes)
@@ -780,7 +780,7 @@ export async function shouldNudge(url: string, currentDomain: string, minutesOnS
                 SELECT 
                     SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) * 1.0 / 
                     MAX(SUM(duration_seconds), 1) as recent_ratio
-                FROM activities WHERE started_at > datetime('now', '-30 minutes')
+                FROM effective_activities WHERE started_at > datetime('now', '-30 minutes')
             `).get() as { recent_ratio: number };
 
             const baseline = todayBaseline?.baseline_ratio || 0.5;

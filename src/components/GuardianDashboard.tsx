@@ -9,18 +9,65 @@ interface GuardianFeedMessage {
     time: number;
 }
 
-export default function GuardianDashboard({ sessionId, plannedMinutes, targetTitle, startedAt }: { sessionId: string, plannedMinutes: number, targetTitle: string, startedAt?: number }) {
-    const [score, setScore] = useState<number>(100);
+interface PresenceCheck {
+    checkId: string;
+    targetTitle: string;
+    secondsRemaining: number;
+    app: string | null;
+    windowTitle: string | null;
+}
+
+export default function GuardianDashboard({ sessionId, plannedMinutes, targetTitle, startedAt, paused = false }: { sessionId: string, plannedMinutes: number, targetTitle: string, startedAt?: number, paused?: boolean }) {
+    const [score, setScore] = useState<number | null>(null);
     const [trend, setTrend] = useState<number>(0);
     const [messages, setMessages] = useState<GuardianFeedMessage[]>([]);
     const [elapsed, setElapsed] = useState<number>(() => startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0);
-    const [history, setHistory] = useState<number[]>([100]);
+    const [history, setHistory] = useState<number[]>([]);
     const [onTopicTime, setOnTopicTime] = useState<number>(0);
     const [distractions, setDistractions] = useState<number>(0);
+    const [presenceCheck, setPresenceCheck] = useState<PresenceCheck | null>(null);
+    const [presenceActionPending, setPresenceActionPending] = useState(false);
+
+    useEffect(() => {
+        if (!sessionId) return;
+        let cancelled = false;
+        const loadPresence = async () => {
+            try {
+                const response = await fetch(`/api/guardian/presence?sessionId=${encodeURIComponent(sessionId)}`);
+                if (!response.ok || cancelled) return;
+                const data = await response.json() as { check?: PresenceCheck | null };
+                if (!cancelled) setPresenceCheck(data.check ?? null);
+            } catch { /* the next poll retries */ }
+        };
+        void loadPresence();
+        const timer = window.setInterval(loadPresence, 5_000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [sessionId]);
+
+    const resolvePresence = async (action: 'still_working' | 'break' | 'end') => {
+        if (!presenceCheck || presenceActionPending) return;
+        setPresenceActionPending(true);
+        try {
+            const response = await fetch('/api/guardian/presence', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId, checkId: presenceCheck.checkId, action }),
+            });
+            if (!response.ok) throw new Error('Could not resolve presence check');
+            setPresenceCheck(null);
+        } catch (error) {
+            console.error('[Guardian] Presence response failed', error);
+        } finally {
+            setPresenceActionPending(false);
+        }
+    };
 
     // SSE Subscription
     useEffect(() => {
-        if (!sessionId) return;
+        if (!sessionId || paused) return;
         const sse = new EventSource(`/api/guardian/stream?sessionId=${sessionId}`);
 
         sse.onmessage = (event) => {
@@ -39,11 +86,11 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
         };
 
         return () => sse.close();
-    }, [sessionId]);
+    }, [sessionId, paused]);
 
     // Local display timer between stream updates
     useEffect(() => {
-        if (!sessionId) return;
+        if (!sessionId || paused) return;
 
         const tickTimer = setInterval(() => {
             setElapsed(e => e + 1);
@@ -52,7 +99,7 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
         return () => {
             clearInterval(tickTimer);
         };
-    }, [sessionId]);
+    }, [sessionId, paused]);
 
     const formatTime = (sec: number) => {
         const m = Math.floor(sec / 60);
@@ -60,10 +107,32 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
-    const scoreColor = adaptiveScoreColor(score);
+    const scoreColor = score === null ? '#52525b' : adaptiveScoreColor(score);
 
     return (
         <div className="w-full max-w-4xl mx-auto p-8 bg-zinc-950 text-white rounded-2xl shadow-2xl relative overflow-hidden">
+            {presenceCheck ? (
+                <div role="alertdialog" aria-live="assertive" aria-labelledby="presence-check-title" className="mb-8 rounded-xl border border-amber-500/50 bg-amber-500/10 p-5">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <p id="presence-check-title" className="font-bold text-amber-200">Are you still working on “{presenceCheck.targetTitle}”?</p>
+                            <p className="mt-1 text-sm text-amber-100/70">
+                                No interaction was detected for 3 minutes{presenceCheck.app ? ` in ${presenceCheck.app}` : ''}. LifeOS cannot reliably distinguish reading or thinking from being away.
+                            </p>
+                            <p className="mt-1 text-xs text-amber-200/70">
+                                {presenceCheck.secondsRemaining > 0
+                                    ? `Guardian pauses in ${presenceCheck.secondsRemaining}s if unanswered.`
+                                    : 'Guardian is paused. This uncertain interval remains unscored.'}
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <button disabled={presenceActionPending} onClick={() => void resolvePresence('still_working')} className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-black disabled:opacity-50">Yes, still working</button>
+                            <button disabled={presenceActionPending} onClick={() => void resolvePresence('break')} className="rounded-lg border border-amber-300/40 px-3 py-2 text-sm font-semibold text-amber-100 disabled:opacity-50">Taking a break</button>
+                            <button disabled={presenceActionPending} onClick={() => void resolvePresence('end')} className="rounded-lg border border-red-400/40 px-3 py-2 text-sm font-semibold text-red-200 disabled:opacity-50">End session</button>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
             {/* Context Header */}
             <div className="flex justify-between items-center mb-12">
                 <div>
@@ -85,12 +154,14 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
                         <svg className="w-48 h-48 transform -rotate-90">
                             <circle cx="96" cy="96" r="88" fill="none" stroke="#27272a" strokeWidth="8" />
                             <circle cx="96" cy="96" r="88" fill="none" stroke={scoreColor} strokeWidth="8"
-                                strokeDasharray="552.9" strokeDashoffset={552.9 - (552.9 * score) / 100}
+                                strokeDasharray="552.9" strokeDashoffset={score === null ? 552.9 : 552.9 - (552.9 * score) / 100}
                                 className="transition-all duration-1000 ease-out" />
                         </svg>
                         <div className="absolute inset-0 flex flex-col items-center justify-center">
-                            <div className="text-6xl font-black tracking-tighter" style={{ color: scoreColor }}>{score}</div>
-                            <div className="text-zinc-400 text-sm mt-2 font-bold">{trend >= 0 ? '+' : ''}{trend} pts</div>
+                            <div className="text-6xl font-black tracking-tighter" style={{ color: scoreColor }}>{score ?? '—'}</div>
+                            <div className="text-zinc-400 text-sm mt-2 font-bold">
+                                {score === null ? 'Waiting for evidence' : `${trend >= 0 ? '+' : ''}${trend} pts`}
+                            </div>
                         </div>
                     </div>
                 </div>

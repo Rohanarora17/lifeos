@@ -26,6 +26,7 @@ import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import { generateNextDayPlan } from './next-day-planner';
 import { getTaskTimeProgress } from './task-time-sessions';
+import { VisionClientUnavailableError } from './guardian-client-status';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
@@ -1357,7 +1358,16 @@ export async function executeAction(
             const duration = getAdaptiveSessionMinutes(payload.durationMinutes);
             const moodRaw = payload.mood as string | undefined;
             const mood = (moodRaw === 'high' || moodRaw === 'medium' || moodRaw === 'low') ? moodRaw : undefined;
-            startGuardianSession({ topic: title, durationMinutes: duration, mood, source: 'api' });
+            try {
+                startGuardianSession({ topic: title, durationMinutes: duration, mood, source: 'api' });
+            } catch (error) {
+                if (!(error instanceof VisionClientUnavailableError)) throw error;
+                const recovery = error.readiness.screenRecordingStatus !== 'authorized'
+                    ? 'Grant LifeOSCopilot Screen Recording permission on the MacBook, then retry.'
+                    : 'Open LifeOSCopilot on the MacBook, then retry.';
+                await sendTelegram(`Guardian was not started. ${recovery}`, 'HTML', FULL_MENU_KEYBOARD);
+                break;
+            }
             await sendTelegram(`🛡️ ${replyText || `Session started: <b>${title}</b> for ${duration}m`}`, 'HTML', SESSION_START_KEYBOARD);
             break;
         }

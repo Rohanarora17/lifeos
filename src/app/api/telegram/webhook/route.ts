@@ -28,6 +28,7 @@ import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { getAdaptiveBands } from '@/lib/adaptive-bands';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { VisionClientUnavailableError } from '@/lib/guardian-client-status';
 
 function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
@@ -626,7 +627,14 @@ async function handlePendingSessionContext(reply: string, pendingRaw: string) {
             `🛡️ <b>Session started!</b>\n📚 ${session.targetTitle}\n⏱️ ${session.durationMinutes} min${contextNote}`,
             'HTML', SESSION_START_KEYBOARD
         );
-    } catch {
+    } catch (error) {
+        if (error instanceof VisionClientUnavailableError) {
+            const recovery = error.readiness.screenRecordingStatus !== 'authorized'
+                ? 'Grant LifeOSCopilot Screen Recording permission on the MacBook, then retry.'
+                : 'Open LifeOSCopilot on the MacBook, then retry.';
+            await sendTelegram(`Guardian was not started. ${recovery}`, 'HTML', FULL_MENU_KEYBOARD);
+            return;
+        }
         await sendTelegram(webhookPersonalizedLine('session_start_failed'), 'HTML', FULL_MENU_KEYBOARD);
     }
 }

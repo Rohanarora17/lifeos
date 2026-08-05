@@ -47,7 +47,7 @@ export async function sendWeeklyReckoning(): Promise<void> {
     // Screen time categories this week
     const screenCats = db.prepare(`
       SELECT category, ROUND(SUM(duration_seconds)/3600.0, 1) as hours
-      FROM activities
+      FROM effective_activities
       WHERE date(started_at) >= ?
       GROUP BY category
       ORDER BY hours DESC

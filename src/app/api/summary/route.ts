@@ -230,7 +230,7 @@ export async function GET(request: NextRequest) {
 
         const topDomains = db.prepare(`
       SELECT domain, SUM(duration_seconds) / 60 as minutes, category
-      FROM activities WHERE date(started_at, 'localtime') = ?
+      FROM effective_activities WHERE date(started_at, 'localtime') = ?
       GROUP BY domain ORDER BY minutes DESC LIMIT 10
     `).all(date) as { domain: string; minutes: number; category: string }[];
 

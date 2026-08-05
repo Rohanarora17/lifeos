@@ -217,17 +217,35 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
 export function getUpcomingCommitments(): SoftWatchCommitment[] {
   try {
     const db = getDb();
+    const windowStart = Date.now();
     const windowEnd = Date.now() + 4 * 60 * 60_000; // next 4 hours
+    db.prepare(`
+      UPDATE soft_watch_commitments
+      SET status = 'expired'
+      WHERE status = 'pending'
+        AND intended_start_at < ?
+    `).run(windowStart);
+    db.prepare(`
+      UPDATE soft_watch_commitments
+      SET status = 'dismissed'
+      WHERE status = 'pending'
+        AND id IN (
+          SELECT sw.id
+          FROM soft_watch_commitments sw
+          JOIN planned_focus_sessions pfs ON pfs.soft_watch_id = sw.id
+          WHERE pfs.status IN ('completed','skipped','cancelled')
+        )
+    `).run();
     return db.prepare(`
       SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
         intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,
         source, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt,
         status, locked_in_session_id as lockedInSessionId, created_at as createdAt
       FROM soft_watch_commitments
-      WHERE status = 'pending' AND intended_start_at <= ?
+      WHERE status = 'pending' AND intended_start_at BETWEEN ? AND ?
       ORDER BY intended_start_at ASC
       LIMIT 5
-    `).all(windowEnd) as SoftWatchCommitment[];
+    `).all(windowStart, windowEnd) as SoftWatchCommitment[];
   } catch {
     return [];
   }

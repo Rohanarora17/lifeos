@@ -1,6 +1,71 @@
 import AppKit
 import AVFoundation
 
+private func readNativeMessage() -> [String: Any]? {
+    let input = FileHandle.standardInput
+    let header = input.readData(ofLength: 4)
+    guard header.count == 4 else { return nil }
+    let bytes = [UInt8](header)
+    let length = Int(bytes[0]) | Int(bytes[1]) << 8 | Int(bytes[2]) << 16 | Int(bytes[3]) << 24
+    guard length > 0, length <= 1_048_576 else { return nil }
+    let payload = input.readData(ofLength: length)
+    guard payload.count == length else { return nil }
+    return try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
+}
+
+private func writeNativeMessage(_ value: [String: Any]) {
+    guard let payload = try? JSONSerialization.data(withJSONObject: value) else { return }
+    let length = UInt32(payload.count)
+    let header = Data([
+        UInt8(length & 0xff),
+        UInt8((length >> 8) & 0xff),
+        UInt8((length >> 16) & 0xff),
+        UInt8((length >> 24) & 0xff),
+    ])
+    FileHandle.standardOutput.write(header)
+    FileHandle.standardOutput.write(payload)
+}
+
+private func runNativeMessagingIfRequested() -> Bool {
+    guard CommandLine.arguments.contains("--native-message") else { return false }
+    guard readNativeMessage()?["action"] as? String == "wake" else {
+        writeNativeMessage(["ok": false, "error": "unsupported_action"])
+        return true
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.lifeos.copilot"]
+    do {
+        try process.run()
+        process.waitUntilExit()
+        writeNativeMessage([
+            "ok": process.terminationStatus == 0,
+            "status": Int(process.terminationStatus),
+        ])
+    } catch {
+        writeNativeMessage(["ok": false, "error": error.localizedDescription])
+    }
+    return true
+}
+
+private func screenRecordingStatus() -> (label: String, capable: Bool) {
+    let authorized = CGPreflightScreenCaptureAccess()
+    return (authorized ? "authorized" : "denied", authorized)
+}
+
+private func currentInputIdleSeconds() -> Double {
+    CGEventSource.secondsSinceLastEventType(
+        .combinedSessionState,
+        eventType: .null
+    )
+}
+
+private func currentSystemState(inputIdleSeconds: Double) -> String {
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    if session?["CGSSessionScreenIsLocked"] as? Bool == true { return "locked" }
+    return inputIdleSeconds >= 60 ? "idle" : "active"
+}
+
 private func copilotLog(_ message: String) {
     let line = "[LifeOSCopilot] \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
@@ -189,6 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorderService()
     private let overlay = OverlayWindow()
     private let classificationPrompt = ClassificationPromptController()
+    private let presencePrompt = PresencePromptController()
     private let speaker = AVSpeechSynthesizer()
 
     private var activeSessionId: String?
@@ -196,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentAppStartedAt = Date()
     private var currentApp = "Unknown App"
     private var currentTitle = ""
+    private var presentedPresenceCheckId: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "LifeOS"
@@ -207,10 +274,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
 
         installHotkeys()
+        let initial = capture.frontmostApp()
+        currentApp = initial.app
+        currentTitle = initial.title
+        currentAppStartedAt = Date()
         Task { await pollHeartbeatLoop() }
         Task { await visionCaptureLoop() }
         Task { await classificationAskLoop() }
-        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.flushAppDwellIfActive()
             }
@@ -247,8 +318,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pollHeartbeatLoop() async {
         while true {
             do {
-                let response = try await api.heartbeat()
+                let frontmost = capture.frontmostApp()
+                if
+                    activeSessionId != nil,
+                    (frontmost.app != currentApp || frontmost.title != currentTitle)
+                {
+                    await flushAppDwellIfActive(nextFrontmost: frontmost)
+                } else if activeSessionId == nil {
+                    currentApp = frontmost.app
+                    currentTitle = frontmost.title
+                    currentAppStartedAt = Date()
+                }
+                let permission = screenRecordingStatus()
+                let inputIdleSeconds = currentInputIdleSeconds()
+                let response = try await api.heartbeat(
+                    app: frontmost.app,
+                    title: frontmost.title,
+                    screenRecordingStatus: permission.label,
+                    captureCapable: permission.capable,
+                    systemState: currentSystemState(inputIdleSeconds: inputIdleSeconds),
+                    inputIdleSeconds: inputIdleSeconds,
+                    sessionId: activeSessionId
+                )
                 activeSessionId = response.active ? response.sessionId : nil
+                presentPresenceCheckIfNeeded(response.presenceCheck)
                 await MainActor.run {
                     statusItem.button?.title = response.active ? "LifeOS On" : "LifeOS"
                 }
@@ -259,16 +352,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func presentPresenceCheckIfNeeded(_ check: NativePresenceCheck?) {
+        guard let check else {
+            presencePrompt.hide()
+            presentedPresenceCheckId = nil
+            return
+        }
+        guard presentedPresenceCheckId != check.checkId else { return }
+        presentedPresenceCheckId = check.checkId
+        presencePrompt.show(
+            checkId: check.checkId,
+            targetTitle: check.targetTitle,
+            secondsRemaining: check.secondsRemaining
+        ) { [weak self] action in
+            Task { @MainActor in
+                guard let self else { return }
+                do {
+                    try await self.api.resolvePresenceCheck(
+                        sessionId: check.sessionId,
+                        checkId: check.checkId,
+                        action: action
+                    )
+                } catch {
+                    self.presentedPresenceCheckId = nil
+                    copilotLog("Presence response failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private func visionCaptureLoop() async {
         var nextDelayMs = 5_000
         while true {
             do {
-                try await api.sendVisionHeartbeat()
+                let frontmost = capture.frontmostApp()
+                let permission = screenRecordingStatus()
+                let inputIdleSeconds = currentInputIdleSeconds()
+                try await api.sendVisionHeartbeat(
+                    app: frontmost.app,
+                    title: frontmost.title,
+                    screenRecordingStatus: permission.label,
+                    captureCapable: permission.capable,
+                    systemState: currentSystemState(inputIdleSeconds: inputIdleSeconds),
+                    inputIdleSeconds: inputIdleSeconds,
+                    sessionId: activeSessionId
+                )
                 let state = try await api.visionState()
                 activeSessionId = state.active ? state.sessionId : nil
                 nextDelayMs = max(5_000, min(60_000, state.nextIntervalMs))
 
-                if state.active, let sessionId = state.sessionId {
+                if state.active, state.captureMode == "vision", let sessionId = state.sessionId {
                     let windowCapture = await capture.captureFrontmostWindow()
                     if let base64Jpeg = windowCapture.base64Jpeg {
                         try await api.sendVisionCapture(
@@ -368,20 +501,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func flushAppDwellIfActive() async {
+    private func flushAppDwellIfActive(nextFrontmost: (app: String, title: String)? = nil) async {
         guard let sessionId = activeSessionId else { return }
-        let next = capture.frontmostApp()
+        let next = nextFrontmost ?? capture.frontmostApp()
+        let observedStart = currentAppStartedAt
         let elapsed = Int(Date().timeIntervalSince(currentAppStartedAt))
-        if elapsed >= 5 {
-            if let response = try? await api.sendAppDwell(
-                sessionId: sessionId,
-                app: currentApp,
-                title: currentTitle,
-                durationSeconds: elapsed
-            ), response.needsUserAsk == true || response.asked == true {
-                // Server created a pending ask — pull it for the on-screen popup immediately
-                await presentPendingClassificationAsk()
+        if elapsed < 5 {
+            if next.app != currentApp || next.title != currentTitle {
+                currentApp = next.app
+                currentTitle = next.title
+                currentAppStartedAt = Date()
             }
+            return
+        }
+        if let response = try? await api.sendAppDwell(
+            sessionId: sessionId,
+            app: currentApp,
+            title: currentTitle,
+            startedAt: observedStart,
+            durationSeconds: elapsed
+        ), response.needsUserAsk == true || response.asked == true {
+            // Server created a pending ask — pull it for the on-screen popup immediately
+            await presentPendingClassificationAsk()
         }
         currentApp = next.app
         currentTitle = next.title
@@ -444,7 +585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-if !runVoiceAuditIfRequested() && !runOneShotCaptureIfRequested() {
+if !runNativeMessagingIfRequested() && !runVoiceAuditIfRequested() && !runOneShotCaptureIfRequested() {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

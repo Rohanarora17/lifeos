@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LifeOS Tracker",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Track your browsing, YouTube, and screen time. Stay accountable.",
   "permissions": [
     "tabs",
@@ -15,7 +15,8 @@
     "sidePanel",
     "scripting",
     "windows",
-    "offscreen"
+    "offscreen",
+    "nativeMessaging"
   ],
   "commands": {
     "push-to-talk": {

@@ -7,6 +7,8 @@ import { getGenAI, generateWithFallback } from '@/lib/ai';
 import { MODEL_PRO } from '@/lib/models';
 import { getAdaptiveSessionMinuteDecision } from '@/lib/adaptive-command-defaults';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { VisionClientUnavailableError } from '@/lib/guardian-client-status';
+import { lifeosDateKey } from '@/lib/timezone';
 
 interface PlannedSessionStartMatch {
   id: string;
@@ -20,7 +22,7 @@ interface PlannedSessionStartMatch {
 }
 
 function todayIst(): string {
-  return new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
+  return lifeosDateKey();
 }
 
 function tokenScore(candidate: string, query: string): number {
@@ -99,7 +101,7 @@ async function resolveImmediateBlockDomains(targetTitle: string, goalTitle: stri
     // User's personal distraction history (strongest signal)
     try {
       const rows = db.prepare(`
-        SELECT domain FROM activities
+        SELECT domain FROM effective_activities
         WHERE category = 'distraction' AND started_at >= datetime('now', '-30 days')
         GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 25
       `).all() as { domain: string }[];
@@ -177,6 +179,7 @@ export async function POST(req: Request) {
       mood: body.mood as 'high' | 'medium' | 'low' | null | undefined,
       source: (body.source as 'voice' | 'dashboard' | 'extension' | 'api' | undefined) || 'api',
       sessionContext: body.sessionContext as string | undefined,
+      startRequestId: body.startRequestId as string | undefined,
     };
 
     let parsedIntent: Awaited<ReturnType<typeof parseLockInIntent>> | null = null;
@@ -280,6 +283,18 @@ export async function POST(req: Request) {
       } : null,
     });
   } catch (error) {
+    if (error instanceof VisionClientUnavailableError) {
+      return NextResponse.json({
+        error: error.code,
+        message: error.message,
+        clientStatus: error.readiness,
+        recovery: {
+          wakeSupported: error.readiness.wakeSupported,
+          retryAfterMs: 1_000,
+          timeoutMs: 20_000,
+        },
+      }, { status: 409 });
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

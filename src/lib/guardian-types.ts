@@ -180,6 +180,10 @@ export interface GuardianState {
   intentProfile: SessionIntentProfile | null;
   sessionPolicy: GuardianPolicyBundle | null;
   screenContext: ScreenContext | null; // populated by screen_vision events, null until first capture
+  pauseReason: 'client_unavailable' | 'presence_unconfirmed' | 'manual' | null;
+  pausedAt: number | null;
+  totalPausedMs: number;
+  startRequestId: string | null;
 }
 
 export interface SoftWatchCommitment {
@@ -189,7 +193,7 @@ export interface SoftWatchCommitment {
   taskId: number | null;
   intendedStartAt: number;
   plannedMinutes: number;
-  source: 'voice' | 'dashboard' | 'calendar' | 'telegram';
+  source: 'voice' | 'dashboard' | 'calendar' | 'telegram' | 'next_day_plan' | 'cognitive_experiment';
   reminderSentAt: number | null;
   checkInSentAt: number | null;
   status: 'pending' | 'locked_in' | 'expired' | 'dismissed';
@@ -209,6 +213,7 @@ export interface GuardianStartRequest {
   mood?: 'high' | 'medium' | 'low' | null;
   source?: 'voice' | 'dashboard' | 'extension' | 'api';
   sessionContext?: string;  // free-form context: what they'll be doing, tools, tab-switching intent, etc.
+  startRequestId?: string;
 }
 
 export type WorkMode = 'deep_work' | 'research' | 'urgent_sprint' | 'learning' | 'recovery';

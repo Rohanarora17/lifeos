@@ -137,7 +137,11 @@ final class ScreenCaptureService {
             ($0[kCGWindowOwnerPID as String] as? pid_t) == app.processIdentifier
                 && ($0[kCGWindowLayer as String] as? Int) == 0
         }?[kCGWindowName as String] as? String ?? ""
-        return (app.localizedName ?? "Unknown App", title)
+        let appName = app.localizedName ?? "Unknown App"
+        if sensitiveRule(app: appName, title: title) != nil {
+            return ("Sensitive App", "")
+        }
+        return (appName, title)
     }
 
     private func sensitiveRule(app: String, title: String) -> String? {
@@ -239,6 +243,8 @@ final class AudioRecorderService: NSObject, AVAudioRecorderDelegate {
 final class LifeOSAPIClient {
     var serverBase: URL
     private let deviceToken: String?
+    private let deviceId: String
+    private let clientVersion: String
 
     init() {
         let environment = ProcessInfo.processInfo.environment
@@ -246,6 +252,12 @@ final class LifeOSAPIClient {
             string: environment["LIFEOS_SERVER_URL"] ?? "http://localhost:3000"
         )!
         deviceToken = environment["LIFEOS_DEVICE_TOKEN"]
+        deviceId = environment["LIFEOS_DEVICE_ID"]
+            ?? Host.current().localizedName
+            ?? "macbook-primary"
+        clientVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "0.2.0"
     }
 
     private func authorize(_ request: inout URLRequest) {
@@ -267,24 +279,78 @@ final class LifeOSAPIClient {
         return data
     }
 
-    func heartbeat() async throws -> NativeHeartbeatResponse {
+    func heartbeat(
+        app: String,
+        title: String,
+        screenRecordingStatus: String,
+        captureCapable: Bool,
+        systemState: String,
+        inputIdleSeconds: Double,
+        sessionId: String?
+    ) async throws -> NativeHeartbeatResponse {
         let url = serverBase.appendingPathComponent("/api/native/ingest")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["kind": "capture_heartbeat"])
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "kind": "capture_heartbeat",
+            "deviceId": deviceId,
+            "clientVersion": clientVersion,
+            "screenRecordingStatus": screenRecordingStatus,
+            "captureCapable": captureCapable,
+            "systemState": systemState,
+            "inputIdleSeconds": inputIdleSeconds,
+            "appInFocus": app,
+            "windowTitle": title,
+            "sessionId": sessionId.map { $0 as Any } ?? NSNull(),
+            "observedAt": ISO8601DateFormatter().string(from: Date())
+        ])
         let data = try await responseData(for: request)
         return try JSONDecoder().decode(NativeHeartbeatResponse.self, from: data)
     }
 
-    func sendVisionHeartbeat() async throws {
+    func resolvePresenceCheck(sessionId: String, checkId: String, action: String) async throws {
+        let url = serverBase.appendingPathComponent("/api/guardian/presence")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "sessionId": sessionId,
+            "checkId": checkId,
+            "action": action,
+        ])
+        _ = try await responseData(for: request)
+    }
+
+    func sendVisionHeartbeat(
+        app: String,
+        title: String,
+        screenRecordingStatus: String,
+        captureCapable: Bool,
+        systemState: String,
+        inputIdleSeconds: Double,
+        sessionId: String?
+    ) async throws {
         let url = serverBase.appendingPathComponent("/api/guardian/vision")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         authorize(&request)
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["type": "heartbeat"])
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "type": "heartbeat",
+            "deviceId": deviceId,
+            "clientVersion": clientVersion,
+            "screenRecordingStatus": screenRecordingStatus,
+            "captureCapable": captureCapable,
+            "systemState": systemState,
+            "inputIdleSeconds": inputIdleSeconds,
+            "appInFocus": app,
+            "windowTitle": title,
+            "sessionId": sessionId.map { $0 as Any } ?? NSNull(),
+            "observedAt": ISO8601DateFormatter().string(from: Date())
+        ])
         _ = try await responseData(for: request)
     }
 
@@ -312,7 +378,10 @@ final class LifeOSAPIClient {
             "sessionId": sessionId,
             "base64Jpeg": base64Jpeg,
             "appInFocus": app,
-            "windowTitle": title
+            "windowTitle": title,
+            "deviceId": deviceId,
+            "clientVersion": clientVersion,
+            "observedAt": ISO8601DateFormatter().string(from: Date())
         ])
         _ = try await responseData(for: request)
     }
@@ -333,7 +402,13 @@ final class LifeOSAPIClient {
         _ = try await responseData(for: request)
     }
 
-    func sendAppDwell(sessionId: String, app: String, title: String, durationSeconds: Int) async throws -> NativeIngestResponse {
+    func sendAppDwell(
+        sessionId: String,
+        app: String,
+        title: String,
+        startedAt: Date,
+        durationSeconds: Int
+    ) async throws -> NativeIngestResponse {
         let url = serverBase.appendingPathComponent("/api/native/ingest")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -342,8 +417,11 @@ final class LifeOSAPIClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "kind": "app_dwell",
             "sessionId": sessionId,
+            "deviceId": deviceId,
+            "clientVersion": clientVersion,
             "appInFocus": app,
             "windowTitle": title,
+            "startedAt": ISO8601DateFormatter().string(from: startedAt),
             "durationSeconds": durationSeconds
         ])
         let data = try await responseData(for: request)

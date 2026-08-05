@@ -11,8 +11,11 @@ INSTALL_BIN="$APP_DIR/Contents/MacOS/LifeOSCopilot"
 CONFIG_DIR="$HOME/.config/lifeos"
 ENV_FILE="$CONFIG_DIR/client.env"
 WRAPPER="$INSTALL_DIR/run-copilot.sh"
+NATIVE_HOST_WRAPPER="$INSTALL_DIR/native-messaging-host.sh"
 LOG_DIR="$HOME/Library/Logs/LifeOSCopilot"
 PLIST="$HOME/Library/LaunchAgents/com.lifeos.copilot.plist"
+NATIVE_HOST_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+NATIVE_HOST_MANIFEST="$NATIVE_HOST_DIR/com.lifeos.copilot.json"
 UPDATE=0
 
 if [ "${1:-}" = "--update" ]; then
@@ -33,7 +36,17 @@ if [ "$(stat -f '%Lp' "$ENV_FILE")" != "600" ]; then
   exit 1
 fi
 
-mkdir -p "$INSTALL_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
+set -a
+source "$ENV_FILE"
+set +a
+
+if [ -z "${LIFEOS_EXTENSION_ID:-}" ]; then
+  echo "Missing LIFEOS_EXTENSION_ID in $ENV_FILE"
+  echo "Copy the extension ID from chrome://extensions and rerun."
+  exit 1
+fi
+
+mkdir -p "$INSTALL_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents" "$NATIVE_HOST_DIR"
 if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
   swift build --package-path "$PACKAGE_DIR" -c release
   mkdir -p "$APP_DIR/Contents/MacOS"
@@ -54,9 +67,9 @@ if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSAppTransportSecurity</key>
@@ -86,6 +99,22 @@ exec "$INSTALL_BIN"
 EOF
 chmod 700 "$WRAPPER"
 
+cat > "$NATIVE_HOST_WRAPPER" <<EOF
+#!/bin/bash
+exec "$INSTALL_BIN" --native-message
+EOF
+chmod 700 "$NATIVE_HOST_WRAPPER"
+
+cat > "$NATIVE_HOST_MANIFEST" <<EOF
+{
+  "name": "com.lifeos.copilot",
+  "description": "Starts the LifeOS MacBook vision client for verified Guardian sessions",
+  "path": "$NATIVE_HOST_WRAPPER",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://${LIFEOS_EXTENSION_ID}/"]
+}
+EOF
+
 launchctl bootout "gui/$(id -u)/com.lifeos.copilot" 2>/dev/null || true
 
 cat > "$PLIST" <<EOF
@@ -102,10 +131,7 @@ cat > "$PLIST" <<EOF
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>15</integer>
     <key>StandardOutPath</key>
@@ -123,3 +149,4 @@ echo "LifeOSCopilot installed and started."
 echo "App: $APP_DIR"
 echo "Status: launchctl print gui/$(id -u)/com.lifeos.copilot"
 echo "Logs: $LOG_DIR"
+echo "Chrome native host: $NATIVE_HOST_MANIFEST"

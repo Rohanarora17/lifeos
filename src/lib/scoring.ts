@@ -2,6 +2,7 @@
 
 import { Database } from 'better-sqlite3';
 import { getAdaptiveBands } from './adaptive-bands';
+import { lifeosDayBoundsUtc } from './timezone';
 
 export interface ScoreConfig {
     xpPerTask: number;
@@ -185,7 +186,23 @@ export function getAccountabilityScore(stats: {
 // Tie-breaks overlapping categories: Distraction > Productive > Neutral
 // -----------------------------------------------------------------------------
 export function getDailyActivityStats(db: Database, dateString: string) {
-    const activities = db.prepare(`SELECT category, started_at, ended_at, duration_seconds, is_actively_interacting FROM activities WHERE date(started_at, 'localtime') = ?`).all(dateString) as any[];
+    const { startIso, endIso } = lifeosDayBoundsUtc(dateString);
+    const activities = db.prepare(`
+        SELECT category, started_at, ended_at, duration_seconds, is_actively_interacting
+        FROM activities
+        WHERE started_at >= ? AND started_at < ? AND COALESCE(counted, 1) = 1
+        UNION ALL
+        SELECT category, observed_start AS started_at, observed_end AS ended_at,
+               duration_seconds, CASE WHEN score_eligible = 1 THEN 1 ELSE 0 END AS is_actively_interacting
+        FROM session_activity_intervals
+        WHERE observed_start >= ? AND observed_start < ? AND counted = 1
+    `).all(startIso, endIso, startIso, endIso) as Array<{
+        category: string;
+        started_at: string;
+        ended_at: string | null;
+        duration_seconds: number;
+        is_actively_interacting: number;
+    }>;
 
     // Array of 86400 elements representing each second of the day
     const day = new Uint8Array(86400);
@@ -195,15 +212,12 @@ export function getDailyActivityStats(db: Database, dateString: string) {
     const categoryMapIdle: Record<string, number> = { neutral: 1, productive: 2, distraction: 3 };
     const categoryMapActive: Record<string, number> = { neutral: 4, productive: 5, distraction: 6 };
 
-    let totalActivities = activities.length;
+    const totalActivities = activities.length;
     if (totalActivities === 0) {
         return { productive_minutes: 0, distraction_minutes: 0, neutral_minutes: 0, total_minutes: 0, total_activities: 0 };
     }
 
-    const sysOffset = new Date().getTimezoneOffset() * 60000;
-    const midnightObj = new Date(dateString + 'T00:00:00');
-    // Account for local timezone offsets to correctly anchor midnight
-    const midnight = new Date(midnightObj.getTime() + midnightObj.getTimezoneOffset() * 60000 - sysOffset).getTime();
+    const midnight = Date.parse(startIso);
 
     for (const a of activities) {
         // Normalize legacy native labels (shallow_work, communication, …) into 3 buckets

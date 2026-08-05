@@ -168,7 +168,7 @@ export async function GET(request: NextRequest) {
         if (timeHabits.length > 0) {
             const productiveMinutes = db.prepare(`
                 SELECT SUM(duration_seconds) / 60 as mins
-                FROM activities WHERE date(started_at, 'localtime') = ? AND category = 'productive'
+                FROM effective_activities WHERE date(started_at, 'localtime') = ? AND category = 'productive'
             `).get(today) as { mins: number } | undefined;
 
             const todayProdMins = Math.round(productiveMinutes?.mins || 0);

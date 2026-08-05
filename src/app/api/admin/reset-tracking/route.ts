@@ -12,6 +12,10 @@ const TABLES_TO_CLEAR = [
   'nudge_log',
   'tab_switches',
   'screen_time',
+  'session_activity_intervals',
+  'guardian_presence_checks',
+  'browser_collector_status',
+  'native_client_status',
   // Behavioral memory
   'behavioral_memory',
   'behavior_snapshots',

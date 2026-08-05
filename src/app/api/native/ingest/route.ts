@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getActiveGuardianSession, tickGuardianSession } from '@/lib/guardian-runtime';
+import { getActiveGuardianSession, pauseGuardianSession, tickGuardianSession } from '@/lib/guardian-runtime';
 import { touchIntelligence } from '@/lib/intelligence';
 import { recordExplicitFeedbackLearning, type ExplicitFeedback } from '@/lib/feedback-learning';
 import type { NativeIngestPayload } from '@/lib/focus-copilot-types';
@@ -9,6 +9,18 @@ import {
   classifyNativeAppActivity,
   maybeAskNativeCategory,
 } from '@/lib/native-app-classification';
+import {
+  getBrowserCollectorState,
+  isChromeApplication,
+  recordNativeClientHeartbeat,
+} from '@/lib/guardian-client-status';
+import { arbitrateSessionActivity, recordSessionActivityInterval } from '@/lib/session-activity';
+import {
+  getPendingPresenceCheck,
+  hasRecentStillWorkingConfirmation,
+  observeStaticActivity,
+  STATIC_ACTIVITY_GRACE_MS,
+} from '@/lib/guardian-presence';
 
 function clampConfidence(value: unknown): number {
   return Math.max(0, Math.min(1, typeof value === 'number' ? value : 0.7));
@@ -27,12 +39,95 @@ function attentionForActivityCategory(
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as NativeIngestPayload;
-    const activeSession = getActiveGuardianSession();
-    const sessionId = body.sessionId || activeSession?.sessionId || null;
 
     if (body.kind === 'capture_heartbeat') {
-      return NextResponse.json({ ok: true, active: !!activeSession, sessionId: activeSession?.sessionId ?? null });
+      const inputIdleSeconds = Math.max(0, Number(body.inputIdleSeconds ?? 0));
+      const activeBeforeHeartbeat = getActiveGuardianSession();
+      const browser = activeBeforeHeartbeat
+        ? getBrowserCollectorState(activeBeforeHeartbeat.sessionId)
+        : { fresh: false, mediaPlaybackActive: false };
+      const foregroundMediaActive = Boolean(
+        activeBeforeHeartbeat
+        && isChromeApplication(body.appInFocus)
+        && browser.fresh
+        && browser.mediaPlaybackActive,
+      );
+      const confirmedStaticActive = Boolean(
+        activeBeforeHeartbeat
+        && hasRecentStillWorkingConfirmation(activeBeforeHeartbeat.sessionId),
+      );
+      const effectiveSystemState = body.systemState === 'idle'
+        && (
+          foregroundMediaActive
+          || confirmedStaticActive
+          || (inputIdleSeconds > 0 && inputIdleSeconds * 1_000 < STATIC_ACTIVITY_GRACE_MS)
+        )
+        ? 'active'
+        : body.systemState;
+      recordNativeClientHeartbeat({
+        deviceId: body.deviceId,
+        clientVersion: body.clientVersion,
+        screenRecordingStatus: body.screenRecordingStatus,
+        captureCapable: body.captureCapable,
+        frontmostApp: body.appInFocus,
+        frontmostWindowTitle: body.windowTitle,
+        systemState: effectiveSystemState,
+        activeSessionId: body.sessionId,
+        metadata: { ...(body.metadata ?? {}), inputIdleSeconds, foregroundMediaActive, confirmedStaticActive },
+        observedAt: body.observedAt,
+      });
+      const activeSession = getActiveGuardianSession();
+      let presenceCheck = activeSession ? getPendingPresenceCheck(activeSession.sessionId) : null;
+      if (
+        activeSession
+        && activeSession.state === 'ACTIVE'
+        && body.systemState === 'idle'
+        && inputIdleSeconds * 1_000 >= STATIC_ACTIVITY_GRACE_MS
+        && !foregroundMediaActive
+        && !confirmedStaticActive
+      ) {
+        const presence = observeStaticActivity({
+          sessionId: activeSession.sessionId,
+          inputIdleSeconds,
+          app: body.appInFocus,
+          windowTitle: body.windowTitle,
+          observedAt: body.observedAt ? Date.parse(body.observedAt) : Date.now(),
+        });
+        presenceCheck = presence.check;
+        if (presence.timedOut && presence.check) {
+          pauseGuardianSession(activeSession.sessionId, 'presence_unconfirmed');
+        }
+      } else if (activeSession && effectiveSystemState === 'locked') {
+        const arbitration = arbitrateSessionActivity(activeSession.sessionId, 'idle');
+        if (arbitration.accepted) {
+          const observedEnd = body.observedAt || new Date().toISOString();
+          recordSessionActivityInterval({
+            sessionId: activeSession.sessionId,
+            source: 'idle',
+            observedStart: new Date(Date.parse(observedEnd) - 5_000).toISOString(),
+            observedEnd,
+            state: 'locked',
+            app: 'macOS',
+            title: 'Device locked',
+            category: 'neutral',
+            scoreEligible: false,
+            selectionReason: arbitration.reason,
+            captureStatus: 'verified_system_state',
+            engagementState: 'inactive',
+            engagementConfidence: 1,
+          });
+        }
+      }
+      return NextResponse.json({
+        ok: true,
+        active: !!activeSession,
+        sessionId: activeSession?.sessionId ?? null,
+        presenceCheck,
+      });
     }
+
+    const activeSession = getActiveGuardianSession();
+    const sessionId = body.sessionId || activeSession?.sessionId || null;
 
     if (!sessionId || !activeSession || activeSession.sessionId !== sessionId) {
       return NextResponse.json({ ok: false, error: 'No active guardian session for native ingest' }, { status: 409 });
@@ -48,6 +143,27 @@ export async function POST(req: Request) {
 
       const app = body.appInFocus || 'Unknown App';
       const title = body.windowTitle || '';
+      if (app === 'Sensitive App') {
+        const arbitration = arbitrateSessionActivity(sessionId, 'private');
+        if (arbitration.accepted) {
+          const observedEnd = new Date().toISOString();
+          recordSessionActivityInterval({
+            sessionId,
+            source: 'private',
+            observedStart: new Date(Date.now() - durationSeconds * 1_000).toISOString(),
+            observedEnd,
+            state: 'private',
+            app,
+            category: 'neutral',
+            scoreEligible: false,
+            selectionReason: arbitration.reason,
+            captureStatus: 'privacy_skipped',
+            engagementState: 'private',
+            engagementConfidence: 1,
+          });
+        }
+        return NextResponse.json({ ok: true, stored: 'private_interval', counted: false });
+      }
       const classified = classifyNativeAppActivity({
         app,
         title,
@@ -58,6 +174,8 @@ export async function POST(req: Request) {
 
       const activityCategory = classified.activityCategory;
       const startedAt = body.startedAt || new Date(Date.now() - durationSeconds * 1000).toISOString();
+      const endedAt = new Date(Date.parse(startedAt) + durationSeconds * 1_000).toISOString();
+      const arbitration = arbitrateSessionActivity(sessionId, 'vision');
       const inferred = {
         source: 'native_copilot',
         app,
@@ -79,8 +197,10 @@ export async function POST(req: Request) {
 
       const result = db.prepare(`
         INSERT INTO activities
-          (url, domain, title, category, subcategory, started_at, duration_seconds, ai_classification, classification_confidence, device_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (url, domain, title, category, subcategory, started_at, ended_at, duration_seconds,
+           ai_classification, classification_confidence, device_name, guardian_session_id,
+           counted, capture_source, selection_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'vision', ?)
       `).run(
         `native://${encodeURIComponent(app)}`,
         app,
@@ -88,13 +208,42 @@ export async function POST(req: Request) {
         activityCategory,
         'native_app',
         startedAt,
+        endedAt,
         durationSeconds,
         JSON.stringify(inferred),
         confidenceLabel,
         'LifeOS Native Copilot',
+        sessionId,
+        arbitration.reason,
       );
 
       const activityId = Number(result.lastInsertRowid);
+
+      if (!arbitration.accepted) {
+        return NextResponse.json({
+          ok: true,
+          stored: 'raw_activity',
+          counted: false,
+          selectedSource: arbitration.selectedSource,
+          reason: arbitration.reason,
+        });
+      }
+
+      recordSessionActivityInterval({
+        sessionId,
+        source: 'vision',
+        observedStart: startedAt,
+        observedEnd: endedAt,
+        app,
+        windowTitle: title,
+        url: `native://${encodeURIComponent(app)}`,
+        domain: `native:${app.toLowerCase()}`,
+        title: title || app,
+        category: activityCategory,
+        subcategory: 'native_app',
+        selectionReason: arbitration.reason,
+        evidence: { rawActivityId: activityId, confidence: classified.confidence },
+      });
 
       const event: GuardianEvent = {
         sessionId,
@@ -112,6 +261,8 @@ export async function POST(req: Request) {
           internal: classified.internal,
           needsUserAsk: classified.needsUserAsk,
           metadata: body.metadata ?? {},
+          captureSource: 'vision',
+          sourceVerified: true,
         },
       };
       await tickGuardianSession(sessionId, event);
@@ -141,6 +292,8 @@ export async function POST(req: Request) {
         needsUserAsk: classified.needsUserAsk,
         asked,
         confidence: classified.confidence,
+        counted: true,
+        selectedSource: 'vision',
       });
     }
 
@@ -175,8 +328,11 @@ export async function POST(req: Request) {
         INSERT INTO screen_observations
           (observed_at, source, app, window_title, activity, category, content_type, attention_quality,
            specific_content, productive_for_goals, confidence, session_id, raw_description)
-        VALUES (datetime('now','localtime'), 'native_copilot', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'native_copilot', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
+        body.observedAt && Number.isFinite(Date.parse(body.observedAt))
+          ? new Date(body.observedAt).toISOString()
+          : new Date().toISOString(),
         app,
         title,
         activity,
@@ -195,25 +351,28 @@ export async function POST(req: Request) {
         }),
       );
 
-      const event: GuardianEvent = {
-        sessionId,
-        type: 'native_context',
-        timestamp: Date.now(),
-        url: `native://${encodeURIComponent(app)}`,
-        domain: `native:${app.toLowerCase()}`,
-        title: title || app,
-        payload: {
-          kind: body.kind,
-          appInFocus: app,
-          windowTitle: title,
-          category: activityCategory,
-          attentionQuality: attention,
-          metadata: body.metadata ?? {},
-        },
-      };
-      await tickGuardianSession(sessionId, event);
+      if (body.kind === 'sensitivity_skip') {
+        const arbitration = arbitrateSessionActivity(sessionId, 'private');
+        if (arbitration.accepted) {
+          const endedAt = new Date().toISOString();
+          recordSessionActivityInterval({
+            sessionId,
+            source: 'private',
+            observedStart: new Date(Date.now() - 1_000).toISOString(),
+            observedEnd: endedAt,
+            state: 'private',
+            app,
+            windowTitle: null,
+            category: 'neutral',
+            scoreEligible: false,
+            selectionReason: arbitration.reason,
+            captureStatus: 'privacy_skipped',
+            evidence: { reason: body.reason ?? 'sensitive_window' },
+          });
+        }
+      }
       touchIntelligence(body.kind === 'sensitivity_skip' ? 'native_sensitivity_skip' : 'native_screen_observation');
-      return NextResponse.json({ ok: true, stored: 'screen_observations', category: activityCategory });
+      return NextResponse.json({ ok: true, stored: 'screen_observations', category: activityCategory, counted: false });
     }
 
     if (body.kind === 'overlay_feedback') {

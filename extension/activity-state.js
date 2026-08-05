@@ -26,6 +26,16 @@
         return isWithinConfiguredHours || idleState === 'active';
     }
 
+    function shouldTreatMediaPlaybackAsActive(systemState, mediaPlaybackActive) {
+        return systemState !== 'locked' && mediaPlaybackActive === true;
+    }
+
+    function guardianIntervalStart(declaredStart, now, maxVerifiedBackfillMs = 15_000) {
+        const parsed = Number(declaredStart);
+        if (!Number.isFinite(parsed)) return now;
+        return Math.min(now, Math.max(parsed, now - maxVerifiedBackfillMs));
+    }
+
     function transitionInterval(current, nextContext, now, maxIntervalMs = 60_000) {
         if (
             current
@@ -97,8 +107,10 @@
     return {
         RELEVANCE_THRESHOLD,
         isWithinWakingHours,
+        guardianIntervalStart,
         recoverPersistedInterval,
         shouldCollectTelemetry,
+        shouldTreatMediaPlaybackAsActive,
         shouldGroupTab,
         transitionInterval,
     };

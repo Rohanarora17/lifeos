@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getDb, setSetting } from '@/lib/db';
 import { classifyEnergy } from '@/lib/adaptive-bands';
+import { lifeosDateKey } from '@/lib/timezone';
 
 /**
  * POST /api/guardian/standup
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const goal = (body.goal as string | undefined)?.trim();
     const mood = (body.mood as string | undefined)?.trim();
-    const date = new Date(Date.now() + 19800000).toISOString().slice(0, 10); // IST date
+    const date = lifeosDateKey();
 
     if (!goal) {
       return NextResponse.json({ error: 'goal is required' }, { status: 400 });
@@ -52,7 +53,7 @@ export async function GET() {
   const goal = getSetting('standup_goal_today');
   const date = getSetting('standup_goal_date');
   const mood = getSetting('standup_mood_today');
-  const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+  const today = lifeosDateKey();
 
   const isToday = date === today;
 

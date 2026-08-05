@@ -9,6 +9,9 @@ import {
     saveNativeAppPreference,
     toActivityCategory,
 } from '@/lib/native-app-classification';
+import { getGuardianClientReadiness } from '@/lib/guardian-client-status';
+import { lifeosDayBoundsUtc } from '@/lib/timezone';
+import { getDailyActivityStats } from '@/lib/scoring';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -24,10 +27,15 @@ export async function POST(request: NextRequest) {
 
         // Classify with session context so the same URL isn't mis-classified during an active study session
         const activeSession = getActiveGuardianSession();
-        const sessionContext = activeSession
-            ? { targetTitle: activeSession.targetTitle, goalTitle: activeSession.goalTitle ?? null }
-            : undefined;
-        const classification = await classifyActivity(url, title || '', domain, youtube_channel, sessionContext);
+        if (activeSession) {
+            return NextResponse.json({
+                accepted: true,
+                counted: false,
+                reason: 'Guardian session activity is recorded through the canonical source arbiter.',
+                sessionId: activeSession.sessionId,
+            }, { status: 202 });
+        }
+        const classification = await classifyActivity(url, title || '', domain, youtube_channel, undefined);
 
         const db = getDb();
         const stmt = db.prepare(`
@@ -73,12 +81,13 @@ export async function GET(request: NextRequest) {
         const offset = parseInt(searchParams.get('offset') || '0');
 
         const db = getDb();
-        let query = 'SELECT * FROM activities WHERE 1=1';
+        const bounds = date ? lifeosDayBoundsUtc(date) : null;
+        let query = 'SELECT * FROM activities WHERE COALESCE(counted, 1) = 1';
         const params: (string | number)[] = [];
 
         if (date) {
-            query += " AND date(started_at, 'localtime') = ?";
-            params.push(date);
+            query += ' AND started_at >= ? AND started_at < ?';
+            params.push(bounds!.startIso, bounds!.endIso);
         }
         if (category) {
             query += ' AND category = ?';
@@ -94,15 +103,70 @@ export async function GET(request: NextRequest) {
 
         const rawActivities = db.prepare(query).all(...params) as Array<Record<string, unknown> & { category?: string }>;
         // Normalize legacy native categories so the UI select always shows productive|neutral|distraction
-        const activities = rawActivities.map((act) => ({
+        const legacyActivities = rawActivities.map((act) => ({
             ...act,
             category: toActivityCategory(act.category),
             raw_category: act.category,
+            record_type: 'legacy',
+            capture_source: act.capture_source || 'legacy',
+            counted: 1,
+            score_eligible: 1,
         }));
+
+        let intervalQuery = `
+          SELECT interval_id, session_id, source, observed_start, observed_end,
+                 duration_seconds, state, app, window_title, url, domain, title,
+                 category, subcategory, score_eligible, counted, selection_reason, capture_status
+                 , engagement_state, engagement_confidence, confirmation_status
+          FROM session_activity_intervals
+          WHERE counted = 1
+        `;
+        const intervalParams: Array<string> = [];
+        if (date) {
+            intervalQuery += ' AND observed_start >= ? AND observed_start < ?';
+            intervalParams.push(bounds!.startIso, bounds!.endIso);
+        }
+        if (category) {
+            intervalQuery += ' AND category = ?';
+            intervalParams.push(category);
+        }
+        if (domain) {
+            intervalQuery += ' AND domain = ?';
+            intervalParams.push(domain);
+        }
+        intervalQuery += ' ORDER BY observed_start DESC LIMIT 500';
+        const intervals = (db.prepare(intervalQuery).all(...intervalParams) as Array<Record<string, unknown>>).map(row => ({
+            id: `interval:${row.interval_id}`,
+            interval_id: row.interval_id,
+            session_id: row.session_id,
+            url: row.url || `native://${encodeURIComponent(String(row.app || 'activity'))}`,
+            domain: row.domain || row.app || 'macOS',
+            title: row.title || row.window_title || row.app || 'Verified activity',
+            category: toActivityCategory(typeof row.category === 'string' ? row.category : null),
+            raw_category: row.category,
+            subcategory: row.subcategory || row.state,
+            started_at: row.observed_start,
+            ended_at: row.observed_end,
+            duration_seconds: row.duration_seconds,
+            device_name: row.source === 'chrome' ? 'Chrome extension' : 'MacBook vision client',
+            record_type: 'guardian_interval',
+            capture_source: row.source,
+            counted: row.counted,
+            score_eligible: row.score_eligible,
+            selection_reason: row.selection_reason,
+            capture_status: row.capture_status,
+            window_title: row.window_title,
+            app: row.app,
+            engagement_state: row.engagement_state,
+            engagement_confidence: row.engagement_confidence,
+            confirmation_status: row.confirmation_status,
+        }));
+        const activities = ([...intervals, ...legacyActivities] as Array<Record<string, unknown> & { started_at?: unknown; duration_seconds?: unknown; capture_source?: unknown; score_eligible?: unknown }>)
+            .sort((a, b) => Date.parse(String(b.started_at)) - Date.parse(String(a.started_at)))
+            .slice(0, limit);
 
         let stats = null;
         if (date) {
-            const { getDailyActivityStats } = require('@/lib/scoring');
             stats = getDailyActivityStats(db, date);
         }
 
@@ -111,11 +175,31 @@ export async function GET(request: NextRequest) {
             maxInsights: 2,
             includeMemoryFacts: 3,
         });
+        const summaryWhere = bounds
+            ? 'WHERE counted = 1 AND observed_start >= ? AND observed_start < ?'
+            : 'WHERE counted = 1';
+        const sourceRows = db.prepare(`
+            SELECT source,
+                   SUM(CASE WHEN score_eligible = 1 THEN duration_seconds ELSE 0 END) AS seconds,
+                   SUM(CASE WHEN score_eligible = 0 THEN duration_seconds ELSE 0 END) AS unscored_seconds
+            FROM session_activity_intervals
+            ${summaryWhere}
+            GROUP BY source
+        `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) as Array<{
+            source: string; seconds: number | null; unscored_seconds: number | null;
+        }>;
+        const sourceSeconds = (source: string) => Number(sourceRows.find(row => row.source === source)?.seconds ?? 0);
 
         return NextResponse.json({
             activities,
             stats,
             activityPolicy: buildAdaptiveActivityPolicy(personalization, stats),
+            sourceSummary: {
+                chromeSeconds: sourceSeconds('chrome'),
+                visionSeconds: sourceSeconds('vision'),
+                unscoredSeconds: sourceRows.reduce((sum, row) => sum + Number(row.unscored_seconds ?? 0), 0),
+            },
+            collectorStatus: getGuardianClientReadiness(),
         });
     } catch (error) {
         console.error('Activity GET error:', error);
@@ -139,14 +223,24 @@ export async function PATCH(request: NextRequest) {
 
         const db = getDb();
 
+        if (typeof id === 'string' && id.startsWith('interval:')) {
+            const intervalId = id.slice('interval:'.length);
+            db.prepare(`UPDATE session_activity_intervals SET category = ?, updated_at = datetime('now') WHERE interval_id = ?`)
+                .run(category, intervalId);
+            return NextResponse.json({ success: true, id, category, recordType: 'guardian_interval' });
+        }
+
         // 1. Update the activity record
         db.prepare('UPDATE activities SET category = ? WHERE id = ?').run(category, id);
 
         // 2. Fetch the updated activity to inject a rule into memory
-        const activity = db.prepare('SELECT domain, url, youtube_video_id, title, device_name, subcategory FROM activities WHERE id = ?').get(id) as any;
+        const activity = db.prepare('SELECT domain, url, youtube_video_id, title, device_name, subcategory FROM activities WHERE id = ?').get(id) as {
+            domain: string; url: string; youtube_video_id: string | null; title: string;
+            device_name: string | null; subcategory: string | null;
+        } | undefined;
 
         if (activity) {
-            const { learnMemory } = require('@/lib/behavior');
+            const { learnMemory } = await import('@/lib/behavior');
 
             // If it's a YouTube video, remember the specific title/type.
             let detail = activity.domain;
@@ -175,8 +269,8 @@ export async function PATCH(request: NextRequest) {
                 const appName = activity.domain || activity.title || 'Unknown App';
                 saveNativeAppPreference(appName, category, `user correct via activity UI`);
                 try {
-                    const { recordExplicitFeedbackLearning } = require('@/lib/feedback-learning') as typeof import('@/lib/feedback-learning');
-                    const { touchIntelligence } = require('@/lib/intelligence') as typeof import('@/lib/intelligence');
+                    const { recordExplicitFeedbackLearning } = await import('@/lib/feedback-learning');
+                    const { touchIntelligence } = await import('@/lib/intelligence');
                     recordExplicitFeedbackLearning({
                         source: 'native_classification',
                         feedback: category === 'distraction' ? 'wrong' : category === 'productive' ? 'helpful' : 'dismissed',
@@ -209,14 +303,14 @@ export async function PATCH(request: NextRequest) {
             }
 
             // Modify ai_classification row so if it gets cached, it gets the new category
-            const existingAi = db.prepare('SELECT ai_classification FROM activities WHERE id = ?').get(id) as any;
+            const existingAi = db.prepare('SELECT ai_classification FROM activities WHERE id = ?').get(id) as { ai_classification: string | null } | undefined;
             if (existingAi && existingAi.ai_classification) {
                 try {
                     const parsed = JSON.parse(existingAi.ai_classification);
                     parsed.category = category;
                     parsed.reasoning = `Manually overridden by user to ${category}`;
                     db.prepare('UPDATE activities SET ai_classification = ? WHERE id = ?').run(JSON.stringify(parsed), id);
-                } catch (e) { }
+                } catch { /* retain the manual category even if legacy JSON is malformed */ }
             }
         }
 

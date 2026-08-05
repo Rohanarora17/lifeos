@@ -82,4 +82,11 @@ export interface NativeIngestPayload {
   outcomeId?: number;
   reason?: string;
   metadata?: Record<string, unknown>;
+  deviceId?: string;
+  clientVersion?: string;
+  screenRecordingStatus?: string;
+  captureCapable?: boolean;
+  systemState?: 'active' | 'idle' | 'locked';
+  inputIdleSeconds?: number;
+  observedAt?: string;
 }

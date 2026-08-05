@@ -87,7 +87,7 @@ export async function GET(request: Request) {
       SUM(CASE WHEN category='productive' THEN duration_seconds ELSE 0 END)/60 as productive,
       SUM(CASE WHEN category='distraction' THEN duration_seconds ELSE 0 END)/60 as distraction,
       SUM(duration_seconds)/60 as total
-    FROM activities WHERE started_at >= datetime('now', '-30 days')
+    FROM effective_activities WHERE started_at >= datetime('now', '-30 days')
     GROUP BY h ORDER BY h
   `).all();
 
@@ -98,19 +98,19 @@ export async function GET(request: Request) {
       WHEN 3 THEN 'Wednesday' WHEN 4 THEN 'Thursday' WHEN 5 THEN 'Friday'
       WHEN 6 THEN 'Saturday' END as day_name,
       SUM(CASE WHEN category='productive' THEN duration_seconds ELSE 0 END)/3600.0 as hours
-    FROM activities WHERE started_at >= datetime('now', '-30 days')
+    FROM effective_activities WHERE started_at >= datetime('now', '-30 days')
     GROUP BY day_name
   `).all();
 
     // Top domains
     const topProductive = db.prepare(`
-    SELECT domain, SUM(duration_seconds)/60 as mins FROM activities
+    SELECT domain, SUM(duration_seconds)/60 as mins FROM effective_activities
     WHERE category='productive' AND started_at >= datetime('now', '-30 days')
     GROUP BY domain ORDER BY mins DESC LIMIT 8
   `).all();
 
     const topDistraction = db.prepare(`
-    SELECT domain, SUM(duration_seconds)/60 as mins FROM activities
+    SELECT domain, SUM(duration_seconds)/60 as mins FROM effective_activities
     WHERE category='distraction' AND started_at >= datetime('now', '-30 days')
     GROUP BY domain ORDER BY mins DESC LIMIT 8
   `).all();

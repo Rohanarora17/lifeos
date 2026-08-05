@@ -75,4 +75,14 @@ window.addEventListener('message', (event) => {
     if (event.data && (event.data.type === 'STOP_GUARDIAN' || event.data.type === 'LIFEOS_FOCUS_STOP')) {
         chrome.runtime.sendMessage({ type: 'STOP_GUARDIAN' });
     }
+
+    if (event.data && event.data.type === 'LIFEOS_WAKE_COPILOT') {
+        chrome.runtime.sendMessage({ type: 'WAKE_COPILOT' }, (result) => {
+            event.source?.postMessage({
+                type: 'LIFEOS_WAKE_COPILOT_RESULT',
+                requestId: event.data.requestId || null,
+                result: result || { ok: false, error: 'No native helper response' },
+            }, event.origin);
+        });
+    }
 });

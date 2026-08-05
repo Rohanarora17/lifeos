@@ -66,7 +66,7 @@ export function computeFocusSessions(date: string): FocusSession[] {
   // We only consider active interactions to prevent zombie tabs from counting as "Focus"
   const activities = db.prepare(`
     SELECT id, domain, category, started_at, ended_at, duration_seconds
-    FROM activities
+    FROM effective_activities
     WHERE date(started_at, 'localtime') = ? 
       AND duration_seconds > 0 
       AND is_actively_interacting = 1
@@ -256,7 +256,7 @@ export function computeAttentionEntropy(date: string, days: number = 1): Entropy
   const activities = days > 1
     ? db.prepare(`
         SELECT domain, duration_seconds, started_at
-        FROM activities
+        FROM effective_activities
         WHERE date(started_at, 'localtime') BETWEEN date(?, '-' || ? || ' days') AND ?
         AND duration_seconds > 0
         AND is_actively_interacting = 1
@@ -264,7 +264,7 @@ export function computeAttentionEntropy(date: string, days: number = 1): Entropy
       `).all(date, days - 1, date) as { domain: string; duration_seconds: number; started_at: string }[]
     : db.prepare(`
         SELECT domain, duration_seconds, started_at
-        FROM activities
+        FROM effective_activities
         WHERE date(started_at, 'localtime') = ? 
         AND duration_seconds > 0
         AND is_actively_interacting = 1
@@ -375,7 +375,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   const dailyWork = db.prepare(`
     SELECT date(started_at, 'localtime') as d,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as productive_mins
-    FROM activities
+    FROM effective_activities
     WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY d ORDER BY d
   `).all() as { d: string; productive_mins: number }[];
@@ -468,7 +468,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   // ── Timing consistency (when do they start working each day?) ──
   const startTimes = db.prepare(`
     SELECT date(started_at, 'localtime') as d, MIN(CAST(strftime('%H', datetime(started_at, 'localtime')) AS REAL) + CAST(strftime('%M', datetime(started_at, 'localtime')) AS REAL) / 60) as start_hour
-    FROM activities
+    FROM effective_activities
     WHERE started_at >= datetime('now', '-${days} days') AND category = 'productive'
     GROUP BY d
   `).all() as { d: string; start_hour: number }[];
@@ -492,7 +492,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   // Daily streak (days with productive activity)
   const activeDates = db.prepare(`
     SELECT DISTINCT date(started_at, 'localtime') as d
-    FROM activities
+    FROM effective_activities
     WHERE category = 'productive'
     ORDER BY d DESC
   `).all() as { d: string }[];
@@ -602,7 +602,7 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
     case 'productive_minutes': {
       const r = db.prepare(`
         SELECT COALESCE(SUM(duration_seconds), 0) / 60 as v
-        FROM activities WHERE category = 'productive'
+        FROM effective_activities WHERE category = 'productive'
         AND started_at >= ${start} AND started_at < ${end}
         AND is_actively_interacting = 1
       `).get() as { v: number };
@@ -635,7 +635,7 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
     case 'distraction_minutes': {
       const r = db.prepare(`
         SELECT COALESCE(SUM(duration_seconds), 0) / 60 as v
-        FROM activities WHERE category = 'distraction'
+        FROM effective_activities WHERE category = 'distraction'
         AND started_at >= ${start} AND started_at < ${end}
         AND is_actively_interacting = 1
       `).get() as { v: number };
@@ -687,7 +687,7 @@ export function classifyArchetype(days: number = 30): Archetype {
   const hourly = db.prepare(`
     SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
       SUM(CASE WHEN category = 'productive' AND is_actively_interacting = 1 THEN duration_seconds ELSE 0 END) as prod
-    FROM activities WHERE started_at >= datetime('now', '-${days} days')
+    FROM effective_activities WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY h
   `).all() as { h: number; prod: number }[];
 
@@ -722,7 +722,7 @@ export function classifyArchetype(days: number = 30): Archetype {
   const dailyProd = db.prepare(`
     SELECT date(started_at, 'localtime') as d,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 60 as mins
-    FROM activities WHERE started_at >= datetime('now', '-${days} days')
+    FROM effective_activities WHERE started_at >= datetime('now', '-${days} days')
     GROUP BY d
   `).all() as { d: string; mins: number }[];
 
@@ -1135,7 +1135,7 @@ export async function runDeepAnalysis(): Promise<{
   const hourly = db.prepare(`
     SELECT CAST(strftime('%H', datetime(started_at, 'localtime')) AS INTEGER) as h,
       SUM(CASE WHEN category = 'productive' THEN duration_seconds ELSE 0 END) / 3600.0 as productive_h
-    FROM activities WHERE started_at >= datetime('now', '-30 days')
+    FROM effective_activities WHERE started_at >= datetime('now', '-30 days')
     GROUP BY h ORDER BY productive_h DESC LIMIT 4
   `).all() as { h: number; productive_h: number }[];
 
@@ -1143,13 +1143,13 @@ export async function runDeepAnalysis(): Promise<{
 
   // Browsing patterns
   const topProductive = db.prepare(`
-    SELECT domain, SUM(duration_seconds)/60 as mins FROM activities
+    SELECT domain, SUM(duration_seconds)/60 as mins FROM effective_activities
     WHERE category='productive' AND started_at >= datetime('now', '-30 days')
     GROUP BY domain ORDER BY mins DESC LIMIT 5
   `).all() as { domain: string; mins: number }[];
 
   const topDistraction = db.prepare(`
-    SELECT domain, SUM(duration_seconds)/60 as mins FROM activities
+    SELECT domain, SUM(duration_seconds)/60 as mins FROM effective_activities
     WHERE category='distraction' AND started_at >= datetime('now', '-30 days')
     GROUP BY domain ORDER BY mins DESC LIMIT 5
   `).all() as { domain: string; mins: number }[];

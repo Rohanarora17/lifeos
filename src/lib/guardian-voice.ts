@@ -29,6 +29,7 @@ import { recordAdaptiveHabitCheckin } from './adaptive-habit-checkin';
 import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import { getTaskTimeProgress } from './task-time-sessions';
 import { generateNextDayPlan, getNextDayPlan, type NextDayPlanPayload } from './next-day-planner';
+import { VisionClientUnavailableError } from './guardian-client-status';
 import {
   computeFocusSessions,
   computeFocusScore,
@@ -1680,13 +1681,23 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
   // ── start_session ────────────────────────────────────────────────────────
 
   if (intent.action === 'start_session' && intent.topic) {
-    const session = startGuardianSession({
-      topic: intent.topic,
-      durationMinutes: intent.durationMinutes ? getAdaptiveSessionMinutes(intent.durationMinutes) : undefined,
-      mood: intent.mood || null,
-      source: 'voice',
-      sessionContext: transcript, // full voice utterance carries nuance: "I'll be switching tabs", tools, etc.
-    });
+    let session;
+    try {
+      session = startGuardianSession({
+        topic: intent.topic,
+        durationMinutes: intent.durationMinutes ? getAdaptiveSessionMinutes(intent.durationMinutes) : undefined,
+        mood: intent.mood || null,
+        source: 'voice',
+        sessionContext: transcript, // full voice utterance carries nuance: "I'll be switching tabs", tools, etc.
+      });
+    } catch (error) {
+      if (!(error instanceof VisionClientUnavailableError)) throw error;
+      const response = error.readiness.screenRecordingStatus !== 'authorized'
+        ? 'I cannot start Guardian until LifeOSCopilot has Screen Recording permission on the MacBook.'
+        : 'I cannot start Guardian because the MacBook vision client is offline. Open LifeOSCopilot and try again.';
+      addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });
+      return { type: 'intent_only', transcript, intent, responseText: response };
+    }
 
     // Proactive coaching: speak top UIL insight with the session start confirmation
     const profile = getIntelligenceProfile();

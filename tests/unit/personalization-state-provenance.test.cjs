@@ -41,4 +41,13 @@ describe('personalization state provenance', () => {
     assert.equal(snapshot.userState.moodSource, 'explicit_checkin');
     assert.equal(snapshot.moment.mode, 'recovery');
   });
+
+  it('clears a standup anchor when it belongs to a previous date', () => {
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('standup_goal_today', 'Yesterday algorithm anchor')`).run();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('standup_goal_date', '2020-01-01')`).run();
+
+    const snapshot = buildPersonalizationSnapshot({ surface: 'dashboard' });
+
+    assert.equal(snapshot.userState.standupGoal, null);
+  });
 });

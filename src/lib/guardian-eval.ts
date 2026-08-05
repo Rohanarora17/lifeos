@@ -56,6 +56,10 @@ function createEvalSession(scenario: GuardianEvalScenario): GuardianState {
     intentProfile: null,
     sessionPolicy: null,
     screenContext: null,
+    pauseReason: null,
+    pausedAt: null,
+    totalPausedMs: 0,
+    startRequestId: null,
   };
 }
 

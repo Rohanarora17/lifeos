@@ -8,6 +8,7 @@ const DEFAULT_API_BASE = 'http://localhost:3000/api';
 const TELEMETRY_ALARM = 'lifeos-telemetry-sample';
 const TELEMETRY_STATE_KEY = 'telemetryEventV1Current';
 const TELEMETRY_QUEUE_KEY = 'telemetryEventV1Queue';
+const PRESENCE_NOTIFICATION_PREFIX = 'lifeos-presence-';
 let API_BASE = DEFAULT_API_BASE;
 
 /** Always reads storage fresh — safe across service worker restarts. */
@@ -552,6 +553,19 @@ async function postGuardianEvent(payload, tabIdHint = null) {
     if (!guardianActive || !sessionContext?.sessionId) return null;
 
     try {
+        const focusedWindow = await chrome.windows.getLastFocused().catch(() => null);
+        const mediaState = await getForegroundMediaPlaybackState(
+            tabIdHint || currentActiveTabId,
+            focusedWindow?.focused === true,
+        );
+        const commonPayload = {
+            ...(payload?.payload || {}),
+            deviceId: 'chrome-primary',
+            browserWindowFocused: focusedWindow?.focused === true,
+            collectorVersion: chrome.runtime.getManifest().version,
+            mediaPlaybackActive: mediaState.active,
+            mediaTitle: mediaState.title,
+        };
         const headers = await getAuthHeaders();
         const res = await fetch(`${API_BASE}/guardian/events`, {
             method: 'POST',
@@ -560,6 +574,7 @@ async function postGuardianEvent(payload, tabIdHint = null) {
                 sessionId: sessionContext.sessionId,
                 timestamp: Date.now(),
                 ...payload,
+                payload: commonPayload,
             }),
         });
 
@@ -569,6 +584,7 @@ async function postGuardianEvent(payload, tabIdHint = null) {
             activeTabs.clear();
             disableSessionCaptureAlarms();
             chrome.action.setBadgeText({ text: '' });
+            clearPresenceNotifications().catch(() => { });
             return null;
         }
 
@@ -579,6 +595,11 @@ async function postGuardianEvent(payload, tabIdHint = null) {
         }
         if (Array.isArray(data.commands)) {
             await applyGuardianCommands(data.commands, tabIdHint);
+        }
+        if (data?.presenceCheck?.checkId) {
+            await showPresenceCheck(data.presenceCheck);
+        } else {
+            await clearPresenceNotifications();
         }
 
         // Update badge with live focus score
@@ -596,6 +617,82 @@ async function postGuardianEvent(payload, tabIdHint = null) {
     } catch (e) {
         console.error('[LifeOS] guardian event failed', e);
         return null;
+    }
+}
+
+async function showPresenceCheck(check) {
+    const seconds = Math.max(0, Number(check.secondsRemaining || 0));
+    await chrome.notifications.create(`${PRESENCE_NOTIFICATION_PREFIX}${check.checkId}`, {
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: `Still working on ${check.targetTitle || 'your session'}?`,
+        message: seconds > 0
+            ? `No interaction for 3 minutes. Guardian pauses in ${seconds}s if unanswered.`
+            : 'Guardian is paused. The uncertain interval is unscored.',
+        requireInteraction: true,
+        buttons: [
+            { title: 'Yes, still working' },
+            { title: 'Taking a break' },
+        ],
+    });
+}
+
+async function resolvePresenceFromExtension(checkId, action) {
+    if (!sessionContext?.sessionId) return;
+    const headers = await getAuthHeaders();
+    const response = await fetch(`${API_BASE}/guardian/presence`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ sessionId: sessionContext.sessionId, checkId, action }),
+    });
+    if (response.ok) {
+        await chrome.notifications.clear(`${PRESENCE_NOTIFICATION_PREFIX}${checkId}`);
+    }
+}
+
+async function clearPresenceNotifications() {
+    const notifications = await chrome.notifications.getAll();
+    await Promise.all(Object.keys(notifications)
+        .filter((id) => id.startsWith(PRESENCE_NOTIFICATION_PREFIX))
+        .map((id) => chrome.notifications.clear(id)));
+}
+
+chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+    if (!notificationId.startsWith(PRESENCE_NOTIFICATION_PREFIX)) return;
+    const checkId = notificationId.slice(PRESENCE_NOTIFICATION_PREFIX.length);
+    const action = buttonIndex === 0 ? 'still_working' : 'break';
+    resolvePresenceFromExtension(checkId, action).catch(() => { });
+});
+
+chrome.notifications.onClicked.addListener((notificationId) => {
+    if (!notificationId.startsWith(PRESENCE_NOTIFICATION_PREFIX)) return;
+    const appBase = API_BASE.replace(/\/api\/?$/, '');
+    chrome.tabs.create({ url: `${appBase}/guardian` }).catch(() => { });
+});
+
+async function getForegroundMediaPlaybackState(tabId, browserWindowFocused = true) {
+    if (!tabId || !browserWindowFocused) return { active: false, title: null };
+    try {
+        const results = await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            func: () => {
+                if (document.visibilityState !== 'visible') return { active: false, title: null };
+                const elements = Array.from(document.querySelectorAll('video, audio'));
+                const playing = elements.find((element) => (
+                    !element.paused
+                    && !element.ended
+                    && element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+                    && element.currentTime > 0
+                ));
+                return playing
+                    ? { active: true, title: document.title || null }
+                    : { active: false, title: null };
+            },
+        });
+        const active = results.find((item) => item?.result?.active === true)?.result;
+        return active || { active: false, title: null };
+    } catch {
+        return { active: false, title: null };
     }
 }
 
@@ -789,6 +886,22 @@ chrome.idle.onStateChanged.addListener(async (state) => {
     if (!guardianActive || !sessionContext?.sessionId) return;
 
     if (state === 'idle' || state === 'locked') {
+        const mediaState = await getForegroundMediaPlaybackState(
+            currentActiveTabId,
+            (await chrome.windows.getLastFocused().catch(() => null))?.focused === true,
+        );
+        if (LifeOSActivityState.shouldTreatMediaPlaybackAsActive(state, mediaState.active)) {
+            guardianIdleLastReportedAt = null;
+            await postGuardianEvent({
+                type: 'heartbeat',
+                payload: {
+                    mediaPlaybackActive: true,
+                    mediaTitle: mediaState.title,
+                    inputIdleSuppressed: true,
+                },
+            }, currentActiveTabId);
+            return;
+        }
         await flushGuardianDwell(state);
         guardianIdleLastReportedAt = Date.now() - 60_000;
         await reportGuardianIdleDelta(state);
@@ -853,7 +966,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     }
     if (alarm.name === 'lifeos-guardian-heartbeat') {
         if (!guardianActive || !sessionContext?.sessionId) return;
-        await postGuardianEvent({ type: 'heartbeat' }, currentActiveTabId);
+        // Checkpoint sustained dwell so Activity begins at the session boundary
+        // and stays current during a long-lived page such as a lecture video.
+        // Canonical storage merges these adjacent 30-second chunks.
+        await flushGuardianDwell('periodic_checkpoint');
+        const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (tab?.id && tab.url && !isPrivacyBlocked(tab.url)) {
+            currentActiveTabId = tab.id;
+            const groupInfo = await resolveTabGroup(tab.groupId);
+            await reportTabActivity(tab.id, tab.url, tab.title || '', groupInfo);
+        } else {
+            await postGuardianEvent({ type: 'heartbeat' }, currentActiveTabId);
+        }
     }
 });
 
@@ -891,6 +1015,7 @@ async function checkExternalSession() {
             chrome.action.setBadgeText({ text: '' });
             activeTabs.clear();
             disableSessionCaptureAlarms();
+            clearPresenceNotifications().catch(() => { });
             if (sessionGroupId !== null) {
                 chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
                 sessionGroupId = null;
@@ -902,6 +1027,20 @@ async function checkExternalSession() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === 'WAKE_COPILOT') {
+        chrome.runtime.sendNativeMessage(
+            'com.lifeos.copilot',
+            { action: 'wake', requestedAt: new Date().toISOString() },
+            (response) => {
+                const error = chrome.runtime.lastError?.message;
+                sendResponse(error
+                    ? { ok: false, error }
+                    : (response || { ok: false, error: 'Native helper returned no response' }));
+            },
+        );
+        return true;
+    }
+
     if (msg.type === 'START_GUARDIAN') {
         guardianActive = true;
         sessionContext = msg.context || msg;
@@ -921,7 +1060,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
             const tab = tabs[0];
             if (tab?.url && !isPrivacyBlocked(tab.url)) {
-                const sessionStart = Date.now();
+                const sessionStart = LifeOSActivityState.guardianIntervalStart(
+                    sessionContext.startedAt,
+                    Date.now(),
+                );
                 activeTabs.set('current', {
                     url: tab.url,
                     title: tab.title || '',
@@ -976,6 +1118,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.action.setBadgeText({ text: '' });
         activeTabs.clear();
         disableSessionCaptureAlarms();
+        clearPresenceNotifications().catch(() => { });
         stopGuardianSSE();
         // Collapse the session group so it's preserved but out of the way
         if (sessionGroupId !== null) {

@@ -10,10 +10,17 @@ import {
   updateScreenContext,
   persistVisionSignal,
   generateContextNarrative,
-  updateMacbookClientHeartbeat,
-  isMacbookClientConnected,
 } from '@/lib/screen-vision';
 import type { GuardianEvent } from '@/lib/guardian-types';
+import {
+  getBrowserCollectorState,
+  getGuardianClientReadiness,
+  isChromeApplication,
+  recordNativeClientHeartbeat,
+  selectedCaptureSource,
+} from '@/lib/guardian-client-status';
+import { arbitrateSessionActivity, attachVisionAssessment } from '@/lib/session-activity';
+import { hasRecentStillWorkingConfirmation, STATIC_ACTIVITY_GRACE_MS } from '@/lib/guardian-presence';
 
 // ---------------------------------------------------------------------------
 // Per-session state for change detection and client tracking
@@ -29,9 +36,6 @@ interface VisionSessionState {
 
 const sessionVisionState = new Map<string, VisionSessionState>();
 
-// Re-export for consumers that import from the route
-export { isMacbookClientConnected };
-
 // ---------------------------------------------------------------------------
 // POST /api/guardian/vision
 // Receives screenshots from MacBook client daemon (or internal fallback calls)
@@ -43,12 +47,44 @@ export async function POST(req: Request) {
 
     // Heartbeat from client (no screenshot, just connectivity check)
     if (body.type === 'heartbeat') {
-      updateMacbookClientHeartbeat();
-      console.log('[Vision] MacBook client heartbeat received');
-      return NextResponse.json({ connected: true });
+      const inputIdleSeconds = Math.max(0, Number(body.inputIdleSeconds ?? 0));
+      const activeSession = getActiveGuardianSession();
+      const browser = activeSession
+        ? getBrowserCollectorState(activeSession.sessionId)
+        : { fresh: false, mediaPlaybackActive: false };
+      const foregroundMediaActive = Boolean(
+        activeSession
+        && isChromeApplication(typeof body.appInFocus === 'string' ? body.appInFocus : null)
+        && browser.fresh
+        && browser.mediaPlaybackActive,
+      );
+      const confirmedStaticActive = Boolean(
+        activeSession && hasRecentStillWorkingConfirmation(activeSession.sessionId),
+      );
+      const reportedState = body.systemState === 'idle' || body.systemState === 'locked' ? body.systemState : 'active';
+      const effectiveState = reportedState === 'idle'
+        && (
+          foregroundMediaActive
+          || confirmedStaticActive
+          || (inputIdleSeconds > 0 && inputIdleSeconds * 1_000 < STATIC_ACTIVITY_GRACE_MS)
+        )
+        ? 'active'
+        : reportedState;
+      const readiness = recordNativeClientHeartbeat({
+        deviceId: typeof body.deviceId === 'string' ? body.deviceId : null,
+        clientVersion: typeof body.clientVersion === 'string' ? body.clientVersion : null,
+        screenRecordingStatus: typeof body.screenRecordingStatus === 'string' ? body.screenRecordingStatus : null,
+        captureCapable: body.captureCapable === true,
+        frontmostApp: typeof body.appInFocus === 'string' ? body.appInFocus : null,
+        frontmostWindowTitle: typeof body.windowTitle === 'string' ? body.windowTitle : null,
+        systemState: effectiveState,
+        activeSessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
+        metadata: { inputIdleSeconds, foregroundMediaActive, confirmedStaticActive, heartbeatSurface: 'vision' },
+        observedAt: typeof body.observedAt === 'string' ? body.observedAt : null,
+      });
+      return NextResponse.json({ connected: readiness.ready, readiness });
     }
 
-    updateMacbookClientHeartbeat();
     console.log(`[Vision] Screenshot received — app="${(body as Record<string,string>).appInFocus}" window="${(body as Record<string,string>).windowTitle}" session=${(body as Record<string,string>).sessionId}`);
 
     const { sessionId, base64Jpeg, appInFocus, windowTitle } = body as {
@@ -62,6 +98,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields: sessionId, base64Jpeg, appInFocus' }, { status: 400 });
     }
 
+    recordNativeClientHeartbeat({
+      deviceId: typeof body.deviceId === 'string' ? body.deviceId : null,
+      clientVersion: typeof body.clientVersion === 'string' ? body.clientVersion : null,
+      screenRecordingStatus: 'authorized',
+      captureCapable: true,
+      frontmostApp: appInFocus,
+      frontmostWindowTitle: windowTitle,
+      systemState: 'active',
+      activeSessionId: sessionId,
+      observedAt: typeof body.observedAt === 'string' ? body.observedAt : null,
+    });
+
     // Privacy: skip sensitive apps entirely
     if (isSensitiveApp(appInFocus, windowTitle ?? '')) {
       console.log(`[Vision] Skipping sensitive app: ${appInFocus}`);
@@ -73,6 +121,17 @@ export async function POST(req: Request) {
     if (!session || session.sessionId !== sessionId) {
       console.warn(`[Vision] Screenshot rejected — no active session matching ${sessionId}`);
       return NextResponse.json({ skipped: true, reason: 'no_active_session' });
+    }
+
+
+    const arbitration = arbitrateSessionActivity(sessionId, 'vision');
+    if (!arbitration.accepted) {
+      return NextResponse.json({
+        analyzed: false,
+        counted: false,
+        reason: arbitration.reason,
+        selectedSource: arbitration.selectedSource,
+      });
     }
 
     const elapsedMinutes = Math.round((Date.now() - session.startedAt) / 60_000);
@@ -165,6 +224,14 @@ export async function POST(req: Request) {
 
     // Persist to screen_observations
     persistVisionSignal(signal, sessionId);
+    attachVisionAssessment(sessionId, {
+      app: signal.appInFocus,
+      capturedAt: signal.capturedAt,
+      taskAlignment: signal.taskAlignment,
+      engagementDepth: signal.engagementDepth,
+      contentSummary: signal.contentSummary,
+      confidence: signal.confidence,
+    });
 
     // Post as screen_vision GuardianEvent — guardian-runtime will update screenContext + score
     const event: GuardianEvent = {
@@ -205,20 +272,22 @@ export async function POST(req: Request) {
 
 export async function GET() {
   const session = getActiveGuardianSession();
-  const clientConnected = isMacbookClientConnected();
+  const readiness = getGuardianClientReadiness();
 
   if (!session) {
     return NextResponse.json({
       active: false,
       captureState: 'normal',
       nextIntervalMs: 15_000,
-      macbookClient: { connected: clientConnected },
+      captureMode: 'vision',
+      macbookClient: { connected: readiness.ready, readiness },
     });
   }
 
   const captureStateResult = computeCaptureState(session, session.screenContext?.captureState ?? 'normal');
   const vState = sessionVisionState.get(session.sessionId);
   const screenCtx = session.screenContext;
+  const captureMode = selectedCaptureSource(session.sessionId);
 
   return NextResponse.json({
     active: true,
@@ -226,12 +295,14 @@ export async function GET() {
     goalTitle: session.goalTitle ?? session.targetTitle,
     topic: session.intentProfile?.topic ?? session.targetTitle,
     captureState: captureStateResult.state,
+    captureMode,
     nextIntervalMs: captureStateResult.intervalMs,
     captureReason: captureStateResult.reason,
     momentMode: captureStateResult.momentMode,
     focusScore: session.focusScoreHistory.at(-1) ?? 50,
     macbookClient: {
-      connected: clientConnected,
+      connected: readiness.ready,
+      readiness,
       lastScreenshot: vState?.lastAnalyzedAt ? new Date(vState.lastAnalyzedAt).toISOString() : null,
       totalCaptures: screenCtx?.recentObservations?.length ?? 0,
     },

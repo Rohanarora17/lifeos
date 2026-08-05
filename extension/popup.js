@@ -251,6 +251,25 @@ async function renderFocusStarter(el) {
     }
 
     try {
+      let readinessResponse = await apiFetch(`${API_BASE}/guardian/client-readiness`);
+      let readiness = await readinessResponse.json();
+      if (!readiness.ready) {
+        await chrome.runtime.sendMessage({ type: 'WAKE_COPILOT' });
+        const deadline = Date.now() + 20_000;
+        while (!readiness.ready && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 1_000));
+          readinessResponse = await apiFetch(`${API_BASE}/guardian/client-readiness`);
+          readiness = await readinessResponse.json();
+        }
+      }
+      if (!readiness.ready) {
+        throw new Error(readiness.screenRecordingStatus !== 'authorized'
+          ? 'LifeOSCopilot needs Screen Recording permission.'
+          : 'LifeOSCopilot is not running on the MacBook.');
+      }
+      const storedStart = await chrome.storage.local.get('pendingGuardianStartRequestId');
+      const startRequestId = storedStart.pendingGuardianStartRequestId || crypto.randomUUID();
+      await chrome.storage.local.set({ pendingGuardianStartRequestId: startRequestId });
       const res = await apiFetch(`${API_BASE}/guardian/session/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -260,10 +279,12 @@ async function renderFocusStarter(el) {
           conceptNodeName: taskTitle || goalTitle || selectedOption.dataset.title || 'Focus Session',
           durationMinutes: duration,
           source: 'extension',
+          startRequestId,
         }),
       });
       const data = await res.json();
       if (!data?.session) return;
+      await chrome.storage.local.remove('pendingGuardianStartRequestId');
 
       chrome.runtime.sendMessage({
         type: 'START_GUARDIAN',

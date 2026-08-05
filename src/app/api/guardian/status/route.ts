@@ -3,7 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { getActiveGuardianSession } from '@/lib/guardian-runtime';
-import { isMacbookClientConnected } from '@/lib/screen-vision';
+import { getGuardianClientReadiness, selectedCaptureSource } from '@/lib/guardian-client-status';
 import { getDb } from '@/lib/db';
 
 export async function GET() {
@@ -38,13 +38,13 @@ export async function GET() {
   const pendingCheckin = db.prepare("SELECT value FROM settings WHERE key = 'pending_checkin_type'").get() as { value: string } | undefined;
   const pendingDate = db.prepare("SELECT value FROM settings WHERE key = 'pending_checkin_date'").get() as { value: string } | undefined;
 
-  const macbookConnected = isMacbookClientConnected();
+  const clientReadiness = getGuardianClientReadiness();
 
   return NextResponse.json({
     timestamp: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
     macbook_client: {
-      connected: macbookConnected,
-      note: macbookConnected ? 'heartbeat within last 30s' : 'no heartbeat — screenshots come from Mac Mini fallback',
+      ...clientReadiness,
+      selected_source: session ? selectedCaptureSource(session.sessionId) : null,
     },
     active_session: session ? {
       sessionId: session.sessionId,

@@ -30,16 +30,27 @@ struct CopilotTurnResponse: Codable {
     let error: String?
 }
 
+struct NativePresenceCheck: Codable {
+    let checkId: String
+    let sessionId: String
+    let targetTitle: String
+    let secondsRemaining: Int
+    let app: String?
+    let windowTitle: String?
+}
+
 struct NativeHeartbeatResponse: Codable {
     let ok: Bool
     let active: Bool
     let sessionId: String?
+    let presenceCheck: NativePresenceCheck?
 }
 
 struct VisionStateResponse: Codable {
     let active: Bool
     let sessionId: String?
     let nextIntervalMs: Int
+    let captureMode: String?
 }
 
 struct NativeIngestResponse: Codable {

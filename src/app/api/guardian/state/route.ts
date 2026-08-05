@@ -28,6 +28,9 @@ export async function GET(req: Request) {
           thresholds: session.sessionPolicy.thresholds,
         } : null,
         energyComposite: session.energyComposite,
+        pauseReason: session.pauseReason,
+        pausedAt: session.pausedAt,
+        totalPausedMs: session.totalPausedMs,
       });
     }
 

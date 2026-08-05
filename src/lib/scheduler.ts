@@ -553,7 +553,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
                 SELECT
                     COALESCE(SUM(CASE WHEN category='productive' THEN duration_seconds END),0) as prod,
                     COALESCE(SUM(CASE WHEN category='distraction' THEN duration_seconds END),0) as dist
-                FROM activities WHERE date(started_at,'localtime') = ?
+                FROM effective_activities WHERE date(started_at,'localtime') = ?
             `).get(today) as { prod: number; dist: number };
             const tasks = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE date(created_at,'localtime') <= ? AND status IN ('todo','doing','done')").get(today) as { total: number; done: number };
             const habits = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };

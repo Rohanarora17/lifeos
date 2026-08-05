@@ -56,7 +56,7 @@ export function learnDomainClassifications() {
                 SUM(CASE WHEN category = 'productive' THEN 1 ELSE 0 END) as productive_count,
                 SUM(CASE WHEN category = 'distraction' THEN 1 ELSE 0 END) as distraction_count,
                 SUM(CASE WHEN category = 'neutral' THEN 1 ELSE 0 END) as neutral_count
-            FROM activities
+            FROM effective_activities
             WHERE started_at >= datetime('now', '-14 days')
               AND domain NOT IN ('newtab', 'extensions', 'localhost', 'context-switch')
             GROUP BY domain

@@ -3,9 +3,11 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  guardianIntervalStart,
   isWithinWakingHours,
   recoverPersistedInterval,
   shouldCollectTelemetry,
+  shouldTreatMediaPlaybackAsActive,
   shouldGroupTab,
   transitionInterval,
 } = require('../../extension/activity-state.js');
@@ -22,6 +24,19 @@ describe('extension activity state machine', () => {
     assert.equal(shouldCollectTelemetry(false, 'idle'), false);
     assert.equal(shouldCollectTelemetry(false, 'locked'), false);
     assert.equal(shouldCollectTelemetry(true, 'idle'), true);
+  });
+
+  it('treats foreground playback as active while input-idle, but not while locked', () => {
+    assert.equal(shouldTreatMediaPlaybackAsActive('idle', true), true);
+    assert.equal(shouldTreatMediaPlaybackAsActive('active', true), true);
+    assert.equal(shouldTreatMediaPlaybackAsActive('idle', false), false);
+    assert.equal(shouldTreatMediaPlaybackAsActive('locked', true), false);
+  });
+
+  it('anchors the first interval at session start without inventing an unverified long backfill', () => {
+    assert.equal(guardianIntervalStart(100_000, 101_000), 100_000);
+    assert.equal(guardianIntervalStart(50_000, 101_000), 86_000);
+    assert.equal(guardianIntervalStart(undefined, 101_000), 101_000);
   });
 
   it('closes the prior interval exactly at a focus or state transition', () => {

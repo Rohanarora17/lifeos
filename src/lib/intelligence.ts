@@ -535,7 +535,7 @@ function aggregateSignals(): string {
   try {
     const rows = db.prepare(`
       SELECT domain, category, ROUND(SUM(duration_seconds)/60) as mins
-      FROM activities
+      FROM effective_activities
       WHERE date(started_at) >= ? AND domain != ''
       GROUP BY domain, category ORDER BY mins DESC LIMIT 15
     `).all(fortnight) as Array<{ domain: string; category: string; mins: number }>;
@@ -847,7 +847,9 @@ Return ONLY valid JSON (no markdown, no explanation):
       nextRecommendedTopic: raw.nextRecommendedTopic ?? prev.nextRecommendedTopic,
       habitStreakSummary: raw.habitStreakSummary ?? prev.habitStreakSummary,
       habitsAtRisk: raw.habitsAtRisk ?? prev.habitsAtRisk,
-      standupGoalToday: raw.standupGoalToday ?? prev.standupGoalToday,
+      // This field is date-bound. Carrying yesterday's value forward makes stale
+      // goals look current when today's standup is absent.
+      standupGoalToday: raw.standupGoalToday ?? null,
       moodToday: raw.moodToday ?? prev.moodToday,
       calendarEventsToday: raw.calendarEventsToday ?? prev.calendarEventsToday,
       recentStudyTopics: raw.recentStudyTopics ?? prev.recentStudyTopics,

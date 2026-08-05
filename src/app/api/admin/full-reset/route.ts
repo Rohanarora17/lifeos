@@ -68,6 +68,10 @@ const CLEAR_TABLES = [
   'screen_observations',
   'phone_screen_time',
   'telemetry_events_v1',
+  'session_activity_intervals',
+  'guardian_presence_checks',
+  'browser_collector_status',
+  'native_client_status',
   'session_domain_classifications',
 
   // Guardian sessions, feedback, overrides, evaluations, and learned policies

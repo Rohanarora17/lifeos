@@ -1,4 +1,5 @@
 import { GuardianPolicyBundle, GuardianState } from './guardian-types';
+import type { CanonicalScoringInterval } from './session-activity';
 
 export type Trend = 'rising' | 'stable' | 'falling';
 
@@ -36,13 +37,14 @@ function eventDomainKey(event: { url?: string; domain?: string; payload?: Record
 }
 
 export function computeFocusScore(
-    session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory' | 'screenContext'>,
+    session: Pick<GuardianState, 'tick' | 'startedAt' | 'tabEventLog' | 'focusScoreHistory' | 'screenContext' | 'totalPausedMs'>,
     policy?: GuardianPolicyBundle,
     energyComposite?: number | null,
+    canonicalIntervals?: CanonicalScoringInterval[],
 ) {
     if (!session || session.tick === 0) return { score: 100, trend: 'stable' as Trend };
 
-    const elapsedMs = Date.now() - session.startedAt;
+    const elapsedMs = Math.max(1, Date.now() - session.startedAt - session.totalPausedMs);
     const elapsedMinutes = elapsedMs / 60000;
 
     const thresholds = policy?.thresholds;
@@ -54,42 +56,67 @@ export function computeFocusScore(
     let switches = 0;
     let idleSeconds = 0;
 
-    session.tabEventLog.forEach((event) => {
-        if (event.type === 'idle' && event.idleSeconds) {
-            idleSeconds += event.idleSeconds;
-            return;
-        }
-        if (!isContinuityEvent(event)) return;
-        switches++;
-        const payloadClassification = eventClassification(event);
-        const payloadAttentionCategory = eventAttentionCategory(event);
-        const isDistraction =
-            payloadClassification === 'distraction' || payloadAttentionCategory === 'blocked_distractor';
-        const isProductive =
-            payloadClassification === 'on_topic' || payloadAttentionCategory === 'productive_support' || payloadAttentionCategory === 'temporary_override';
-
-        if (isProductive && event.dwellSeconds) {
-            onTopicSeconds += event.dwellSeconds;
-        }
-        if (isDistraction) {
-            const domain = eventDomainKey(event);
-            if (domain && distractionDomains.has(domain)) {
-                distractionRevisits++;
+    const eligibleCanonical = canonicalIntervals?.filter(interval => interval.scoreEligible) ?? null;
+    if (canonicalIntervals) {
+        for (const interval of canonicalIntervals) {
+            if (!interval.scoreEligible || interval.state === 'idle' || interval.state === 'locked') {
+                idleSeconds += interval.durationSeconds;
+                continue;
             }
-            if (domain) distractionDomains.add(domain);
+            switches += 1;
+            if (interval.category === 'productive') onTopicSeconds += interval.durationSeconds;
+            if (interval.category === 'distraction') {
+                if (interval.domain && distractionDomains.has(interval.domain)) distractionRevisits += 1;
+                if (interval.domain) distractionDomains.add(interval.domain);
+            }
         }
-    });
+    } else {
+        session.tabEventLog.forEach((event) => {
+            if (event.type === 'idle' && event.idleSeconds) {
+                idleSeconds += event.idleSeconds;
+                return;
+            }
+            if (!isContinuityEvent(event)) return;
+            switches++;
+            const payloadClassification = eventClassification(event);
+            const payloadAttentionCategory = eventAttentionCategory(event);
+            const isDistraction =
+                payloadClassification === 'distraction' || payloadAttentionCategory === 'blocked_distractor';
+            const isProductive =
+                payloadClassification === 'on_topic' || payloadAttentionCategory === 'productive_support' || payloadAttentionCategory === 'temporary_override';
 
-    const tabContinuityScore = Math.min(100, (onTopicSeconds / Math.max(1, elapsedMs / 1000)) * 100);
+            if (isProductive && event.dwellSeconds) onTopicSeconds += event.dwellSeconds;
+            if (isDistraction) {
+                const domain = eventDomainKey(event);
+                if (domain && distractionDomains.has(domain)) distractionRevisits++;
+                if (domain) distractionDomains.add(domain);
+            }
+        });
+    }
+
+    const verifiedActiveSeconds = eligibleCanonical
+        ? eligibleCanonical.reduce((sum, interval) => sum + interval.durationSeconds, 0)
+        : elapsedMs / 1000;
+    const tabContinuityScore = Math.min(100, (onTopicSeconds / Math.max(1, verifiedActiveSeconds)) * 100);
 
     // Vision blending: when screen observations are available, blend vision task alignment
     // with tab-based continuity. Vision is evidence-based (sees actual content); tabs are
     // inference-based (URL classification). More observations → trust vision more.
     const screenCtx = session.screenContext;
-    const visionObsCount = screenCtx?.recentObservations.length ?? 0;
+    const canonicalVisionAssessments = eligibleCanonical?.flatMap(interval => {
+        const assessment = interval.evidence.visionAssessment;
+        return assessment && typeof assessment === 'object' ? [assessment as Record<string, unknown>] : [];
+    }) ?? [];
+    const visionObsCount = canonicalIntervals ? canonicalVisionAssessments.length : (screenCtx?.recentObservations.length ?? 0);
     let continuityScore = tabContinuityScore;
-    if (screenCtx && visionObsCount >= 1) {
-        const visionAlignment = screenCtx.taskAlignmentAvg; // 0-100
+    const latestContinuitySource = canonicalIntervals
+        ? eligibleCanonical?.at(-1)?.source
+        : [...session.tabEventLog].reverse().find(isContinuityEvent)?.payload?.captureSource;
+    const canonicalVisionAlignment = canonicalVisionAssessments.length > 0
+        ? canonicalVisionAssessments.reduce((sum, item) => sum + Number(item.taskAlignment || 0), 0) / canonicalVisionAssessments.length
+        : null;
+    const visionAlignment = canonicalIntervals ? canonicalVisionAlignment : (screenCtx?.taskAlignmentAvg ?? null);
+    if (visionAlignment !== null && visionObsCount >= 1 && latestContinuitySource === 'vision') {
         // Weight: ramp from 30% vision at 1 obs → 60% vision at 5+ obs
         const visionWeight = Math.min(0.6, 0.3 + (visionObsCount - 1) * 0.075);
         continuityScore = Math.min(100,
@@ -103,21 +130,27 @@ export function computeFocusScore(
 
     // Vision-aware switch adjustment: if vision shows active_learning engagement,
     // the user may be productively comparing tabs (research mode) — reduce penalty.
-    if (screenCtx?.engagementDepth === 'active_learning' && switchesPerMin > 2) {
+    const engagementDepth = canonicalIntervals
+        ? String(canonicalVisionAssessments.at(-1)?.engagementDepth || '')
+        : screenCtx?.engagementDepth;
+    if (engagementDepth === 'active_learning' && switchesPerMin > 2) {
         switchScore = Math.min(100, switchScore * 1.25);
     }
 
     const dwellTarget = thresholds?.dwellDepthTargetSeconds ?? 180;
-    const tabsWithDwell = session.tabEventLog.filter(
+    const tabsWithDwell = eligibleCanonical ?? session.tabEventLog.filter(
         (e) => isContinuityEvent(e) && typeof e.dwellSeconds === 'number'
     );
-    const totalDwellSeconds = tabsWithDwell.reduce((sum, e) => sum + (e.dwellSeconds || 0), 0);
+    const totalDwellSeconds = tabsWithDwell.reduce(
+        (sum, item) => sum + ('durationSeconds' in item ? item.durationSeconds : (item.dwellSeconds || 0)),
+        0,
+    );
     const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
     let dwellScore = Math.min(100, (avgDwell / dwellTarget) * 100);
 
     // Vision-aware dwell boost: active_creation (coding, writing) often shows sustained
     // engagement without many tab switches — give it a modest dwell credit.
-    if (screenCtx?.engagementDepth === 'active_creation') {
+    if (engagementDepth === 'active_creation') {
         dwellScore = Math.min(100, dwellScore * 1.15);
     }
 
@@ -160,7 +193,7 @@ export function computeFocusScore(
 
     return {
         score,
-        components: { continuityScore, switchScore, dwellScore, visionAlignment: screenCtx?.taskAlignmentAvg ?? null },
+        components: { continuityScore, switchScore, dwellScore, visionAlignment },
         trend,
         onTopicSeconds,
         distractionCount: distractionRevisits,

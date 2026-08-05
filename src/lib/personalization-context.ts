@@ -1,4 +1,4 @@
-import { getDb } from './db';
+import { getDb, getSetting } from './db';
 import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { getMemoryContext } from './memory';
 import { getAdaptiveBands } from './adaptive-bands';
@@ -157,7 +157,7 @@ function getRecentDistractionMinutes(): number {
   try {
     const row = getDb().prepare(`
       SELECT COALESCE(SUM(duration_seconds), 0) as seconds
-      FROM activities
+      FROM effective_activities
       WHERE started_at >= datetime('now', '-2 hours')
         AND category = 'distraction'
     `).get() as { seconds: number } | undefined;
@@ -273,6 +273,16 @@ function getExplicitTodayState(date: string): {
   }
 }
 
+function getTodayStandupGoal(date: string): string | null {
+  try {
+    return getSetting('standup_goal_date') === date
+      ? (getSetting('standup_goal_today')?.trim() || null)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function deriveMoment(input: {
   hour: number;
   openTasks: number;
@@ -328,7 +338,7 @@ export function buildPersonalizationSnapshot(opts?: {
   const surface = opts?.surface ?? 'agent';
   const now = getIstNow();
   const date = now.toISOString().slice(0, 10);
-  const hour = now.getHours();
+  const hour = now.getUTCHours();
   const profile = getIntelligenceProfile();
   const bands = getAdaptiveBands();
   const active = opts?.activeSession ?? null;
@@ -372,6 +382,7 @@ export function buildPersonalizationSnapshot(opts?: {
   const helpfulRate = getHelpfulRate();
   const plannedFocus = getPlannedFocusContext(date);
   const explicitState = getExplicitTodayState(date);
+  const standupGoalToday = getTodayStandupGoal(date);
   const energy = explicitState.energy ?? 'medium';
   const mood = explicitState.mood;
 
@@ -405,7 +416,7 @@ export function buildPersonalizationSnapshot(opts?: {
     },
     userState: {
       narrative: profile.currentNarrative,
-      standupGoal: profile.standupGoalToday,
+      standupGoal: standupGoalToday,
       mood,
       energy,
       moodSource: mood ? 'explicit_checkin' : 'unknown',

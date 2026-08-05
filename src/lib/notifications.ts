@@ -275,7 +275,7 @@ function getTodayMicroContext(): {
     try {
         const row = db.prepare(`
             SELECT COALESCE(SUM(duration_seconds), 0) as seconds
-            FROM activities
+            FROM effective_activities
             WHERE started_at >= datetime('now', '-2 hours')
               AND category = 'distraction'
         `).get() as { seconds: number };
@@ -1125,7 +1125,7 @@ export async function sendWeeklyEmail(): Promise<void> {
             SELECT
                 COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
                 COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist
-            FROM activities WHERE date(started_at, 'localtime') >= ?
+            FROM effective_activities WHERE date(started_at, 'localtime') >= ?
         `).get(weekStartStr) as { prod: number; dist: number };
 
         const totalSessions = sessions.length;
@@ -1330,7 +1330,7 @@ export async function runAlertEngine(): Promise<{ triggered: string[] }> {
             COALESCE(SUM(CASE WHEN category = 'productive' THEN duration_seconds END), 0) as prod,
             COALESCE(SUM(CASE WHEN category = 'distraction' THEN duration_seconds END), 0) as dist,
             COALESCE(SUM(duration_seconds), 0) as total
-          FROM activities WHERE started_at >= datetime('now', '-2 hours')
+          FROM effective_activities WHERE started_at >= datetime('now', '-2 hours')
         `).get() as { prod: number; dist: number; total: number };
 
                 if (todayStats.total > bands.dailyCapacityMinutes * 10 && todayStats.dist > todayStats.prod) {

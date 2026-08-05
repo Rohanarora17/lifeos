@@ -83,7 +83,7 @@ export async function generateDeepCorrelations(): Promise<void> {
                     category, 
                     SUM(CASE WHEN is_actively_interacting = 1 THEN duration_seconds ELSE 0 END) as active_seconds,
                     SUM(CASE WHEN is_actively_interacting = 0 THEN duration_seconds ELSE 0 END) as idle_seconds
-                FROM activities
+                FROM effective_activities
                 WHERE started_at >= datetime('now', '-30 days', 'localtime')
                 GROUP BY day, category
                 

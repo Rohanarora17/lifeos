@@ -29,6 +29,7 @@ interface DayBriefing {
     intendedStartAt: number;
     plannedMinutes: number;
     status: string;
+    source: string;
   }>;
   personalization?: GuardianInsights['personalization'];
   adaptiveTasks?: GuardianInsights['recommendedTasks'];
@@ -172,13 +173,14 @@ function formatDuration(mins: number) {
 }
 
 function tomorrowIso() {
-  const d = new Date(Date.now() + 19800000);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const d = new Date(`${today}T00:00:00.000Z`);
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString().slice(0, 10);
 }
 
 function formatPlanClock(iso: string) {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
 }
 
 function parseSessionRule(ruleJson: string): SessionRulePreview {
@@ -474,7 +476,14 @@ function optimizerHistoryEmptyMessage(personalization?: GuardianInsights['person
 }
 
 export default function GuardianPage() {
-  const { session: activeSession, adaptiveDefaults, start: startGuardianSession, end: endGuardianSession } = useGuardianSession();
+  const {
+    session: activeSession,
+    adaptiveDefaults,
+    startError,
+    clientReadiness,
+    start: startGuardianSession,
+    end: endGuardianSession,
+  } = useGuardianSession();
   const [briefing, setBriefing] = useState<DayBriefing | null>(null);
   const [insights, setInsights] = useState<GuardianInsights | null>(null);
   const [loading, setLoading] = useState(true);
@@ -846,7 +855,7 @@ export default function GuardianPage() {
   };
 
   const formatCommitmentTime = (ts: number) =>
-    new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
 
   if (loading) {
     return (
@@ -872,11 +881,25 @@ export default function GuardianPage() {
       {/* Live Session — shown when active */}
       {activeSession.active ? (
         <div style={{ marginBottom: '28px' }}>
+          {activeSession.paused && (
+            <div style={{
+              marginBottom: '12px', padding: '12px', borderRadius: '10px',
+              background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.35)',
+              color: '#fbbf24', fontSize: '13px', lineHeight: 1.45,
+            }}>
+              {activeSession.pauseReason === 'presence_unconfirmed'
+                ? 'Session paused — the presence check was not answered within 60 seconds. The uncertain interval is unscored; answer the prompt to resume or end the session.'
+                : activeSession.pauseReason === 'manual'
+                  ? 'Session paused manually. Timer and scoring are stopped.'
+                  : 'Session paused — verified MacBook capture is unavailable. The timer and scoring will resume automatically when LifeOSCopilot reconnects.'}
+            </div>
+          )}
           <GuardianDashboard
             sessionId={activeSession.sessionId!}
             plannedMinutes={activeSession.durationMinutes}
             targetTitle={activeSession.targetTitle ?? 'Focus Session'}
             startedAt={activeSession.startedAt ?? undefined}
+            paused={activeSession.paused}
           />
           <button
             onClick={endSession}
@@ -898,6 +921,16 @@ export default function GuardianPage() {
           <div style={{ fontSize: '11px', color: '#8888a0', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '14px' }}>
             Start a Session
           </div>
+          {startError && (
+            <div style={{
+              marginBottom: '12px', padding: '10px 12px', borderRadius: '9px',
+              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+              color: '#fca5a5', fontSize: '12px', lineHeight: 1.45,
+            }}>
+              {startError}
+              {clientReadiness?.frontmostApp ? ` Last seen in ${clientReadiness.frontmostApp}.` : ''}
+            </div>
+          )}
           {adaptivePersonalization && (
             <div style={{
               background: 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,197,94,0.04))',
@@ -1232,7 +1265,9 @@ export default function GuardianPage() {
                 }}>
                   <div>
                     <div style={{ fontSize: '13px', fontWeight: 600, color: '#f0f0f5' }}>{c.targetTitle}</div>
-                    <div style={{ fontSize: '10px', color: '#8888a0' }}>{formatCommitmentTime(c.intendedStartAt)} · {c.plannedMinutes}m</div>
+                    <div style={{ fontSize: '10px', color: '#8888a0' }}>
+                      {formatCommitmentTime(c.intendedStartAt)} · {c.plannedMinutes}m · {c.source === 'next_day_plan' ? 'AI planned' : c.source === 'cognitive_experiment' ? 'System experiment' : 'User created'}
+                    </div>
                   </div>
                   <button
                     onClick={() => void dismissCommitment(c.id)}
@@ -1449,7 +1484,10 @@ export default function GuardianPage() {
                 <div>
                   <div style={{ fontSize: '13px', color: '#c0c0d5', lineHeight: 1.5 }}>{r.reflectionText}</div>
                   <div style={{ fontSize: '10px', color: '#555570', marginTop: '4px' }}>
-                    {r.focusQuality} · {new Date(r.generatedAt).toLocaleDateString()}
+                    {r.focusQuality} · {new Date(r.generatedAt).toLocaleString('en-IN', {
+                      timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric',
+                      hour: '2-digit', minute: '2-digit',
+                    })}
                   </div>
                 </div>
               </div>

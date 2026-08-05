@@ -413,6 +413,15 @@ window.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'STOP_GUARDIAN') {
         chrome.runtime.sendMessage(event.data);
     }
+    if (event.data && event.data.type === 'LIFEOS_WAKE_COPILOT') {
+        chrome.runtime.sendMessage({ type: 'WAKE_COPILOT' }, (result) => {
+            window.postMessage({
+                type: 'LIFEOS_WAKE_COPILOT_RESULT',
+                requestId: event.data.requestId || null,
+                result: result || { ok: false, error: 'No response from LifeOS extension' },
+            }, '*');
+        });
+    }
 });
 
 // Browser support surface. The extension contributes DOM selection and page

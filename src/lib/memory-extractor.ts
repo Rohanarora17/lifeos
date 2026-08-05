@@ -366,7 +366,7 @@ export async function extractMemoryFromCheckin(checkin: {
 
       const screenCats = db.prepare(`
         SELECT category, ROUND(SUM(duration_seconds)/3600.0, 1) as hours
-        FROM activities
+        FROM effective_activities
         WHERE started_at BETWEEN ? AND ?
         GROUP BY category ORDER BY hours DESC
       `).all(todayStart, todayEnd) as Array<{ category: string; hours: number }>;

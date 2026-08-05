@@ -11,12 +11,26 @@ describe('guardian route lifecycle', () => {
   let stateGET;
   let endPOST;
   let sessionId;
+  let recordBrowserCollectorHeartbeat;
 
   before(() => {
     delete process.env.GOOGLE_CLOUD_PROJECT;
     delete process.env.TELEGRAM_BOT_TOKEN;
     const env = createIsolatedDb('lifeos-guardian-routes-');
     db = env.db;
+    process.env.LIFEOS_REQUIRE_VISION_CLIENT = 'true';
+    const clientStatus = env.requireLib('guardian-client-status.ts');
+    const { recordNativeClientHeartbeat } = clientStatus;
+    ({ recordBrowserCollectorHeartbeat } = clientStatus);
+    recordNativeClientHeartbeat({
+      deviceId: 'test-macbook',
+      clientVersion: 'test',
+      screenRecordingStatus: 'authorized',
+      captureCapable: true,
+      frontmostApp: 'Google Chrome',
+      frontmostWindowTitle: 'Polynomial commitments paper',
+      systemState: 'active',
+    });
     ({ POST: startPOST } = require(
       '../../src/app/api/guardian/session/start/route.ts'
     ));
@@ -40,6 +54,7 @@ describe('guardian route lifecycle', () => {
         })
       );
     }
+    delete process.env.LIFEOS_REQUIRE_VISION_CLIENT;
   });
 
   it('starts, ingests browser context, exposes state, and completes', async () => {
@@ -51,6 +66,7 @@ describe('guardian route lifecycle', () => {
           durationMinutes: 25,
           mood: 'medium',
           source: 'api',
+          startRequestId: 'guardian-route-lifecycle-start',
         }),
       })
     );
@@ -60,6 +76,12 @@ describe('guardian route lifecycle', () => {
     assert.equal(started.session.state, 'ACTIVE');
     assert.equal(started.session.targetTitle, 'Audit polynomial commitment research');
     sessionId = started.session.sessionId;
+    recordBrowserCollectorHeartbeat({
+      deviceId: 'test-chrome',
+      sessionId,
+      windowFocused: true,
+      collectorVersion: 'test',
+    });
 
     const eventResponse = await eventsPOST(
       new Request('http://lifeos.test/api/guardian/events', {
@@ -71,6 +93,7 @@ describe('guardian route lifecycle', () => {
           title: 'Polynomial commitments paper',
           dwellSeconds: 30,
           tabStartedAt: Date.now() - 30_000,
+          payload: { browserWindowFocused: true, collectorVersion: 'test' },
         }),
       })
     );

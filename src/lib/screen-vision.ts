@@ -17,20 +17,20 @@ import { getDb } from './db';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { getAdaptiveBands } from './adaptive-bands';
 import sharp from 'sharp';
+import { getGuardianClientReadiness } from './guardian-client-status';
 
 // ---------------------------------------------------------------------------
 // MacBook client connection tracking
 // ---------------------------------------------------------------------------
 
-let macbookClientLastSeen = 0;
-
+/** @deprecated Heartbeats are persisted by the ingest routes. */
 export function updateMacbookClientHeartbeat(): void {
-  macbookClientLastSeen = Date.now();
+  // Kept as a compatibility no-op for older internal callers.
 }
 
-/** True when the MacBook vision client sent a heartbeat within the last 30 seconds. */
+/** True when the persisted MacBook client heartbeat and permissions are ready. */
 export function isMacbookClientConnected(): boolean {
-  return Date.now() - macbookClientLastSeen < 30_000;
+  return getGuardianClientReadiness().ready;
 }
 
 // ---------------------------------------------------------------------------
@@ -591,8 +591,9 @@ export function persistVisionSignal(signal: ScreenVisionSignal, sessionId: strin
        specific_content, productive_for_goals, confidence, session_id,
        task_alignment, engagement_depth, distraction_indicators, progress_indicator, change_magnitude)
      VALUES
-      (datetime('now','localtime'), 'screen_vision', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (?, 'screen_vision', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    new Date(signal.capturedAt).toISOString(),
     signal.appInFocus,
     signal.windowTitle,
     signal.contentSummary,
