@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import GuardianDashboard from '@/components/GuardianDashboard';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+import { buildGuardianDurationOptions } from '@/lib/guardian-session-options';
 import { scoreColor } from '@/lib/score-classify';
 
 interface DayBriefing {
@@ -192,55 +193,9 @@ function parseSessionRule(ruleJson: string): SessionRulePreview {
   }
 }
 
-type AdaptiveTask = NonNullable<GuardianInsights['recommendedTasks']>[number];
-
-interface DurationOption {
-  minutes: number;
-  label: string;
-}
-
-function addDurationOption(options: DurationOption[], minutes: number | null | undefined, label: string) {
-  if (!minutes || minutes <= 0) return;
-  const rounded = Math.max(5, Math.round(minutes / 5) * 5);
-  if (options.some(option => option.minutes === rounded)) return;
-  options.push({ minutes: rounded, label });
-}
-
 function formatPlannedFocusLabel(plannedFocus: NonNullable<GuardianInsights['personalization']>['plannedFocus']) {
   if (!plannedFocus?.nextTitle) return null;
   return `${plannedFocus.nextTitle}${plannedFocus.nextMinutes ? ` (${formatDuration(plannedFocus.nextMinutes)})` : ''}`;
-}
-
-function buildGuardianDurationOptions(input: {
-  adaptiveDuration: number;
-  personalization?: GuardianInsights['personalization'];
-  selectedTask?: AdaptiveTask | null;
-  topTask?: AdaptiveTask | null;
-}): DurationOption[] {
-  const options: DurationOption[] = [];
-  const mode = input.personalization?.mode ?? 'normal';
-  const base = Math.round(input.adaptiveDuration);
-
-  addDurationOption(options, input.selectedTask?.estimatedMinutes, 'This task');
-  addDurationOption(options, input.personalization?.plannedFocus?.nextMinutes, 'Next planned');
-  addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
-
-  if (mode === 'recovery' || input.personalization?.energy === 'low' || input.personalization?.mood === 'low') {
-    addDurationOption(options, Math.min(base, 20), 'Small start');
-    addDurationOption(options, Math.min(Math.max(base, 25), 35), 'Manageable');
-  } else if (mode === 'deadline_pressure') {
-    addDurationOption(options, Math.max(base, 45), 'Serious sprint');
-    addDurationOption(options, Math.max(base, 75), 'Deep push');
-  } else if (mode === 'planning') {
-    addDurationOption(options, Math.min(base, 30), 'Planning pass');
-    addDurationOption(options, Math.max(base, 45), 'Setup block');
-  } else {
-    addDurationOption(options, Math.max(25, base - 15), 'Shorter');
-    addDurationOption(options, Math.min(120, base + 15), 'Deeper');
-  }
-
-  addDurationOption(options, input.topTask?.estimatedMinutes, 'Top recommendation');
-  return options.slice(0, 5);
 }
 
 function guardianTopicPlaceholder(personalization?: GuardianInsights['personalization']) {
@@ -556,6 +511,8 @@ export default function GuardianPage() {
     }>;
   } | null>(null);
   const topicRef = useRef<HTMLInputElement>(null);
+  const topicPrefillHandledRef = useRef(false);
+  const durationEditedRef = useRef(false);
   const adaptivePersonalization = insights?.personalization ?? briefing?.personalization;
   const plannedFocus = adaptivePersonalization?.plannedFocus;
   const plannedFocusLabel = formatPlannedFocusLabel(plannedFocus);
@@ -566,9 +523,13 @@ export default function GuardianPage() {
     : null;
   const durationOptions = buildGuardianDurationOptions({
     adaptiveDuration,
-    personalization: adaptivePersonalization,
-    selectedTask: selectedAdaptiveTask,
-    topTask: adaptiveTasks[0] ?? null,
+    mode: adaptivePersonalization?.mode,
+    energy: adaptivePersonalization?.energy,
+    mood: adaptivePersonalization?.mood,
+    selectedTaskMinutes: selectedAdaptiveTask?.estimatedMinutes,
+    plannedMinutes: plannedFocus?.nextMinutes,
+    topTaskMinutes: adaptiveTasks[0]?.estimatedMinutes,
+    selectedMinutes: duration,
   });
   const guardianOpeningMessage = buildGuardianOpeningMessage({
     active: activeSession.active,
@@ -593,7 +554,7 @@ export default function GuardianPage() {
         const data = await res.json() as GuardianInsights;
         setInsights(data);
         const nextDuration = data.personalization?.plannedFocus?.nextMinutes ?? data.personalization?.recommendedSessionMinutes;
-        if (!activeSession.active && nextDuration) {
+        if (!activeSession.active && nextDuration && !durationEditedRef.current) {
           setDuration(Math.round(nextDuration));
         }
       }
@@ -687,21 +648,24 @@ export default function GuardianPage() {
   }, [fetchBriefing, fetchInsights, fetchOptimizerData, fetchHistoryData, fetchSuggestedTasks, fetchNextDayPlan, fetchCalibrationStatus]);
 
   useEffect(() => {
-    if (!activeSession.active && !adaptivePersonalization?.recommendedSessionMinutes) {
+    if (!activeSession.active && !adaptivePersonalization?.recommendedSessionMinutes && !durationEditedRef.current) {
       setDuration(Math.round(adaptiveDefaults.recommendedSessionMinutes));
     }
   }, [activeSession.active, adaptiveDefaults.recommendedSessionMinutes, adaptivePersonalization?.recommendedSessionMinutes]);
 
   // Pre-fill topic from the highest-signal planned focus before falling back to briefing.
   useEffect(() => {
-    if (plannedFocus?.nextTitle && !topic) {
+    if (topicPrefillHandledRef.current) return;
+    if (plannedFocus?.nextTitle) {
       setTopic(plannedFocus.nextTitle);
+      topicPrefillHandledRef.current = true;
       return;
     }
-    if (briefing?.upcomingFocusTarget && !topic) {
+    if (briefing?.upcomingFocusTarget) {
       setTopic(briefing.upcomingFocusTarget);
+      topicPrefillHandledRef.current = true;
     }
-  }, [briefing, plannedFocus?.nextTitle, topic]);
+  }, [briefing, plannedFocus?.nextTitle]);
 
   const sendRecommendationFeedback = async (
     taskId: number,
@@ -716,6 +680,8 @@ export default function GuardianPage() {
   };
 
   const acceptAdaptiveTask = (task: NonNullable<GuardianInsights['recommendedTasks']>[number]) => {
+    topicPrefillHandledRef.current = true;
+    durationEditedRef.current = true;
     setTopic(task.title);
     setSelectedRecommendationId(task.id);
     setDuration(Math.round(task.estimatedMinutes || adaptiveDuration));
@@ -1076,7 +1042,11 @@ export default function GuardianPage() {
             type="text"
             placeholder={guardianTopicPlaceholder(adaptivePersonalization)}
             value={topic}
-            onChange={e => { setTopic(e.target.value); setSelectedRecommendationId(null); }}
+            onChange={e => {
+              topicPrefillHandledRef.current = true;
+              setTopic(e.target.value);
+              setSelectedRecommendationId(null);
+            }}
             onKeyDown={e => e.key === 'Enter' && !scheduleMode && !showContext && void startSession()}
             style={{
               width: '100%', padding: '10px 12px', background: '#0a0a12', border: '1px solid #2a2a40',
@@ -1122,7 +1092,10 @@ export default function GuardianPage() {
           <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
             <select
               value={duration}
-              onChange={e => setDuration(Number(e.target.value))}
+              onChange={e => {
+                durationEditedRef.current = true;
+                setDuration(Number(e.target.value));
+              }}
               style={{
                 flex: 1, padding: '9px', background: '#0a0a12', border: '1px solid #2a2a40',
                 borderRadius: '8px', color: '#f0f0f5', fontSize: '13px', cursor: 'pointer',

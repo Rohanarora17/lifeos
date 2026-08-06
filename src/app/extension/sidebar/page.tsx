@@ -6,6 +6,7 @@ import '@/lib/polyfill-crypto-uuid';
 import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useGuardianSession } from '@/hooks/useGuardianSession';
+import { buildGuardianDurationOptions } from '@/lib/guardian-session-options';
 import { scoreBadgeBg, scoreBadgeBorder, scoreBadgeText } from '@/lib/score-classify';
 
 // Lazy-load livekit-client only after polyfill is in place and component mounts
@@ -111,58 +112,9 @@ function formatDuration(mins: number) {
     return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
-interface DurationOption {
-    minutes: number;
-    label: string;
-}
-
-type RecommendedTask = NonNullable<InsightsData['recommendedTasks']>[number];
-
-function addDurationOption(options: DurationOption[], minutes: number | null | undefined, label: string) {
-    if (!minutes || minutes <= 0) return;
-    const rounded = Math.max(5, Math.round(minutes / 5) * 5);
-    if (options.some(option => option.minutes === rounded)) return;
-    options.push({ minutes: rounded, label });
-}
-
 function formatPlannedFocusLabel(plannedFocus: NonNullable<InsightsData['personalization']>['plannedFocus']) {
     if (!plannedFocus?.nextTitle) return null;
     return `${plannedFocus.nextTitle}${plannedFocus.nextMinutes ? ` · ${formatDuration(plannedFocus.nextMinutes)}` : ''}`;
-}
-
-function buildDurationOptions(input: {
-    adaptiveDuration: number;
-    personalization?: InsightsData['personalization'];
-    selectedTask?: RecommendedTask | null;
-    topTask?: RecommendedTask | null;
-}): DurationOption[] {
-    const options: DurationOption[] = [];
-    const mode = input.personalization?.mode ?? 'normal';
-    const base = Math.round(input.adaptiveDuration);
-    const selectedEstimate = input.selectedTask?.estimatedMinutes ?? null;
-    const topEstimate = input.topTask?.estimatedMinutes ?? null;
-    const plannedMinutes = input.personalization?.plannedFocus?.nextMinutes ?? null;
-
-    addDurationOption(options, selectedEstimate, 'This task');
-    addDurationOption(options, plannedMinutes, 'Next planned');
-    addDurationOption(options, base, mode === 'recovery' ? 'Recovery default' : mode === 'deadline_pressure' ? 'Pressure default' : 'Today default');
-
-    if (mode === 'recovery' || input.personalization?.energy === 'low' || input.personalization?.mood === 'low') {
-        addDurationOption(options, Math.min(base, 20), 'Small start');
-        addDurationOption(options, Math.min(Math.max(base, 25), 35), 'Manageable');
-    } else if (mode === 'deadline_pressure') {
-        addDurationOption(options, Math.max(base, 45), 'Serious sprint');
-        addDurationOption(options, Math.max(base, 75), 'Deep push');
-    } else if (mode === 'planning') {
-        addDurationOption(options, Math.min(base, 30), 'Planning pass');
-        addDurationOption(options, Math.max(base, 45), 'Setup block');
-    } else {
-        addDurationOption(options, Math.max(25, base - 15), 'Shorter');
-        addDurationOption(options, Math.min(120, base + 15), 'Deeper');
-    }
-
-    addDurationOption(options, topEstimate, 'Top recommendation');
-    return options.slice(0, 5);
 }
 
 function buildFocusTargetPrompt(insights: InsightsData | null): string {
@@ -222,11 +174,15 @@ export default function ExtensionSidebar() {
         ?? topRecommendedTask?.estimatedMinutes
         ?? adaptiveDefaults.recommendedSessionMinutes;
     const effectiveFocusDuration = focusDuration ?? (adaptiveDuration ? Math.round(adaptiveDuration) : null);
-    const durationOptions = buildDurationOptions({
+    const durationOptions = buildGuardianDurationOptions({
         adaptiveDuration,
-        personalization: insights?.personalization,
-        selectedTask: selectedRecommendedTask,
-        topTask: topRecommendedTask,
+        mode: insights?.personalization?.mode,
+        energy: insights?.personalization?.energy,
+        mood: insights?.personalization?.mood,
+        selectedTaskMinutes: selectedRecommendedTask?.estimatedMinutes,
+        plannedMinutes: plannedFocus?.nextMinutes,
+        topTaskMinutes: topRecommendedTask?.estimatedMinutes,
+        selectedMinutes: effectiveFocusDuration,
     });
 
     // Notify extension background when session state changes

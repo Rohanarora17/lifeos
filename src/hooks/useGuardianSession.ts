@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createClientRequestId } from '@/lib/polyfill-crypto-uuid';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -187,7 +188,7 @@ export function useGuardianSession() {
     let readiness = await fetchReadiness();
     if (readiness.ready) return readiness;
 
-    const requestId = crypto.randomUUID();
+    const requestId = createClientRequestId();
     window.postMessage({ type: 'LIFEOS_WAKE_COPILOT', requestId }, '*');
     if (window.parent !== window) {
       window.parent.postMessage({ type: 'LIFEOS_WAKE_COPILOT', requestId }, '*');
@@ -209,7 +210,7 @@ export function useGuardianSession() {
     setStartError(null);
     try {
       await ensureClientReady();
-      const startRequestId = pendingStartRequestIdRef.current ?? crypto.randomUUID();
+      const startRequestId = pendingStartRequestIdRef.current ?? createClientRequestId();
       pendingStartRequestIdRef.current = startRequestId;
       const res = await fetch('/api/guardian/session/start', {
         method: 'POST',
