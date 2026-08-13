@@ -20,7 +20,12 @@ import {
   selectedCaptureSource,
 } from '@/lib/guardian-client-status';
 import { arbitrateSessionActivity, attachVisionAssessment } from '@/lib/session-activity';
-import { hasRecentStillWorkingConfirmation, STATIC_ACTIVITY_GRACE_MS } from '@/lib/guardian-presence';
+import {
+  hasRecentStillWorkingConfirmation,
+  hasRecentTaskAlignedVisionEvidence,
+  isWithinSessionPresenceGrace,
+  STATIC_ACTIVITY_GRACE_MS,
+} from '@/lib/guardian-presence';
 
 // ---------------------------------------------------------------------------
 // Per-session state for change detection and client tracking
@@ -49,6 +54,7 @@ export async function POST(req: Request) {
     if (body.type === 'heartbeat') {
       const inputIdleSeconds = Math.max(0, Number(body.inputIdleSeconds ?? 0));
       const activeSession = getActiveGuardianSession();
+      const observedAtMs = typeof body.observedAt === 'string' ? Date.parse(body.observedAt) : Date.now();
       const browser = activeSession
         ? getBrowserCollectorState(activeSession.sessionId)
         : { fresh: false, mediaPlaybackActive: false };
@@ -61,11 +67,25 @@ export async function POST(req: Request) {
       const confirmedStaticActive = Boolean(
         activeSession && hasRecentStillWorkingConfirmation(activeSession.sessionId),
       );
+      const taskAlignedVisionActive = Boolean(
+        activeSession
+        && hasRecentTaskAlignedVisionEvidence({
+          sessionId: activeSession.sessionId,
+          app: typeof body.appInFocus === 'string' ? body.appInFocus : null,
+          windowTitle: typeof body.windowTitle === 'string' ? body.windowTitle : null,
+          now: observedAtMs,
+        }),
+      );
+      const sessionGraceActive = Boolean(
+        activeSession && isWithinSessionPresenceGrace(activeSession.sessionId, observedAtMs),
+      );
       const reportedState = body.systemState === 'idle' || body.systemState === 'locked' ? body.systemState : 'active';
       const effectiveState = reportedState === 'idle'
         && (
           foregroundMediaActive
           || confirmedStaticActive
+          || taskAlignedVisionActive
+          || sessionGraceActive
           || (inputIdleSeconds > 0 && inputIdleSeconds * 1_000 < STATIC_ACTIVITY_GRACE_MS)
         )
         ? 'active'
@@ -79,7 +99,10 @@ export async function POST(req: Request) {
         frontmostWindowTitle: typeof body.windowTitle === 'string' ? body.windowTitle : null,
         systemState: effectiveState,
         activeSessionId: typeof body.sessionId === 'string' ? body.sessionId : null,
-        metadata: { inputIdleSeconds, foregroundMediaActive, confirmedStaticActive, heartbeatSurface: 'vision' },
+        metadata: {
+          inputIdleSeconds, foregroundMediaActive, confirmedStaticActive,
+          taskAlignedVisionActive, sessionGraceActive, heartbeatSurface: 'vision',
+        },
         observedAt: typeof body.observedAt === 'string' ? body.observedAt : null,
       });
       return NextResponse.json({ connected: readiness.ready, readiness });

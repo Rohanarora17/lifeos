@@ -12,7 +12,7 @@ final class PresencePromptController {
     private var deadline = Date()
     private var onChoose: ((String) -> Void)?
 
-    func show(checkId: String, targetTitle: String, secondsRemaining: Int, onChoose: @escaping (String) -> Void) {
+    func show(checkId: String, targetTitle: String, app: String?, secondsRemaining: Int, onChoose: @escaping (String) -> Void) {
         if currentCheckId == checkId, panel?.isVisible == true { return }
         hide()
         currentCheckId = checkId
@@ -41,9 +41,8 @@ final class PresencePromptController {
         panel.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 0.97)
         panel.titlebarAppearsTransparent = true
 
-        let view = PresencePromptView(targetTitle: targetTitle) { [weak self] action in
+        let view = PresencePromptView(targetTitle: targetTitle, app: app) { [weak self] action in
             self?.onChoose?(action)
-            self?.hide()
         }
         countdownLabel = view.countdownLabel
         panel.contentView = view
@@ -62,6 +61,13 @@ final class PresencePromptController {
             : "Guardian is paused. The uncertain interval remains unscored."
     }
 
+    func showResolutionError(_ message: String) {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        countdownLabel?.textColor = .systemRed
+        countdownLabel?.stringValue = message
+    }
+
     func hide() {
         countdownTimer?.invalidate()
         countdownTimer = nil
@@ -77,7 +83,7 @@ private final class PresencePromptView: NSView {
     let countdownLabel = NSTextField(wrappingLabelWithString: "")
     private let onChoose: (String) -> Void
 
-    init(targetTitle: String, onChoose: @escaping (String) -> Void) {
+    init(targetTitle: String, app: String?, onChoose: @escaping (String) -> Void) {
         self.onChoose = onChoose
         super.init(frame: NSRect(x: 0, y: 0, width: 500, height: 190))
 
@@ -86,7 +92,8 @@ private final class PresencePromptView: NSView {
         title.textColor = .white
         title.translatesAutoresizingMaskIntoConstraints = false
 
-        let explanation = NSTextField(wrappingLabelWithString: "No interaction was detected for 3 minutes. LifeOS cannot reliably distinguish reading or thinking from being away.")
+        let appContext = app?.isEmpty == false ? " while \(app ?? "the current app") was frontmost" : ""
+        let explanation = NSTextField(wrappingLabelWithString: "No keyboard or pointer input, foreground playback, or verified content progress was detected for 3 minutes\(appContext). LifeOS cannot reliably distinguish static reading or thinking from being away.")
         explanation.font = .systemFont(ofSize: 12)
         explanation.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         explanation.translatesAutoresizingMaskIntoConstraints = false

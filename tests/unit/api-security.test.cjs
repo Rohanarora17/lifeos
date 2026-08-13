@@ -62,6 +62,17 @@ describe('API security policy', () => {
     assert.equal(ingestion.allowed, true);
     assert.equal(ingestion.kind, 'device');
 
+    const presenceResponse = authorizeApiRequest(
+      request({
+        method: 'POST',
+        pathname: '/api/guardian/presence',
+        authorization: 'Bearer device-secret',
+      }),
+      production,
+    );
+    assert.equal(presenceResponse.allowed, true);
+    assert.equal(presenceResponse.kind, 'device');
+
     const dashboard = authorizeApiRequest(
       request({ authorization: 'Bearer device-secret' }),
       production,

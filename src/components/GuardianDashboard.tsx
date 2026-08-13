@@ -117,7 +117,7 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
                         <div>
                             <p id="presence-check-title" className="font-bold text-amber-200">Are you still working on “{presenceCheck.targetTitle}”?</p>
                             <p className="mt-1 text-sm text-amber-100/70">
-                                No interaction was detected for 3 minutes{presenceCheck.app ? ` in ${presenceCheck.app}` : ''}. LifeOS cannot reliably distinguish reading or thinking from being away.
+                                No keyboard or pointer input, foreground playback, or verified content progress was detected for 3 minutes{presenceCheck.app ? ` while ${presenceCheck.app} was frontmost` : ''}. LifeOS cannot reliably distinguish static reading or thinking from being away.
                             </p>
                             <p className="mt-1 text-xs text-amber-200/70">
                                 {presenceCheck.secondsRemaining > 0

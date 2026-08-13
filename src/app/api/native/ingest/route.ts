@@ -17,7 +17,9 @@ import {
 import { arbitrateSessionActivity, recordSessionActivityInterval } from '@/lib/session-activity';
 import {
   getPendingPresenceCheck,
+  hasRecentTaskAlignedVisionEvidence,
   hasRecentStillWorkingConfirmation,
+  isWithinSessionPresenceGrace,
   observeStaticActivity,
   STATIC_ACTIVITY_GRACE_MS,
 } from '@/lib/guardian-presence';
@@ -43,6 +45,7 @@ export async function POST(req: Request) {
     if (body.kind === 'capture_heartbeat') {
       const inputIdleSeconds = Math.max(0, Number(body.inputIdleSeconds ?? 0));
       const activeBeforeHeartbeat = getActiveGuardianSession();
+      const observedAtMs = body.observedAt ? Date.parse(body.observedAt) : Date.now();
       const browser = activeBeforeHeartbeat
         ? getBrowserCollectorState(activeBeforeHeartbeat.sessionId)
         : { fresh: false, mediaPlaybackActive: false };
@@ -56,10 +59,25 @@ export async function POST(req: Request) {
         activeBeforeHeartbeat
         && hasRecentStillWorkingConfirmation(activeBeforeHeartbeat.sessionId),
       );
+      const taskAlignedVisionActive = Boolean(
+        activeBeforeHeartbeat
+        && hasRecentTaskAlignedVisionEvidence({
+          sessionId: activeBeforeHeartbeat.sessionId,
+          app: body.appInFocus,
+          windowTitle: body.windowTitle,
+          now: observedAtMs,
+        }),
+      );
+      const sessionGraceActive = Boolean(
+        activeBeforeHeartbeat
+        && isWithinSessionPresenceGrace(activeBeforeHeartbeat.sessionId, observedAtMs),
+      );
       const effectiveSystemState = body.systemState === 'idle'
         && (
           foregroundMediaActive
           || confirmedStaticActive
+          || taskAlignedVisionActive
+          || sessionGraceActive
           || (inputIdleSeconds > 0 && inputIdleSeconds * 1_000 < STATIC_ACTIVITY_GRACE_MS)
         )
         ? 'active'
@@ -73,7 +91,10 @@ export async function POST(req: Request) {
         frontmostWindowTitle: body.windowTitle,
         systemState: effectiveSystemState,
         activeSessionId: body.sessionId,
-        metadata: { ...(body.metadata ?? {}), inputIdleSeconds, foregroundMediaActive, confirmedStaticActive },
+        metadata: {
+          ...(body.metadata ?? {}), inputIdleSeconds, foregroundMediaActive,
+          confirmedStaticActive, taskAlignedVisionActive, sessionGraceActive,
+        },
         observedAt: body.observedAt,
       });
       const activeSession = getActiveGuardianSession();
@@ -85,13 +106,14 @@ export async function POST(req: Request) {
         && inputIdleSeconds * 1_000 >= STATIC_ACTIVITY_GRACE_MS
         && !foregroundMediaActive
         && !confirmedStaticActive
+        && !taskAlignedVisionActive
       ) {
         const presence = observeStaticActivity({
           sessionId: activeSession.sessionId,
           inputIdleSeconds,
           app: body.appInFocus,
           windowTitle: body.windowTitle,
-          observedAt: body.observedAt ? Date.parse(body.observedAt) : Date.now(),
+          observedAt: observedAtMs,
         });
         presenceCheck = presence.check;
         if (presence.timedOut && presence.check) {

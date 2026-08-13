@@ -55,8 +55,8 @@ describe('Guardian presence confirmation', () => {
     });
 
     presence.resolvePresenceCheck(observed.check.checkId, 'still_working', 1_190_000);
-    assert.equal(presence.hasRecentStillWorkingConfirmation(sessionId, 1_300_000), true);
-    assert.equal(presence.hasRecentStillWorkingConfirmation(sessionId, 1_371_000), false);
+    assert.equal(presence.hasRecentStillWorkingConfirmation(sessionId, 1_700_000), true);
+    assert.equal(presence.hasRecentStillWorkingConfirmation(sessionId, 1_791_000), false);
     assert.deepEqual(db.prepare(`
       SELECT score_eligible, category, engagement_state, confirmation_status
       FROM session_activity_intervals WHERE session_id = ?
@@ -66,6 +66,37 @@ describe('Guardian presence confirmation', () => {
       engagement_state: 'confirmed_active',
       confirmation_status: 'confirmed',
     });
+  });
+
+  it('does not inherit keyboard or pointer idle time from before the session started', () => {
+    assert.equal(presence.isWithinSessionPresenceGrace(sessionId, 1_030_000), true);
+    const observed = presence.observeStaticActivity({
+      sessionId, inputIdleSeconds: 900, app: 'Preview',
+      windowTitle: 'Algorithms.pdf', observedAt: 1_030_000,
+    });
+    assert.equal(observed.created, false);
+    assert.equal(observed.check, null);
+  });
+
+  it('uses recent task-aligned vision evidence before asking for confirmation', () => {
+    db.prepare(`
+      INSERT INTO screen_observations (
+        observed_at, source, app, window_title, category, attention_quality,
+        productive_for_goals, confidence, session_id, task_alignment,
+        engagement_depth, change_magnitude
+      ) VALUES (?, 'screen_vision', 'Preview', 'Algorithms.pdf', 'deep_work',
+        'focused', 1, 0.92, ?, 88, 'active_learning', 'moderate')
+    `).run(new Date(1_179_000).toISOString(), sessionId);
+
+    assert.equal(presence.hasRecentTaskAlignedVisionEvidence({
+      sessionId, app: 'Preview', windowTitle: 'Algorithms.pdf', now: 1_180_000,
+    }), true);
+    const observed = presence.observeStaticActivity({
+      sessionId, inputIdleSeconds: 180, app: 'Preview',
+      windowTitle: 'Algorithms.pdf', observedAt: 1_180_000,
+    });
+    assert.equal(observed.created, false);
+    assert.equal(observed.check, null);
   });
 
   it('leaves an unanswered or break interval unscored', () => {

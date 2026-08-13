@@ -5,7 +5,7 @@ import { recordSessionActivityInterval } from '@/lib/session-activity';
 
 export const STATIC_ACTIVITY_GRACE_MS = 3 * 60_000;
 export const PRESENCE_RESPONSE_MS = 60_000;
-export const PRESENCE_REASK_COOLDOWN_MS = 3 * 60_000;
+export const PRESENCE_REASK_COOLDOWN_MS = 10 * 60_000;
 
 export type PresenceResolution = 'still_working' | 'break' | 'end' | 'timeout';
 
@@ -75,6 +75,67 @@ export function hasRecentStillWorkingConfirmation(sessionId: string, now = Date.
     && latest.resolved_at
     && now - latest.resolved_at < PRESENCE_REASK_COOLDOWN_MS,
   );
+}
+
+export function isWithinSessionPresenceGrace(sessionId: string, now = Date.now()) {
+  const sessionStart = getDb().prepare('SELECT started_at FROM guardian_sessions WHERE session_id = ?')
+    .pluck().get(sessionId) as number | undefined;
+  return sessionStart !== undefined
+    && Number.isFinite(now)
+    && now >= sessionStart
+    && now - sessionStart < STATIC_ACTIVITY_GRACE_MS;
+}
+
+export function hasRecentTaskAlignedVisionEvidence(input: {
+  sessionId: string;
+  app?: string | null;
+  windowTitle?: string | null;
+  now?: number;
+}) {
+  const requestedNow = input.now ?? Date.now();
+  const now = Number.isFinite(requestedNow) ? requestedNow : Date.now();
+  const rows = getDb().prepare(`
+    SELECT observed_at, app, window_title, task_alignment, engagement_depth,
+           confidence, change_magnitude
+    FROM screen_observations
+    WHERE session_id = ?
+      AND source = 'screen_vision'
+      AND observed_at >= ?
+      AND productive_for_goals = 1
+      AND confidence >= 0.6
+      AND engagement_depth NOT IN ('idle', 'distraction')
+    ORDER BY observed_at DESC
+    LIMIT 5
+  `).all(
+    input.sessionId,
+    new Date(now - STATIC_ACTIVITY_GRACE_MS).toISOString(),
+  ) as Array<{
+    observed_at: string;
+    app: string | null;
+    window_title: string | null;
+    task_alignment: number | null;
+    engagement_depth: string | null;
+    confidence: number | null;
+    change_magnitude: string | null;
+  }>;
+
+  const expectedApp = input.app?.trim().toLowerCase() || null;
+  const expectedWindow = input.windowTitle?.trim().toLowerCase() || null;
+  return rows.some((row) => {
+    const observedAt = Date.parse(row.observed_at);
+    if (!Number.isFinite(observedAt) || observedAt > now + 5_000) return false;
+    if (Number(row.task_alignment ?? 0) < 60) return false;
+    if (expectedApp && row.app?.trim().toLowerCase() !== expectedApp) return false;
+    if (
+      expectedWindow
+      && row.window_title
+      && row.window_title.trim().toLowerCase() !== expectedWindow
+    ) return false;
+    return row.change_magnitude !== 'none'
+      || row.engagement_depth === 'active_creation'
+      || row.engagement_depth === 'active_learning'
+      || row.engagement_depth === 'passive_consumption';
+  });
 }
 
 function markWindowUncertain(sessionId: string, checkId: string, startMs: number, endMs: number) {
@@ -178,8 +239,22 @@ export function observeStaticActivity(input: {
   windowTitle?: string | null;
   observedAt?: number;
 }) {
-  const now = input.observedAt ?? Date.now();
+  const requestedNow = input.observedAt ?? Date.now();
+  const now = Number.isFinite(requestedNow) ? requestedNow : Date.now();
+  const sessionStart = getDb().prepare('SELECT started_at FROM guardian_sessions WHERE session_id = ?')
+    .pluck().get(input.sessionId) as number | undefined;
+  if (isWithinSessionPresenceGrace(input.sessionId, now)) {
+    return { check: getPendingPresenceCheck(input.sessionId, now), timedOut: false, created: false };
+  }
   if (input.inputIdleSeconds * 1_000 < STATIC_ACTIVITY_GRACE_MS) {
+    return { check: getPendingPresenceCheck(input.sessionId, now), timedOut: false, created: false };
+  }
+  if (hasRecentTaskAlignedVisionEvidence({
+    sessionId: input.sessionId,
+    app: input.app,
+    windowTitle: input.windowTitle,
+    now,
+  })) {
     return { check: getPendingPresenceCheck(input.sessionId, now), timedOut: false, created: false };
   }
 
@@ -190,8 +265,6 @@ export function observeStaticActivity(input: {
     if (latest?.resolved_at && now - latest.resolved_at < PRESENCE_REASK_COOLDOWN_MS) {
       return { check: null, timedOut: false, created: false };
     }
-    const sessionStart = getDb().prepare('SELECT started_at FROM guardian_sessions WHERE session_id = ?')
-      .pluck().get(input.sessionId) as number | undefined;
     const uncertainStartedAt = Math.max(
       sessionStart ?? now,
       now - input.inputIdleSeconds * 1_000,

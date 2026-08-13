@@ -53,10 +53,31 @@ private func screenRecordingStatus() -> (label: String, capable: Bool) {
     return (authorized ? "authorized" : "denied", authorized)
 }
 
+private func requestScreenRecordingAccessIfNeeded() -> Bool {
+    if CGPreflightScreenCaptureAccess() {
+        return true
+    }
+
+    // Unlike CGPreflightScreenCaptureAccess(), this presents the system consent
+    // prompt when Screen Recording has not previously been requested.
+    return CGRequestScreenCaptureAccess()
+}
+
+private func openScreenRecordingSettings() {
+    guard let url = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+    ) else { return }
+    NSWorkspace.shared.open(url)
+}
+
 private func currentInputIdleSeconds() -> Double {
-    CGEventSource.secondsSinceLastEventType(
+    guard let anyInputEvent = CGEventType(rawValue: UInt32.max) else {
+        copilotLog("Could not construct the Core Graphics any-input event token")
+        return 0
+    }
+    return CGEventSource.secondsSinceLastEventType(
         .combinedSessionState,
-        eventType: .null
+        eventType: anyInputEvent
     )
 }
 
@@ -269,9 +290,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Ask About Window", action: #selector(askAboutWindow), keyEquivalent: "g"))
         menu.addItem(NSMenuItem(title: "Toggle Push To Talk", action: #selector(togglePushToTalk), keyEquivalent: " "))
+        menu.addItem(NSMenuItem(title: "Screen Recording Settings", action: #selector(showScreenRecordingSettings), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
+
+        let screenRecordingAuthorized = requestScreenRecordingAccessIfNeeded()
+        if !screenRecordingAuthorized {
+            statusItem.button?.title = "LifeOS — Permission"
+            copilotLog(
+                "Screen Recording permission is unavailable. "
+                    + "Use the LifeOS menu to open Screen Recording Settings."
+            )
+        }
 
         installHotkeys()
         let initial = capture.frontmostApp()
@@ -290,6 +321,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func showScreenRecordingSettings() {
+        openScreenRecordingSettings()
     }
 
     private func installHotkeys() {
@@ -363,6 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         presencePrompt.show(
             checkId: check.checkId,
             targetTitle: check.targetTitle,
+            app: check.app,
             secondsRemaining: check.secondsRemaining
         ) { [weak self] action in
             Task { @MainActor in
@@ -373,8 +409,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         checkId: check.checkId,
                         action: action
                     )
-                } catch {
+                    self.presencePrompt.hide()
                     self.presentedPresenceCheckId = nil
+                } catch {
+                    self.presencePrompt.showResolutionError(
+                        "Could not save your answer. Check the LifeOS connection and retry."
+                    )
                     copilotLog("Presence response failed: \(error.localizedDescription)")
                 }
             }
