@@ -186,6 +186,93 @@ export function recordSessionActivityInterval(input: SessionActivityIntervalInpu
   return intervalId;
 }
 
+/**
+ * Browser telemetry can arrive after the native client has temporarily filled
+ * the same Chrome-frontmost period with Vision evidence. Preserve any
+ * non-overlapping edges and remove only the overlap before inserting Chrome as
+ * the authoritative interval. This keeps the canonical timeline single-source
+ * without discarding valid activity around the browser interval.
+ */
+export function removeOverlappingVisionFallback(
+  sessionId: string,
+  observedStart: string,
+  observedEnd: string,
+) {
+  const startMs = Date.parse(observedStart);
+  const endMs = Date.parse(observedEnd);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT *
+    FROM session_activity_intervals
+    WHERE session_id = ? AND source = 'vision' AND counted = 1
+      AND observed_start < ? AND observed_end > ?
+    ORDER BY observed_start ASC
+  `).all(
+    sessionId,
+    new Date(endMs).toISOString(),
+    new Date(startMs).toISOString(),
+  ) as Array<Record<string, unknown> & {
+    interval_id: string;
+    observed_start: string;
+    observed_end: string;
+  }>;
+
+  const updateEnd = db.prepare(`
+    UPDATE session_activity_intervals
+    SET observed_end = ?, duration_seconds = ?, updated_at = datetime('now')
+    WHERE interval_id = ?
+  `);
+  const updateStart = db.prepare(`
+    UPDATE session_activity_intervals
+    SET observed_start = ?, duration_seconds = ?, updated_at = datetime('now')
+    WHERE interval_id = ?
+  `);
+  const insertSplit = db.prepare(`
+    INSERT INTO session_activity_intervals (
+      interval_id, session_id, device_id, source, observed_start, observed_end,
+      duration_seconds, state, app, window_title, url, domain, title, category,
+      subcategory, score_eligible, counted, selection_reason, capture_status,
+      evidence_json, engagement_state, engagement_confidence, presence_check_id,
+      confirmation_status
+    )
+    SELECT ?, session_id, device_id, source, ?, observed_end, ?, state, app,
+           window_title, url, domain, title, category, subcategory,
+           score_eligible, counted, selection_reason, capture_status,
+           evidence_json, engagement_state, engagement_confidence,
+           presence_check_id, confirmation_status
+    FROM session_activity_intervals
+    WHERE interval_id = ?
+  `);
+  const remove = db.prepare('DELETE FROM session_activity_intervals WHERE interval_id = ?');
+
+  db.transaction(() => {
+    for (const row of rows) {
+      const rowStart = Date.parse(row.observed_start);
+      const rowEnd = Date.parse(row.observed_end);
+      if (!Number.isFinite(rowStart) || !Number.isFinite(rowEnd)) continue;
+
+      if (rowStart < startMs && rowEnd > endMs) {
+        const rightSeconds = Math.max(1, Math.round((rowEnd - endMs) / 1_000));
+        insertSplit.run(randomUUID(), new Date(endMs).toISOString(), rightSeconds, row.interval_id);
+        const leftSeconds = Math.max(1, Math.round((startMs - rowStart) / 1_000));
+        updateEnd.run(new Date(startMs).toISOString(), leftSeconds, row.interval_id);
+      } else if (rowStart < startMs && rowEnd > startMs) {
+        const seconds = Math.max(1, Math.round((startMs - rowStart) / 1_000));
+        updateEnd.run(new Date(startMs).toISOString(), seconds, row.interval_id);
+      } else if (rowStart < endMs && rowEnd > endMs) {
+        const seconds = Math.max(1, Math.round((rowEnd - endMs) / 1_000));
+        updateStart.run(new Date(endMs).toISOString(), seconds, row.interval_id);
+      } else {
+        remove.run(row.interval_id);
+      }
+    }
+  })();
+
+  return rows.length;
+}
+
 export function getSessionActivityEvidenceCount(sessionId: string) {
   const row = getDb().prepare(`
     SELECT COUNT(*) AS count

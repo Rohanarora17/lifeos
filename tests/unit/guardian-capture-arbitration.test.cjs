@@ -57,7 +57,8 @@ describe('Guardian capture arbitration', () => {
       collectorVersion: '1.2.0', observedAt: new Date(now - 35_000).toISOString(),
     });
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
-    assert.equal(client.getBrowserCollectorState(sessionId, now + 11_000).fresh, false);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 39_000).fresh, true);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 41_000).fresh, false);
   });
 
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
