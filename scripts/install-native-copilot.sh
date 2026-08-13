@@ -67,9 +67,9 @@ if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSAppTransportSecurity</key>
@@ -85,7 +85,12 @@ if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
 </plist>
 PLIST
   plutil -lint "$APP_DIR/Contents/Info.plist"
-  codesign --force --sign - --identifier com.lifeos.copilot "$APP_DIR"
+  CODESIGN_IDENTITY="${LIFEOS_CODESIGN_IDENTITY:--}"
+  codesign --force --sign "$CODESIGN_IDENTITY" --identifier com.lifeos.copilot "$APP_DIR"
+  if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    echo "Warning: ad-hoc signing can make macOS request Screen Recording permission again after an update."
+    echo "Set LIFEOS_CODESIGN_IDENTITY in client.env to a stable Apple signing identity to preserve TCC identity."
+  fi
 elif [ -x "$INSTALL_BIN" ]; then
   echo "Keeping the installed binary unchanged. Use --update to replace it."
 fi

@@ -23,6 +23,7 @@ import {
   observeStaticActivity,
   STATIC_ACTIVITY_GRACE_MS,
 } from '@/lib/guardian-presence';
+import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
 
 function clampConfidence(value: unknown): number {
   return Math.max(0, Math.min(1, typeof value === 'number' ? value : 0.7));
@@ -198,6 +199,7 @@ export async function POST(req: Request) {
       const startedAt = body.startedAt || new Date(Date.now() - durationSeconds * 1000).toISOString();
       const endedAt = new Date(Date.parse(startedAt) + durationSeconds * 1_000).toISOString();
       const arbitration = arbitrateSessionActivity(sessionId, 'vision');
+      const evidenceMode = getSessionEvidenceMode(sessionId);
       const inferred = {
         source: 'native_copilot',
         app,
@@ -241,7 +243,7 @@ export async function POST(req: Request) {
 
       const activityId = Number(result.lastInsertRowid);
 
-      if (!arbitration.accepted) {
+      if (!arbitration.accepted && evidenceMode !== 'authoritative') {
         return NextResponse.json({
           ok: true,
           stored: 'raw_activity',
@@ -251,21 +253,23 @@ export async function POST(req: Request) {
         });
       }
 
-      recordSessionActivityInterval({
-        sessionId,
-        source: 'vision',
-        observedStart: startedAt,
-        observedEnd: endedAt,
-        app,
-        windowTitle: title,
-        url: `native://${encodeURIComponent(app)}`,
-        domain: `native:${app.toLowerCase()}`,
-        title: title || app,
-        category: activityCategory,
-        subcategory: 'native_app',
-        selectionReason: arbitration.reason,
-        evidence: { rawActivityId: activityId, confidence: classified.confidence },
-      });
+      if (evidenceMode !== 'authoritative') {
+        recordSessionActivityInterval({
+          sessionId,
+          source: 'vision',
+          observedStart: startedAt,
+          observedEnd: endedAt,
+          app,
+          windowTitle: title,
+          url: `native://${encodeURIComponent(app)}`,
+          domain: `native:${app.toLowerCase()}`,
+          title: title || app,
+          category: activityCategory,
+          subcategory: 'native_app',
+          selectionReason: arbitration.reason,
+          evidence: { rawActivityId: activityId, confidence: classified.confidence },
+        });
+      }
 
       const event: GuardianEvent = {
         sessionId,

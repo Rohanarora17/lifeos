@@ -9,6 +9,7 @@ const TELEMETRY_ALARM = 'lifeos-telemetry-sample';
 const TELEMETRY_STATE_KEY = 'telemetryEventV1Current';
 const TELEMETRY_QUEUE_KEY = 'telemetryEventV1Queue';
 const PRESENCE_NOTIFICATION_PREFIX = 'lifeos-presence-';
+const GUARDIAN_EVIDENCE_SEQUENCE_KEY = 'guardianEvidenceSequenceV2';
 let API_BASE = DEFAULT_API_BASE;
 
 /** Always reads storage fresh — safe across service worker restarts. */
@@ -620,6 +621,91 @@ async function postGuardianEvent(payload, tabIdHint = null) {
     }
 }
 
+async function nextGuardianEvidenceSequence() {
+    const stored = await chrome.storage.local.get(GUARDIAN_EVIDENCE_SEQUENCE_KEY);
+    const next = Math.max(0, Number(stored[GUARDIAN_EVIDENCE_SEQUENCE_KEY] || 0)) + 1;
+    await chrome.storage.local.set({ [GUARDIAN_EVIDENCE_SEQUENCE_KEY]: next });
+    return next;
+}
+
+async function postGuardianPageEvidence(message, sender) {
+    if (!guardianActive || !sessionContext?.sessionId || !sender?.tab?.id) return;
+    await getApiBase();
+    const tab = await chrome.tabs.get(sender.tab.id).catch(() => null);
+    const focusedWindow = tab
+        ? await chrome.windows.get(tab.windowId).catch(() => null)
+        : null;
+    const windowFocused = Boolean(tab?.active && focusedWindow?.focused);
+    const privacyBlocked = isPrivacyBlocked(message.url || tab?.url);
+    const sequence = await nextGuardianEvidenceSequence();
+    const observedEnd = Date.parse(message.observedEnd) || Date.now();
+    const declaredStart = Date.parse(message.observedStart);
+    const observedStart = Number.isFinite(declaredStart)
+        ? Math.max(observedEnd - 15_000, Math.min(declaredStart, observedEnd - 1))
+        : observedEnd - 10_000;
+    const headers = await getAuthHeaders();
+    const response = await fetch(`${API_BASE}/guardian/evidence`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+            events: [{
+                schemaVersion: 2,
+                eventId: `chrome-${sequence}-${crypto.randomUUID()}`,
+                sequence,
+                collector: 'chrome',
+                collectorVersion: chrome.runtime.getManifest().version,
+                deviceId: 'chrome-primary',
+                sessionId: sessionContext.sessionId,
+                observedStart: new Date(observedStart).toISOString(),
+                observedEnd: new Date(observedEnd).toISOString(),
+                capabilities: ['active_tab', 'interaction', 'media_progress', 'window_focus'],
+                privacy: {
+                    decision: privacyBlocked ? 'redact' : 'allow',
+                    reason: privacyBlocked ? 'sensitive_or_internal_page' : 'guardian_session',
+                },
+                native: null,
+                chrome: {
+                    windowFocused,
+                    url: privacyBlocked ? null : message.url || tab?.url || null,
+                    domain: privacyBlocked ? null : getUrlDomain(message.url || tab?.url),
+                    title: privacyBlocked ? null : message.title || tab?.title || null,
+                    interaction: message.interaction || {
+                        keyboard: false, pointer: false, scroll: false,
+                        navigation: false, lastInputAt: null,
+                    },
+                    media: message.media || {
+                        playing: false, progressed: false, currentTime: null, title: null,
+                    },
+                },
+            }],
+        }),
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data?.session) sessionContext = data.session;
+    if (Array.isArray(data?.commands)) await applyGuardianCommands(data.commands, sender.tab.id);
+    if (data?.presenceCheck?.checkId) await showPresenceCheck(data.presenceCheck);
+    else await clearPresenceNotifications();
+}
+
+async function requestGuardianPageEvidence(tabId, navigation = false) {
+    if (!guardianActive || !tabId) return;
+    try {
+        await chrome.tabs.sendMessage(tabId, {
+            type: 'LIFEOS_COLLECT_EVIDENCE_NOW',
+            navigation,
+        });
+    } catch {
+        try {
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['guardian.js'] });
+            await chrome.tabs.sendMessage(tabId, {
+                type: 'LIFEOS_COLLECT_EVIDENCE_NOW',
+                navigation,
+            });
+        } catch { /* internal or unavailable page */ }
+    }
+}
+
 async function showPresenceCheck(check) {
     const seconds = Math.max(0, Number(check.secondsRemaining || 0));
     await chrome.notifications.create(`${PRESENCE_NOTIFICATION_PREFIX}${check.checkId}`, {
@@ -704,6 +790,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     if (!tab.active) return; // Only track the active tab for focus scoring
     currentActiveTabId = tabId;
+    await requestGuardianPageEvidence(tabId, true);
 
     const groupInfo = await resolveTabGroup(tab.groupId);
     reportTabActivity(tabId, tab.url, tab.title, groupInfo);
@@ -721,6 +808,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
         await sampleBrowserTelemetry().catch(() => { });
         if (isPrivacyBlocked(tab.url)) return;
         currentActiveTabId = activeInfo.tabId;
+        await requestGuardianPageEvidence(activeInfo.tabId, true);
         const groupInfo = await resolveTabGroup(tab.groupId);
         reportTabActivity(activeInfo.tabId, tab.url, tab.title, groupInfo);
     } catch (e) { }
@@ -737,6 +825,8 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
         await checkExternalSession();
     }
     await sampleBrowserTelemetry().catch(() => { });
+    const [activeTab] = await chrome.tabs.query({ active: true, windowId }).catch(() => []);
+    if (activeTab?.id) await requestGuardianPageEvidence(activeTab.id, false);
 });
 
 async function resolveTabGroup(groupId) {
@@ -1027,6 +1117,15 @@ async function checkExternalSession() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === 'GUARDIAN_PAGE_EVIDENCE') {
+        postGuardianPageEvidence(msg, sender)
+            .then(() => sendResponse({ ok: true }))
+            .catch(error => {
+                console.warn('[LifeOS] Guardian evidence upload failed', error);
+                sendResponse({ ok: false, error: String(error) });
+            });
+        return true;
+    }
     if (msg.type === 'WAKE_COPILOT') {
         chrome.runtime.sendNativeMessage(
             'com.lifeos.copilot',
@@ -1083,49 +1182,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                         timestamp: sessionStart,
                     }).catch(() => { });
                 }
+                requestGuardianPageEvidence(tab.id, true).catch(() => { });
             }
         });
         sendResponse({ ok: true });
     }
 
     if (msg.type === 'STOP_GUARDIAN') {
-        // Flush the final tab's dwell time before clearing state.
-        // The server flushes on endGuardianSession too, but this extension-side flush
-        // ensures the event reaches the server before the session closes.
-        const current = activeTabs.get('current');
-        if (current && current.url && sessionContext?.sessionId) {
-            const finalDwellSeconds = Math.round((Date.now() - current.startedAt) / 1000);
-            if (finalDwellSeconds > 5) {
-                // Fire-and-forget: send the final tab event (don't await — we're stopping).
-                // tabStartedAt gives the server the exact start time so started_at is accurate.
-                postGuardianEvent({
-                    type: 'tab',
-                    url: current.url,
-                    title: current.title || '',
-                    dwellSeconds: finalDwellSeconds,
-                    tabStartedAt: current.startedAt,
-                    timestamp: Date.now(),
-                    prevUrl: current.url,
-                    prevTitle: current.title || '',
-                }).catch(() => { });
+        void (async () => {
+            // Acknowledge the V2 flush before the web app asks the server to
+            // finalize its 15-second evidence watermark.
+            if (currentActiveTabId) {
+                await requestGuardianPageEvidence(currentActiveTabId, false);
             }
-        }
+            const current = activeTabs.get('current');
+            if (current && current.url && sessionContext?.sessionId) {
+                const finalDwellSeconds = Math.round((Date.now() - current.startedAt) / 1000);
+                if (finalDwellSeconds > 5) {
+                    await postGuardianEvent({
+                        type: 'tab',
+                        url: current.url,
+                        title: current.title || '',
+                        dwellSeconds: finalDwellSeconds,
+                        tabStartedAt: current.startedAt,
+                        timestamp: Date.now(),
+                        prevUrl: current.url,
+                        prevTitle: current.title || '',
+                    }).catch(() => null);
+                }
+            }
 
-        guardianActive = false;
-        sessionContext = null;
-        guardianPersonalization = null;
-        console.log('[LifeOS] Guardian Mode STOPPED');
-        chrome.action.setBadgeText({ text: '' });
-        activeTabs.clear();
-        disableSessionCaptureAlarms();
-        clearPresenceNotifications().catch(() => { });
-        stopGuardianSSE();
-        // Collapse the session group so it's preserved but out of the way
-        if (sessionGroupId !== null) {
-            chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
-            sessionGroupId = null;
-        }
-        sendResponse({ ok: true });
+            guardianActive = false;
+            sessionContext = null;
+            guardianPersonalization = null;
+            console.log('[LifeOS] Guardian Mode STOPPED');
+            chrome.action.setBadgeText({ text: '' });
+            activeTabs.clear();
+            disableSessionCaptureAlarms();
+            await clearPresenceNotifications().catch(() => { });
+            stopGuardianSSE();
+            if (sessionGroupId !== null) {
+                chrome.tabGroups.update(sessionGroupId, { collapsed: true }).catch(() => { });
+                sessionGroupId = null;
+            }
+            sendResponse({ ok: true, flushed: true });
+        })().catch(error => sendResponse({ ok: false, error: String(error) }));
+        return true;
     }
 
     if (msg.type === 'GET_GUARDIAN_STATUS') {

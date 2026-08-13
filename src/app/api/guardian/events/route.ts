@@ -6,6 +6,7 @@ import { classifyActivity } from '@/lib/ai';
 import { recordBrowserCollectorHeartbeat } from '@/lib/guardian-client-status';
 import { arbitrateSessionActivity, recordSessionActivityInterval } from '@/lib/session-activity';
 import { getPendingPresenceCheck } from '@/lib/guardian-presence';
+import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
 
 // Logs activity to SQLite asynchronously — never on the response critical path.
 // When prevUrl is present, dwell time is logged against the PREVIOUS URL (where the time was spent).
@@ -103,7 +104,7 @@ export async function POST(req: Request) {
     });
 
     let canonicalIntervalId: string | null = null;
-    if (event.type === 'tab' || event.type === 'idle') {
+    if ((event.type === 'tab' || event.type === 'idle') && getSessionEvidenceMode(event.sessionId) !== 'authoritative') {
       const proposed = event.type === 'idle' ? 'idle' : 'chrome';
       const arbitration = arbitrateSessionActivity(event.sessionId, proposed);
       if (!arbitration.accepted) {

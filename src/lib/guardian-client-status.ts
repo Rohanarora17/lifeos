@@ -1,10 +1,16 @@
 import { getDb } from '@/lib/db';
+import {
+  collectorIsCompatible,
+  GUARDIAN_EVIDENCE_SCHEMA_VERSION,
+  MIN_CHROME_COLLECTOR_VERSION,
+  MIN_NATIVE_COLLECTOR_VERSION,
+} from '@/lib/guardian-evidence-contract';
 
 export const CLIENT_STALE_MS = 15_000;
 // The durable telemetry state machine checkpoints sustained tabs at most once
 // per minute. Allow that checkpoint plus scheduler/network jitter; the native
 // frontmost-app heartbeat still prevents background Chrome from being selected.
-export const BROWSER_STALE_MS = 75_000;
+export const BROWSER_STALE_MS = 35_000;
 
 export type ClientSystemState = 'active' | 'idle' | 'locked';
 
@@ -24,7 +30,7 @@ export interface NativeClientHeartbeat {
 export interface GuardianClientReadiness {
   ready: boolean;
   required: boolean;
-  reason: 'ready' | 'disabled' | 'never_seen' | 'stale' | 'permission_required' | 'capture_unavailable';
+  reason: 'ready' | 'disabled' | 'never_seen' | 'stale' | 'permission_required' | 'capture_unavailable' | 'incompatible_client';
   deviceId: string | null;
   clientVersion: string | null;
   lastSeenAt: string | null;
@@ -36,6 +42,27 @@ export interface GuardianClientReadiness {
   systemState: ClientSystemState;
   activeSessionId: string | null;
   wakeSupported: boolean;
+  nativeCollector?: {
+    ready: boolean;
+    compatible: boolean;
+    version: string | null;
+    minimumVersion: string;
+    lastSeenAt: string | null;
+    permissions: { screenRecording: string; captureCapable: boolean };
+  };
+  chromeCollector?: {
+    detected: boolean;
+    ready: boolean;
+    compatible: boolean;
+    version: string | null;
+    minimumVersion: string;
+    lastSeenAt: string | null;
+    windowFocused: boolean;
+    updateRequired: boolean;
+  };
+  evidenceSchemaVersion?: number;
+  selectedSource?: 'chrome' | 'vision' | 'vision_fallback' | 'idle' | 'unavailable';
+  updateInstructions?: string[];
 }
 
 export class VisionClientUnavailableError extends Error {
@@ -60,6 +87,33 @@ function normalizeDeviceId(value?: string | null) {
 function isoOrNow(value?: string | null) {
   const parsed = value ? Date.parse(value) : NaN;
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
+}
+
+function browserCollectorReadiness(sessionId: string | null, nowMs: number) {
+  const row = getDb().prepare(`
+    SELECT last_seen_at, window_focused, collector_version
+    FROM browser_collector_status
+    WHERE (? IS NULL OR session_id = ?)
+    ORDER BY last_seen_at DESC LIMIT 1
+  `).get(sessionId, sessionId) as {
+    last_seen_at: string; window_focused: number; collector_version: string;
+  } | undefined;
+  const age = row ? nowMs - Date.parse(row.last_seen_at) : Number.POSITIVE_INFINITY;
+  const compatible = Boolean(row && collectorIsCompatible('chrome', row.collector_version));
+  const ready = Boolean(
+    row && compatible && row.window_focused === 1
+      && age >= 0 && age <= BROWSER_STALE_MS,
+  );
+  return {
+    row,
+    state: {
+      detected: Boolean(row), ready, compatible,
+      version: row?.collector_version ?? null, minimumVersion: MIN_CHROME_COLLECTOR_VERSION,
+      lastSeenAt: row?.last_seen_at ?? null,
+      windowFocused: row?.window_focused === 1,
+      updateRequired: Boolean(row && !compatible),
+    },
+  };
 }
 
 export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
@@ -103,12 +157,21 @@ export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
 export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientReadiness {
   const required = guardianClientRequired();
   if (!required) {
+    const browser = browserCollectorReadiness(null, nowMs);
     return {
       ready: true, required: false, reason: 'disabled', deviceId: null,
       clientVersion: null, lastSeenAt: null, heartbeatAgeMs: null,
       screenRecordingStatus: 'disabled', captureCapable: true,
       frontmostApp: null, frontmostWindowTitle: null, systemState: 'active',
       activeSessionId: null, wakeSupported: true,
+      nativeCollector: {
+        ready: true, compatible: true, version: null, minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
+        lastSeenAt: null, permissions: { screenRecording: 'disabled', captureCapable: true },
+      },
+      chromeCollector: browser.state,
+      evidenceSchemaVersion: GUARDIAN_EVIDENCE_SCHEMA_VERSION,
+      selectedSource: browser.state.ready ? 'chrome' : 'vision_fallback',
+      updateInstructions: browser.state.detected ? [] : ['Chrome detail is unavailable until the LifeOS extension reports evidence.'],
     };
   }
 
@@ -119,12 +182,24 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
   ) as Record<string, unknown> | undefined;
 
   if (!row) {
+    const browser = browserCollectorReadiness(null, nowMs);
     return {
       ready: false, required: true, reason: 'never_seen', deviceId: expected || null,
       clientVersion: null, lastSeenAt: null, heartbeatAgeMs: null,
       screenRecordingStatus: 'unknown', captureCapable: false,
       frontmostApp: null, frontmostWindowTitle: null, systemState: 'active',
       activeSessionId: null, wakeSupported: true,
+      nativeCollector: {
+        ready: false, compatible: false, version: null, minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
+        lastSeenAt: null, permissions: { screenRecording: 'unknown', captureCapable: false },
+      },
+      chromeCollector: browser.state,
+      evidenceSchemaVersion: GUARDIAN_EVIDENCE_SCHEMA_VERSION,
+      selectedSource: 'unavailable',
+      updateInstructions: [
+        'Install or start the MacBook collector before beginning a Guardian session.',
+        ...(!browser.state.detected ? ['Reload or install the LifeOS Chrome extension for browser detail.'] : []),
+      ],
     };
   }
 
@@ -136,6 +211,15 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
   if (!Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs > CLIENT_STALE_MS) reason = 'stale';
   else if (screenRecordingStatus !== 'authorized') reason = 'permission_required';
   else if (!captureCapable) reason = 'capture_unavailable';
+  else if (!collectorIsCompatible('native', String(row.client_version || 'unknown'))) reason = 'incompatible_client';
+
+  const activeSessionId = row.active_session_id ? String(row.active_session_id) : null;
+  const browser = browserCollectorReadiness(activeSessionId, nowMs);
+  const browserRow = browser.row;
+  const browserCompatible = browser.state.compatible;
+  const browserReady = browser.state.ready;
+  const nativeCompatible = collectorIsCompatible('native', String(row.client_version || 'unknown'));
+  const chromeFrontmost = isChromeApplication(row.frontmost_app ? String(row.frontmost_app) : null);
 
   return {
     ready: reason === 'ready', required: true, reason,
@@ -148,8 +232,27 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
     frontmostApp: row.frontmost_app ? String(row.frontmost_app) : null,
     frontmostWindowTitle: row.frontmost_window_title ? String(row.frontmost_window_title) : null,
     systemState: row.system_state === 'idle' || row.system_state === 'locked' ? row.system_state : 'active',
-    activeSessionId: row.active_session_id ? String(row.active_session_id) : null,
+    activeSessionId,
     wakeSupported: true,
+    nativeCollector: {
+      ready: reason === 'ready', compatible: nativeCompatible,
+      version: String(row.client_version || 'unknown'), minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
+      lastSeenAt, permissions: { screenRecording: screenRecordingStatus, captureCapable },
+    },
+    chromeCollector: browser.state,
+    evidenceSchemaVersion: GUARDIAN_EVIDENCE_SCHEMA_VERSION,
+    selectedSource: reason !== 'ready'
+      ? 'unavailable'
+      : row.system_state === 'locked'
+        ? 'idle'
+        : chromeFrontmost
+          ? browserReady ? 'chrome' : 'vision_fallback'
+          : 'vision',
+    updateInstructions: [
+      ...(!nativeCompatible ? ['Update the MacBook collector with scripts/install-native-copilot.sh --update.'] : []),
+      ...(browserRow && !browserCompatible ? ['Reload or update the LifeOS Chrome extension.'] : []),
+      ...(!browserRow ? ['Chrome detail is unavailable until the LifeOS extension reports evidence; Vision fallback will be used.'] : []),
+    ],
   };
 }
 
@@ -200,7 +303,7 @@ export function recordBrowserCollectorHeartbeat(input: {
 
 export function getBrowserCollectorState(sessionId: string, nowMs = Date.now()) {
   const row = getDb().prepare(`
-    SELECT last_seen_at, window_focused, media_playback_active, media_title
+    SELECT last_seen_at, window_focused, media_playback_active, media_title, collector_version
     FROM browser_collector_status
     WHERE session_id = ?
     ORDER BY last_seen_at DESC
@@ -210,12 +313,14 @@ export function getBrowserCollectorState(sessionId: string, nowMs = Date.now()) 
     window_focused: number;
     media_playback_active: number;
     media_title: string | null;
+    collector_version: string;
   } | undefined;
   if (!row || row.window_focused !== 1) {
     return { fresh: false, mediaPlaybackActive: false, mediaTitle: null };
   }
   const age = nowMs - Date.parse(row.last_seen_at);
-  const fresh = Number.isFinite(age) && age >= 0 && age <= BROWSER_STALE_MS;
+  const fresh = Number.isFinite(age) && age >= 0 && age <= BROWSER_STALE_MS
+    && collectorIsCompatible('chrome', row.collector_version);
   return {
     fresh,
     mediaPlaybackActive: fresh && row.media_playback_active === 1,

@@ -6,6 +6,11 @@ import {
   isChromeApplication,
   selectedCaptureSource,
 } from '@/lib/guardian-client-status';
+import {
+  getEvidenceCoverage,
+  getFinalizedEvidenceIntervals,
+  getSessionEvidenceMode,
+} from '@/lib/guardian-evidence-store';
 
 export type SessionActivitySource = 'chrome' | 'vision' | 'idle' | 'private';
 export type SessionActivityCategory = 'productive' | 'neutral' | 'distraction';
@@ -88,6 +93,7 @@ export function arbitrateSessionActivity(sessionId: string, proposed: SessionAct
 }
 
 export function recordSessionActivityInterval(input: SessionActivityIntervalInput) {
+  if (getSessionEvidenceMode(input.sessionId) === 'authoritative') return null;
   const startMs = Date.parse(input.observedStart);
   const endMs = Date.parse(input.observedEnd);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
@@ -274,6 +280,10 @@ export function removeOverlappingVisionFallback(
 }
 
 export function getSessionActivityEvidenceCount(sessionId: string) {
+  if (getSessionEvidenceMode(sessionId) === 'authoritative') {
+    const coverage = getEvidenceCoverage(sessionId);
+    return coverage.eligibleSeconds >= 30 ? Math.floor(coverage.eligibleSeconds / 5) : 0;
+  }
   const row = getDb().prepare(`
     SELECT COUNT(*) AS count
     FROM session_activity_intervals
@@ -283,6 +293,9 @@ export function getSessionActivityEvidenceCount(sessionId: string) {
 }
 
 export function getSessionScoringIntervals(sessionId: string): CanonicalScoringInterval[] {
+  if (getSessionEvidenceMode(sessionId) === 'authoritative') {
+    return getFinalizedEvidenceIntervals(sessionId) as CanonicalScoringInterval[];
+  }
   const rows = getDb().prepare(`
     SELECT source, duration_seconds, state, domain, category, score_eligible, evidence_json
     FROM session_activity_intervals

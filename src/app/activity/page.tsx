@@ -16,8 +16,8 @@ interface Activity {
     youtube_channel: string | null;
     ai_classification?: string;
     device_name?: string;
-    record_type?: 'legacy' | 'guardian_interval';
-    capture_source?: 'chrome' | 'vision' | 'idle' | 'private' | 'legacy';
+    record_type?: 'legacy' | 'guardian_interval' | 'guardian_evidence_segment';
+    capture_source?: 'chrome' | 'vision' | 'idle' | 'private' | 'unverified' | 'legacy';
     counted?: number;
     score_eligible?: number;
     selection_reason?: string;
@@ -27,6 +27,8 @@ interface Activity {
     engagement_state?: 'interactive' | 'passive_engaged' | 'uncertain' | 'confirmed_active' | 'inactive' | 'private' | 'disconnected';
     engagement_confidence?: number;
     confirmation_status?: string;
+    provisional?: number;
+    pipeline_mode?: 'shadow' | 'authoritative';
 }
 
 interface Stats {
@@ -53,8 +55,23 @@ interface ActivityResponse {
     activities?: Activity[];
     stats?: Stats;
     activityPolicy?: ActivityPolicy;
-    sourceSummary?: { chromeSeconds: number; visionSeconds: number; unscoredSeconds: number };
-    collectorStatus?: { ready: boolean; reason: string; frontmostApp: string | null };
+    sourceSummary?: { chromeSeconds: number; visionSeconds: number; unscoredSeconds: number; unverifiedSeconds: number };
+    collectorStatus?: {
+        ready: boolean; reason: string; frontmostApp: string | null;
+        nativeCollector?: { ready: boolean; compatible: boolean; version: string | null; minimumVersion: string };
+        chromeCollector?: { detected: boolean; ready: boolean; compatible: boolean; version: string | null; minimumVersion: string; updateRequired: boolean };
+        selectedSource?: string;
+        updateInstructions?: string[];
+    };
+    diagnostics?: {
+        rawEvidence?: Array<{ event_id: string; collector: string; compatible: number; late_after_watermark: number }>;
+        shadowRollout?: {
+            requiredAcceptedSessions: number;
+            recordedSessions: number;
+            acceptedSessions: number;
+            eligibleForCutover: boolean;
+        };
+    };
 }
 
 function activityReason(act: Activity): string {
@@ -86,18 +103,22 @@ export default function ActivityPage() {
     const [activities, setActivities] = useState<Activity[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
     const [activityPolicy, setActivityPolicy] = useState<ActivityPolicy | null>(null);
-    const [sourceSummary, setSourceSummary] = useState<{ chromeSeconds: number; visionSeconds: number; unscoredSeconds: number } | null>(null);
-    const [collectorStatus, setCollectorStatus] = useState<{ ready: boolean; reason: string; frontmostApp: string | null } | null>(null);
+    const [sourceSummary, setSourceSummary] = useState<NonNullable<ActivityResponse['sourceSummary']> | null>(null);
+    const [collectorStatus, setCollectorStatus] = useState<NonNullable<ActivityResponse['collectorStatus']> | null>(null);
+    const [diagnostics, setDiagnostics] = useState(false);
+    const [diagnosticCount, setDiagnosticCount] = useState(0);
+    const [shadowRollout, setShadowRollout] = useState<NonNullable<NonNullable<ActivityResponse['diagnostics']>['shadowRollout']> | null>(null);
     const [date, setDate] = useState(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()));
     const [filter, setFilter] = useState<string>('all');
 
     const loadActivities = useCallback(async (): Promise<ActivityResponse> => {
         const params = new URLSearchParams({ date, limit: '200' });
+        if (diagnostics) params.set('diagnostics', 'true');
         if (filter !== 'all') params.set('category', filter);
         const res = await fetch(`/api/activity?${params}`);
         if (!res.ok) throw new Error('Could not load activity.');
         return await res.json() as ActivityResponse;
-    }, [date, filter]);
+    }, [date, diagnostics, filter]);
 
     const applyActivities = useCallback((data: ActivityResponse) => {
         setActivities(data.activities || []);
@@ -105,6 +126,8 @@ export default function ActivityPage() {
         setActivityPolicy(data.activityPolicy || null);
         setSourceSummary(data.sourceSummary || null);
         setCollectorStatus(data.collectorStatus || null);
+        setDiagnosticCount(data.diagnostics?.rawEvidence?.length || 0);
+        setShadowRollout(data.diagnostics?.shadowRollout || null);
     }, []);
 
     useEffect(() => {
@@ -195,9 +218,14 @@ export default function ActivityPage() {
                             Exactly one source is counted for each Guardian interval. “Active” means verified engagement, not merely keyboard or mouse input. Raw screenshots are analyzed transiently and are not retained.
                         </p>
                     </div>
-                    <span className={collectorStatus?.ready ? 'badge-green' : 'badge-red'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
-                        Vision {collectorStatus?.ready ? 'connected' : collectorStatus?.reason || 'unknown'}
-                    </span>
+                    <div className="flex gap-2">
+                        <span className={collectorStatus?.nativeCollector?.ready ? 'badge-green' : 'badge-red'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
+                            Native {collectorStatus?.nativeCollector?.version || 'not detected'}
+                        </span>
+                        <span className={collectorStatus?.chromeCollector?.ready ? 'badge-green' : 'badge-yellow'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
+                            Chrome {collectorStatus?.chromeCollector?.version || 'fallback'}
+                        </span>
+                    </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div style={{ padding: '12px', border: '1px solid var(--border)', borderRadius: '10px' }}>
@@ -222,6 +250,16 @@ export default function ActivityPage() {
                     <span><b style={{ color: 'var(--text-primary)' }}>Inactive:</b> away or locked</span>
                     <span><b style={{ color: 'var(--text-primary)' }}>Private:</b> never scored</span>
                 </div>
+                {(collectorStatus?.updateInstructions?.length || 0) > 0 && (
+                    <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                        {collectorStatus?.updateInstructions?.join(' ')}
+                    </div>
+                )}
+                {sourceSummary && sourceSummary.unverifiedSeconds > 0 && (
+                    <p className="mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>
+                        Unverified coverage: {formatTime(sourceSummary.unverifiedSeconds / 60)}. It was not scored.
+                    </p>
+                )}
             </div>
 
             {/* Filters */}
@@ -235,7 +273,22 @@ export default function ActivityPage() {
                         {f === 'all' ? '🌐 All' : f === 'productive' ? '🟢 Productive' : f === 'distraction' ? '🔴 Distraction' : '🟡 Neutral'}
                     </button>
                 ))}
+                <button className={`btn btn-sm ${diagnostics ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setDiagnostics(value => !value)}>
+                    Diagnostics {diagnostics ? `(${diagnosticCount})` : ''}
+                </button>
             </div>
+
+            {diagnostics && shadowRollout && (
+                <div className="card mb-4" style={{ padding: '12px 14px' }}>
+                    <p className="text-sm font-semibold">Evidence V2 shadow rollout</p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                        {shadowRollout.acceptedSessions}/{shadowRollout.requiredAcceptedSessions} accepted sessions.
+                        {shadowRollout.eligibleForCutover
+                            ? ' The latest two sessions passed the overlap, gap, and compatibility gates.'
+                            : ' Keep legacy scoring authoritative until two consecutive controlled sessions pass.'}
+                    </p>
+                </div>
+            )}
 
             {/* Timeline */}
             <div className="card">
@@ -270,8 +323,20 @@ export default function ActivityPage() {
                                                 color: act.capture_source === 'chrome' ? '#60a5fa' : act.capture_source === 'vision' ? '#a78bfa' : '#9ca3af',
                                                 border: '1px solid currentColor', borderRadius: '999px', padding: '1px 6px', opacity: 0.9,
                                             }}>
-                                                {act.capture_source === 'chrome' ? 'Chrome' : act.capture_source === 'vision' ? 'Vision' : act.capture_source} · {act.score_eligible === 0 ? 'unscored' : 'counted'}
+                                                {act.capture_source === 'chrome'
+                                                    ? 'Chrome'
+                                                    : act.capture_source === 'vision' && act.subcategory === 'chrome_vision_fallback'
+                                                        ? 'Vision fallback'
+                                                        : act.capture_source === 'vision'
+                                                            ? 'Vision'
+                                                            : act.capture_source} · {act.score_eligible === 0 ? 'unscored' : 'counted'}
                                             </span>
+                                        )}
+                                        {act.provisional === 1 && (
+                                            <span className="text-xs badge-yellow" style={{ padding: '1px 6px', borderRadius: '999px' }}>Provisional</span>
+                                        )}
+                                        {act.pipeline_mode === 'shadow' && (
+                                            <span className="text-xs" style={{ color: '#fbbf24' }}>Shadow · not counted</span>
                                         )}
                                         {act.engagement_state && act.engagement_state !== 'interactive' && (
                                             <span className="text-xs" style={{ color: act.engagement_state === 'uncertain' ? '#fbbf24' : act.engagement_state === 'confirmed_active' ? '#34d399' : '#9ca3af' }}>

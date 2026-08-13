@@ -35,6 +35,7 @@ const DEVICE_PATHS = [
     '/api/native/classification-ask',
     '/api/guardian/vision',
     '/api/guardian/events',
+    '/api/guardian/evidence',
     '/api/guardian/presence',
     '/api/guardian/state',
     '/api/extension/tasks',

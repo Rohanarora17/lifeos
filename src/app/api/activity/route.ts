@@ -12,6 +12,7 @@ import {
 import { getGuardianClientReadiness } from '@/lib/guardian-client-status';
 import { lifeosDayBoundsUtc } from '@/lib/timezone';
 import { getDailyActivityStats } from '@/lib/scoring';
+import { getGuardianShadowRolloutStatus } from '@/lib/guardian-evidence-shadow';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -79,6 +80,7 @@ export async function GET(request: NextRequest) {
         const domain = searchParams.get('domain');
         const limit = parseInt(searchParams.get('limit') || '100');
         const offset = parseInt(searchParams.get('offset') || '0');
+        const diagnostics = searchParams.get('diagnostics') === 'true';
 
         const db = getDb();
         const bounds = date ? lifeosDayBoundsUtc(date) : null;
@@ -120,6 +122,11 @@ export async function GET(request: NextRequest) {
                  , engagement_state, engagement_confidence, confirmation_status
           FROM session_activity_intervals
           WHERE counted = 1
+            AND NOT EXISTS (
+              SELECT 1 FROM guardian_sessions gs
+              WHERE gs.session_id = session_activity_intervals.session_id
+                AND gs.evidence_pipeline_mode = 'authoritative'
+            )
         `;
         const intervalParams: Array<string> = [];
         if (date) {
@@ -161,7 +168,54 @@ export async function GET(request: NextRequest) {
             engagement_confidence: row.engagement_confidence,
             confirmation_status: row.confirmation_status,
         }));
-        const activities = ([...intervals, ...legacyActivities] as Array<Record<string, unknown> & { started_at?: unknown; duration_seconds?: unknown; capture_source?: unknown; score_eligible?: unknown }>)
+
+        let segmentQuery = `
+          SELECT * FROM guardian_activity_segments
+          WHERE (pipeline_mode = 'authoritative' OR (? = 1 AND pipeline_mode = 'shadow'))
+        `;
+        const segmentParams: Array<string | number> = [diagnostics ? 1 : 0];
+        if (date) {
+            segmentQuery += ' AND observed_start >= ? AND observed_start < ?';
+            segmentParams.push(bounds!.startIso, bounds!.endIso);
+        }
+        if (category) {
+            segmentQuery += ' AND category = ?';
+            segmentParams.push(category);
+        }
+        if (domain) {
+            segmentQuery += ' AND domain = ?';
+            segmentParams.push(domain);
+        }
+        segmentQuery += ' ORDER BY observed_start DESC LIMIT 500';
+        const evidenceSegments = (db.prepare(segmentQuery).all(...segmentParams) as Array<Record<string, unknown>>).map(row => ({
+            id: `evidence:${row.segment_id}`,
+            interval_id: row.segment_id,
+            session_id: row.session_id,
+            url: row.url || `native://${encodeURIComponent(String(row.app || 'activity'))}`,
+            domain: row.domain || row.app || 'macOS',
+            title: row.title || row.window_title || row.app || 'Verified activity',
+            category: toActivityCategory(typeof row.category === 'string' ? row.category : null),
+            raw_category: row.category,
+            subcategory: row.subcategory || row.state,
+            started_at: row.observed_start,
+            ended_at: row.observed_end,
+            duration_seconds: Number(row.duration_seconds || 0),
+            device_name: row.source === 'chrome' ? 'Chrome extension' : 'MacBook vision client',
+            record_type: 'guardian_evidence_segment',
+            capture_source: row.source,
+            counted: row.counted,
+            score_eligible: row.score_eligible,
+            selection_reason: row.selection_reason,
+            capture_status: Number(row.provisional) === 1 ? 'provisional' : 'finalized',
+            provisional: row.provisional,
+            window_title: row.window_title,
+            app: row.app,
+            engagement_state: row.engagement_state,
+            engagement_confidence: row.engagement_confidence,
+            evidence_ids: row.evidence_ids_json,
+            pipeline_mode: row.pipeline_mode,
+        }));
+        const activities = ([...evidenceSegments, ...intervals, ...legacyActivities] as Array<Record<string, unknown> & { started_at?: unknown; duration_seconds?: unknown; capture_source?: unknown; score_eligible?: unknown }>)
             .sort((a, b) => Date.parse(String(b.started_at)) - Date.parse(String(a.started_at)))
             .slice(0, limit);
 
@@ -178,17 +232,48 @@ export async function GET(request: NextRequest) {
         const summaryWhere = bounds
             ? 'WHERE counted = 1 AND observed_start >= ? AND observed_start < ?'
             : 'WHERE counted = 1';
-        const sourceRows = db.prepare(`
+        const legacySourceRows = db.prepare(`
             SELECT source,
                    SUM(CASE WHEN score_eligible = 1 THEN duration_seconds ELSE 0 END) AS seconds,
                    SUM(CASE WHEN score_eligible = 0 THEN duration_seconds ELSE 0 END) AS unscored_seconds
             FROM session_activity_intervals
             ${summaryWhere}
+              AND NOT EXISTS (
+                SELECT 1 FROM guardian_sessions gs
+                WHERE gs.session_id = session_activity_intervals.session_id
+                  AND gs.evidence_pipeline_mode = 'authoritative'
+              )
             GROUP BY source
         `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) as Array<{
             source: string; seconds: number | null; unscored_seconds: number | null;
         }>;
-        const sourceSeconds = (source: string) => Number(sourceRows.find(row => row.source === source)?.seconds ?? 0);
+        const evidenceWhere = bounds
+            ? `WHERE pipeline_mode = 'authoritative' AND provisional = 0 AND slice_start >= ? AND slice_start < ?`
+            : `WHERE pipeline_mode = 'authoritative' AND provisional = 0`;
+        const evidenceSourceRows = db.prepare(`
+            SELECT source,
+                   SUM(CASE WHEN counted = 1 AND score_eligible = 1 THEN duration_seconds ELSE 0 END) AS seconds,
+                   SUM(CASE WHEN score_eligible = 0 THEN duration_seconds ELSE 0 END) AS unscored_seconds
+            FROM guardian_activity_slices
+            ${evidenceWhere}
+            GROUP BY source
+        `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) as Array<{
+            source: string; seconds: number | null; unscored_seconds: number | null;
+        }>;
+        const sourceRows = [...legacySourceRows, ...evidenceSourceRows];
+        const sourceSeconds = (source: string) => sourceRows
+            .filter(row => row.source === source)
+            .reduce((sum, row) => sum + Number(row.seconds ?? 0), 0);
+        const unscoredSourceSeconds = (source: string) => sourceRows
+            .filter(row => row.source === source)
+            .reduce((sum, row) => sum + Number(row.unscored_seconds ?? 0), 0);
+        const diagnosticEvidence = diagnostics ? db.prepare(`
+            SELECT event_id, collector, collector_version, observed_start, observed_end,
+                   compatible, late_after_watermark, privacy_decision
+            FROM guardian_evidence_events
+            ${bounds ? 'WHERE observed_start >= ? AND observed_start < ?' : ''}
+            ORDER BY observed_start DESC LIMIT 200
+        `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) : [];
 
         return NextResponse.json({
             activities,
@@ -198,8 +283,13 @@ export async function GET(request: NextRequest) {
                 chromeSeconds: sourceSeconds('chrome'),
                 visionSeconds: sourceSeconds('vision'),
                 unscoredSeconds: sourceRows.reduce((sum, row) => sum + Number(row.unscored_seconds ?? 0), 0),
+                unverifiedSeconds: unscoredSourceSeconds('unverified'),
             },
             collectorStatus: getGuardianClientReadiness(),
+            diagnostics: diagnostics ? {
+                rawEvidence: diagnosticEvidence,
+                shadowRollout: getGuardianShadowRolloutStatus(10),
+            } : undefined,
         });
     } catch (error) {
         console.error('Activity GET error:', error);
@@ -228,6 +318,20 @@ export async function PATCH(request: NextRequest) {
             db.prepare(`UPDATE session_activity_intervals SET category = ?, updated_at = datetime('now') WHERE interval_id = ?`)
                 .run(category, intervalId);
             return NextResponse.json({ success: true, id, category, recordType: 'guardian_interval' });
+        }
+
+        if (typeof id === 'string' && id.startsWith('evidence:')) {
+            const segmentId = id.slice('evidence:'.length);
+            const segment = db.prepare(`
+              SELECT session_id, observed_start, observed_end
+              FROM guardian_activity_segments WHERE segment_id = ?
+            `).get(segmentId) as { session_id: string; observed_start: string; observed_end: string } | undefined;
+            if (!segment) return NextResponse.json({ error: 'segment not found' }, { status: 404 });
+            db.prepare(`
+              UPDATE guardian_activity_slices SET category = ?, updated_at = datetime('now')
+              WHERE session_id = ? AND slice_start >= ? AND slice_end <= ?
+            `).run(category, segment.session_id, segment.observed_start, segment.observed_end);
+            return NextResponse.json({ success: true, id, category, recordType: 'guardian_evidence_segment' });
         }
 
         // 1. Update the activity record

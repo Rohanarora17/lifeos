@@ -10,6 +10,7 @@ import {
     recordSessionActivityInterval,
     removeOverlappingVisionFallback,
 } from '@/lib/session-activity';
+import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
 
 export interface TelemetryIngestResult {
     accepted: number;
@@ -29,6 +30,7 @@ function contextJson(event: TelemetryEventV1) {
 
 function ingestGuardianBrowserEvidence(event: TelemetryEventV1) {
     if (event.source !== 'browser_extension' || !event.sessionId) return;
+    if (getSessionEvidenceMode(event.sessionId) === 'authoritative') return;
 
     const db = getDb();
     const active = db.prepare(`

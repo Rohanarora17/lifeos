@@ -24,7 +24,7 @@ describe('guardian route lifecycle', () => {
     ({ recordBrowserCollectorHeartbeat } = clientStatus);
     recordNativeClientHeartbeat({
       deviceId: 'test-macbook',
-      clientVersion: 'test',
+      clientVersion: '0.3.0',
       screenRecordingStatus: 'authorized',
       captureCapable: true,
       frontmostApp: 'Google Chrome',
@@ -80,7 +80,7 @@ describe('guardian route lifecycle', () => {
       deviceId: 'test-chrome',
       sessionId,
       windowFocused: true,
-      collectorVersion: 'test',
+      collectorVersion: '1.3.0',
     });
 
     const eventResponse = await eventsPOST(
@@ -93,7 +93,7 @@ describe('guardian route lifecycle', () => {
           title: 'Polynomial commitments paper',
           dwellSeconds: 30,
           tabStartedAt: Date.now() - 30_000,
-          payload: { browserWindowFocused: true, collectorVersion: 'test' },
+          payload: { browserWindowFocused: true, collectorVersion: '1.3.0' },
         }),
       })
     );

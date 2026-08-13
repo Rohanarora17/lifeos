@@ -6,6 +6,81 @@
 if (window.__lifeosGuardianLoaded) { /* already loaded */ } else {
 window.__lifeosGuardianLoaded = true;
 
+let lifeosEvidenceStartedAt = Date.now();
+let lifeosLastInputAt = null;
+let lifeosKeyboard = false;
+let lifeosPointer = false;
+let lifeosScroll = false;
+let lifeosNavigation = true;
+const lifeosMediaTimes = new WeakMap();
+
+function noteLifeOSEvidence(kind) {
+    lifeosLastInputAt = new Date().toISOString();
+    if (kind === 'keyboard') lifeosKeyboard = true;
+    if (kind === 'pointer') lifeosPointer = true;
+    if (kind === 'scroll') lifeosScroll = true;
+}
+
+document.addEventListener('keydown', () => noteLifeOSEvidence('keyboard'), { capture: true, passive: true });
+document.addEventListener('pointerdown', () => noteLifeOSEvidence('pointer'), { capture: true, passive: true });
+document.addEventListener('pointermove', () => noteLifeOSEvidence('pointer'), { capture: true, passive: true });
+document.addEventListener('scroll', () => noteLifeOSEvidence('scroll'), { capture: true, passive: true });
+
+async function collectLifeOSPageEvidence(force = false) {
+    if (!force && document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    const mediaElements = Array.from(document.querySelectorAll('video, audio'));
+    let mediaPlaying = false;
+    let mediaProgressed = false;
+    let mediaCurrentTime = null;
+    for (const element of mediaElements) {
+        const previous = lifeosMediaTimes.get(element);
+        const current = Number(element.currentTime || 0);
+        const playing = !element.paused && !element.ended && element.readyState >= 2;
+        if (playing) {
+            mediaPlaying = true;
+            mediaCurrentTime = Math.max(mediaCurrentTime || 0, current);
+            if (typeof previous === 'number' && current > previous + 0.25) mediaProgressed = true;
+        }
+        lifeosMediaTimes.set(element, current);
+    }
+    const result = await chrome.runtime.sendMessage({
+        type: 'GUARDIAN_PAGE_EVIDENCE',
+        observedStart: new Date(Math.min(lifeosEvidenceStartedAt, now - 1)).toISOString(),
+        observedEnd: new Date(now).toISOString(),
+        url: location.href,
+        title: document.title,
+        interaction: {
+            keyboard: lifeosKeyboard,
+            pointer: lifeosPointer,
+            scroll: lifeosScroll,
+            navigation: lifeosNavigation,
+            lastInputAt: lifeosLastInputAt,
+        },
+        media: {
+            playing: mediaPlaying,
+            progressed: mediaProgressed,
+            currentTime: mediaCurrentTime,
+            title: mediaPlaying ? document.title : null,
+        },
+    }).catch(() => ({ ok: false }));
+    lifeosEvidenceStartedAt = now;
+    lifeosKeyboard = false;
+    lifeosPointer = false;
+    lifeosScroll = false;
+    lifeosNavigation = false;
+    return result;
+}
+
+setInterval(() => { void collectLifeOSPageEvidence(false); }, 10_000);
+window.addEventListener('pagehide', () => { void collectLifeOSPageEvidence(true); });
+for (const mediaEvent of ['play', 'pause', 'ended', 'seeking']) {
+    document.addEventListener(mediaEvent, () => { void collectLifeOSPageEvidence(true); }, {
+        capture: true,
+        passive: true,
+    });
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'BLOCK_TAB') {
         injectBlockOverlay(request);
@@ -17,7 +92,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         injectClassifyToast(request);
     } else if (request.type === 'PTT_STATE') {
         updatePttOverlay(request.state, request.transcript);
-    }
+    } else if (request.type === 'LIFEOS_COLLECT_EVIDENCE_NOW') {
+        if (request.navigation === true) lifeosNavigation = true;
+		collectLifeOSPageEvidence(true).then(sendResponse);
+		return true;
+	}
 	});
 	
 function escapeHtml(value) {
@@ -411,7 +490,13 @@ window.addEventListener('message', (event) => {
         chrome.runtime.sendMessage(event.data);
     }
     if (event.data && event.data.type === 'STOP_GUARDIAN') {
-        chrome.runtime.sendMessage(event.data);
+        chrome.runtime.sendMessage(event.data, (result) => {
+            window.postMessage({
+                type: 'LIFEOS_STOP_GUARDIAN_RESULT',
+                requestId: event.data.requestId || null,
+                result: result || { ok: false },
+            }, '*');
+        });
     }
     if (event.data && event.data.type === 'LIFEOS_WAKE_COPILOT') {
         chrome.runtime.sendMessage({ type: 'WAKE_COPILOT' }, (result) => {

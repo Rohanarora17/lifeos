@@ -51,6 +51,7 @@ import {
   getGuardianClientReadiness,
 } from './guardian-client-status';
 import { getSessionActivityEvidenceCount, getSessionScoringIntervals } from './session-activity';
+import { configuredGuardianEvidenceMode, recordGuardianScoreSnapshot } from './guardian-evidence-store';
 
 export { VisionClientUnavailableError } from './guardian-client-status';
 
@@ -1594,10 +1595,12 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
 
   // Persist to DB so the session survives server restarts
   try {
+    const evidencePipelineMode = configuredGuardianEvidenceMode();
     getDb().prepare(`
       INSERT OR IGNORE INTO guardian_sessions
-        (session_id, target_title, goal_id, goal_title, concept_node_name, started_at, duration_minutes, mood, start_request_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (session_id, target_title, goal_id, goal_title, concept_node_name, started_at,
+         duration_minutes, mood, start_request_id, evidence_pipeline_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sessionId, targetTitle,
       input.goalId || null, input.goalTitle || null,
@@ -1605,6 +1608,7 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
       session.startedAt, durationMinutes,
       input.mood || null,
       input.startRequestId ?? null,
+      evidencePipelineMode,
     );
   } catch (err) {
     console.error('[guardian] Failed to persist session to DB:', err);
@@ -2335,6 +2339,7 @@ export async function tickGuardianSession(sessionId: string, inputEvent?: Guardi
   const policy = session.sessionPolicy ?? getActiveGuardianPolicyBundle();
   const focus = computeFocusScore(session, policy, session.energyComposite, getSessionScoringIntervals(sessionId));
   session.focusScoreHistory.push(focus.score);
+  recordGuardianScoreSnapshot(sessionId, focus.score, focus.components ?? {});
 
   emitSessionEvent(sessionId, {
     type: 'focus_score',

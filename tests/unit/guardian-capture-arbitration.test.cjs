@@ -43,28 +43,28 @@ describe('Guardian capture arbitration', () => {
   it('selects Chrome only when Chrome is frontmost and extension evidence is fresh', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.0.0',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.0',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, false);
   });
 
-  it('keeps a 30-second MV3 alarm heartbeat fresh through normal scheduler jitter', () => {
+  it('expires the legacy browser heartbeat instead of keeping a 75-second freshness workaround', () => {
     const now = Date.now();
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.2.0', observedAt: new Date(now - 35_000).toISOString(),
+      collectorVersion: '1.3.0', observedAt: new Date(now - 20_000).toISOString(),
     });
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
-    assert.equal(client.getBrowserCollectorState(sessionId, now + 39_000).fresh, true);
-    assert.equal(client.getBrowserCollectorState(sessionId, now + 41_000).fresh, false);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 14_000).fresh, true);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 16_000).fresh, false);
   });
 
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
     heartbeat('Preview');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.0.0',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.0',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, false);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, true);
@@ -104,7 +104,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome', 'idle');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.2.0', mediaPlaybackActive: true,
+      collectorVersion: '1.3.0', mediaPlaybackActive: true,
       mediaTitle: 'Lecture 2: Contradiction and Induction',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);

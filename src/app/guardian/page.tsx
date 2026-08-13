@@ -897,6 +897,16 @@ export default function GuardianPage() {
               {clientReadiness?.frontmostApp ? ` Last seen in ${clientReadiness.frontmostApp}.` : ''}
             </div>
           )}
+          {!startError && clientReadiness?.selectedSource === 'vision_fallback' && (
+            <div style={{
+              marginBottom: '12px', padding: '10px 12px', borderRadius: '9px',
+              background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
+              color: '#fde68a', fontSize: '12px', lineHeight: 1.45,
+            }}>
+              Chrome detail is unavailable, so Guardian will use the MacBook vision client while Chrome is frontmost.
+              {clientReadiness.updateInstructions?.length ? ` ${clientReadiness.updateInstructions.join(' ')}` : ''}
+            </div>
+          )}
           {adaptivePersonalization && (
             <div style={{
               background: 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(34,197,94,0.04))',

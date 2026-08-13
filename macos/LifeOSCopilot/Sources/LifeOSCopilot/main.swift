@@ -276,6 +276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = OverlayWindow()
     private let classificationPrompt = ClassificationPromptController()
     private let presencePrompt = PresencePromptController()
+    private var evidenceSequence = 0
+    private var lastEvidenceAt = Date()
     private let speaker = AVSpeechSynthesizer()
 
     private var activeSessionId: String?
@@ -376,6 +378,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     sessionId: activeSessionId
                 )
                 activeSessionId = response.active ? response.sessionId : nil
+                if let sessionId = activeSessionId {
+                    let observedEnd = Date()
+                    let observedStart = max(lastEvidenceAt, observedEnd.addingTimeInterval(-5))
+                    evidenceSequence += 1
+                    try? await api.sendGuardianEvidence(
+                        sessionId: sessionId,
+                        app: frontmost.app,
+                        title: frontmost.title,
+                        screenRecordingStatus: permission.label,
+                        captureCapable: permission.capable,
+                        systemState: currentSystemState(inputIdleSeconds: inputIdleSeconds),
+                        inputIdleSeconds: inputIdleSeconds,
+                        observedStart: observedStart,
+                        observedEnd: observedEnd,
+                        sequence: evidenceSequence
+                    )
+                    lastEvidenceAt = observedEnd
+                } else {
+                    lastEvidenceAt = Date()
+                }
                 presentPresenceCheckIfNeeded(response.presenceCheck)
                 await MainActor.run {
                     statusItem.button?.title = response.active ? "LifeOS On" : "LifeOS"

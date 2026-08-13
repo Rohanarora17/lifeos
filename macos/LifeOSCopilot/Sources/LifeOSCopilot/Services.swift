@@ -257,7 +257,7 @@ final class LifeOSAPIClient {
             ?? "macbook-primary"
         clientVersion = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "0.2.0"
+        ) as? String ?? "0.3.0"
     }
 
     private func authorize(_ request: inout URLRequest) {
@@ -308,6 +308,54 @@ final class LifeOSAPIClient {
         ])
         let data = try await responseData(for: request)
         return try JSONDecoder().decode(NativeHeartbeatResponse.self, from: data)
+    }
+
+    func sendGuardianEvidence(
+        sessionId: String,
+        app: String,
+        title: String,
+        screenRecordingStatus: String,
+        captureCapable: Bool,
+        systemState: String,
+        inputIdleSeconds: Double,
+        observedStart: Date,
+        observedEnd: Date,
+        sequence: Int
+    ) async throws {
+        let url = serverBase.appendingPathComponent("/api/guardian/evidence")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        let sensitive = app == "Sensitive App"
+        let event: [String: Any] = [
+            "schemaVersion": 2,
+            "eventId": "native-\(deviceId)-\(sequence)-\(UUID().uuidString)",
+            "sequence": sequence,
+            "collector": "native",
+            "collectorVersion": clientVersion,
+            "deviceId": deviceId,
+            "sessionId": sessionId,
+            "observedStart": ISO8601DateFormatter().string(from: observedStart),
+            "observedEnd": ISO8601DateFormatter().string(from: observedEnd),
+            "capabilities": ["frontmost_app", "input_idle", "screen_capture", "privacy_filter"],
+            "privacy": [
+                "decision": sensitive ? "redact" : "allow",
+                "reason": sensitive ? "sensitive_window" : "guardian_session",
+            ],
+            "native": [
+                "frontmostApp": app,
+                "windowTitle": sensitive ? NSNull() : title,
+                "systemState": systemState == "locked" ? "locked" : "active",
+                "inputIdleSeconds": inputIdleSeconds,
+                "screenRecordingStatus": screenRecordingStatus,
+                "captureCapable": captureCapable,
+                "sensitive": sensitive,
+            ],
+            "chrome": NSNull(),
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["events": [event]])
+        _ = try await responseData(for: request)
     }
 
     func resolvePresenceCheck(sessionId: String, checkId: String, action: String) async throws {

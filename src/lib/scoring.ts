@@ -196,7 +196,18 @@ export function getDailyActivityStats(db: Database, dateString: string) {
                duration_seconds, CASE WHEN score_eligible = 1 THEN 1 ELSE 0 END AS is_actively_interacting
         FROM session_activity_intervals
         WHERE observed_start >= ? AND observed_start < ? AND counted = 1
-    `).all(startIso, endIso, startIso, endIso) as Array<{
+          AND NOT EXISTS (
+            SELECT 1 FROM guardian_sessions gs
+            WHERE gs.session_id = session_activity_intervals.session_id
+              AND gs.evidence_pipeline_mode = 'authoritative'
+          )
+        UNION ALL
+        SELECT category, slice_start AS started_at, slice_end AS ended_at,
+               duration_seconds, score_eligible AS is_actively_interacting
+        FROM guardian_activity_slices
+        WHERE slice_start >= ? AND slice_start < ?
+          AND pipeline_mode = 'authoritative' AND provisional = 0 AND counted = 1
+    `).all(startIso, endIso, startIso, endIso, startIso, endIso) as Array<{
         category: string;
         started_at: string;
         ended_at: string | null;

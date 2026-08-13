@@ -31,7 +31,7 @@ describe('telemetry event store', () => {
       group: null,
       provenance: {
         collector: 'extension',
-        collectorVersion: '1.0.0',
+        collectorVersion: '1.3.0',
         adaptedFrom: null,
       },
       privacy: { decision: 'allow', reason: 'waking_hours_metadata' },

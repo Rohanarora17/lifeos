@@ -56,6 +56,16 @@ export interface GuardianClientReadiness {
   screenRecordingStatus: string;
   frontmostApp: string | null;
   wakeSupported: boolean;
+  chromeCollector?: {
+    detected: boolean;
+    ready: boolean;
+    compatible: boolean;
+    version: string | null;
+    minimumVersion: string;
+    updateRequired: boolean;
+  };
+  selectedSource?: 'chrome' | 'vision' | 'vision_fallback' | 'idle' | 'unavailable';
+  updateInstructions?: string[];
 }
 
 // ─── Derived view ─────────────────────────────────────────────────────────────
@@ -222,6 +232,15 @@ export function useGuardianSession() {
         setRaw(data.session);
         rawRef.current = data.session;
         pendingStartRequestIdRef.current = null;
+        window.postMessage({
+          type: 'START_GUARDIAN',
+          context: {
+            sessionId: data.session.sessionId,
+            targetTitle: data.session.targetTitle,
+            durationMinutes: data.session.durationMinutes,
+            startedAt: data.session.startedAt,
+          },
+        }, '*');
         return data.session.sessionId;
       }
       setStartError(data.message || data.error || 'Guardian session could not start.');
@@ -233,15 +252,32 @@ export function useGuardianSession() {
 
   const end = useCallback(async () => {
     const sessionId = rawRef.current?.sessionId;
-    setRaw(null);
-    rawRef.current = null;
     if (sessionId) {
-      fetch('/api/guardian/session/end', {
+      const requestId = createClientRequestId();
+      await new Promise<void>((resolve) => {
+        const timeout = window.setTimeout(() => {
+          window.removeEventListener('message', onResult);
+          resolve();
+        }, 3_000);
+        function onResult(event: MessageEvent) {
+          if (event.source !== window) return;
+          if (event.data?.type !== 'LIFEOS_STOP_GUARDIAN_RESULT') return;
+          if (event.data?.requestId !== requestId) return;
+          window.clearTimeout(timeout);
+          window.removeEventListener('message', onResult);
+          resolve();
+        }
+        window.addEventListener('message', onResult);
+        window.postMessage({ type: 'STOP_GUARDIAN', requestId }, '*');
+      });
+      await fetch('/api/guardian/session/end', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId }),
       }).catch(() => { });
     }
+    setRaw(null);
+    rawRef.current = null;
   }, []);
 
   return {

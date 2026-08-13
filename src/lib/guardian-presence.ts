@@ -239,6 +239,12 @@ export function observeStaticActivity(input: {
   windowTitle?: string | null;
   observedAt?: number;
 }) {
+  const evidenceMode = getDb().prepare(`
+    SELECT evidence_pipeline_mode FROM guardian_sessions WHERE session_id = ?
+  `).pluck().get(input.sessionId);
+  if (evidenceMode === 'authoritative') {
+    return { check: getPendingPresenceCheck(input.sessionId, input.observedAt), timedOut: false, created: false };
+  }
   const requestedNow = input.observedAt ?? Date.now();
   const now = Number.isFinite(requestedNow) ? requestedNow : Date.now();
   const sessionStart = getDb().prepare('SELECT started_at FROM guardian_sessions WHERE session_id = ?')
@@ -290,6 +296,49 @@ export function observeStaticActivity(input: {
   return { check, timedOut: Boolean(check && now >= check.responseDeadlineAt), created };
 }
 
+export function observeFinalizedUncertainEvidence(sessionId: string, now = Date.now()) {
+  const rows = getDb().prepare(`
+    SELECT slice_start, slice_end, duration_seconds, app, window_title, engagement_state
+    FROM guardian_activity_slices
+    WHERE session_id = ? AND pipeline_mode = 'authoritative' AND provisional = 0
+    ORDER BY slice_start DESC
+    LIMIT 120
+  `).all(sessionId) as Array<{
+    slice_start: string; slice_end: string; duration_seconds: number;
+    app: string | null; window_title: string | null; engagement_state: string;
+  }>;
+  let uncertainSeconds = 0;
+  let uncertainStartedAt = now;
+  let app: string | null = null;
+  let windowTitle: string | null = null;
+  for (const row of rows) {
+    if (row.engagement_state !== 'uncertain') break;
+    uncertainSeconds += Number(row.duration_seconds || 0);
+    uncertainStartedAt = Date.parse(row.slice_start);
+    app = app || row.app;
+    windowTitle = windowTitle || row.window_title;
+  }
+  let check = getPendingPresenceCheck(sessionId, now);
+  if (uncertainSeconds < STATIC_ACTIVITY_GRACE_MS / 1_000) {
+    return { check, timedOut: Boolean(check && now >= check.responseDeadlineAt), created: false };
+  }
+  if (!check && !hasRecentStillWorkingConfirmation(sessionId, now)) {
+    const checkId = randomUUID();
+    getDb().prepare(`
+      INSERT INTO guardian_presence_checks (
+        check_id, session_id, uncertain_started_at, asked_at, response_deadline_at,
+        app, window_title, evidence_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      checkId, sessionId, uncertainStartedAt, now, now + PRESENCE_RESPONSE_MS,
+      app, windowTitle,
+      JSON.stringify({ source: 'guardian_activity_slices', uncertainSeconds }),
+    );
+    check = getPendingPresenceCheck(sessionId, now);
+  }
+  return { check, timedOut: Boolean(check && now >= check.responseDeadlineAt), created: Boolean(check) };
+}
+
 export function resolvePresenceCheck(
   checkId: string,
   resolution: PresenceResolution,
@@ -315,6 +364,19 @@ export function resolvePresenceCheck(
             capture_status = 'user_confirmed', updated_at = datetime('now')
         WHERE presence_check_id = ?
       `).run(checkId);
+      getDb().prepare(`
+        UPDATE guardian_activity_slices
+        SET score_eligible = 1,
+            engagement_state = 'confirmed_active', engagement_confidence = 1.0,
+            selection_reason = 'The user confirmed they were still working during this static interval.',
+            updated_at = datetime('now')
+        WHERE session_id = ? AND pipeline_mode = 'authoritative'
+          AND slice_start >= ? AND slice_start < ? AND engagement_state = 'uncertain'
+      `).run(
+        check.sessionId,
+        new Date(check.uncertainStartedAt).toISOString(),
+        new Date(now).toISOString(),
+      );
     } else {
       getDb().prepare(`
         UPDATE session_activity_intervals
@@ -329,6 +391,20 @@ export function resolvePresenceCheck(
           ? 'No response was received, so the interval remained unscored and Guardian paused.'
           : 'The user confirmed they were taking a break, so the interval remained unscored.',
         checkId,
+      );
+      getDb().prepare(`
+        UPDATE guardian_activity_slices
+        SET score_eligible = 0, engagement_state = 'inactive', engagement_confidence = 1.0,
+            selection_reason = ?, updated_at = datetime('now')
+        WHERE session_id = ? AND pipeline_mode = 'authoritative'
+          AND slice_start >= ? AND slice_start < ? AND engagement_state = 'uncertain'
+      `).run(
+        resolution === 'timeout'
+          ? 'No response was received, so the interval remained unscored and Guardian paused.'
+          : 'The user confirmed they were taking a break, so the interval remained unscored.',
+        check.sessionId,
+        new Date(check.uncertainStartedAt).toISOString(),
+        new Date(now).toISOString(),
       );
     }
   })();

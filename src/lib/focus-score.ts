@@ -58,12 +58,14 @@ export function computeFocusScore(
 
     const eligibleCanonical = canonicalIntervals?.filter(interval => interval.scoreEligible) ?? null;
     if (canonicalIntervals) {
+        let previousContext: string | null = null;
         for (const interval of canonicalIntervals) {
-            if (!interval.scoreEligible || interval.state === 'idle' || interval.state === 'locked') {
-                idleSeconds += interval.durationSeconds;
-                continue;
-            }
-            switches += 1;
+            // Missing, private, uncertain, and disconnected time is coverage—not
+            // evidence of poor focus. It must never become an idle penalty.
+            if (!interval.scoreEligible || interval.state === 'idle' || interval.state === 'locked') continue;
+            const context = `${interval.source}:${interval.domain || 'unknown'}`;
+            if (previousContext !== null && context !== previousContext) switches += 1;
+            previousContext = context;
             if (interval.category === 'productive') onTopicSeconds += interval.durationSeconds;
             if (interval.category === 'distraction') {
                 if (interval.domain && distractionDomains.has(interval.domain)) distractionRevisits += 1;
@@ -97,6 +99,9 @@ export function computeFocusScore(
     const verifiedActiveSeconds = eligibleCanonical
         ? eligibleCanonical.reduce((sum, interval) => sum + interval.durationSeconds, 0)
         : elapsedMs / 1000;
+    const scoringMinutes = eligibleCanonical
+        ? Math.max(1, verifiedActiveSeconds / 60)
+        : elapsedMinutes;
     const tabContinuityScore = Math.min(100, (onTopicSeconds / Math.max(1, verifiedActiveSeconds)) * 100);
 
     // Vision blending: when screen observations are available, blend vision task alignment
@@ -125,7 +130,7 @@ export function computeFocusScore(
     }
 
     const scatterThreshold = thresholds?.highScatterSpeakThreshold ?? 6;
-    const switchesPerMin = switches / Math.max(1, elapsedMinutes);
+    const switchesPerMin = switches / scoringMinutes;
     let switchScore = Math.max(0, 100 - (switchesPerMin / scatterThreshold) * 100);
 
     // Vision-aware switch adjustment: if vision shows active_learning engagement,
@@ -141,11 +146,20 @@ export function computeFocusScore(
     const tabsWithDwell = eligibleCanonical ?? session.tabEventLog.filter(
         (e) => isContinuityEvent(e) && typeof e.dwellSeconds === 'number'
     );
-    const totalDwellSeconds = tabsWithDwell.reduce(
-        (sum, item) => sum + ('durationSeconds' in item ? item.durationSeconds : (item.dwellSeconds || 0)),
-        0,
-    );
-    const avgDwell = tabsWithDwell.length > 0 ? totalDwellSeconds / tabsWithDwell.length : 0;
+    let totalDwellSeconds = 0;
+    let dwellSegments = 0;
+    let previousDwellContext: string | null = null;
+    for (const item of tabsWithDwell) {
+        totalDwellSeconds += 'durationSeconds' in item ? item.durationSeconds : (item.dwellSeconds || 0);
+        const context = 'durationSeconds' in item
+            ? `${item.source}:${item.domain || 'unknown'}`
+            : eventDomainKey(item) || `event:${dwellSegments}`;
+        if (context !== previousDwellContext) {
+            dwellSegments += 1;
+            previousDwellContext = context;
+        }
+    }
+    const avgDwell = dwellSegments > 0 ? totalDwellSeconds / dwellSegments : 0;
     let dwellScore = Math.min(100, (avgDwell / dwellTarget) * 100);
 
     // Vision-aware dwell boost: active_creation (coding, writing) often shows sustained
