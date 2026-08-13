@@ -1,7 +1,10 @@
 import { getDb } from '@/lib/db';
 
 export const CLIENT_STALE_MS = 15_000;
-export const BROWSER_STALE_MS = 15_000;
+// Chrome MV3 alarms fire every 30 seconds. Allow one alarm period plus normal
+// scheduler jitter; the native frontmost-app heartbeat still prevents
+// background Chrome from being selected during this window.
+export const BROWSER_STALE_MS = 45_000;
 
 export type ClientSystemState = 'active' | 'idle' | 'locked';
 

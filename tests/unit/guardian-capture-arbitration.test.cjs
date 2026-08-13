@@ -49,6 +49,17 @@ describe('Guardian capture arbitration', () => {
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, false);
   });
 
+  it('keeps a 30-second MV3 alarm heartbeat fresh through normal scheduler jitter', () => {
+    const now = Date.now();
+    heartbeat('Google Chrome');
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'test-chrome', sessionId, windowFocused: true,
+      collectorVersion: '1.2.0', observedAt: new Date(now - 35_000).toISOString(),
+    });
+    assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 11_000).fresh, false);
+  });
+
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
     heartbeat('Preview');
     client.recordBrowserCollectorHeartbeat({
@@ -65,7 +76,9 @@ describe('Guardian capture arbitration', () => {
   it('falls back to vision when Chrome is frontmost but extension evidence is absent', () => {
     heartbeat('Google Chrome');
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, false);
-    assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, true);
+    const fallback = activity.arbitrateSessionActivity(sessionId, 'vision');
+    assert.equal(fallback.accepted, true);
+    assert.match(fallback.reason, /extension telemetry was unavailable or stale/);
   });
 
   it('uses native state once for idle and marks it unscored', () => {

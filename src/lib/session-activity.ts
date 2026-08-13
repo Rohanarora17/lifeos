@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import {
   getBrowserCollectorState,
   getGuardianClientReadiness,
+  isChromeApplication,
   selectedCaptureSource,
 } from '@/lib/guardian-client-status';
 
@@ -80,7 +81,9 @@ export function arbitrateSessionActivity(sessionId: string, proposed: SessionAct
       ? client.systemState === 'idle' && browser.mediaPlaybackActive
         ? `Chrome remained selected because verified foreground media was playing${browser.mediaTitle ? `: ${browser.mediaTitle}` : ''}.`
         : 'Chrome was verified as the frontmost app and extension telemetry was fresh.'
-      : 'A non-Chrome app was verified frontmost, so the native vision client was selected.',
+      : isChromeApplication(client.frontmostApp)
+        ? 'Chrome was frontmost, but extension telemetry was unavailable or stale, so the native vision client was used as a fallback.'
+        : 'A non-Chrome app was verified frontmost, so the native vision client was selected.',
   };
 }
 
