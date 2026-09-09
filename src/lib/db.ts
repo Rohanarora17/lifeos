@@ -177,7 +177,9 @@ function initSchema(db: Database.Database) {
   try { db.prepare("ALTER TABLE rewards_store ADD COLUMN pricing_json TEXT DEFAULT '{}'").run(); } catch { }
   try { db.prepare('ALTER TABLE rewards_store ADD COLUMN adaptive_reason TEXT DEFAULT NULL').run(); } catch { }
   try { db.prepare('ALTER TABLE rewards_store ADD COLUMN user_cost_override INTEGER DEFAULT 0').run(); } catch { }
+  try { db.prepare('ALTER TABLE rewards_store ADD COLUMN is_custom INTEGER NOT NULL DEFAULT 0').run(); } catch { }
   try { db.prepare('CREATE INDEX IF NOT EXISTS idx_rewards_store_category ON rewards_store(category, cost)').run(); } catch { }
+  try { db.prepare('CREATE INDEX IF NOT EXISTS idx_rewards_store_custom ON rewards_store(is_custom, created_at DESC)').run(); } catch { }
 
   // ─── P0.3: goals — type system + velocity tracking ────────────────────────
   try { db.prepare("ALTER TABLE goals ADD COLUMN goal_type TEXT DEFAULT 'milestone'").run(); } catch (e) { }

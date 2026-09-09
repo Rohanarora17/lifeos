@@ -14,7 +14,7 @@ const navItems = [
     { href: '/study-plan', label: 'Study Plans', icon: '📚' },
     { href: '/guardian', label: 'Guardian', icon: '🛡️' },
     { href: '/chat', label: 'Jarvis', icon: '💬' },
-    { href: '/store', label: 'Store & Badges', icon: '💎' },
+    { href: '/store', label: 'Rewards', icon: '🎁' },
     { href: '/analytics', label: 'Analytics', icon: '📈' },
     { href: '/calendar', label: 'Calendar', icon: '📅' },
     { href: '/insights', label: 'AI Insights', icon: '🧠' },
@@ -23,7 +23,12 @@ const navItems = [
     { href: '/settings', label: 'Settings', icon: '⚙️' },
 ];
 
-export default function Sidebar() {
+interface SidebarProps {
+    isOpen?: boolean;
+    onClose?: () => void;
+}
+
+export default function Sidebar({ isOpen = false, onClose }: SidebarProps) {
     const pathname = usePathname();
     const [level, setLevel] = useState<number | null>(null);
 
@@ -39,10 +44,13 @@ export default function Sidebar() {
     }, []);
 
     return (
-        <aside className="fixed left-0 top-0 bottom-0 w-[260px] flex flex-col border-r"
+        <aside
+            id="lifeos-sidebar"
+            aria-label="Primary navigation"
+            className={`fixed inset-y-0 left-0 z-50 w-[260px] flex-col border-r ${isOpen ? 'flex' : 'hidden lg:flex'}`}
             style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
             {/* Logo */}
-            <div className="p-6 pb-4">
+            <div className="flex items-start justify-between gap-3 p-6 pb-4">
                 <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
                         style={{ background: 'var(--gradient-primary)' }}>
@@ -53,15 +61,25 @@ export default function Sidebar() {
                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Personal Productivity OS</p>
                     </div>
                 </div>
+                <button
+                    type="button"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-xl lg:hidden"
+                    style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)' }}
+                    onClick={onClose}
+                    aria-label="Close navigation"
+                >
+                    ×
+                </button>
             </div>
 
             {/* Nav */}
-            <nav className="flex-1 px-3 py-2 flex flex-col gap-1">
+            <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-2">
                 {navItems.map(item => (
                     <Link
                         key={item.href}
                         href={item.href}
                         className={`nav-link ${pathname === item.href ? 'active' : ''}`}
+                        onClick={onClose}
                     >
                         <span className="text-lg">{item.icon}</span>
                         <span>{item.label}</span>

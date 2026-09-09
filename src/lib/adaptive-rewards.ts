@@ -1,6 +1,9 @@
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { getDb } from './db';
 import { getVoluntaryRewardMultiplier } from './cognitive-active-coach';
+import { calculateRewardPrice, type RewardCategory } from './reward-pricing';
+
+export type { RewardCategory } from './reward-pricing';
 
 export type RewardAction =
   | 'habit_checkin'
@@ -33,8 +36,6 @@ export interface RewardPolicySummary {
   earningGuidance: string;
   spendingGuidance: string;
 }
-
-export type RewardCategory = 'restorative' | 'leisure' | 'purchase' | 'escape' | 'social' | 'custom';
 
 export interface AdaptiveRewardPriceInput {
   title: string;
@@ -235,107 +236,42 @@ export function getAdaptiveTaskRewardBase(input: AdaptiveTaskRewardBaseInput): {
   };
 }
 
-function inferRewardCategory(title: string, explicit?: RewardCategory | string | null): RewardCategory {
-  if (explicit && ['restorative', 'leisure', 'purchase', 'escape', 'social', 'custom'].includes(explicit)) {
-    return explicit as RewardCategory;
-  }
-  const lower = title.toLowerCase();
-  if (/(sleep|nap|walk|massage|bath|rest|meditat|stretch|tea)/.test(lower)) return 'restorative';
-  if (/(game|gaming|movie|youtube|netflix|anime|scroll|instagram|twitter|reddit)/.test(lower)) return 'leisure';
-  if (/(buy|order|coffee|food|book|course|device|shopping|purchase)/.test(lower)) return 'purchase';
-  if (/(skip|avoid|bunk|delay|postpone|cheat)/.test(lower)) return 'escape';
-  if (/(friend|call|party|date|meet|hangout)/.test(lower)) return 'social';
-  return 'custom';
-}
-
-function baseRewardCost(category: RewardCategory, title: string): number {
-  const lower = title.toLowerCase();
-  if (category === 'restorative') return 350;
-  if (category === 'social') return 700;
-  if (category === 'purchase') return /(expensive|device|keyboard|shoe|course)/.test(lower) ? 2200 : 1200;
-  if (category === 'escape') return 2400;
-  if (category === 'leisure') return /(hour|movie|gaming|game|netflix)/.test(lower) ? 1200 : 850;
-  return 800;
-}
-
-function rewardPriceMultiplier(category: RewardCategory, snapshot: PersonalizationSnapshot): { multiplier: number; reasons: string[] } {
-  let multiplier = 1;
-  const reasons: string[] = [];
-
-  if (snapshot.moment.mode === 'deadline_pressure' && (category === 'leisure' || category === 'escape')) {
-    multiplier += 0.35;
-    reasons.push('priced higher because deadline pressure makes escape rewards risky');
-  }
-  if (snapshot.moment.mode === 'recovery' && category === 'restorative') {
-    multiplier -= 0.2;
-    reasons.push('priced lower because restorative rewards support recovery');
-  }
-  if (snapshot.userState.energy === 'low' && category === 'escape') {
-    multiplier += 0.15;
-    reasons.push('priced higher because low energy can turn escape rewards into avoidance');
-  }
-  if (snapshot.userState.focusTrend === 'declining' && category === 'leisure') {
-    multiplier += 0.15;
-    reasons.push('priced higher because focus trend is declining');
-  }
-  if (snapshot.moment.mode === 'protect_focus' && (category === 'restorative' || category === 'social')) {
-    multiplier -= 0.1;
-    reasons.push('priced slightly lower because it can preserve momentum after focus');
-  }
-
-  return { multiplier: clamp(multiplier, 0.7, 1.75), reasons };
-}
-
 export function priceAdaptiveReward(input: AdaptiveRewardPriceInput): AdaptiveRewardPriceDecision {
   const snapshot = getSnapshot(input.snapshot);
   const title = subjectLabel(input.title);
-  const category = inferRewardCategory(title, input.category);
-  const explicit = Number(input.desiredCost);
-
-  if (Number.isFinite(explicit) && explicit > 0) {
-    return {
-      cost: Math.max(1, Math.round(explicit)),
-      category,
-      userCostOverride: true,
-      multiplier: 1,
-      reason: 'user supplied an explicit price; adaptive policy recorded context but did not override it',
-      pricingJson: JSON.stringify({
-        source: 'user_override',
-        category,
-        mode: snapshot.moment.mode,
-        energy: snapshot.userState.energy,
-        balance: input.balance ?? null,
-      }),
-    };
-  }
-
-  const base = baseRewardCost(category, title);
-  const priced = rewardPriceMultiplier(category, snapshot);
   const balance = Math.max(0, Math.round(input.balance ?? 0));
-  const balanceFloor = balance > 0 ? Math.max(100, Math.round(balance * 0.08 / 25) * 25) : 0;
-  const balanceCeil = balance > 0 ? Math.max(500, Math.round(balance * 0.6 / 25) * 25) : 5000;
-  const cost = Math.max(100, Math.min(balanceCeil, Math.max(balanceFloor, Math.round((base * priced.multiplier) / 25) * 25)));
-  const reason = priced.reasons.length
-    ? priced.reasons.join('; ')
-    : `priced from ${category} baseline for ${snapshot.moment.mode} mode`;
+  const priced = calculateRewardPrice({
+    title,
+    desiredCost: input.desiredCost,
+    category: input.category,
+    balance,
+    context: {
+      mode: snapshot.moment.mode,
+      energy: snapshot.userState.energy,
+      focusTrend: snapshot.userState.focusTrend,
+    },
+  });
 
   return {
-    cost,
-    category,
-    userCostOverride: false,
-    multiplier: Number(priced.multiplier.toFixed(2)),
-    reason,
+    cost: priced.cost,
+    category: priced.category,
+    userCostOverride: priced.userCostOverride,
+    multiplier: priced.multiplier,
+    reason: priced.reason,
     pricingJson: JSON.stringify({
-      source: 'adaptive_policy',
-      base,
-      multiplier: Number(priced.multiplier.toFixed(2)),
-      category,
+      source: priced.userCostOverride ? 'user_override' : 'adaptive_policy',
+      base: priced.baseCost,
+      multiplier: priced.multiplier,
+      category: priced.category,
       mode: snapshot.moment.mode,
       energy: snapshot.userState.energy,
       mood: snapshot.userState.mood,
       focusTrend: snapshot.userState.focusTrend,
       balance,
-      bounds: { balanceFloor, balanceCeil },
+      bounds: priced.userCostOverride ? null : {
+        balanceFloor: priced.balanceFloor,
+        balanceCeil: priced.balanceCeil,
+      },
     }),
   };
 }

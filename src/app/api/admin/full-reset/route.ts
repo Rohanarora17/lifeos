@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { reseedGamificationCatalog } from '@/lib/gamification-catalog';
 import fs from 'fs';
 import path from 'path';
 
@@ -122,6 +123,7 @@ const CLEAR_TABLES = [
   'agent_action_outcomes',
 
   // Gamification/user reward state (+ catalog; reseeded after wipe)
+  'reward_redemptions',
   'coin_ledger',
   'user_badges',
   'badges',
@@ -208,33 +210,6 @@ function rebuildMemFactsFts(db: ReturnType<typeof getDb>): string {
       return `skipped: ${inner instanceof Error ? inner.message : String(inner)}`;
     }
   }
-}
-
-function reseedGamificationCatalog(db: ReturnType<typeof getDb>): { badges: number; rewards: number } {
-  // Same seeds as migrations/008_gamification.sql
-  const badgeResult = db.prepare(`
-    INSERT OR IGNORE INTO badges (id, name, description, icon, metric, target) VALUES
-      (1, 'First Steps', 'Complete your first task', '👶', 'tasks_done', 1),
-      (2, 'Task Warrior', 'Complete 50 tasks', '⚔️', 'tasks_done', 50),
-      (3, 'Executioner', 'Complete 500 tasks', '🥷', 'tasks_done', 500),
-      (4, 'Getting Consistent', 'Reach a 7-day habit streak', '🔥', 'streak_days', 7),
-      (5, 'Unbreakable', 'Reach a 30-day habit streak', '💎', 'streak_days', 30),
-      (6, 'Deep Worker', 'Complete 10 Pomodoro sessions', '🧠', 'focus_sessions', 10),
-      (7, 'Monk Mode', 'Complete 100 Pomodoro sessions', '🧘', 'focus_sessions', 100)
-  `).run();
-
-  const rewardResult = db.prepare(`
-    INSERT OR IGNORE INTO rewards_store (id, title, cost, icon) VALUES
-      (1, '1 Hour Guilt-Free Gaming', 1000, '🎮'),
-      (2, 'Watch a Movie', 1500, '🍿'),
-      (3, 'Buy a Coffee out', 500, '☕'),
-      (4, 'Skip a Chore', 2000, '🧹')
-  `).run();
-
-  return {
-    badges: badgeResult.changes,
-    rewards: rewardResult.changes,
-  };
 }
 
 export async function GET() {
