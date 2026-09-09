@@ -19,6 +19,7 @@ import {
     formatCognitiveSelfAnswerForPrompt,
     isCognitiveSelfQuestion,
 } from '@/lib/cognitive-self-answer';
+import { recordHumanContact } from '@/lib/coaching-state';
 
 const tools = [{
     functionDeclarations: [
@@ -339,6 +340,8 @@ export async function POST(request: NextRequest) {
         const body = await request.json() as { messages?: unknown; query?: unknown };
         const messages = normalizeMessages(body);
         if (!messages) return NextResponse.json({ error: 'messages or query required' }, { status: 400 });
+        const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
+        recordHumanContact('web_chat', { length: lastUserMessage?.content.length ?? 0 });
 
         const ai = getGenAI();
 

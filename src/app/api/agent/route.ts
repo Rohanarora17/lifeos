@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runAgent, AgentSurface } from '@/lib/lifeos-agent';
+import { recordHumanContact } from '@/lib/coaching-state';
 
 const VALID_SURFACES: AgentSurface[] = ['telegram', 'web', 'voice', 'scheduler'];
 
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
   const resolvedSurface: AgentSurface = VALID_SURFACES.includes(surface as AgentSurface)
     ? (surface as AgentSurface)
     : 'web';
+  recordHumanContact(`${resolvedSurface}_agent`, { length: message.trim().length });
 
   try {
     const result = await runAgent({

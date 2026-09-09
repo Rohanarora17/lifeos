@@ -29,6 +29,13 @@ import { getAdaptiveBands } from '@/lib/adaptive-bands';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { VisionClientUnavailableError } from '@/lib/guardian-client-status';
+import {
+    acceptRecoveryRestart,
+    getCoachingState,
+    handleRecoveryResponse,
+    recordHumanContact,
+    setCoachingPaused,
+} from '@/lib/coaching-state';
 
 function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
@@ -123,6 +130,7 @@ export async function POST(request: Request) {
             const chatId = String(message?.chat?.id);
             if (chatId !== authorizedChatId) return NextResponse.json({ ok: true });
 
+            recordHumanContact('telegram_callback', { callbackData: data });
             await handleCallbackQuery(id, data);
             return NextResponse.json({ ok: true });
         }
@@ -135,6 +143,13 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
             const text: string = body.message.text;
+
+            if (/^\s*\/resume(?:@[^\s]+)?\s*$/i.test(text)) {
+                recordHumanContact('telegram_text', { length: text.length, command: 'resume' });
+                setCoachingPaused(false);
+                await sendTelegram('Coaching resumed. I will use the current recovery state instead of recycling the old reminder sequence.', 'HTML', FULL_MENU_KEYBOARD);
+                return NextResponse.json({ ok: true });
+            }
 
             // Screen time report from iOS Shortcut
             if (text.includes('SCREEN_TIME_REPORT')) {
@@ -149,14 +164,26 @@ export async function POST(request: Request) {
                 return NextResponse.json({ ok: true });
             }
 
+            // Shortcut telemetry is handled above and must not count as the person
+            // replying. Every remaining authorized text message is human contact.
+            recordHumanContact('telegram_text', { length: text.length });
+
+            if (/^\s*\/pause(?:@[^\s]+)?\s*$/i.test(text)) {
+                setCoachingPaused(true);
+                await sendTelegram('Coaching is paused. Reply /resume or use the Coach page when you want to restart.', 'HTML', FULL_MENU_KEYBOARD);
+                return NextResponse.json({ ok: true });
+            }
+
             // Native app classification ask — only consume clear short answers so
             // longer messages still reach the agent / check-in handlers.
             try {
+                /* eslint-disable @typescript-eslint/no-require-imports */
                 const {
                     getPendingNativeCategoryAsk,
                     parseNativeCategoryAnswer,
                     resolveNativeCategoryAsk,
                 } = require('@/lib/native-app-classification') as typeof import('@/lib/native-app-classification');
+                /* eslint-enable @typescript-eslint/no-require-imports */
                 if (getPendingNativeCategoryAsk()) {
                     const answer = parseNativeCategoryAnswer(text);
                     if (answer) {
@@ -172,6 +199,25 @@ export async function POST(request: Request) {
             // Slash commands always win over pending conversational intercepts
             // (evening check-in / weekly reckoning previously swallowed /review /tasks).
             const isSlashCommand = /^\s*[/\\][a-zA-Z]/.test(text);
+
+            // Recovery takes precedence over stale pending check-ins. The system should
+            // understand why contact stopped before returning to the normal daily flow.
+            const coachingState = getCoachingState();
+            if (!isSlashCommand && coachingState.episode && !coachingState.episode.acceptedAt) {
+                if (/^\s*start\s*$/i.test(text)) {
+                    const state = acceptRecoveryRestart({});
+                    await executeAction('START_SESSION', '', {
+                        targetTitle: state.restart.title,
+                        durationMinutes: state.restart.minutes,
+                    });
+                    return NextResponse.json({ ok: true });
+                }
+                const recovery = handleRecoveryResponse(text);
+                if (recovery.handled) {
+                    await sendTelegram(recovery.reply, 'HTML', FULL_MENU_KEYBOARD);
+                    return NextResponse.json({ ok: true });
+                }
+            }
 
             // Pending session context — user replied with context after being prompted
             const pendingSessionRaw = getSetting('pending_session_context');
@@ -240,6 +286,8 @@ export async function POST(request: Request) {
             const chatId = String(body.message.chat.id);
             if (chatId !== authorizedChatId) return NextResponse.json({ ok: true });
 
+            recordHumanContact('telegram_voice', { durationSeconds: body.message.voice.duration });
+
             const fileId = body.message.voice.file_id as string;
             console.log(`[Webhook] Voice note received: file_id=${fileId}, duration=${body.message.voice.duration}s`);
 
@@ -257,6 +305,15 @@ export async function POST(request: Request) {
             }
 
             console.log(`[Webhook] Voice note transcript: "${transcript.slice(0, 100)}"`);
+
+            const coachingState = getCoachingState();
+            if (coachingState.episode && !coachingState.episode.acceptedAt) {
+                const recovery = handleRecoveryResponse(transcript);
+                if (recovery.handled) {
+                    await sendTelegram(recovery.reply, 'HTML', FULL_MENU_KEYBOARD);
+                    return NextResponse.json({ ok: true });
+                }
+            }
 
             // Route transcript through the same pipeline as text
             const pendingCheckin = getPendingCheckinType();
@@ -326,13 +383,17 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
         } else if (type === 'classify') {
             await handleClassifyCallback(rest);
         } else if (type === 'native_cat') {
+            /* eslint-disable @typescript-eslint/no-require-imports */
             const {
                 resolveNativeCategoryAsk,
                 toActivityCategory,
             } = require('@/lib/native-app-classification') as typeof import('@/lib/native-app-classification');
+            /* eslint-enable @typescript-eslint/no-require-imports */
             const category = toActivityCategory(rest);
             const result = resolveNativeCategoryAsk(category, 'telegram_callback');
             await sendTelegram(result.message, 'HTML', FULL_MENU_KEYBOARD);
+        } else if (type === 'coach') {
+            await handleCoachCallback(rest);
         } else {
             await sendTelegram(`Unknown callback type: ${type}`, '', FULL_MENU_KEYBOARD);
         }
@@ -340,6 +401,31 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
         console.error(`[Callback] Handler threw for "${actionData}":`, err);
         await sendTelegram(`⚠️ Something went wrong processing that button.\n<code>${String(err).slice(0, 100)}</code>`, 'HTML', FULL_MENU_KEYBOARD).catch(() => {});
     }
+}
+
+async function handleCoachCallback(payload: string) {
+    if (payload === 'pause') {
+        setCoachingPaused(true);
+        await sendTelegram('Coaching is paused. Use the Coach page or reply /resume when you want to restart.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+    if (payload.startsWith('restart:')) {
+        const minutes = Number(payload.split(':')[1]) || 10;
+        const state = acceptRecoveryRestart({ minutes });
+        await executeAction('START_SESSION', '', {
+            targetTitle: state.restart.title,
+            durationMinutes: state.restart.minutes,
+        });
+        return;
+    }
+    if (payload.startsWith('blocker:')) {
+        const blocker = payload.slice('blocker:'.length);
+        const text = blocker === 'difficulty' ? 'I am stuck in the work itself' : 'There is too much to catch up on';
+        const recovery = handleRecoveryResponse(text);
+        await sendTelegram(recovery.reply || 'Tell me what is blocking the restart.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+    await sendTelegram('That coaching action is no longer available. Open the Coach page for the current state.', 'HTML', FULL_MENU_KEYBOARD);
 }
 
 // ─── action: callbacks ────────────────────────────────────────────────────────

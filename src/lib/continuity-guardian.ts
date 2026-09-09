@@ -8,6 +8,8 @@ import { getTodayPhoneScreenTime } from './phone-screen-time';
 import { getAdaptiveBands } from './adaptive-bands';
 import { buildPersonalizationSnapshot } from './personalization-context';
 import { daysSinceInHistory, getHistoryStartDate, isInCurrentHistory } from './history-epoch';
+import { runCoachingRecoveryCheck } from './coaching-orchestrator';
+import { getCoachingState } from './coaching-state';
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -203,6 +205,15 @@ export async function runContinuityCheck(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getActiveGuardianSession } = require('./guardian-runtime');
     if (getActiveGuardianSession() !== null) return;
+
+    // Recovery owns proactive contact once normal participation has broken down.
+    // This runs before the legacy daily message cap because it has its own one-per-day dedupe.
+    const recovery = await runCoachingRecoveryCheck();
+    const coachingState = getCoachingState();
+    if (coachingState.engagement === 'disengaged' || coachingState.engagement === 'reconnecting' || coachingState.engagement === 'paused') {
+      console.log(`[Continuity] Normal triggers suppressed in ${coachingState.engagement} state (recovery=${recovery}).`);
+      return;
+    }
 
     if (!canSendContinuityMessage()) {
       console.log('[Continuity] Daily message limit reached, skipping.');

@@ -12,6 +12,7 @@ import { getFeedbackLearningSummary } from './feedback-learning';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
 import { buildSelfModel, selectSelfModelQuestion, type SelfModelGapQuestion } from './self-model';
 import { ensureHistoryStartDate } from './history-epoch';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 // ─── State Keys (stored in settings table) ──────────────────────────────────
 
@@ -210,11 +211,20 @@ export type CheckinSendResult =
   | 'sent'
   | 'already_pending'
   | 'already_completed'
+  | 'suppressed_by_coaching_state'
   | 'send_failed';
 
 export async function sendMorningCheckin(options: { force?: boolean } = {}): Promise<CheckinSendResult> {
   const today = todayIst();
   const force = options.force === true;
+
+  if (!force) {
+    const gate = shouldSuppressRoutineCoaching('morning_checkin');
+    if (gate.suppress) {
+      console.log(`[Checkin] Morning check-in suppressed: ${gate.reason}`);
+      return 'suppressed_by_coaching_state';
+    }
+  }
 
   // Check 1: already answered today (DB record)
   const db = getDb();
@@ -298,6 +308,14 @@ Return ONLY the message text. No quotes.`,
 export async function sendEveningReflection(options: { force?: boolean } = {}): Promise<CheckinSendResult> {
   const today = todayIst();
   const force = options.force === true;
+
+  if (!force) {
+    const gate = shouldSuppressRoutineCoaching('evening_reflection');
+    if (gate.suppress) {
+      console.log(`[Checkin] Evening reflection suppressed: ${gate.reason}`);
+      return 'suppressed_by_coaching_state';
+    }
+  }
 
   // Don't send if already completed today (unless force re-opens the prompt after complete)
   const db = getDb();

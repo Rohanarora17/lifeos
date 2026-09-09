@@ -77,6 +77,13 @@ interface DashboardData {
     date: string; xp_earned: number; productive_minutes: number;
     distraction_minutes: number; tasks_completed: number;
   }[];
+  coachingState?: {
+    engagement: 'active' | 'slipping' | 'disengaged' | 'reconnecting' | 'paused';
+    coverage: 'current' | 'partial' | 'missing';
+    reason: string;
+    evidence: string[];
+    restart: { minutes: number; title: string; taskId: number | null };
+  };
   intelligence?: {
     cognitiveLoad: { openTaskCount: number; mentalBandwidth: number; status: string; quickWins: unknown[] };
     recommendedTasks: {
@@ -567,6 +574,27 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-6 animate-fade-in">
+      {data.coachingState && data.coachingState.engagement !== 'active' && (
+        <div
+          className="card flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
+          style={{
+            borderColor: data.coachingState.engagement === 'disengaged' ? '#ef4444' : '#f59e0b',
+            background: data.coachingState.engagement === 'disengaged' ? 'rgba(239,68,68,0.05)' : 'rgba(245,158,11,0.05)',
+          }}
+        >
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide" style={{ color: data.coachingState.engagement === 'disengaged' ? '#ef4444' : '#f59e0b' }}>
+              {data.coachingState.engagement === 'disengaged' ? 'Recovery needed' : data.coachingState.engagement.replace('_', ' ')}
+            </p>
+            <h2 className="mt-1 text-xl font-bold" style={{ color: 'var(--text-primary)' }}>The normal plan needs attention</h2>
+            <p className="mt-1 max-w-3xl text-sm" style={{ color: 'var(--text-secondary)' }}>{data.coachingState.reason}</p>
+            <p className="mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+              Evidence coverage: {data.coachingState.coverage}. Missing device data is not counted as inactivity.
+            </p>
+          </div>
+          <button className="btn btn-primary shrink-0" onClick={() => router.push('/coach')}>Resolve and restart</button>
+        </div>
+      )}
       {/* Focus Session Panel — Active or Start */}
       {session.active ? (
         <div className="card relative overflow-hidden" style={{ borderColor: 'var(--accent-purple)', background: 'rgba(157, 78, 221, 0.05)' }}>

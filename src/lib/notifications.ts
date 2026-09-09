@@ -7,6 +7,7 @@ import { tryGetGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import { buildPersonalizationSnapshot, formatPersonalizationContext } from './personalization-context';
 import { recordExplicitFeedbackLearning } from './feedback-learning';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 // ============================================================
 //  NOTIFICATION ENGINE — Real-time alerts + email via Resend
@@ -627,6 +628,12 @@ function deterministicAlertDecision(
 
     if (deadlineReason) {
         reasons.push(deadlineReason);
+    }
+
+    const coachingGate = shouldSuppressRoutineCoaching(`alert:${type}`);
+    if (coachingGate.suppress) {
+        shouldSend = false;
+        reasons.push(coachingGate.reason);
     }
 
     if (recentAlertCount >= 5 && nextSeverity === 'info') {

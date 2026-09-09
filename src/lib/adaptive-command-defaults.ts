@@ -2,6 +2,8 @@ import { getIntelligenceProfile } from './intelligence';
 import { getDb } from './db';
 import type { PersonalizationSnapshot } from './personalization-context';
 import { getLearningPhaseState } from './history-epoch';
+import { getCoachingState } from './coaching-state';
+import { getSessionPerformanceProfile } from './coaching-performance';
 
 function recentSessionMedianMinutes(): number | null {
   try {
@@ -41,6 +43,15 @@ export function getAdaptiveSessionMinuteDecision(
     };
   }
 
+  const coaching = getCoachingState();
+  if (coaching.engagement === 'disengaged' || coaching.engagement === 'reconnecting') {
+    return {
+      minutes: coaching.episode?.restartMinutes ?? 10,
+      reason: `using a small restart while coaching state is ${coaching.engagement}`,
+      source: 'adaptive',
+    };
+  }
+
   const learning = getLearningPhaseState();
   if (learning.active) {
     return {
@@ -51,14 +62,36 @@ export function getAdaptiveSessionMinuteDecision(
   }
 
   const profile = getIntelligenceProfile();
+  const performance = getSessionPerformanceProfile();
   const learned =
+    performance.recommendedMinutes ||
     profile.adaptiveThresholds?.sessionDurationSweetSpot ||
     profile.optimalSessionMinutes ||
     recentSessionMedianMinutes() ||
     45;
 
   let multiplier = 1;
-  const reasons = [`learned ${Math.round(learned)}m baseline`];
+  const reasons = [performance.recommendedMinutes
+    ? `${performance.confidence}-confidence ${Math.round(learned)}m baseline from sessions that were substantially completed`
+    : `learned ${Math.round(learned)}m baseline`];
+
+  if (performance.sampleSize >= 6 && performance.trend === 'declining') {
+    multiplier *= 0.8;
+    reasons.push('shortened because the last three session outcomes declined');
+  } else if (
+    performance.sampleSize >= 6 &&
+    performance.trend === 'improving' &&
+    (performance.completedAsPlannedRate ?? 0) >= 0.75
+  ) {
+    multiplier *= 1.1;
+    reasons.push('extended slightly after sustained completion and improving outcomes');
+  }
+
+  const currentHour = new Date().getHours();
+  if (performance.bestStartHours.includes(currentHour)) {
+    multiplier *= 1.1;
+    reasons.push('this hour has repeatedly produced stronger session outcomes');
+  }
 
   if (snapshot?.moment.mode === 'recovery' || snapshot?.userState.energy === 'low' || snapshot?.userState.mood === 'low') {
     multiplier *= 0.75;

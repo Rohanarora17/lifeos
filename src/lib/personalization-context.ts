@@ -21,6 +21,7 @@ import {
   getCognitiveTrajectory,
   type CognitiveTrajectory,
 } from './cognitive-self-answer';
+import { getCoachingState, type CoverageState, type EngagementState } from './coaching-state';
 
 export type PersonalizationSurface =
   | 'agent'
@@ -92,6 +93,12 @@ export interface PersonalizationSnapshot {
     recentAlerts: number;
     helpfulRate: number | null;
     corrections30d: number;
+  };
+  coaching: {
+    engagement: EngagementState;
+    coverage: CoverageState;
+    reason: string;
+    evidence: string[];
   };
   moment: {
     mode: 'protect_focus' | 'deadline_pressure' | 'recovery' | 'planning' | 'normal';
@@ -293,7 +300,14 @@ function deriveMoment(input: {
   focusScore: number | null;
   focusGood: number;
   peakFocusHours: number[];
+  engagement: EngagementState;
 }): PersonalizationSnapshot['moment'] {
+  if (input.engagement === 'disengaged' || input.engagement === 'reconnecting' || input.engagement === 'paused') {
+    return {
+      mode: 'recovery',
+      guidance: `The coaching state is ${input.engagement}. Coordinate around one restart and suppress routine pressure.`,
+    };
+  }
   if (input.focusScore !== null && input.focusScore >= input.focusGood && input.peakFocusHours.includes(input.hour)) {
     return {
       mode: 'protect_focus',
@@ -383,6 +397,7 @@ export function buildPersonalizationSnapshot(opts?: {
   const plannedFocus = getPlannedFocusContext(date);
   const explicitState = getExplicitTodayState(date);
   const standupGoalToday = getTodayStandupGoal(date);
+  const coaching = getCoachingState();
   const energy = explicitState.energy ?? 'medium';
   const mood = explicitState.mood;
 
@@ -396,6 +411,7 @@ export function buildPersonalizationSnapshot(opts?: {
     focusScore,
     focusGood: bands.focusGood,
     peakFocusHours: profile.peakFocusHours,
+    engagement: coaching.engagement,
   });
 
   const generatedAt = now.toISOString();
@@ -438,6 +454,12 @@ export function buildPersonalizationSnapshot(opts?: {
       recentAlerts,
       helpfulRate,
       corrections30d,
+    },
+    coaching: {
+      engagement: coaching.engagement,
+      coverage: coaching.coverage,
+      reason: coaching.reason,
+      evidence: coaching.evidence,
     },
     moment,
     // filled below after coach/traits — placeholder satisfies type during construction
@@ -542,6 +564,8 @@ export function formatPersonalizationContext(snapshot: PersonalizationSnapshot):
     '=== FEEDBACK LOOP ===',
     `Alert fatigue: ${snapshot.feedback.alertFatigueLevel} (${snapshot.feedback.recentAlerts} alerts in 2h)`,
     `Agent helpful rate: ${helpful}; corrections in 30d: ${snapshot.feedback.corrections30d}`,
+    `Coaching state: ${snapshot.coaching.engagement}; evidence coverage: ${snapshot.coaching.coverage}`,
+    `Coaching reason: ${snapshot.coaching.reason}`,
     '',
     // Prefer structured snapshot.cognitive (single source of truth) — never invent a second map
     snapshot.cognitive?.contextBlock

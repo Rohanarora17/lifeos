@@ -7,6 +7,7 @@ import { getIntelligenceContext } from './intelligence';
 import { getGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import { daysSinceInHistory, getHistoryStartDate, isInCurrentHistory } from './history-epoch';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 export interface OpenLoop {
   type: 'goal' | 'task' | 'topic';
@@ -110,6 +111,11 @@ export function getOpenLoops(): OpenLoop[] {
  */
 export async function sendOpenLoopsAudit(): Promise<void> {
   try {
+    const coachingGate = shouldSuppressRoutineCoaching('open_loops_audit');
+    if (coachingGate.suppress) {
+      console.log(`[OpenLoops] ${coachingGate.reason}`);
+      return;
+    }
     const loops = getOpenLoops();
 
     if (loops.length === 0) {
@@ -177,6 +183,11 @@ Rules:
  */
 export async function sendMonthlyPatternLetter(): Promise<void> {
   try {
+    const coachingGate = shouldSuppressRoutineCoaching('monthly_pattern_letter');
+    if (coachingGate.suppress) {
+      console.log(`[OpenLoops] ${coachingGate.reason}`);
+      return;
+    }
     const db = getDb();
 
     const reckonings = db.prepare(`

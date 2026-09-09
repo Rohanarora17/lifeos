@@ -13,6 +13,7 @@ import { buildAdaptiveDashboardPolicy } from '@/lib/adaptive-dashboard-policy';
 import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 import { syncCalendarIfStale } from '@/lib/calendar';
+import { getCoachingState } from '@/lib/coaching-state';
 
 // GET: Dashboard overview data
 export async function GET() {
@@ -183,6 +184,7 @@ export async function GET() {
       dailyCapacityMinutes: adaptiveBands.dailyCapacityMinutes,
       recommendedSessionMinutes,
     });
+    const coachingState = getCoachingState();
 
     // Early-run gate: do not present invented peak windows / coaching as "learned"
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -215,6 +217,7 @@ export async function GET() {
         recentActivities,
       },
       weekTrend,
+      coachingState,
       intelligence: {
         cognitiveLoad,
         recommendedTasks,

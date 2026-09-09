@@ -9,6 +9,7 @@ import { getAdaptiveSessionMinuteDecision } from '@/lib/adaptive-command-default
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { VisionClientUnavailableError } from '@/lib/guardian-client-status';
 import { lifeosDateKey } from '@/lib/timezone';
+import { acceptRecoveryRestart, getCoachingState, recordHumanContact } from '@/lib/coaching-state';
 
 interface PlannedSessionStartMatch {
   id: string;
@@ -181,6 +182,7 @@ export async function POST(req: Request) {
       sessionContext: body.sessionContext as string | undefined,
       startRequestId: body.startRequestId as string | undefined,
     };
+    recordHumanContact('guardian_start_request', { source: startInput.source });
 
     let parsedIntent: Awaited<ReturnType<typeof parseLockInIntent>> | null = null;
     if (transcript) {
@@ -238,6 +240,13 @@ export async function POST(req: Request) {
     }
 
     const session = startGuardianSession(startInput);
+    const coaching = getCoachingState();
+    if (coaching.episode && !coaching.episode.acceptedAt) {
+      acceptRecoveryRestart({
+        minutes: session.durationMinutes,
+        nextActionText: session.targetTitle,
+      });
+    }
 
     if (plannedMatch) {
       try {

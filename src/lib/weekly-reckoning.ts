@@ -4,9 +4,15 @@
 import { getDb, setSetting } from './db';
 import { sendTelegram } from './telegram';
 import { getIntelligenceContext } from './intelligence';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 export async function sendWeeklyReckoning(): Promise<void> {
   try {
+    const coachingGate = shouldSuppressRoutineCoaching('weekly_reckoning');
+    if (coachingGate.suppress) {
+      console.log(`[WeeklyReckoning] ${coachingGate.reason}`);
+      return;
+    }
     const db = getDb();
     const now = new Date();
 

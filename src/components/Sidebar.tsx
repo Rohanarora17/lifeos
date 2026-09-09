@@ -13,6 +13,7 @@ const navItems = [
     { href: '/goals', label: 'Goals', icon: '🎯' },
     { href: '/study-plan', label: 'Study Plans', icon: '📚' },
     { href: '/guardian', label: 'Guardian', icon: '🛡️' },
+    { href: '/coach', label: 'Coach', icon: '🧭' },
     { href: '/chat', label: 'Jarvis', icon: '💬' },
     { href: '/store', label: 'Rewards', icon: '🎁' },
     { href: '/analytics', label: 'Analytics', icon: '📈' },

@@ -52,6 +52,7 @@ import {
 } from './guardian-client-status';
 import { getSessionActivityEvidenceCount, getSessionScoringIntervals } from './session-activity';
 import { configuredGuardianEvidenceMode, recordGuardianScoreSnapshot } from './guardian-evidence-store';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 export { VisionClientUnavailableError } from './guardian-client-status';
 
@@ -2809,6 +2810,8 @@ function tickSoftWatchChecker() {
       commitment.reminderSentAt = now;
       softWatchMap.set(id, commitment);
       persistSoftWatch(commitment);
+      const coachingGate = shouldSuppressRoutineCoaching('soft_watch_reminder');
+      if (coachingGate.suppress) continue;
       void speak(
         'soft_watch',
         formatSoftWatchVoiceReminder(commitment, policy),
@@ -2830,6 +2833,8 @@ function tickSoftWatchChecker() {
       softWatchMap.set(id, commitment);
       persistSoftWatch(commitment);
       const delayMinutes = formatPolicyMinutes(policy.checkInDelayMs);
+      const coachingGate = shouldSuppressRoutineCoaching('soft_watch_checkin');
+      if (coachingGate.suppress) continue;
       void speak(
         'soft_watch',
         formatSoftWatchVoiceCheckIn(commitment, policy),

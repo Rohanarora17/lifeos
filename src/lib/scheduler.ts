@@ -17,6 +17,7 @@ import { sendOpenLoopsAudit, sendMonthlyPatternLetter } from './open-loops';
 import { decideAdaptiveJobRun } from './adaptive-scheduler';
 import { buildPersonalizationSnapshot } from './personalization-context';
 import { composeEveningPlanningReminder } from './notifications';
+import { shouldSuppressRoutineCoaching } from './coaching-state';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -500,6 +501,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=morning`);
         // Also send morning brief to Telegram
         try {
+            const coachingGate = shouldSuppressRoutineCoaching('morning_brief');
+            if (coachingGate.suppress) {
+                console.log(`[Scheduler] morning_brief Telegram suppressed: ${coachingGate.reason}`);
+                return;
+            }
             const db = getDb();
             const today = new Date().toISOString().slice(0, 10);
             const pending = (db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status IN ('todo','doing')").get() as { c: number }).c;
@@ -548,6 +554,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         await fetchSchedulerEndpoint(`${baseUrl}/api/summary?type=daily&date=${today}`);
         // Also send daily report to Telegram
         try {
+            const coachingGate = shouldSuppressRoutineCoaching('daily_summary');
+            if (coachingGate.suppress) {
+                console.log(`[Scheduler] daily_summary Telegram suppressed: ${coachingGate.reason}`);
+                return;
+            }
             const db = getDb();
             const stats = db.prepare(`
                 SELECT
@@ -760,6 +771,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     const eveningTime = resolveEveningReflectionTime();
     registerAdaptiveEveningReminderJob(async () => {
         await runAdaptiveSchedulerJob('evening_reminder', async () => {
+            const coachingGate = shouldSuppressRoutineCoaching('evening_planner');
+            if (coachingGate.suppress) {
+                console.log(`[Scheduler] evening_reminder suppressed: ${coachingGate.reason}`);
+                return;
+            }
             const reminder = composeEveningPlanningReminder();
             if (!reminder.shouldSend) {
                 console.log(`[Scheduler] evening_reminder adaptive skip: ${reminder.reason}`);
@@ -928,6 +944,11 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             }
 
             if (streak === 4) {
+                const coachingGate = shouldSuppressRoutineCoaching('streak_cliff');
+                if (coachingGate.suppress) {
+                    console.log(`[Scheduler] ${coachingGate.reason}`);
+                    return;
+                }
                 const today = new Date().toISOString().slice(0, 10);
                 const alreadySent = getSetting('streak_cliff_sent_date') === today;
                 if (!alreadySent) {

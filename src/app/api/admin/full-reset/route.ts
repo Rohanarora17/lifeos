@@ -37,6 +37,9 @@ import path from 'path';
 
 const CLEAR_TABLES = [
   // Dependent task/session/plan data first
+  'coaching_decisions',
+  'coaching_events',
+  'coaching_episodes',
   'task_recommendation_feedback',
   'task_session_logs',
   'node_task_links',
@@ -135,6 +138,7 @@ const TRANSIENT_SETTING_KEYS = [
   // Continuity + UIL pacing
   'continuity_msg_count',
   'continuity_msg_date',
+  'coaching_paused',
   'last_uil_insight_sent_at',
   'last_classify_review_session_id',
   'streak_cliff_sent_date',
