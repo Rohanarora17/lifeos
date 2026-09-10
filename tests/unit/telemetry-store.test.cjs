@@ -31,7 +31,7 @@ describe('telemetry event store', () => {
       group: null,
       provenance: {
         collector: 'extension',
-        collectorVersion: '1.3.1',
+        collectorVersion: '1.3.2',
         adaptedFrom: null,
       },
       privacy: { decision: 'allow', reason: 'waking_hours_metadata' },
@@ -70,7 +70,7 @@ describe('telemetry event store', () => {
       session_id: null,
       last_seen_at: observedEnd,
       window_focused: 1,
-      collector_version: '1.3.1',
+      collector_version: '1.3.2',
     });
     assert.equal(db.prepare('SELECT COUNT(*) FROM session_activity_intervals').pluck().get(), 0);
   });

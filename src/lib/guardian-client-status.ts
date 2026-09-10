@@ -90,6 +90,16 @@ export class VisionClientUnavailableError extends Error {
   }
 }
 
+const MAX_DEVICE_CLOCK_SKEW_MS = 5 * 60_000;
+
+function parseServerTime(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return NaN;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  return Date.parse(normalized);
+}
+
 export function guardianClientRequired() {
   return process.env.LIFEOS_REQUIRE_VISION_CLIENT !== 'false';
 }
@@ -128,7 +138,12 @@ function evidenceCoverage(
 ): EvidenceCoverageState {
   if (!lastSeenAt) return 'missing';
   const age = nowMs - Date.parse(lastSeenAt);
-  if (usable && Number.isFinite(age) && age >= 0 && age <= currentHours * 3_600_000) return 'current';
+  if (
+    usable
+    && Number.isFinite(age)
+    && age >= -MAX_DEVICE_CLOCK_SKEW_MS
+    && age <= currentHours * 3_600_000
+  ) return 'current';
   return 'partial';
 }
 
@@ -173,20 +188,24 @@ export function getGuardianEvidenceHealth(nowMs = Date.now()): GuardianEvidenceH
 }
 
 function browserCollectorReadiness(sessionId: string | null, nowMs: number) {
-  const row = getDb().prepare(`
-    SELECT last_seen_at, window_focused, collector_version
+  const rows = getDb().prepare(`
+    SELECT last_seen_at, updated_at, window_focused, collector_version
     FROM browser_collector_status
     WHERE (? IS NULL OR session_id = ?)
-    ORDER BY last_seen_at DESC LIMIT 1
-  `).get(sessionId, sessionId) as {
-    last_seen_at: string; window_focused: number; collector_version: string;
-  } | undefined;
-  const age = row ? nowMs - Date.parse(row.last_seen_at) : Number.POSITIVE_INFINITY;
+    ORDER BY updated_at DESC
+  `).all(sessionId, sessionId) as Array<{
+    last_seen_at: string; updated_at: string; window_focused: number; collector_version: string;
+  }>;
+  const readyRow = rows.find(candidate => {
+    const age = Math.max(0, nowMs - parseServerTime(candidate.updated_at));
+    return candidate.window_focused === 1
+      && collectorIsCompatible('chrome', candidate.collector_version)
+      && Number.isFinite(age)
+      && age <= BROWSER_STALE_MS;
+  });
+  const row = readyRow ?? rows[0];
   const compatible = Boolean(row && collectorIsCompatible('chrome', row.collector_version));
-  const ready = Boolean(
-    row && compatible && row.window_focused === 1
-      && age >= 0 && age <= BROWSER_STALE_MS,
-  );
+  const ready = Boolean(readyRow);
   return {
     row,
     state: {
@@ -202,6 +221,7 @@ function browserCollectorReadiness(sessionId: string | null, nowMs: number) {
 export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
   const deviceId = normalizeDeviceId(input.deviceId);
   const observedAt = isoOrNow(input.observedAt);
+  const receivedAt = new Date().toISOString();
   const systemState: ClientSystemState = input.systemState === 'idle' || input.systemState === 'locked'
     ? input.systemState
     : 'active';
@@ -210,7 +230,7 @@ export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
       device_id, client_version, last_seen_at, screen_recording_status,
       capture_capable, frontmost_app, frontmost_window_title, system_state,
       active_session_id, metadata_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id) DO UPDATE SET
       client_version = excluded.client_version,
       last_seen_at = excluded.last_seen_at,
@@ -221,7 +241,7 @@ export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
       system_state = excluded.system_state,
       active_session_id = excluded.active_session_id,
       metadata_json = excluded.metadata_json,
-      updated_at = datetime('now')
+      updated_at = excluded.updated_at
   `).run(
     deviceId,
     input.clientVersion?.trim() || 'unknown',
@@ -233,6 +253,7 @@ export function recordNativeClientHeartbeat(input: NativeClientHeartbeat) {
     systemState,
     input.activeSessionId?.trim() || null,
     JSON.stringify(input.metadata ?? {}),
+    receivedAt,
   );
   return getGuardianClientReadiness();
 }
@@ -261,7 +282,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
   const expected = process.env.LIFEOS_MACBOOK_DEVICE_ID?.trim();
   const row = (expected
     ? getDb().prepare('SELECT * FROM native_client_status WHERE device_id = ?').get(expected)
-    : getDb().prepare('SELECT * FROM native_client_status ORDER BY last_seen_at DESC LIMIT 1').get()
+    : getDb().prepare('SELECT * FROM native_client_status ORDER BY updated_at DESC LIMIT 1').get()
   ) as Record<string, unknown> | undefined;
 
   if (!row) {
@@ -287,7 +308,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
   }
 
   const lastSeenAt = String(row.last_seen_at || '');
-  const heartbeatAgeMs = Math.max(0, nowMs - Date.parse(lastSeenAt));
+  const heartbeatAgeMs = Math.max(0, nowMs - parseServerTime(row.updated_at));
   const screenRecordingStatus = String(row.screen_recording_status || 'unknown');
   const captureCapable = Number(row.capture_capable) === 1;
   let reason: GuardianClientReadiness['reason'] = 'ready';
@@ -360,11 +381,12 @@ export function recordBrowserCollectorHeartbeat(input: {
   observedAt?: string | null;
 }) {
   const deviceId = input.deviceId?.trim() || 'chrome-primary';
+  const receivedAt = new Date().toISOString();
   getDb().prepare(`
     INSERT INTO browser_collector_status (
       device_id, last_seen_at, session_id, window_focused, collector_version,
       media_playback_active, media_title, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(device_id) DO UPDATE SET
       last_seen_at = excluded.last_seen_at,
       session_id = excluded.session_id,
@@ -372,7 +394,7 @@ export function recordBrowserCollectorHeartbeat(input: {
       collector_version = excluded.collector_version,
       media_playback_active = excluded.media_playback_active,
       media_title = excluded.media_title,
-      updated_at = datetime('now')
+      updated_at = excluded.updated_at
   `).run(
     deviceId,
     isoOrNow(input.observedAt),
@@ -381,33 +403,38 @@ export function recordBrowserCollectorHeartbeat(input: {
     input.collectorVersion?.trim() || 'unknown',
     input.mediaPlaybackActive === true ? 1 : 0,
     input.mediaTitle?.trim() || null,
+    receivedAt,
   );
 }
 
 export function getBrowserCollectorState(sessionId: string, nowMs = Date.now()) {
-  const row = getDb().prepare(`
-    SELECT last_seen_at, window_focused, media_playback_active, media_title, collector_version
+  const rows = getDb().prepare(`
+    SELECT last_seen_at, updated_at, window_focused, media_playback_active, media_title, collector_version
     FROM browser_collector_status
     WHERE session_id = ?
-    ORDER BY last_seen_at DESC
-    LIMIT 1
-  `).get(sessionId) as {
+    ORDER BY updated_at DESC
+  `).all(sessionId) as Array<{
     last_seen_at: string;
+    updated_at: string;
     window_focused: number;
     media_playback_active: number;
     media_title: string | null;
     collector_version: string;
-  } | undefined;
-  if (!row || row.window_focused !== 1) {
+  }>;
+  const row = rows.find(candidate => {
+    const age = Math.max(0, nowMs - parseServerTime(candidate.updated_at));
+    return candidate.window_focused === 1
+      && collectorIsCompatible('chrome', candidate.collector_version)
+      && Number.isFinite(age)
+      && age <= BROWSER_STALE_MS;
+  });
+  if (!row) {
     return { fresh: false, mediaPlaybackActive: false, mediaTitle: null };
   }
-  const age = nowMs - Date.parse(row.last_seen_at);
-  const fresh = Number.isFinite(age) && age >= 0 && age <= BROWSER_STALE_MS
-    && collectorIsCompatible('chrome', row.collector_version);
   return {
-    fresh,
-    mediaPlaybackActive: fresh && row.media_playback_active === 1,
-    mediaTitle: fresh ? row.media_title : null,
+    fresh: true,
+    mediaPlaybackActive: row.media_playback_active === 1,
+    mediaTitle: row.media_title,
   };
 }
 

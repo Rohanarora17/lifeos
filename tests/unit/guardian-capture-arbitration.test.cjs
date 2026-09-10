@@ -43,7 +43,7 @@ describe('Guardian capture arbitration', () => {
   it('selects Chrome only when Chrome is frontmost and extension evidence is fresh', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.1',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.2',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, false);
@@ -54,17 +54,50 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.1', observedAt: new Date(now - 20_000).toISOString(),
+      collectorVersion: '1.3.2', observedAt: new Date(now - 20_000).toISOString(),
     });
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
-    assert.equal(client.getBrowserCollectorState(sessionId, now + 14_000).fresh, true);
-    assert.equal(client.getBrowserCollectorState(sessionId, now + 16_000).fresh, false);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 34_000).fresh, true);
+    assert.equal(client.getBrowserCollectorState(sessionId, now + 36_000).fresh, false);
+  });
+
+  it('uses server receipt time for liveness when the MacBook clock is ahead', () => {
+    const serverNow = Date.now();
+    heartbeat('Google Chrome');
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'test-chrome-skewed', sessionId, windowFocused: true,
+      collectorVersion: '1.3.2',
+      observedAt: new Date(serverNow + 3 * 60_000).toISOString(),
+    });
+
+    assert.equal(client.getBrowserCollectorState(sessionId, serverNow).fresh, true);
+    assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
+  });
+
+  it('keeps focused Evidence V2 fresh when generic telemetry reports input idle', () => {
+    const serverNow = Date.now();
+    heartbeat('Google Chrome');
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'chrome-primary', sessionId, windowFocused: true,
+      collectorVersion: '1.3.2', receivedAt: new Date(serverNow).toISOString(),
+    });
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'chrome:MacBook', sessionId, windowFocused: false,
+      collectorVersion: '1.3.2', receivedAt: new Date(serverNow + 1_000).toISOString(),
+    });
+    db.prepare(`UPDATE browser_collector_status SET updated_at = ? WHERE device_id = ?`)
+      .run(new Date(serverNow).toISOString(), 'chrome-primary');
+    db.prepare(`UPDATE browser_collector_status SET updated_at = ? WHERE device_id = ?`)
+      .run(new Date(serverNow + 1_000).toISOString(), 'chrome:MacBook');
+
+    assert.equal(client.getBrowserCollectorState(sessionId, serverNow + 2_000).fresh, true);
+    assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
   });
 
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
     heartbeat('Preview');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.1',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.2',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, false);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, true);
@@ -104,7 +137,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome', 'idle');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.1', mediaPlaybackActive: true,
+      collectorVersion: '1.3.2', mediaPlaybackActive: true,
       mediaTitle: 'Lecture 2: Contradiction and Induction',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
@@ -237,7 +270,7 @@ describe('Guardian client-gated session lifecycle', () => {
     assert.equal(retry.sessionId, first.sessionId);
     assert.deepEqual(first.focusScoreHistory, []);
 
-    env.db.prepare(`UPDATE native_client_status SET last_seen_at = ? WHERE device_id = ?`)
+    env.db.prepare(`UPDATE native_client_status SET updated_at = ? WHERE device_id = ?`)
       .run(new Date(Date.now() - 20_000).toISOString(), 'lifecycle-macbook');
     assert.equal(runtime.getActiveGuardianSession().state, 'BREAK');
     assert.equal(runtime.getActiveGuardianSession().pauseReason, 'client_unavailable');

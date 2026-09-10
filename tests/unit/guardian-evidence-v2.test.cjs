@@ -23,7 +23,8 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
     const context = setup();
     const contract = context.env.requireLib('guardian-evidence-contract.ts');
     assert.equal(contract.collectorIsCompatible('chrome', '1.3.0'), false);
-    assert.equal(contract.collectorIsCompatible('chrome', '1.3.1'), true);
+    assert.equal(contract.collectorIsCompatible('chrome', '1.3.1'), false);
+    assert.equal(contract.collectorIsCompatible('chrome', '1.3.2'), true);
   });
 
   function native(context, id, start, end, overrides = {}) {
@@ -56,7 +57,7 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
       eventId: id,
       sequence: Number(id.replace(/\D/g, '')) || 1,
       collector: 'chrome',
-      collectorVersion: '1.3.1',
+      collectorVersion: '1.3.2',
       deviceId: 'chrome-primary',
       sessionId,
       observedStart: new Date(base + start).toISOString(),

@@ -45,7 +45,7 @@ describe('activity evidence status API', () => {
       eventId: 'activity-shadow-chrome',
       sequence: 1,
       collector: 'chrome',
-      collectorVersion: '1.3.1',
+      collectorVersion: '1.3.2',
       deviceId: 'chrome-primary',
       sessionId,
       observedStart: new Date(now - 30_000).toISOString(),

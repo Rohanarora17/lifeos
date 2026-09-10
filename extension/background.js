@@ -380,6 +380,7 @@ async function sampleBrowserTelemetry() {
     if (!LifeOSActivityState.shouldCollectTelemetry(
         withinConfiguredHours,
         idleState,
+        guardianActive && Boolean(sessionContext?.sessionId),
     )) {
         await transitionBrowserTelemetry(null);
         return;

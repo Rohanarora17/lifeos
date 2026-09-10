@@ -26,6 +26,11 @@ describe('extension activity state machine', () => {
     assert.equal(shouldCollectTelemetry(true, 'idle'), true);
   });
 
+  it('keeps telemetry running throughout an active Guardian session', () => {
+    assert.equal(shouldCollectTelemetry(false, 'idle', true), true);
+    assert.equal(shouldCollectTelemetry(false, 'locked', true), true);
+  });
+
   it('treats foreground playback as active while input-idle, but not while locked', () => {
     assert.equal(shouldTreatMediaPlaybackAsActive('idle', true), true);
     assert.equal(shouldTreatMediaPlaybackAsActive('active', true), true);

@@ -2,7 +2,7 @@ export const GUARDIAN_EVIDENCE_SCHEMA_VERSION = 2 as const;
 export const GUARDIAN_SLICE_MS = 5_000;
 export const GUARDIAN_WATERMARK_MS = 15_000;
 export const MIN_NATIVE_COLLECTOR_VERSION = '0.3.0';
-export const MIN_CHROME_COLLECTOR_VERSION = '1.3.1';
+export const MIN_CHROME_COLLECTOR_VERSION = '1.3.2';
 
 export type GuardianCollector = 'native' | 'chrome';
 export type GuardianPrivacyDecision = 'allow' | 'redact' | 'drop';

@@ -22,8 +22,8 @@
             && left.outsideConfiguredHours === right.outsideConfiguredHours;
     }
 
-    function shouldCollectTelemetry(isWithinConfiguredHours, idleState) {
-        return isWithinConfiguredHours || idleState === 'active';
+    function shouldCollectTelemetry(isWithinConfiguredHours, idleState, guardianSessionActive = false) {
+        return guardianSessionActive || isWithinConfiguredHours || idleState === 'active';
     }
 
     function shouldTreatMediaPlaybackAsActive(systemState, mediaPlaybackActive) {

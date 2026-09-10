@@ -106,7 +106,7 @@ describe('active coaching engagement and recovery', () => {
     });
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'chrome:macbook',
-      collectorVersion: '1.3.1',
+      collectorVersion: '1.3.2',
       windowFocused: true,
       observedAt: new Date(now.getTime() - 5_000).toISOString(),
     });
@@ -135,6 +135,31 @@ describe('active coaching engagement and recovery', () => {
     const state = coaching.getCoachingState({ now });
     assert.equal(state.coverageSources.chrome, 'current');
     assert.equal(state.lastEvidenceAt, '2030-01-01T10:00:30.000Z');
+  });
+
+  it('treats bounded device clock skew as current evidence', () => {
+    const now = new Date();
+    const client = env.requireLib('guardian-client-status.ts');
+    const ahead = new Date(now.getTime() + 3 * 60_000).toISOString();
+    client.recordNativeClientHeartbeat({
+      deviceId: 'skewed-macbook',
+      clientVersion: '0.3.0',
+      screenRecordingStatus: 'authorized',
+      captureCapable: true,
+      frontmostApp: 'Google Chrome',
+      systemState: 'active',
+      observedAt: ahead,
+    });
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'skewed-chrome',
+      collectorVersion: '1.3.2',
+      windowFocused: true,
+      observedAt: ahead,
+    });
+
+    const state = coaching.getCoachingState({ now });
+    assert.equal(state.coverageSources.chrome, 'current');
+    assert.equal(state.coverageSources.macbookVision, 'current');
   });
 
   it('describes same-day participation without displaying zero days', () => {
