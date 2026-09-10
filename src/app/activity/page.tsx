@@ -63,13 +63,31 @@ interface ActivityResponse {
     activities?: Activity[];
     stats?: Stats;
     activityPolicy?: ActivityPolicy;
-    sourceSummary?: { chromeSeconds: number; visionSeconds: number; unscoredSeconds: number; unverifiedSeconds: number };
+    sourceSummary?: {
+        chromeSeconds: number;
+        visionSeconds: number;
+        unscoredSeconds: number;
+        unverifiedSeconds: number;
+        shadowChromeSeconds: number;
+        shadowVisionSeconds: number;
+    };
     collectorStatus?: {
-        ready: boolean; reason: string; frontmostApp: string | null;
+        ready: boolean; reason: string; frontmostApp: string | null; activeSessionId?: string | null;
         nativeCollector?: { ready: boolean; compatible: boolean; version: string | null; minimumVersion: string };
         chromeCollector?: { detected: boolean; ready: boolean; compatible: boolean; version: string | null; minimumVersion: string; updateRequired: boolean };
         selectedSource?: string;
         updateInstructions?: string[];
+    };
+    evidenceHealth?: {
+        coverage: 'current' | 'partial' | 'missing';
+        sources: {
+            chrome: 'current' | 'partial' | 'missing';
+            macbookVision: 'current' | 'partial' | 'missing';
+            phone: 'current' | 'partial' | 'missing';
+        };
+        currentSources: number;
+        totalSources: number;
+        lastEvidenceAt: string | null;
     };
     diagnostics?: {
         rawEvidence?: Array<{ event_id: string; collector: string; compatible: number; late_after_watermark: number }>;
@@ -113,6 +131,7 @@ export default function ActivityPage() {
     const [activityPolicy, setActivityPolicy] = useState<ActivityPolicy | null>(null);
     const [sourceSummary, setSourceSummary] = useState<NonNullable<ActivityResponse['sourceSummary']> | null>(null);
     const [collectorStatus, setCollectorStatus] = useState<NonNullable<ActivityResponse['collectorStatus']> | null>(null);
+    const [evidenceHealth, setEvidenceHealth] = useState<NonNullable<ActivityResponse['evidenceHealth']> | null>(null);
     const [diagnostics, setDiagnostics] = useState(false);
     const [diagnosticCount, setDiagnosticCount] = useState(0);
     const [shadowRollout, setShadowRollout] = useState<NonNullable<NonNullable<ActivityResponse['diagnostics']>['shadowRollout']> | null>(null);
@@ -134,6 +153,7 @@ export default function ActivityPage() {
         setActivityPolicy(data.activityPolicy || null);
         setSourceSummary(data.sourceSummary || null);
         setCollectorStatus(data.collectorStatus || null);
+        setEvidenceHealth(data.evidenceHealth || null);
         setDiagnosticCount(data.diagnostics?.rawEvidence?.length || 0);
         setShadowRollout(data.diagnostics?.shadowRollout || null);
     }, []);
@@ -231,13 +251,18 @@ export default function ActivityPage() {
                         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
                             Exactly one source is counted for each Guardian interval. “Active” means verified engagement, not merely keyboard or mouse input. Raw screenshots are analyzed transiently and are not retained.
                         </p>
+                        {evidenceHealth && (
+                            <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                Evidence coverage: <b>{evidenceHealth.coverage}</b> · {evidenceHealth.currentSources}/{evidenceHealth.totalSources} sources recent
+                            </p>
+                        )}
                     </div>
                     <div className="flex gap-2">
-                        <span className={collectorStatus?.nativeCollector?.ready ? 'badge-green' : 'badge-red'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
-                            Native {collectorStatus?.nativeCollector?.version || 'not detected'}
+                        <span className={evidenceHealth?.sources.macbookVision === 'current' ? 'badge-green' : 'badge-yellow'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
+                            Native {collectorStatus?.nativeCollector?.version || 'not detected'} · {evidenceHealth?.sources.macbookVision || 'missing'}
                         </span>
-                        <span className={collectorStatus?.chromeCollector?.ready ? 'badge-green' : 'badge-yellow'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
-                            Chrome {collectorStatus?.chromeCollector?.version || 'fallback'}
+                        <span className={evidenceHealth?.sources.chrome === 'current' ? 'badge-green' : 'badge-yellow'} style={{ padding: '4px 8px', borderRadius: '999px', fontSize: '11px' }}>
+                            Chrome {collectorStatus?.chromeCollector?.version || 'not detected'} · {evidenceHealth?.sources.chrome || 'missing'}
                         </span>
                     </div>
                 </div>
@@ -248,6 +273,11 @@ export default function ActivityPage() {
                             Active URL/domain, tab title, focused dwell, tab switches, and focus/idle state—only while Chrome is verified frontmost.
                         </p>
                         {sourceSummary && <p className="text-xs mt-2">Counted today: {formatTime(sourceSummary.chromeSeconds / 60)}</p>}
+                        {sourceSummary && sourceSummary.shadowChromeSeconds > 0 && (
+                            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                                Captured in validation: {formatTime(sourceSummary.shadowChromeSeconds / 60)}
+                            </p>
+                        )}
                     </div>
                     <div style={{ padding: '12px', border: '1px solid var(--border)', borderRadius: '10px' }}>
                         <p className="text-xs font-semibold mb-1" style={{ color: '#a78bfa' }}>MacBook vision client</p>
@@ -255,6 +285,11 @@ export default function ActivityPage() {
                             Frontmost app/window, app dwell, and privacy-filtered task alignment—only while a non-Chrome app is frontmost.
                         </p>
                         {sourceSummary && <p className="text-xs mt-2">Counted today: {formatTime(sourceSummary.visionSeconds / 60)}</p>}
+                        {sourceSummary && sourceSummary.shadowVisionSeconds > 0 && (
+                            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                                Captured in validation: {formatTime(sourceSummary.shadowVisionSeconds / 60)}
+                            </p>
+                        )}
                     </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5" style={{ color: 'var(--text-muted)' }}>
@@ -264,7 +299,12 @@ export default function ActivityPage() {
                     <span><b style={{ color: 'var(--text-primary)' }}>Inactive:</b> away or locked</span>
                     <span><b style={{ color: 'var(--text-primary)' }}>Private:</b> never scored</span>
                 </div>
-                {(collectorStatus?.updateInstructions?.length || 0) > 0 && (
+                {sourceSummary && (sourceSummary.shadowChromeSeconds > 0 || sourceSummary.shadowVisionSeconds > 0) && (
+                    <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/10 p-3 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                        Validation capture checks the new evidence pipeline against the counted timeline. It is shown separately and does not affect today’s score until the rollout passes its comparison gates.
+                    </div>
+                )}
+                {collectorStatus?.activeSessionId && (collectorStatus?.updateInstructions?.length || 0) > 0 && (
                     <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         {collectorStatus?.updateInstructions?.join(' ')}
                     </div>

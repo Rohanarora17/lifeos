@@ -1,4 +1,5 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    const apiBase = await LifeOSServerConfig.loadApiBase(chrome.storage.local);
     // Load existing key and url
     chrome.storage.local.get([
         'apiKey',
@@ -10,12 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.apiKey) {
             document.getElementById('apiKey').value = data.apiKey;
         }
-        if (data.apiUrl) {
-            document.getElementById('apiUrl').value = data.apiUrl;
-        } else {
-            // Default value
-            document.getElementById('apiUrl').value = 'http://localhost:3000/api';
-        }
+        document.getElementById('apiUrl').value = apiBase;
         if (data.deviceName) {
             document.getElementById('deviceName').value = data.deviceName;
         } else {
@@ -28,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Save settings
     document.getElementById('saveBtn').addEventListener('click', () => {
         const key = document.getElementById('apiKey').value.trim();
-        let url = document.getElementById('apiUrl').value.trim() || 'http://localhost:3000/api';
+        let url = LifeOSServerConfig.normalizeApiBase(document.getElementById('apiUrl').value);
         let device = document.getElementById('deviceName').value.trim() || 'MacBook';
         const trackingWakeHour = Math.min(
             23,
@@ -40,11 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
         );
 
         // Strip trailing slash if present to prevent double slashes
-        if (url.endsWith('/')) url = url.slice(0, -1);
-        if (url.endsWith('/api') === false && url.endsWith(':3000')) {
-            url = url + '/api';
-        }
-
         chrome.storage.local.set({
             apiKey: key,
             apiUrl: url,

@@ -2,9 +2,9 @@
 // Low-detail intervals run during configured waking hours. Rich context is
 // restricted to an active Guardian session.
 
-importScripts('activity-state.js');
+importScripts('server-config.js', 'activity-state.js');
 
-const DEFAULT_API_BASE = 'http://localhost:3000/api';
+const DEFAULT_API_BASE = LifeOSServerConfig.DEFAULT_API_BASE;
 const TELEMETRY_ALARM = 'lifeos-telemetry-sample';
 const TELEMETRY_STATE_KEY = 'telemetryEventV1Current';
 const TELEMETRY_QUEUE_KEY = 'telemetryEventV1Queue';
@@ -14,8 +14,7 @@ let API_BASE = DEFAULT_API_BASE;
 
 /** Always reads storage fresh — safe across service worker restarts. */
 async function getApiBase() {
-    const { apiUrl } = await chrome.storage.local.get('apiUrl');
-    if (apiUrl) API_BASE = apiUrl;
+    API_BASE = await LifeOSServerConfig.loadApiBase(chrome.storage.local);
     return API_BASE;
 }
 
@@ -31,6 +30,7 @@ let CONTEXT_SENSITIVE_DOMAINS = [];
 
 async function fetchGuardianConfig() {
     try {
+        await getApiBase();
         const headers = await getAuthHeaders();
         const res = await fetch(`${API_BASE}/guardian/config`, { headers });
         if (res.ok) {
@@ -129,13 +129,13 @@ function enableGuardianDiscoveryAlarm() {
     chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
 }
 
-// Sync config
-chrome.storage.local.get(['apiUrl'], (data) => {
-    if (data.apiUrl) API_BASE = data.apiUrl;
-});
+// Sync config and migrate the retired localhost default on worker startup.
+LifeOSServerConfig.loadApiBase(chrome.storage.local)
+    .then((apiBase) => { API_BASE = apiBase; })
+    .catch(() => { API_BASE = DEFAULT_API_BASE; });
 chrome.storage.onChanged.addListener((changes, namespace) => {
     if (namespace === 'local' && changes.apiUrl) {
-        API_BASE = changes.apiUrl.newValue || 'http://localhost:3000/api';
+        API_BASE = LifeOSServerConfig.normalizeApiBase(changes.apiUrl.newValue);
     }
 });
 
@@ -211,6 +211,7 @@ function isPrivacyBlocked(url) {
 const activeTabs = new Map(); // tabId -> { url, startedAt }
 
 async function getAuthHeaders() {
+    await getApiBase();
     const data = await chrome.storage.local.get('apiKey');
     const headers = { 'Content-Type': 'application/json' };
     if (data.apiKey) headers.Authorization = `Bearer ${data.apiKey}`;
@@ -596,6 +597,7 @@ async function postGuardianEvent(payload, tabIdHint = null) {
         if (res.status === 409) {
             guardianActive = false;
             sessionContext = null;
+            await LifeOSServerConfig.saveGuardianSession(chrome.storage.session, null);
             activeTabs.clear();
             disableSessionCaptureAlarms();
             chrome.action.setBadgeText({ text: '' });
@@ -1092,15 +1094,27 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 async function checkExternalSession() {
     try {
         const headers = await getAuthHeaders();
-        const res = await fetch(`${API_BASE}/guardian/state`, { headers });
+        const persisted = await LifeOSServerConfig.loadGuardianSession(chrome.storage.session);
+        const request = await LifeOSServerConfig.requestGuardianState({
+            storage: chrome.storage.local,
+            fetchImpl: fetch,
+            headers,
+        });
+        API_BASE = request.apiBase;
+        const res = request.response;
         if (!res.ok) return;
         const data = await res.json();
         const serverActive = data.activeSession?.state === 'ACTIVE';
 
-        if (serverActive && !guardianActive) {
-            console.log('[LifeOS] Discovered active session externally:', data.activeSession);
+        if (serverActive) {
+            const newlyDiscovered = !guardianActive;
             guardianActive = true;
-            sessionContext = data.activeSession;
+            sessionContext = persisted?.sessionId === data.activeSession.sessionId
+                ? { ...persisted, ...data.activeSession }
+                : data.activeSession;
+            await LifeOSServerConfig.saveGuardianSession(chrome.storage.session, sessionContext);
+            if (!newlyDiscovered) return;
+            console.log('[LifeOS] Discovered active session externally:', data.activeSession);
             sessionGroupId = null;
             refreshGuardianPersonalization();
             chrome.action.setBadgeText({ text: 'ON' });
@@ -1119,6 +1133,7 @@ async function checkExternalSession() {
             console.log('[LifeOS] Guardian Mode STOPPED (via polling)');
             guardianActive = false;
             sessionContext = null;
+            await LifeOSServerConfig.saveGuardianSession(chrome.storage.session, null);
             guardianPersonalization = null;
             chrome.action.setBadgeText({ text: '' });
             activeTabs.clear();
@@ -1129,6 +1144,7 @@ async function checkExternalSession() {
                 sessionGroupId = null;
             }
         }
+        if (!serverActive) await LifeOSServerConfig.saveGuardianSession(chrome.storage.session, null);
     } catch (e) {
         // ignore network error
     }
@@ -1161,6 +1177,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'START_GUARDIAN') {
         guardianActive = true;
         sessionContext = msg.context || msg;
+        LifeOSServerConfig.saveGuardianSession(chrome.storage.session, sessionContext).catch(() => { });
         sessionGroupId = null;
         // Refresh domain config so this session gets the latest DB state
         fetchGuardianConfig();
@@ -1232,6 +1249,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
             guardianActive = false;
             sessionContext = null;
+            await LifeOSServerConfig.saveGuardianSession(chrome.storage.session, null);
             guardianPersonalization = null;
             console.log('[LifeOS] Guardian Mode STOPPED');
             chrome.action.setBadgeText({ text: '' });

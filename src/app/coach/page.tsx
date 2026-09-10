@@ -9,8 +9,8 @@ interface CoachState {
   engagement: EngagementState;
   coverage: 'current' | 'partial' | 'missing';
   coverageSources: {
-    activity: 'current' | 'partial' | 'missing';
-    screenVision: 'current' | 'partial' | 'missing';
+    chrome: 'current' | 'partial' | 'missing';
+    macbookVision: 'current' | 'partial' | 'missing';
     phone: 'current' | 'partial' | 'missing';
   };
   reason: string;
@@ -94,6 +94,12 @@ const stateColors: Record<EngagementState, string> = {
   paused: '#94a3b8',
 };
 
+const evidenceSourceLabels: Record<keyof CoachState['coverageSources'], string> = {
+  chrome: 'Chrome detail',
+  macbookVision: 'MacBook vision',
+  phone: 'Phone',
+};
+
 export default function CoachPage() {
   const router = useRouter();
   const [state, setState] = useState<CoachState | null>(null);
@@ -107,6 +113,9 @@ export default function CoachPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const currentEvidenceSources = state
+    ? Object.values(state.coverageSources).filter(value => value === 'current').length
+    : 0;
 
   const refresh = useCallback(async () => {
     const response = await fetch('/api/coaching/state');
@@ -273,7 +282,9 @@ export default function CoachPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>What LifeOS is acting on</h2>
-            <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>Device evidence: {state.coverage}. Missing evidence is never counted as inactivity.</p>
+            <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>
+              Evidence coverage: {state.coverage} · {currentEvidenceSources}/3 sources recent. Participation is evaluated separately, and missing evidence is never counted as inactivity.
+            </p>
           </div>
           <span className="rounded-full px-3 py-1 text-sm font-semibold" style={{ color: stateColors[state.engagement], background: `${stateColors[state.engagement]}18` }}>
             {stateLabels[state.engagement]}
@@ -291,8 +302,10 @@ export default function CoachPage() {
         <div className="grid gap-2 sm:grid-cols-3">
           {Object.entries(state.coverageSources).map(([source, coverage]) => (
             <div key={source} className="rounded-lg border px-3 py-2 text-sm" style={{ borderColor: 'var(--border)' }}>
-              <span className="capitalize" style={{ color: 'var(--text-secondary)' }}>{source.replace(/([A-Z])/g, ' $1')}</span>
-              <span className="float-right font-medium" style={{ color: coverage === 'current' ? '#22c55e' : coverage === 'partial' ? '#f59e0b' : 'var(--text-muted)' }}>{coverage}</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{evidenceSourceLabels[source as keyof CoachState['coverageSources']]}</span>
+              <span className="float-right font-medium" style={{ color: coverage === 'current' ? '#22c55e' : coverage === 'partial' ? '#f59e0b' : 'var(--text-muted)' }}>
+                {coverage === 'current' ? 'recent' : coverage === 'partial' ? 'stale' : 'unavailable'}
+              </span>
             </div>
           ))}
         </div>

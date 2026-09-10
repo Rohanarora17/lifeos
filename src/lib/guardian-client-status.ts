@@ -65,6 +65,20 @@ export interface GuardianClientReadiness {
   updateInstructions?: string[];
 }
 
+export type EvidenceCoverageState = 'current' | 'partial' | 'missing';
+
+export interface GuardianEvidenceHealth {
+  coverage: EvidenceCoverageState;
+  sources: {
+    chrome: EvidenceCoverageState;
+    macbookVision: EvidenceCoverageState;
+    phone: EvidenceCoverageState;
+  };
+  currentSources: number;
+  totalSources: number;
+  lastEvidenceAt: string | null;
+}
+
 export class VisionClientUnavailableError extends Error {
   readonly code = 'vision_client_required';
   readonly readiness: GuardianClientReadiness;
@@ -87,6 +101,75 @@ function normalizeDeviceId(value?: string | null) {
 function isoOrNow(value?: string | null) {
   const parsed = value ? Date.parse(value) : NaN;
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
+}
+
+function safeLatest(query: string): string | null {
+  try {
+    const row = getDb().prepare(query).get() as { at: string | null } | undefined;
+    return row?.at || null;
+  } catch {
+    return null;
+  }
+}
+
+function newestIso(values: Array<string | null>): string | null {
+  const times = values
+    .map(value => ({ value, time: value ? Date.parse(value) : NaN }))
+    .filter((item): item is { value: string; time: number } => Boolean(item.value) && Number.isFinite(item.time));
+  if (times.length === 0) return null;
+  return times.sort((left, right) => right.time - left.time)[0].value;
+}
+
+function evidenceCoverage(
+  lastSeenAt: string | null,
+  nowMs: number,
+  currentHours: number,
+  usable = true,
+): EvidenceCoverageState {
+  if (!lastSeenAt) return 'missing';
+  const age = nowMs - Date.parse(lastSeenAt);
+  if (usable && Number.isFinite(age) && age >= 0 && age <= currentHours * 3_600_000) return 'current';
+  return 'partial';
+}
+
+export function getGuardianEvidenceHealth(nowMs = Date.now()): GuardianEvidenceHealth {
+  const readiness = getGuardianClientReadiness(nowMs);
+  const chromeAt = newestIso([
+    safeLatest(`SELECT MAX(last_seen_at) AS at FROM browser_collector_status`),
+    safeLatest(`SELECT MAX(observed_end) AS at FROM telemetry_events_v1 WHERE source = 'browser_extension'`),
+    safeLatest(`SELECT MAX(observed_end) AS at FROM guardian_evidence_events WHERE collector = 'chrome' AND compatible = 1`),
+  ]);
+  const nativeAt = newestIso([
+    safeLatest(`SELECT MAX(last_seen_at) AS at FROM native_client_status`),
+    safeLatest(`SELECT MAX(observed_at) AS at FROM screen_observations`),
+    safeLatest(`SELECT MAX(observed_end) AS at FROM guardian_evidence_events WHERE collector = 'native' AND compatible = 1`),
+  ]);
+  const phoneAt = safeLatest(`SELECT MAX(received_at) AS at FROM phone_screen_time`);
+  const nativeUsable = Boolean(
+    readiness.nativeCollector?.compatible
+      && readiness.nativeCollector.permissions.screenRecording === 'authorized'
+      && readiness.nativeCollector.permissions.captureCapable,
+  );
+  const chromeUsable = !readiness.chromeCollector?.detected || readiness.chromeCollector.compatible;
+  const sources = {
+    chrome: evidenceCoverage(chromeAt, nowMs, 6, chromeUsable),
+    macbookVision: evidenceCoverage(nativeAt, nowMs, 6, nativeUsable),
+    phone: evidenceCoverage(phoneAt, nowMs, 18),
+  };
+  const values = Object.values(sources);
+  const currentSources = values.filter(value => value === 'current').length;
+  const coverage: EvidenceCoverageState = values.every(value => value === 'current')
+    ? 'current'
+    : values.some(value => value !== 'missing')
+      ? 'partial'
+      : 'missing';
+  return {
+    coverage,
+    sources,
+    currentSources,
+    totalSources: values.length,
+    lastEvidenceAt: newestIso([chromeAt, nativeAt, phoneAt]),
+  };
 }
 
 function browserCollectorReadiness(sessionId: string | null, nowMs: number) {

@@ -19,6 +19,13 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
     return { env, db, store, base, sessionId };
   }
 
+  it('requires the extension release that includes resilient Mac Mini session recovery', () => {
+    const context = setup();
+    const contract = context.env.requireLib('guardian-evidence-contract.ts');
+    assert.equal(contract.collectorIsCompatible('chrome', '1.3.0'), false);
+    assert.equal(contract.collectorIsCompatible('chrome', '1.3.1'), true);
+  });
+
   function native(context, id, start, end, overrides = {}) {
     const { base, sessionId } = context;
     return {
@@ -49,7 +56,7 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
       eventId: id,
       sequence: Number(id.replace(/\D/g, '')) || 1,
       collector: 'chrome',
-      collectorVersion: '1.3.0',
+      collectorVersion: '1.3.1',
       deviceId: 'chrome-primary',
       sessionId,
       observedStart: new Date(base + start).toISOString(),
@@ -176,6 +183,21 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
       SELECT source FROM guardian_activity_slices
       WHERE session_id = ? ORDER BY slice_start LIMIT 1
     `).pluck().get(sessionId), 'vision');
+  });
+
+  it('rejects collector evidence after a session has completed', () => {
+    const context = setup('shadow');
+    const { db, store, base, sessionId } = context;
+    db.prepare(`UPDATE guardian_sessions SET state = 'COMPLETE' WHERE session_id = ?`).run(sessionId);
+
+    const result = store.ingestGuardianEvidence([
+      chrome(context, 'chrome-after-completion', 0, 5_000),
+    ], base + 30_000);
+
+    assert.equal(result.accepted, 0);
+    assert.equal(result.rejected.length, 1);
+    assert.ok(result.rejected[0].errors.includes('sessionInactive'));
+    assert.equal(db.prepare(`SELECT COUNT(*) FROM guardian_evidence_events WHERE session_id = ?`).pluck().get(sessionId), 0);
   });
 
   it('records a cutover report without making shadow slices authoritative', () => {

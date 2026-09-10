@@ -43,7 +43,7 @@ describe('Guardian capture arbitration', () => {
   it('selects Chrome only when Chrome is frontmost and extension evidence is fresh', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.0',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.1',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, false);
@@ -54,7 +54,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.0', observedAt: new Date(now - 20_000).toISOString(),
+      collectorVersion: '1.3.1', observedAt: new Date(now - 20_000).toISOString(),
     });
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
     assert.equal(client.getBrowserCollectorState(sessionId, now + 14_000).fresh, true);
@@ -64,7 +64,7 @@ describe('Guardian capture arbitration', () => {
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
     heartbeat('Preview');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.0',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.1',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, false);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, true);
@@ -104,7 +104,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome', 'idle');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.0', mediaPlaybackActive: true,
+      collectorVersion: '1.3.1', mediaPlaybackActive: true,
       mediaTitle: 'Lecture 2: Contradiction and Induction',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);

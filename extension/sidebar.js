@@ -2,8 +2,8 @@
 const iframe = document.getElementById('lifeos-frame');
 const errorScreen = document.getElementById('error-screen');
 
-let API_BASE = 'http://localhost:3000/api';
-let APP_URL = 'http://localhost:3000';
+let API_BASE = LifeOSServerConfig.DEFAULT_API_BASE;
+let APP_URL = LifeOSServerConfig.DEFAULT_APP_URL;
 
 async function apiFetch(url, options = {}) {
     const { apiKey } = await chrome.storage.local.get('apiKey');
@@ -12,11 +12,9 @@ async function apiFetch(url, options = {}) {
     return fetch(url, { ...options, headers });
 }
 
-chrome.storage.local.get('apiUrl', (data) => {
-    if (data.apiUrl) {
-        API_BASE = data.apiUrl;
-        APP_URL = data.apiUrl.replace(/\/api$/, '');
-    }
+LifeOSServerConfig.loadApiBase(chrome.storage.local).then((apiBase) => {
+    API_BASE = apiBase;
+    APP_URL = apiBase.replace(/\/api$/, '');
     const expectedUrlEl = document.getElementById('expected-url');
     if (expectedUrlEl) expectedUrlEl.innerText = APP_URL;
     checkHealth();
@@ -52,12 +50,11 @@ window.addEventListener('focus', () => {
 window.addEventListener('message', (event) => {
     // Accept messages from the configured app URL (which may be a LAN/VPN IP, not localhost).
     // We check host+port rather than full origin so that the check still passes before
-    // storage finishes loading APP_URL (APP_URL defaults to localhost:3000 but the iframe
+    // storage finishes loading APP_URL (APP_URL defaults to the Mac Mini but the iframe
     // may be at a different IP if the server is accessed by IP address).
     const eventOriginHost = event.origin.replace(/^https?:\/\//, '').replace(/\/$/, '');
     const appUrlHost = APP_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    const isOwnOrigin = eventOriginHost === appUrlHost ||
-        eventOriginHost === 'localhost:3000' || eventOriginHost === '127.0.0.1:3000';
+    const isOwnOrigin = eventOriginHost === appUrlHost;
     if (!isOwnOrigin) return;
 
     if (event.data && (event.data.type === 'START_GUARDIAN' || event.data.type === 'LIFEOS_FOCUS_START')) {

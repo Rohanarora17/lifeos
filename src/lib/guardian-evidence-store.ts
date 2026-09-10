@@ -375,9 +375,12 @@ export function ingestGuardianEvidence(inputs: unknown[], nowMs = Date.now()): G
         return;
       }
       const event = validation.event;
-      const session = db.prepare(`SELECT 1 FROM guardian_sessions WHERE session_id = ?`).get(event.sessionId);
+      const session = db.prepare(`
+        SELECT 1 FROM guardian_sessions WHERE session_id = ? AND state IN ('ACTIVE', 'BREAK')
+      `).get(event.sessionId);
       if (!session) {
-        result.rejected.push({ index, errors: ['sessionId'] });
+        const exists = db.prepare(`SELECT 1 FROM guardian_sessions WHERE session_id = ?`).get(event.sessionId);
+        result.rejected.push({ index, errors: [exists ? 'sessionInactive' : 'sessionId'] });
         return;
       }
       const compatible = collectorIsCompatible(event.collector, event.collectorVersion);

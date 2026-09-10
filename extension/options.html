@@ -69,9 +69,8 @@
 
     <div class="group">
         <label for="apiUrl">Server URL (API Base)</label>
-        <input type="url" id="apiUrl" placeholder="http://localhost:3000/api" />
-        <p style="font-size: 11px; color: #666;">Use your Mac Mini's IP if hosting remotely (e.g.,
-            http://192.168.1.50:3000/api).</p>
+        <input type="url" id="apiUrl" placeholder="http://100.99.194.80:3000/api" />
+        <p style="font-size: 11px; color: #666;">Your Mac Mini API over the private Tailscale network.</p>
     </div>
 
     <div class="group">
@@ -95,6 +94,7 @@
     <button id="saveBtn">Save Settings</button>
     <div id="status">Settings saved.</div>
 
+    <script src="server-config.js"></script>
     <script src="options.js"></script>
 </body>
 

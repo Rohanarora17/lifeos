@@ -9,7 +9,7 @@ import {
     saveNativeAppPreference,
     toActivityCategory,
 } from '@/lib/native-app-classification';
-import { getGuardianClientReadiness } from '@/lib/guardian-client-status';
+import { getGuardianClientReadiness, getGuardianEvidenceHealth } from '@/lib/guardian-client-status';
 import { lifeosDayBoundsUtc } from '@/lib/timezone';
 import { getDailyActivityStats } from '@/lib/scoring';
 import { getGuardianShadowRolloutStatus } from '@/lib/guardian-evidence-shadow';
@@ -316,6 +316,17 @@ export async function GET(request: NextRequest) {
         `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) as Array<{
             source: string; seconds: number | null; unscored_seconds: number | null;
         }>;
+        const shadowWhere = bounds
+            ? `WHERE pipeline_mode = 'shadow' AND provisional = 0 AND slice_start >= ? AND slice_start < ?`
+            : `WHERE pipeline_mode = 'shadow' AND provisional = 0`;
+        const shadowSourceRows = db.prepare(`
+            SELECT source, SUM(duration_seconds) AS seconds
+            FROM guardian_activity_slices
+            ${shadowWhere}
+            GROUP BY source
+        `).all(...(bounds ? [bounds.startIso, bounds.endIso] : [])) as Array<{
+            source: string; seconds: number | null;
+        }>;
         const sourceRows = [...legacySourceRows, ...evidenceSourceRows];
         const sourceSeconds = (source: string) => sourceRows
             .filter(row => row.source === source)
@@ -340,8 +351,15 @@ export async function GET(request: NextRequest) {
                 visionSeconds: sourceSeconds('vision'),
                 unscoredSeconds: sourceRows.reduce((sum, row) => sum + Number(row.unscored_seconds ?? 0), 0),
                 unverifiedSeconds: unscoredSourceSeconds('unverified'),
+                shadowChromeSeconds: shadowSourceRows
+                    .filter(row => row.source === 'chrome')
+                    .reduce((sum, row) => sum + Number(row.seconds ?? 0), 0),
+                shadowVisionSeconds: shadowSourceRows
+                    .filter(row => row.source === 'vision')
+                    .reduce((sum, row) => sum + Number(row.seconds ?? 0), 0),
             },
             collectorStatus: getGuardianClientReadiness(),
+            evidenceHealth: getGuardianEvidenceHealth(),
             diagnostics: diagnostics ? {
                 rawEvidence: diagnosticEvidence,
                 shadowRollout: getGuardianShadowRolloutStatus(10),

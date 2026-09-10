@@ -180,7 +180,7 @@ export function syncCommitmentSources(now = new Date()): CoachingCommitment[] {
     const rows = db.prepare(`
       SELECT id, task_id, title, planned_start, duration_minutes, status
       FROM planned_focus_sessions
-      WHERE date(planned_start) >= date(?)
+      WHERE date(planned_start, '+5 hours', '+30 minutes') >= date(?)
         AND status IN ('planned', 'started', 'completed', 'skipped', 'cancelled')
     `).all(historyStart) as Array<{
       id: string; task_id: number | null; title: string; planned_start: string;

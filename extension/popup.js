@@ -1,7 +1,7 @@
 // LifeOS — Popup Script (Enhanced)
 
-let API_BASE = 'http://localhost:3000/api';
-let APP_URL = 'http://localhost:3000';
+let API_BASE = LifeOSServerConfig.DEFAULT_API_BASE;
+let APP_URL = LifeOSServerConfig.DEFAULT_APP_URL;
 
 async function apiFetch(url, options = {}) {
   const { apiKey } = await chrome.storage.local.get('apiKey');
@@ -10,11 +10,9 @@ async function apiFetch(url, options = {}) {
   return fetch(url, { ...options, headers });
 }
 
-chrome.storage.local.get('apiUrl', (data) => {
-  if (data.apiUrl) {
-    API_BASE = data.apiUrl;
-    APP_URL = data.apiUrl.replace(/\/api$/, '');
-  }
+LifeOSServerConfig.loadApiBase(chrome.storage.local).then((apiBase) => {
+  API_BASE = apiBase;
+  APP_URL = apiBase.replace(/\/api$/, '');
   loadData();
   loadFocusSection();
 });
@@ -516,7 +514,7 @@ async function loadData() {
       <div class="loading" style="flex-direction: column; gap: 8px;">
         <div style="font-size: 24px;">⚡</div>
         <div>Can't reach LifeOS server</div>
-        <div style="font-size: 11px; color: #555570;">Make sure the app is running at localhost:3000</div>
+        <div style="font-size: 11px; color: #555570;">Make sure the Mac Mini is reachable at ${APP_URL}</div>
       </div>
     `;
   }

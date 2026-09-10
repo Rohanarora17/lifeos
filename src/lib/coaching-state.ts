@@ -1,20 +1,20 @@
 import { randomUUID } from 'crypto';
 import { getDb, getSetting, setSetting } from './db';
 import { getHistoryStartDate } from './history-epoch';
+import { getGuardianEvidenceHealth } from './guardian-client-status';
 
 export type EngagementState = 'active' | 'slipping' | 'disengaged' | 'reconnecting' | 'paused';
 export type CoverageState = 'current' | 'partial' | 'missing';
 
 export const COACHING_POLICY_VERSION = 'engagement-v1';
 const DAY_MS = 86_400_000;
-const HOUR_MS = 3_600_000;
 
 export interface CoachingState {
   engagement: EngagementState;
   coverage: CoverageState;
   coverageSources: {
-    activity: CoverageState;
-    screenVision: CoverageState;
+    chrome: CoverageState;
+    macbookVision: CoverageState;
     phone: CoverageState;
   };
   reason: string;
@@ -90,11 +90,6 @@ function escapeHtml(value: string): string {
 function daysSince(time: number | null, nowMs: number): number | null {
   if (time === null) return null;
   return Math.max(0, (nowMs - time) / DAY_MS);
-}
-
-function coverageFor(time: number | null, nowMs: number, currentHours: number): CoverageState {
-  if (time === null) return 'missing';
-  return nowMs - time <= currentHours * HOUR_MS ? 'current' : 'partial';
 }
 
 function newest(values: Array<string | number | null | undefined>): number | null {
@@ -225,16 +220,11 @@ export function getCoachingState(options: { now?: Date } = {}): CoachingState {
   const latestTaskCompletion = safeScalar("SELECT MAX(completed_at) AS at FROM tasks WHERE status = 'done' AND date(completed_at) >= date(?)", 'at', [historyStartDate]);
   const latestHabitCompletion = safeScalar('SELECT MAX(date) AS at FROM habit_checkins WHERE completed = 1 AND date >= ?', 'at', [historyStartDate]);
   const latestSession = safeScalar('SELECT MAX(COALESCE(completed_at, started_at)) AS at FROM guardian_session_summaries WHERE date(COALESCE(completed_at, started_at)) >= date(?)', 'at', [historyStartDate]);
-  const latestTelemetry = safeScalar('SELECT MAX(ingested_at) AS at FROM telemetry_events_v1', 'at');
-  const latestScreen = safeScalar('SELECT MAX(observed_at) AS at FROM screen_observations', 'at');
-  const latestPhone = safeScalar('SELECT MAX(received_at) AS at FROM phone_screen_time', 'at');
+  const evidenceHealth = getGuardianEvidenceHealth(nowMs);
 
   const lastHumanMs = newest([contactEvent, telegramTurn, latestCheckin, latestTaskCompletion, latestHabitCompletion]);
   const lastSessionMs = parseDbTime(latestSession);
-  const telemetryMs = parseDbTime(latestTelemetry);
-  const screenMs = parseDbTime(latestScreen);
-  const phoneMs = parseDbTime(latestPhone);
-  const lastEvidenceMs = newest([latestTelemetry, latestScreen, latestPhone]);
+  const lastEvidenceMs = parseDbTime(evidenceHealth.lastEvidenceAt);
   const contactDays = daysSince(lastHumanMs, nowMs);
   const sessionDays = daysSince(lastSessionMs, nowMs);
   const checkinDays = daysSince(parseDbTime(latestCheckin), nowMs);
@@ -252,22 +242,17 @@ export function getCoachingState(options: { now?: Date } = {}): CoachingState {
     lastHumanMs,
   );
 
-  const coverageSources = {
-    activity: coverageFor(telemetryMs, nowMs, 6),
-    screenVision: coverageFor(screenMs, nowMs, 6),
-    phone: coverageFor(phoneMs, nowMs, 18),
-  };
-  const sourceCoverage = Object.values(coverageSources);
-  const coverage: CoverageState = sourceCoverage.includes('current')
-    ? 'current'
-    : sourceCoverage.includes('partial')
-      ? 'partial'
-      : 'missing';
+  const coverageSources = evidenceHealth.sources;
+  const coverage = evidenceHealth.coverage;
   const evidence: string[] = [];
   if (missedOpportunities > 0) evidence.push(`${missedOpportunities} missed agreed focus opportunit${missedOpportunities === 1 ? 'y' : 'ies'} in 7 days`);
   if (overdueTasks > 0) evidence.push(`${overdueTasks} overdue task${overdueTasks === 1 ? '' : 's'}`);
-  if (contactDays !== null) evidence.push(`${Math.floor(contactDays)} day${Math.floor(contactDays) === 1 ? '' : 's'} since a meaningful interaction`);
-  if (sessionDays !== null) evidence.push(`${Math.floor(sessionDays)} day${Math.floor(sessionDays) === 1 ? '' : 's'} since a completed session`);
+  if (contactDays !== null) evidence.push(contactDays < 1
+    ? 'Meaningful interaction today'
+    : `${Math.floor(contactDays)} day${Math.floor(contactDays) === 1 ? '' : 's'} since a meaningful interaction`);
+  if (sessionDays !== null) evidence.push(sessionDays < 1
+    ? 'Focus session completed today'
+    : `${Math.floor(sessionDays)} day${Math.floor(sessionDays) === 1 ? '' : 's'} since a completed session`);
   if (coverage !== 'current') evidence.push(`device evidence is ${coverage}`);
 
   let engagement: EngagementState = 'active';

@@ -3,8 +3,8 @@
 // Background service worker can't do either — this is the audio bridge.
 
 // Server URL is passed via message from background.js (which reads it from storage).
-// Fallback to localhost for local dev.
-let SERVER = 'http://localhost:3000';
+// Fallback to the deployed Mac Mini when a message has not supplied a URL yet.
+let SERVER = LifeOSServerConfig.DEFAULT_APP_URL;
 
 let mediaRecorder = null;
 let pttInFlight = false; // prevent concurrent PTT requests

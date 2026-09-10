@@ -9,12 +9,13 @@ function isoDaysAgo(days, extraMinutes = 0) {
 }
 
 describe('active coaching engagement and recovery', () => {
+  let env;
   let db;
   let coaching;
   let adaptive;
 
   beforeEach(() => {
-    const env = createIsolatedDb('lifeos-coaching-');
+    env = createIsolatedDb('lifeos-coaching-');
     db = env.db;
     coaching = env.requireLib('coaching-state.ts');
     adaptive = env.requireLib('adaptive-command-defaults.ts');
@@ -89,6 +90,75 @@ describe('active coaching engagement and recovery', () => {
     const state = coaching.getCoachingState();
     assert.equal(state.coverage, 'missing');
     assert.equal(state.engagement, 'active');
+  });
+
+  it('uses shared collector evidence and reports incomplete device coverage as partial', () => {
+    const now = new Date('2030-01-01T10:00:00.000Z');
+    const client = env.requireLib('guardian-client-status.ts');
+    client.recordNativeClientHeartbeat({
+      deviceId: 'macbook',
+      clientVersion: '0.3.0',
+      screenRecordingStatus: 'authorized',
+      captureCapable: true,
+      frontmostApp: 'Google Chrome',
+      systemState: 'active',
+      observedAt: now.toISOString(),
+    });
+    client.recordBrowserCollectorHeartbeat({
+      deviceId: 'chrome:macbook',
+      collectorVersion: '1.3.1',
+      windowFocused: true,
+      observedAt: new Date(now.getTime() - 5_000).toISOString(),
+    });
+
+    const state = coaching.getCoachingState({ now });
+    assert.deepEqual(state.coverageSources, {
+      chrome: 'current',
+      macbookVision: 'current',
+      phone: 'missing',
+    });
+    assert.equal(state.coverage, 'partial');
+    assert.equal(state.lastEvidenceAt, now.toISOString());
+  });
+
+  it('uses observed UTC evidence time instead of timezone-free ingestion time', () => {
+    const now = new Date('2030-01-01T10:01:00.000Z');
+    db.prepare(`
+      INSERT INTO telemetry_events_v1 (
+        event_id, version, device_id, source, observed_start, observed_end,
+        duration_seconds, state, session_id, provenance_json, privacy_decision,
+        privacy_reason, ingested_at
+      ) VALUES ('utc-evidence', 1, 'macbook', 'browser_extension', ?, ?, 30,
+                'active', NULL, '{}', 'allow', 'waking_hours_metadata', '2030-01-01 10:00:30')
+    `).run('2030-01-01T10:00:00.000Z', '2030-01-01T10:00:30.000Z');
+
+    const state = coaching.getCoachingState({ now });
+    assert.equal(state.coverageSources.chrome, 'current');
+    assert.equal(state.lastEvidenceAt, '2030-01-01T10:00:30.000Z');
+  });
+
+  it('describes same-day participation without displaying zero days', () => {
+    const now = new Date();
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('history_start_date', ?)`)
+      .run(now.toISOString().slice(0, 10));
+    db.prepare(`
+      INSERT INTO coaching_events (event_type, source, occurred_at, payload_json)
+      VALUES ('human_contact', 'test', ?, '{}')
+    `).run(new Date(now.getTime() - 60_000).toISOString());
+    db.prepare(`
+      INSERT INTO guardian_session_summaries (
+        session_id, target_title, duration_minutes, elapsed_minutes,
+        average_focus_score, final_focus_score, completed_at, started_at
+      ) VALUES ('today-session', 'Graphs', 20, 20, 80, 80, ?, ?)
+    `).run(
+      new Date(now.getTime() - 30_000).toISOString(),
+      new Date(now.getTime() - 20 * 60_000).toISOString(),
+    );
+
+    const state = coaching.getCoachingState({ now });
+    assert.ok(state.evidence.includes('Meaningful interaction today'));
+    assert.ok(state.evidence.includes('Focus session completed today'));
+    assert.equal(state.evidence.some(item => item.startsWith('0 days')), false);
   });
 
   it('does not revive pre-reset backlog as a fresh recovery failure', () => {

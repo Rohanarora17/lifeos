@@ -29,7 +29,17 @@ function contextJson(event: TelemetryEventV1) {
 }
 
 function ingestGuardianBrowserEvidence(event: TelemetryEventV1) {
-    if (event.source !== 'browser_extension' || !event.sessionId) return;
+    if (event.source !== 'browser_extension') return;
+    const focused = event.state === 'active' && event.window?.focused === true;
+    recordBrowserCollectorHeartbeat({
+        deviceId: `chrome:${event.deviceId}`,
+        sessionId: event.sessionId ?? null,
+        windowFocused: focused,
+        collectorVersion: event.provenance.collectorVersion,
+        observedAt: event.observedEnd,
+    });
+
+    if (!event.sessionId) return;
     if (getSessionEvidenceMode(event.sessionId) === 'authoritative') return;
 
     const db = getDb();
@@ -40,15 +50,6 @@ function ingestGuardianBrowserEvidence(event: TelemetryEventV1) {
         LIMIT 1
     `).get(event.sessionId);
     if (!active) return;
-
-    const focused = event.state === 'active' && event.window?.focused === true;
-    recordBrowserCollectorHeartbeat({
-        deviceId: `chrome:${event.deviceId}`,
-        sessionId: event.sessionId,
-        windowFocused: focused,
-        collectorVersion: event.provenance.collectorVersion,
-        observedAt: event.observedEnd,
-    });
 
     if (!focused || event.privacy.decision !== 'allow' || !event.tab) return;
     const arbitration = arbitrateSessionActivity(event.sessionId, 'chrome');

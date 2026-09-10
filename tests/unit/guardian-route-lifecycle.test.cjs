@@ -104,7 +104,7 @@ describe('guardian route lifecycle', () => {
       deviceId: 'test-chrome',
       sessionId,
       windowFocused: true,
-      collectorVersion: '1.3.0',
+      collectorVersion: '1.3.1',
     });
 
     const eventResponse = await eventsPOST(
@@ -117,7 +117,7 @@ describe('guardian route lifecycle', () => {
           title: 'Polynomial commitments paper',
           dwellSeconds: 30,
           tabStartedAt: Date.now() - 30_000,
-          payload: { browserWindowFocused: true, collectorVersion: '1.3.0' },
+          payload: { browserWindowFocused: true, collectorVersion: '1.3.1' },
         }),
       })
     );

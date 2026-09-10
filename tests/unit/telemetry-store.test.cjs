@@ -31,7 +31,7 @@ describe('telemetry event store', () => {
       group: null,
       provenance: {
         collector: 'extension',
-        collectorVersion: '1.3.0',
+        collectorVersion: '1.3.1',
         adaptedFrom: null,
       },
       privacy: { decision: 'allow', reason: 'waking_hours_metadata' },
@@ -48,6 +48,31 @@ describe('telemetry event store', () => {
     const row = db.prepare('SELECT * FROM telemetry_events_v1 WHERE event_id = ?').get('one');
     assert.equal(row.duration_seconds, 30);
     assert.equal(row.state, 'active');
+  });
+
+  it('refreshes Chrome collector availability from telemetry outside a focus session', () => {
+    const now = Date.now();
+    const observedEnd = new Date(now).toISOString();
+    const observedStart = new Date(now - 30_000).toISOString();
+    const result = ingestTelemetryEvents([event('collector-heartbeat', {
+      observedStart,
+      observedEnd,
+      sessionId: null,
+    })]);
+
+    assert.equal(result.accepted, 1);
+    const row = db.prepare(`
+      SELECT session_id, last_seen_at, window_focused, collector_version
+      FROM browser_collector_status
+      WHERE device_id = 'chrome:macbook'
+    `).get();
+    assert.deepEqual(row, {
+      session_id: null,
+      last_seen_at: observedEnd,
+      window_focused: 1,
+      collector_version: '1.3.1',
+    });
+    assert.equal(db.prepare('SELECT COUNT(*) FROM session_activity_intervals').pluck().get(), 0);
   });
 
   it('retains privacy provenance without storing redacted context', () => {
