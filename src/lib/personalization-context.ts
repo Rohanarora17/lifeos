@@ -22,6 +22,7 @@ import {
   type CognitiveTrajectory,
 } from './cognitive-self-answer';
 import { getCoachingState, type CoverageState, type EngagementState } from './coaching-state';
+import { getDailyActivityStats } from './scoring';
 
 export type PersonalizationSurface =
   | 'agent'
@@ -60,6 +61,12 @@ export interface PersonalizationSnapshot {
     uncheckedHabits: string[];
     calendarEvents: string[];
     recentDistractionMinutes: number;
+    activitySignal: {
+      productiveMinutes: number;
+      distractionMinutes: number;
+      neutralMinutes: number;
+      totalMinutes: number;
+    };
     plannedFocus: {
       plannedToday: number;
       completedToday: number;
@@ -395,6 +402,7 @@ export function buildPersonalizationSnapshot(opts?: {
   `);
   const helpfulRate = getHelpfulRate();
   const plannedFocus = getPlannedFocusContext(date);
+  const activityStats = getDailyActivityStats(getDb(), date);
   const explicitState = getExplicitTodayState(date);
   const standupGoalToday = getTodayStandupGoal(date);
   const coaching = getCoachingState();
@@ -428,6 +436,12 @@ export function buildPersonalizationSnapshot(opts?: {
       uncheckedHabits,
       calendarEvents,
       recentDistractionMinutes: getRecentDistractionMinutes(),
+      activitySignal: {
+        productiveMinutes: activityStats.productive_minutes,
+        distractionMinutes: activityStats.distraction_minutes,
+        neutralMinutes: activityStats.neutral_minutes,
+        totalMinutes: activityStats.total_minutes,
+      },
       plannedFocus,
     },
     userState: {
@@ -545,6 +559,7 @@ export function formatPersonalizationContext(snapshot: PersonalizationSnapshot):
     `Unchecked habits: ${joinList(snapshot.today.uncheckedHabits)}`,
     `Calendar: ${joinList(snapshot.today.calendarEvents)}`,
     `Recent distraction: ${snapshot.today.recentDistractionMinutes} min in last 2h`,
+    `Verified activity signal today: ${snapshot.today.activitySignal.productiveMinutes}m productive, ${snapshot.today.activitySignal.distractionMinutes}m distraction, ${snapshot.today.activitySignal.neutralMinutes}m neutral (${snapshot.today.activitySignal.totalMinutes}m total). Treat neutral as unknown context, not failure.`,
     `Planned focus: ${snapshot.today.plannedFocus.completedToday}/${snapshot.today.plannedFocus.plannedToday} completed today; ${snapshot.today.plannedFocus.skippedToday} skipped; next ${snapshot.today.plannedFocus.nextTitle ? `${snapshot.today.plannedFocus.nextTitle} (${snapshot.today.plannedFocus.nextMinutes}m)` : 'none'}`,
     snapshot.today.plannedFocus.recentFollowThroughRate === null
       ? 'Planned focus follow-through: not enough resolved blocks yet'

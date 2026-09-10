@@ -1421,19 +1421,38 @@ export function applyUserClassificationFeedback(
 ) {
   for (const session of guardianSessions.values()) {
     if (session.state !== 'ACTIVE') continue;
+    applyUserClassificationFeedbackForSession(session.sessionId, domain, classification);
+  }
+}
+
+/**
+ * Apply a classification correction only to the session that owns the activity.
+ * Global domain learning is handled separately; this cache is deliberately
+ * session-scoped so a correction in one focus session cannot rewrite another.
+ */
+export function applyUserClassificationFeedbackForSession(
+  sessionId: string,
+  domain: string,
+  classification: 'on_topic' | 'distraction' | 'unknown',
+) {
+  const session = guardianSessions.get(sessionId);
+  if (session && (session.state === 'ACTIVE' || session.state === 'BREAK')) {
     session.sessionClassificationCache[domain] = classification;
     if (getDomain(session.currentUrl) === domain) {
       session.currentClassification = classification;
     }
-    // Persist the update through to the session_domain_classifications table
-    try {
-      getDb().prepare(`
-        INSERT OR REPLACE INTO session_domain_classifications
-          (session_id, domain, classification, classified_at)
-        VALUES (?, ?, ?, ?)
-      `).run(session.sessionId, domain, classification, Date.now());
-    } catch { /* non-fatal */ }
   }
+
+  // Persist even when the owning session is not in memory (for example after
+  // a restart or when correcting a completed session), while keeping the row
+  // keyed to exactly this session.
+  try {
+    getDb().prepare(`
+      INSERT OR REPLACE INTO session_domain_classifications
+        (session_id, domain, classification, classified_at)
+      VALUES (?, ?, ?, ?)
+    `).run(sessionId, domain, classification, Date.now());
+  } catch { /* non-fatal */ }
 }
 
 export function listGuardianSessions() {

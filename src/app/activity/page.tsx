@@ -16,6 +16,14 @@ interface Activity {
     youtube_channel: string | null;
     ai_classification?: string;
     device_name?: string;
+    session_id?: string | null;
+    session?: {
+        session_id: string;
+        target_title: string | null;
+        goal_title: string | null;
+        started_at: number;
+        state: string;
+    } | null;
     record_type?: 'legacy' | 'guardian_interval' | 'guardian_evidence_segment';
     capture_source?: 'chrome' | 'vision' | 'idle' | 'private' | 'unverified' | 'legacy';
     counted?: number;
@@ -161,6 +169,12 @@ export default function ActivityPage() {
 
     const formatTimestamp = (ts: string) => {
         return new Date(ts).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+    };
+
+    const formatSessionStart = (startedAt: number) => {
+        return new Date(startedAt).toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true,
+        });
     };
 
     return (
@@ -330,6 +344,20 @@ export default function ActivityPage() {
                                                         : act.capture_source === 'vision'
                                                             ? 'Vision'
                                                             : act.capture_source} · {act.score_eligible === 0 ? 'unscored' : 'counted'}
+                                            </span>
+                                            )}
+                                        {act.session && (
+                                            <span
+                                                className="text-xs"
+                                                title={`Session ${act.session.session_id}`}
+                                                style={{
+                                                    color: '#c4b5fd',
+                                                    border: '1px solid #8b5cf633',
+                                                    borderRadius: '999px',
+                                                    padding: '1px 6px',
+                                                }}
+                                            >
+                                                🎯 {act.session.target_title || 'Focus session'} · {formatSessionStart(act.session.started_at)}
                                             </span>
                                         )}
                                         {act.provisional === 1 && (

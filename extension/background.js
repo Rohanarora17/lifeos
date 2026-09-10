@@ -122,6 +122,13 @@ function enableTelemetryAlarm() {
     });
 }
 
+// Manifest V3 service workers are suspended between events. Recreate the
+// discovery alarm on every worker boot so externally-started sessions are
+// rediscovered after Chrome wakes the extension.
+function enableGuardianDiscoveryAlarm() {
+    chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
+}
+
 // Sync config
 chrome.storage.local.get(['apiUrl'], (data) => {
     if (data.apiUrl) API_BASE = data.apiUrl;
@@ -147,13 +154,20 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
     disableSessionCaptureAlarms();
-    chrome.alarms.create('lifeos-guardian-poll', { periodInMinutes: 0.5 });
+    enableGuardianDiscoveryAlarm();
     enableTelemetryAlarm();
-    sampleBrowserTelemetry().catch(() => { });
+    checkExternalSession()
+        .then(() => sampleBrowserTelemetry())
+        .catch(() => { });
 });
 
 enableTelemetryAlarm();
-sampleBrowserTelemetry().catch(() => { });
+enableGuardianDiscoveryAlarm();
+// The first event after suspension may be telemetry. Reconcile the server
+// session before sampling so browser evidence retains its sessionId.
+checkExternalSession()
+    .then(() => sampleBrowserTelemetry())
+    .catch(() => { });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "send-to-lifeos" && info.selectionText) {
@@ -1043,6 +1057,7 @@ async function flushGuardianDwell(reason) {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === TELEMETRY_ALARM) {
+        await checkExternalSession();
         await sampleBrowserTelemetry().catch(() => { });
         if (guardianIdleLastReportedAt) {
             const state = await chrome.idle.queryState(60).catch(() => 'idle');
@@ -1055,6 +1070,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         return;
     }
     if (alarm.name === 'lifeos-guardian-heartbeat') {
+        if (!guardianActive || !sessionContext?.sessionId) {
+            await checkExternalSession();
+        }
         if (!guardianActive || !sessionContext?.sessionId) return;
         // Checkpoint sustained dwell so Activity begins at the session boundary
         // and stays current during a long-lived page such as a lecture video.

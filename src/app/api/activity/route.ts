@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { classifyActivity } from '@/lib/ai';
 import { extractDomain } from '@/lib/categories';
-import { getActiveGuardianSession } from '@/lib/guardian-runtime';
+import { applyUserClassificationFeedbackForSession, getActiveGuardianSession } from '@/lib/guardian-runtime';
 import { buildAdaptiveActivityPolicy } from '@/lib/adaptive-activity-policy';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import {
@@ -13,6 +13,11 @@ import { getGuardianClientReadiness } from '@/lib/guardian-client-status';
 import { lifeosDayBoundsUtc } from '@/lib/timezone';
 import { getDailyActivityStats } from '@/lib/scoring';
 import { getGuardianShadowRolloutStatus } from '@/lib/guardian-evidence-shadow';
+import {
+    applyGuardianActivityCorrection,
+    applyLegacyGuardianActivityCorrection,
+    correctionClassification,
+} from '@/lib/activity-correction';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -215,9 +220,60 @@ export async function GET(request: NextRequest) {
             evidence_ids: row.evidence_ids_json,
             pipeline_mode: row.pipeline_mode,
         }));
-        const activities = ([...evidenceSegments, ...intervals, ...legacyActivities] as Array<Record<string, unknown> & { started_at?: unknown; duration_seconds?: unknown; capture_source?: unknown; score_eligible?: unknown }>)
+        const rawTimeline = ([...evidenceSegments, ...intervals, ...legacyActivities] as Array<Record<string, unknown> & { started_at?: unknown; duration_seconds?: unknown; capture_source?: unknown; score_eligible?: unknown }>)
             .sort((a, b) => Date.parse(String(b.started_at)) - Date.parse(String(a.started_at)))
             .slice(0, limit);
+
+        // Resolve the owner of every Guardian/legacy record once so the UI and
+        // correction path can show and preserve the exact focus-session boundary.
+        const sessionIds = [...new Set(rawTimeline
+            .map(activity => {
+                if (typeof activity.session_id === 'string') return activity.session_id;
+                if (typeof activity.guardian_session_id === 'string') return activity.guardian_session_id;
+                return null;
+            })
+            .filter((sessionId): sessionId is string => Boolean(sessionId)))];
+        const sessionById = new Map<string, {
+            session_id: string;
+            target_title: string | null;
+            goal_title: string | null;
+            started_at: number;
+            state: string;
+        }>();
+        if (sessionIds.length > 0) {
+            const placeholders = sessionIds.map(() => '?').join(',');
+            const sessionRows = db.prepare(`
+                SELECT session_id, target_title, goal_title, started_at, state
+                FROM guardian_sessions
+                WHERE session_id IN (${placeholders})
+            `).all(...sessionIds) as Array<{
+                session_id: string;
+                target_title: string | null;
+                goal_title: string | null;
+                started_at: number;
+                state: string;
+            }>;
+            for (const session of sessionRows) sessionById.set(session.session_id, session);
+        }
+        const activities = rawTimeline.map(activity => {
+            const sessionId = typeof activity.session_id === 'string'
+                ? activity.session_id
+                : typeof activity.guardian_session_id === 'string'
+                    ? activity.guardian_session_id
+                    : null;
+            const session = sessionId ? sessionById.get(sessionId) : undefined;
+            return {
+                ...activity,
+                session_id: sessionId,
+                session: session ? {
+                    session_id: session.session_id,
+                    target_title: session.target_title,
+                    goal_title: session.goal_title,
+                    started_at: session.started_at,
+                    state: session.state,
+                } : null,
+            };
+        });
 
         let stats = null;
         if (date) {
@@ -315,9 +371,15 @@ export async function PATCH(request: NextRequest) {
 
         if (typeof id === 'string' && id.startsWith('interval:')) {
             const intervalId = id.slice('interval:'.length);
-            db.prepare(`UPDATE session_activity_intervals SET category = ?, updated_at = datetime('now') WHERE interval_id = ?`)
-                .run(category, intervalId);
-            return NextResponse.json({ success: true, id, category, recordType: 'guardian_interval' });
+            const correction = applyGuardianActivityCorrection('guardian_interval', intervalId, category);
+            if (correction.sessionId && correction.affectedDomain) {
+                applyUserClassificationFeedbackForSession(
+                    correction.sessionId,
+                    correction.affectedDomain,
+                    correctionClassification(category),
+                );
+            }
+            return NextResponse.json({ success: true, id, category, recordType: 'guardian_interval', ...correction });
         }
 
         if (typeof id === 'string' && id.startsWith('evidence:')) {
@@ -327,15 +389,38 @@ export async function PATCH(request: NextRequest) {
               FROM guardian_activity_segments WHERE segment_id = ?
             `).get(segmentId) as { session_id: string; observed_start: string; observed_end: string } | undefined;
             if (!segment) return NextResponse.json({ error: 'segment not found' }, { status: 404 });
-            db.prepare(`
-              UPDATE guardian_activity_slices SET category = ?, updated_at = datetime('now')
-              WHERE session_id = ? AND slice_start >= ? AND slice_end <= ?
-            `).run(category, segment.session_id, segment.observed_start, segment.observed_end);
-            return NextResponse.json({ success: true, id, category, recordType: 'guardian_evidence_segment' });
+            const correction = applyGuardianActivityCorrection('guardian_evidence_segment', segmentId, category);
+            if (correction.sessionId && correction.affectedDomain) {
+                applyUserClassificationFeedbackForSession(
+                    correction.sessionId,
+                    correction.affectedDomain,
+                    correctionClassification(category),
+                );
+            }
+            return NextResponse.json({ success: true, id, category, recordType: 'guardian_evidence_segment', ...correction });
         }
 
-        // 1. Update the activity record
-        db.prepare('UPDATE activities SET category = ? WHERE id = ?').run(category, id);
+        // Older Guardian rows use a numeric id. Resolve their session and any
+        // linked canonical interval before applying the normal legacy learning
+        // behavior, so corrections still flow back to one owning session.
+        const legacyOwner = db.prepare(`
+            SELECT guardian_session_id FROM activities WHERE id = ?
+        `).get(id) as { guardian_session_id: string | null } | undefined;
+        const legacyCorrection = legacyOwner?.guardian_session_id
+            ? applyLegacyGuardianActivityCorrection(Number(id), category)
+            : null;
+        if (legacyCorrection?.sessionId && legacyCorrection.affectedDomain) {
+            applyUserClassificationFeedbackForSession(
+                legacyCorrection.sessionId,
+                legacyCorrection.affectedDomain,
+                correctionClassification(category),
+            );
+        }
+
+        // 1. Update the activity record (unless the scoped correction already did it)
+        if (!legacyCorrection) {
+            db.prepare('UPDATE activities SET category = ? WHERE id = ?').run(category, id);
+        }
 
         // 2. Fetch the updated activity to inject a rule into memory
         const activity = db.prepare('SELECT domain, url, youtube_video_id, title, device_name, subcategory FROM activities WHERE id = ?').get(id) as {
@@ -418,7 +503,7 @@ export async function PATCH(request: NextRequest) {
             }
         }
 
-        return NextResponse.json({ success: true, id, category });
+        return NextResponse.json({ success: true, id, category, ...(legacyCorrection || {}) });
     } catch (error) {
         console.error('Activity PATCH error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
