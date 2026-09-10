@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db';
 // Settings, tasks, goals, habits (definitions), knowledge graph, and policy
 // artifacts are intentionally preserved.
 const TABLES_TO_CLEAR = [
+  'coaching_commitments',
   'coaching_decisions',
   'coaching_events',
   'coaching_episodes',

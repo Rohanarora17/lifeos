@@ -36,6 +36,12 @@ import {
     recordHumanContact,
     setCoachingPaused,
 } from '@/lib/coaching-state';
+import {
+    getCommitment,
+    getCommitmentStartPlan,
+    recordCommitmentBlocker,
+    rescheduleCommitment,
+} from '@/lib/coaching-commitments';
 
 function tomorrowIsoDate(): string {
     return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
@@ -199,6 +205,25 @@ export async function POST(request: Request) {
             // Slash commands always win over pending conversational intercepts
             // (evening check-in / weekly reckoning previously swallowed /review /tasks).
             const isSlashCommand = /^\s*[/\\][a-zA-Z]/.test(text);
+
+            const pendingCommitmentBlocker = Number(getSetting('coaching_pending_commitment_blocker'));
+            if (!isSlashCommand && Number.isInteger(pendingCommitmentBlocker) && pendingCommitmentBlocker > 0) {
+                setSetting('coaching_pending_commitment_blocker', '');
+                const commitment = recordCommitmentBlocker(pendingCommitmentBlocker, text);
+                if (commitment) {
+                    await sendTelegram(
+                        `Recorded. The blocker is <b>${commitment.blockerKind?.replace(/_/g, ' ') || 'other'}</b>. Choose a real next move for this commitment.`,
+                        'HTML',
+                        [[
+                            { text: '▶ Start now', callback_data: `commit:start:${commitment.id}` },
+                            { text: '⏰ Move 30m', callback_data: `commit:snooze:${commitment.id}` },
+                        ]]
+                    );
+                } else {
+                    await sendTelegram('That commitment is no longer active. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
+                }
+                return NextResponse.json({ ok: true });
+            }
 
             // Recovery takes precedence over stale pending check-ins. The system should
             // understand why contact stopped before returning to the normal daily flow.
@@ -394,6 +419,8 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
             await sendTelegram(result.message, 'HTML', FULL_MENU_KEYBOARD);
         } else if (type === 'coach') {
             await handleCoachCallback(rest);
+        } else if (type === 'commit') {
+            await handleCommitmentCallback(rest);
         } else {
             await sendTelegram(`Unknown callback type: ${type}`, '', FULL_MENU_KEYBOARD);
         }
@@ -401,6 +428,58 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
         console.error(`[Callback] Handler threw for "${actionData}":`, err);
         await sendTelegram(`⚠️ Something went wrong processing that button.\n<code>${String(err).slice(0, 100)}</code>`, 'HTML', FULL_MENU_KEYBOARD).catch(() => {});
     }
+}
+
+async function handleCommitmentCallback(payload: string) {
+    const colonIdx = payload.indexOf(':');
+    const action = colonIdx === -1 ? payload : payload.slice(0, colonIdx);
+    const commitmentId = Number(colonIdx === -1 ? '' : payload.slice(colonIdx + 1));
+    if (!Number.isInteger(commitmentId) || commitmentId <= 0) {
+        await sendTelegram('That commitment action is invalid. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+
+    if (action === 'start') {
+        const plan = getCommitmentStartPlan(commitmentId);
+        if (!plan) {
+            await sendTelegram('That commitment is no longer available. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
+            return;
+        }
+        await executeAction('START_SESSION', '', {
+            targetTitle: plan.commitment.title,
+            durationMinutes: plan.minutes,
+        });
+        return;
+    }
+
+    if (action === 'snooze') {
+        const commitment = rescheduleCommitment(commitmentId, 30);
+        if (!commitment) {
+            await sendTelegram('That commitment is no longer available. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
+            return;
+        }
+        await sendTelegram(
+            `⏰ Rescheduled for <b>${new Date(commitment.plannedStartAt).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}</b>. I will evaluate the next start, not keep repeating this reminder.`,
+            'HTML', FULL_MENU_KEYBOARD
+        );
+        return;
+    }
+
+    if (action === 'block') {
+        const commitment = getCommitment(commitmentId);
+        if (!commitment) {
+            await sendTelegram('That commitment is no longer available. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
+            return;
+        }
+        setSetting('coaching_pending_commitment_blocker', String(commitmentId));
+        await sendTelegram(
+            'What stopped the start? Tell me what actually happened: phone, low energy, confusion, overwhelm, a changed priority, or something else.',
+            'HTML'
+        );
+        return;
+    }
+
+    await sendTelegram('That commitment action is no longer available. Open the Coach page for the current plan.', 'HTML', FULL_MENU_KEYBOARD);
 }
 
 async function handleCoachCallback(payload: string) {

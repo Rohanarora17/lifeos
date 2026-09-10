@@ -37,6 +37,7 @@ import path from 'path';
 
 const CLEAR_TABLES = [
   // Dependent task/session/plan data first
+  'coaching_commitments',
   'coaching_decisions',
   'coaching_events',
   'coaching_episodes',
@@ -158,6 +159,7 @@ const TRANSIENT_SETTING_KEYS = [
   'pending_session_context',
   'pending_weekly_reckoning',
   'pending_weekly_reckoning_date',
+  'coaching_pending_commitment_blocker',
 
   // Scheduler "already sent today" dedupe
   'scheduler_evening_reminder_last_sent_date',

@@ -53,14 +53,19 @@ export interface CoachingEpisode {
 export interface CoachingDecision {
   id: number;
   episodeId: string | null;
+  commitmentId: number | null;
   policyVersion: string;
   actionType: string;
+  variant: string | null;
+  contextKey: string | null;
   status: string;
   channel: string | null;
   message: string | null;
   reason: string;
   expectedOutcome: string | null;
   actualOutcome: string | null;
+  outcomeScore: number | null;
+  evaluatedAt: string | null;
   createdAt: string;
 }
 
@@ -463,20 +468,26 @@ export function getRecentCoachingDecisions(limit = 20): CoachingDecision[] {
   try {
     const rows = getDb().prepare(`
       SELECT id, episode_id, policy_version, action_type, status, channel, message,
-             reason, expected_outcome, actual_outcome, created_at
+             reason, expected_outcome, actual_outcome, created_at,
+             commitment_id, variant, context_key, outcome_score, evaluated_at
       FROM coaching_decisions ORDER BY created_at DESC LIMIT ?
     `).all(Math.max(1, Math.min(100, limit))) as Array<Record<string, string | number | null>>;
     return rows.map(row => ({
       id: Number(row.id),
       episodeId: row.episode_id as string | null,
+      commitmentId: row.commitment_id === null ? null : Number(row.commitment_id),
       policyVersion: String(row.policy_version),
       actionType: String(row.action_type),
+      variant: row.variant as string | null,
+      contextKey: row.context_key as string | null,
       status: String(row.status),
       channel: row.channel as string | null,
       message: row.message as string | null,
       reason: String(row.reason),
       expectedOutcome: row.expected_outcome as string | null,
       actualOutcome: row.actual_outcome as string | null,
+      outcomeScore: row.outcome_score === null ? null : Number(row.outcome_score),
+      evaluatedAt: row.evaluated_at as string | null,
       createdAt: String(row.created_at),
     }));
   } catch {

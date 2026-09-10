@@ -18,6 +18,7 @@ import { decideAdaptiveJobRun } from './adaptive-scheduler';
 import { buildPersonalizationSnapshot } from './personalization-context';
 import { composeEveningPlanningReminder } from './notifications';
 import { shouldSuppressRoutineCoaching } from './coaching-state';
+import { runCommitmentExecutionCheck } from './coaching-commitments';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -627,6 +628,15 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             headers: { 'Content-Type': 'application/json' },
             body: '{}',
         });
+    });
+
+    // Closed-loop accountability — detect an agreed start that is five minutes
+    // late, ask for a concrete action once, and retain its measured outcome.
+    registerIntervalJob('commitment_executor', 60 * 1000, async () => {
+        const result = await runCommitmentExecutionCheck();
+        if (result.action !== 'none' && result.action !== 'already_handled') {
+            console.log(`[Scheduler] commitment executor: ${result.action}${result.commitment ? ` (${result.commitment.id})` : ''}`);
+        }
     });
 
     // Alert engine — runs every 5 minutes, checks for triggers

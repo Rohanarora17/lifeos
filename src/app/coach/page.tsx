@@ -31,11 +31,16 @@ interface CoachState {
 
 interface CoachDecision {
   id: number;
+  commitmentId: number | null;
   actionType: string;
+  variant: string | null;
+  contextKey: string | null;
   status: string;
   reason: string;
   message: string | null;
   actualOutcome: string | null;
+  outcomeScore: number | null;
+  evaluatedAt: string | null;
   createdAt: string;
 }
 
@@ -49,6 +54,28 @@ interface SessionPerformance {
   bestStartHours: number[];
   trend: 'improving' | 'declining' | 'stable' | 'unknown';
   explanation: string;
+}
+
+interface CoachingCommitment {
+  id: number;
+  title: string;
+  plannedStartAt: string;
+  plannedMinutes: number;
+  state: 'scheduled' | 'due' | 'missed' | 'started' | 'completed' | 'abandoned' | 'rescheduled' | 'cancelled';
+  blockerKind: string | null;
+  blockerText: string | null;
+  outcomeReason: string | null;
+}
+
+interface InterventionLearning {
+  totalEvaluated: number;
+  variants: Array<{
+    variant: 'direct_start' | 'tiny_start' | 'choice';
+    evaluated: number;
+    completed: number;
+    started: number;
+    averageOutcome: number | null;
+  }>;
 }
 
 const stateLabels: Record<EngagementState, string> = {
@@ -72,7 +99,10 @@ export default function CoachPage() {
   const [state, setState] = useState<CoachState | null>(null);
   const [decisions, setDecisions] = useState<CoachDecision[]>([]);
   const [performance, setPerformance] = useState<SessionPerformance | null>(null);
+  const [commitment, setCommitment] = useState<CoachingCommitment | null>(null);
+  const [interventionLearning, setInterventionLearning] = useState<InterventionLearning | null>(null);
   const [reply, setReply] = useState('');
+  const [commitmentBlocker, setCommitmentBlocker] = useState('');
   const [coachReply, setCoachReply] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -89,6 +119,8 @@ export default function CoachPage() {
     setState(payload.state);
     setPerformance(payload.performance);
     setDecisions(payload.decisions || []);
+    setCommitment(payload.currentCommitment || null);
+    setInterventionLearning(payload.interventionLearning || null);
   }, [router]);
 
   useEffect(() => {
@@ -107,10 +139,10 @@ export default function CoachPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'The coaching action failed.');
       setCoachReply(payload.reply ? payload.reply.replace(/<[^>]+>/g, '') : null);
-      setState(payload.state);
+      if (payload.state) setState(payload.state);
       setReply('');
       await refresh();
-      return payload.state as CoachState;
+      return payload;
     } finally {
       setSaving(false);
     }
@@ -126,8 +158,8 @@ export default function CoachPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        topic: accepted.restart.title,
-        durationMinutes: accepted.restart.minutes,
+        topic: accepted.state.restart.title,
+        durationMinutes: accepted.state.restart.minutes,
         source: 'dashboard',
         sessionContext: 'Accepted from the active coaching recovery flow.',
       }),
@@ -135,6 +167,37 @@ export default function CoachPage() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || payload.error || 'Guardian could not start the restart session.');
     router.push('/guardian');
+  }
+
+  async function startCommitment() {
+    if (!commitment) return;
+    const accepted = await act('commit_start', { commitmentId: commitment.id });
+    const response = await fetch('/api/guardian/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: accepted.startPlan.commitment.title,
+        durationMinutes: accepted.startPlan.minutes,
+        source: 'dashboard',
+        sessionContext: `Started from coaching commitment ${commitment.id}.`,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || payload.error || 'Guardian could not start this commitment.');
+    router.push('/guardian');
+  }
+
+  async function rescheduleCurrentCommitment() {
+    if (!commitment) return;
+    await act('commit_reschedule', { commitmentId: commitment.id, delayMinutes: 30 });
+    setCoachReply('Commitment moved by 30 minutes. LifeOS will evaluate the new start time.');
+  }
+
+  async function saveCommitmentBlocker() {
+    if (!commitment || !commitmentBlocker.trim()) return;
+    await act('commit_blocked', { commitmentId: commitment.id, text: commitmentBlocker });
+    setCommitmentBlocker('');
+    setCoachReply('Blocker attached to this commitment and its intervention outcome.');
   }
 
   if (loading) return <div className="py-20 text-center" style={{ color: 'var(--text-secondary)' }}>Loading coaching state…</div>;
@@ -149,6 +212,62 @@ export default function CoachPage() {
       </div>
 
       {error && <div className="card" style={{ borderColor: '#ef4444', color: '#ef4444' }}>{error}</div>}
+
+      <section className="card space-y-4" style={{ borderColor: commitment?.state === 'missed' ? '#ef4444' : 'var(--border)' }}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Current commitment</h2>
+            <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>One planned start, one response, and one measured outcome.</p>
+          </div>
+          {commitment && (
+            <span className="rounded-full px-3 py-1 text-sm font-semibold capitalize" style={{ background: 'var(--bg-secondary)', color: commitment.state === 'missed' ? '#ef4444' : 'var(--text-secondary)' }}>
+              {commitment.state}
+            </span>
+          )}
+        </div>
+        {commitment ? (
+          <>
+            <div>
+              <p className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>{commitment.title}</p>
+              <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
+                {new Date(commitment.plannedStartAt).toLocaleString()} · {commitment.plannedMinutes} minutes
+              </p>
+              {commitment.blockerText && <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>Recorded blocker: “{commitment.blockerText}”</p>}
+              {commitment.outcomeReason && <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{commitment.outcomeReason}</p>}
+            </div>
+            {commitment.state === 'started' ? (
+              <button type="button" onClick={() => router.push('/guardian')} className="btn btn-primary">Open active session</button>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-3">
+                  <button type="button" disabled={saving} onClick={() => startCommitment().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-primary">
+                    Start now
+                  </button>
+                  <button type="button" disabled={saving} onClick={() => rescheduleCurrentCommitment().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-ghost">
+                    Move 30 minutes
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <label htmlFor="commitment-blocker" className="sr-only">Why did this commitment not start?</label>
+                  <input
+                    id="commitment-blocker"
+                    value={commitmentBlocker}
+                    onChange={event => setCommitmentBlocker(event.target.value)}
+                    placeholder="What stopped the start?"
+                    className="min-w-0 flex-1 rounded-xl border bg-transparent px-3 py-2 outline-none"
+                    style={{ borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+                  />
+                  <button type="button" disabled={saving || !commitmentBlocker.trim()} onClick={() => saveCommitmentBlocker().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-ghost">
+                    Record blocker
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <p style={{ color: 'var(--text-secondary)' }}>No active commitment. The next planned focus session will appear here.</p>
+        )}
+      </section>
 
       <section className="card space-y-5" style={{ borderColor: stateColors[state.engagement] }}>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -239,6 +358,28 @@ export default function CoachPage() {
         ) : <p style={{ color: 'var(--text-secondary)' }}>Session learning is unavailable.</p>}
       </section>
 
+      <section className="card space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Which interventions work</h2>
+          <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>LifeOS compares actual starts and completed sessions after each missed-start response.</p>
+        </div>
+        {!interventionLearning || interventionLearning.totalEvaluated === 0 ? (
+          <p style={{ color: 'var(--text-secondary)' }}>Collecting evidence. Policy changes begin after measured outcomes, so a reply alone is not counted as success.</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-3">
+            {interventionLearning.variants.map(item => (
+              <div key={item.variant} className="rounded-xl border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+                <p className="font-semibold capitalize" style={{ color: 'var(--text-primary)' }}>{item.variant.replaceAll('_', ' ')}</p>
+                <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{item.completed}/{item.evaluated} completed · {item.started} started</p>
+                <p className="mt-1 text-xs uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                  Outcome {item.averageOutcome === null ? 'learning' : `${Math.round(item.averageOutcome * 100)}%`}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="card">
         <h2 className="mb-4 text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>Recent coaching decisions</h2>
         {decisions.length === 0 ? (
@@ -252,7 +393,11 @@ export default function CoachPage() {
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{new Date(decision.createdAt).toLocaleString()}</p>
                 </div>
                 <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>{decision.reason}</p>
-                <p className="mt-1 text-xs uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{decision.status}</p>
+                <p className="mt-1 text-xs uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                  {decision.status}
+                  {decision.variant ? ` · ${decision.variant.replaceAll('_', ' ')}` : ''}
+                  {decision.outcomeScore !== null ? ` · outcome ${Math.round(decision.outcomeScore * 100)}%` : ''}
+                </p>
               </div>
             ))}
           </div>

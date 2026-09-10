@@ -58,6 +58,20 @@ describe('guardian route lifecycle', () => {
   });
 
   it('starts, ingests browser context, exposes state, and completes', async () => {
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+    const plan = db.prepare(`
+      INSERT INTO daily_plans (plan_date, status, created_at, updated_at)
+      VALUES (?, 'active', datetime('now'), datetime('now'))
+    `).run(today);
+    const plannedStart = new Date();
+    db.prepare(`
+      INSERT INTO planned_focus_sessions (
+        id, plan_id, title, planned_start, planned_end, duration_minutes, status
+      ) VALUES ('route-planned-session', ?, 'Audit polynomial commitment research', ?, ?, 25, 'planned')
+    `).run(plan.lastInsertRowid, plannedStart.toISOString(), new Date(plannedStart.getTime() + 25 * 60_000).toISOString());
+
     const startResponse = await startPOST(
       new Request('http://lifeos.test/api/guardian/session/start', {
         method: 'POST',
@@ -76,6 +90,16 @@ describe('guardian route lifecycle', () => {
     assert.equal(started.session.state, 'ACTIVE');
     assert.equal(started.session.targetTitle, 'Audit polynomial commitment research');
     sessionId = started.session.sessionId;
+    const startedCommitment = db.prepare(`
+      SELECT state, session_id FROM coaching_commitments
+      WHERE source_type='planned_focus' AND source_id='route-planned-session'
+    `).get();
+    assert.equal(startedCommitment.state, 'started');
+    assert.equal(startedCommitment.session_id, sessionId);
+    assert.equal(
+      db.prepare("SELECT status FROM planned_focus_sessions WHERE id='route-planned-session'").pluck().get(),
+      'started',
+    );
     recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome',
       sessionId,
@@ -143,6 +167,17 @@ describe('guardian route lifecycle', () => {
       )
       .get(sessionId);
     assert.equal(persisted.state, 'COMPLETE');
+    const completedCommitment = db.prepare(`
+      SELECT state, outcome_score, completion_ratio FROM coaching_commitments
+      WHERE source_type='planned_focus' AND source_id='route-planned-session'
+    `).get();
+    assert.equal(completedCommitment.state, 'abandoned');
+    assert.equal(completedCommitment.outcome_score, 0);
+    assert.ok(completedCommitment.completion_ratio < 0.8);
+    assert.equal(
+      db.prepare("SELECT status FROM planned_focus_sessions WHERE id='route-planned-session'").pluck().get(),
+      'skipped',
+    );
     sessionId = null;
   });
 });

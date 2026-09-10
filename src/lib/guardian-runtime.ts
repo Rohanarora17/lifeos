@@ -53,6 +53,10 @@ import {
 import { getSessionActivityEvidenceCount, getSessionScoringIntervals } from './session-activity';
 import { configuredGuardianEvidenceMode, recordGuardianScoreSnapshot } from './guardian-evidence-store';
 import { shouldSuppressRoutineCoaching } from './coaching-state';
+import {
+  recordSessionOutcomeForCommitment,
+  recordSessionStartedForCommitment,
+} from './coaching-commitments';
 
 export { VisionClientUnavailableError } from './guardian-client-status';
 
@@ -1616,6 +1620,12 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
   }
 
   linkSoftWatchToSession(sessionId, targetTitle);
+  recordSessionStartedForCommitment({
+    sessionId,
+    title: targetTitle,
+    startedAt: new Date(session.startedAt),
+    plannedMinutes: durationMinutes,
+  });
 
   // Activate matching tasks → 'doing' (sync, fast keyword match)
   try {
@@ -1702,6 +1712,12 @@ export function endGuardianSession(sessionId: string) {
   } catch { /* non-fatal */ }
 
   if (!hasVerifiedEvidence) {
+    recordSessionOutcomeForCommitment({
+      sessionId,
+      elapsedMinutes: 0,
+      focusScore: null,
+      verifiedEvidence: false,
+    });
     emitSessionEvent(sessionId, {
       type: 'session_end',
       summary: {
@@ -1782,6 +1798,12 @@ export function endGuardianSession(sessionId: string) {
   }
   const focusScores = session.focusScoreHistory.length ? session.focusScoreHistory : [100];
   const avgFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
+  recordSessionOutcomeForCommitment({
+    sessionId,
+    elapsedMinutes,
+    focusScore: avgFocusScore,
+    verifiedEvidence: true,
+  });
 
   // Fire-and-forget: task completion assessment + reflection → Telegram + Calendar update
   void (async () => {
@@ -2789,6 +2811,18 @@ function updateCommitmentFollowThroughRate() {
 function tickSoftWatchChecker() {
   const now = Date.now();
   for (const [id, commitment] of softWatchMap) {
+    try {
+      const persisted = getDb().prepare(`
+        SELECT status, reminder_sent_at as reminderSentAt, check_in_sent_at as checkInSentAt
+        FROM soft_watch_commitments WHERE id=?
+      `).get(id) as Pick<SoftWatchCommitment, 'status' | 'reminderSentAt' | 'checkInSentAt'> | undefined;
+      if (persisted) {
+        commitment.status = persisted.status;
+        commitment.reminderSentAt = persisted.reminderSentAt;
+        commitment.checkInSentAt = persisted.checkInSentAt;
+        softWatchMap.set(id, commitment);
+      }
+    } catch { /* retain the in-memory value on transient database errors */ }
     if (commitment.status !== 'pending') continue;
 
     const sincStart = now - commitment.intendedStartAt;
