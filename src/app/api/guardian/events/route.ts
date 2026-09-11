@@ -4,7 +4,11 @@ import { normalizeGuardianEventInput } from '@/lib/guardian-events';
 import { getDb } from '@/lib/db';
 import { classifyActivity } from '@/lib/ai';
 import { recordBrowserCollectorHeartbeat } from '@/lib/guardian-client-status';
-import { arbitrateSessionActivity, recordSessionActivityInterval } from '@/lib/session-activity';
+import {
+  arbitrateSessionActivity,
+  recordSessionActivityInterval,
+  removeOverlappingVisionFallback,
+} from '@/lib/session-activity';
 import { getPendingPresenceCheck } from '@/lib/guardian-presence';
 import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
 
@@ -135,11 +139,15 @@ export async function POST(req: Request) {
         const observedStart = event.tabStartedAt
           ? new Date(event.tabStartedAt).toISOString()
           : new Date(event.timestamp - (event.dwellSeconds ?? 0) * 1_000).toISOString();
+        const observedEnd = new Date(
+          Date.parse(observedStart) + (event.dwellSeconds ?? 0) * 1_000,
+        ).toISOString();
+        removeOverlappingVisionFallback(event.sessionId, observedStart, observedEnd);
         canonicalIntervalId = recordSessionActivityInterval({
           sessionId: event.sessionId,
           source: 'chrome',
           observedStart,
-          observedEnd: new Date(Date.parse(observedStart) + (event.dwellSeconds ?? 0) * 1_000).toISOString(),
+          observedEnd,
           app: 'Google Chrome',
           url: activityUrl,
           domain,

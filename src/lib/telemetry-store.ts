@@ -5,12 +5,6 @@ import {
     validateTelemetryEventV1,
 } from '@/lib/telemetry-contract';
 import { recordBrowserCollectorHeartbeat } from '@/lib/guardian-client-status';
-import {
-    arbitrateSessionActivity,
-    recordSessionActivityInterval,
-    removeOverlappingVisionFallback,
-} from '@/lib/session-activity';
-import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
 
 export interface TelemetryIngestResult {
     accepted: number;
@@ -37,52 +31,6 @@ function ingestGuardianBrowserEvidence(event: TelemetryEventV1) {
         windowFocused: focused,
         collectorVersion: event.provenance.collectorVersion,
         observedAt: event.observedEnd,
-    });
-
-    if (!event.sessionId) return;
-    if (getSessionEvidenceMode(event.sessionId) === 'authoritative') return;
-
-    const db = getDb();
-    const active = db.prepare(`
-        SELECT 1
-        FROM guardian_sessions
-        WHERE session_id = ? AND state = 'ACTIVE'
-        LIMIT 1
-    `).get(event.sessionId);
-    if (!active) return;
-
-    if (!focused || event.privacy.decision !== 'allow' || !event.tab) return;
-    const arbitration = arbitrateSessionActivity(event.sessionId, 'chrome');
-    if (!arbitration.accepted) return;
-
-    removeOverlappingVisionFallback(
-        event.sessionId,
-        event.observedStart,
-        event.observedEnd,
-    );
-    recordSessionActivityInterval({
-        intervalId: `browser-telemetry:${event.eventId}`,
-        sessionId: event.sessionId,
-        deviceId: event.deviceId,
-        source: 'chrome',
-        observedStart: event.observedStart,
-        observedEnd: event.observedEnd,
-        app: event.application?.name || 'Google Chrome',
-        windowTitle: event.window?.title ?? null,
-        url: event.tab.url,
-        domain: event.tab.domain,
-        title: event.tab.title,
-        category: 'neutral',
-        subcategory: 'browser_telemetry',
-        selectionReason: arbitration.reason,
-        captureStatus: 'verified_browser_telemetry',
-        engagementState: 'interactive',
-        engagementConfidence: 0.95,
-        evidence: {
-            telemetryEventId: event.eventId,
-            collector: event.provenance.collector,
-            collectorVersion: event.provenance.collectorVersion,
-        },
     });
 }
 

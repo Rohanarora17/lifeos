@@ -67,9 +67,13 @@ async function sendBlockToTab(tabId, blockData) {
     try {
         await chrome.tabs.sendMessage(tabId, blockData);
     } catch {
-        // Content script not loaded (pre-existing tab) — inject guardian.js then retry
+        // Content script not loaded (pre-existing or invalidated tab) — replace it then retry.
         try {
-            await chrome.scripting.executeScript({ target: { tabId }, files: ['guardian.js'] });
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => { window.__lifeosGuardianLoadedVersion = null; },
+            });
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['runtime-messaging.js', 'guardian.js'] });
             // Small delay to let the script register its listener
             await new Promise(r => setTimeout(r, 50));
             chrome.tabs.sendMessage(tabId, blockData).catch(() => { });
@@ -714,7 +718,11 @@ async function requestGuardianPageEvidence(tabId, navigation = false) {
         });
     } catch {
         try {
-            await chrome.scripting.executeScript({ target: { tabId }, files: ['guardian.js'] });
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => { window.__lifeosGuardianLoadedVersion = null; },
+            });
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['runtime-messaging.js', 'guardian.js'] });
             await chrome.tabs.sendMessage(tabId, {
                 type: 'LIFEOS_COLLECT_EVIDENCE_NOW',
                 navigation,

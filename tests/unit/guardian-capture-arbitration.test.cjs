@@ -43,7 +43,7 @@ describe('Guardian capture arbitration', () => {
   it('selects Chrome only when Chrome is frontmost and extension evidence is fresh', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.2',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.3',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, false);
@@ -54,7 +54,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.2', observedAt: new Date(now - 20_000).toISOString(),
+      collectorVersion: '1.3.3', observedAt: new Date(now - 20_000).toISOString(),
     });
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
     assert.equal(client.getBrowserCollectorState(sessionId, now + 34_000).fresh, true);
@@ -66,7 +66,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome-skewed', sessionId, windowFocused: true,
-      collectorVersion: '1.3.2',
+      collectorVersion: '1.3.3',
       observedAt: new Date(serverNow + 3 * 60_000).toISOString(),
     });
 
@@ -79,11 +79,11 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'chrome-primary', sessionId, windowFocused: true,
-      collectorVersion: '1.3.2', receivedAt: new Date(serverNow).toISOString(),
+      collectorVersion: '1.3.3', receivedAt: new Date(serverNow).toISOString(),
     });
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'chrome:MacBook', sessionId, windowFocused: false,
-      collectorVersion: '1.3.2', receivedAt: new Date(serverNow + 1_000).toISOString(),
+      collectorVersion: '1.3.3', receivedAt: new Date(serverNow + 1_000).toISOString(),
     });
     db.prepare(`UPDATE browser_collector_status SET updated_at = ? WHERE device_id = ?`)
       .run(new Date(serverNow).toISOString(), 'chrome-primary');
@@ -97,7 +97,7 @@ describe('Guardian capture arbitration', () => {
   it('suppresses background Chrome while Preview or VS Code is frontmost', () => {
     heartbeat('Preview');
     client.recordBrowserCollectorHeartbeat({
-      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.2',
+      deviceId: 'test-chrome', sessionId, windowFocused: true, collectorVersion: '1.3.3',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, false);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'vision').accepted, true);
@@ -137,7 +137,7 @@ describe('Guardian capture arbitration', () => {
     heartbeat('Google Chrome', 'idle');
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'test-chrome', sessionId, windowFocused: true,
-      collectorVersion: '1.3.2', mediaPlaybackActive: true,
+      collectorVersion: '1.3.3', mediaPlaybackActive: true,
       mediaTitle: 'Lecture 2: Contradiction and Induction',
     });
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);

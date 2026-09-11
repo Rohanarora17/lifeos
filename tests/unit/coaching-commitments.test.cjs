@@ -11,6 +11,7 @@ describe('closed-loop coaching commitments', () => {
   beforeEach(() => {
     const env = createIsolatedDb('lifeos-coaching-commitments-');
     db = env.db;
+    env.setSetting('history_start_date', '2026-09-10');
     commitments = env.requireLib('coaching-commitments.ts');
   });
 

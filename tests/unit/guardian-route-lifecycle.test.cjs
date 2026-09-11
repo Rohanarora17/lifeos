@@ -12,6 +12,8 @@ describe('guardian route lifecycle', () => {
   let endPOST;
   let sessionId;
   let recordBrowserCollectorHeartbeat;
+  let recordSessionActivityInterval;
+  let ingestTelemetryEvents;
 
   before(() => {
     delete process.env.GOOGLE_CLOUD_PROJECT;
@@ -22,6 +24,8 @@ describe('guardian route lifecycle', () => {
     const clientStatus = env.requireLib('guardian-client-status.ts');
     const { recordNativeClientHeartbeat } = clientStatus;
     ({ recordBrowserCollectorHeartbeat } = clientStatus);
+    ({ recordSessionActivityInterval } = env.requireLib('session-activity.ts'));
+    ({ ingestTelemetryEvents } = env.requireLib('telemetry-store.ts'));
     recordNativeClientHeartbeat({
       deviceId: 'test-macbook',
       clientVersion: '0.3.0',
@@ -104,8 +108,45 @@ describe('guardian route lifecycle', () => {
       deviceId: 'test-chrome',
       sessionId,
       windowFocused: true,
-      collectorVersion: '1.3.2',
+      collectorVersion: '1.3.3',
     });
+
+    const intervalEnd = Date.now();
+    const intervalStart = intervalEnd - 30_000;
+    recordSessionActivityInterval({
+      intervalId: 'route-vision-fallback',
+      sessionId,
+      deviceId: 'test-macbook',
+      source: 'vision',
+      observedStart: new Date(intervalStart).toISOString(),
+      observedEnd: new Date(intervalEnd).toISOString(),
+      app: 'Google Chrome',
+      title: 'Polynomial commitments paper',
+      category: 'neutral',
+      subcategory: 'vision_fallback',
+      selectionReason: 'Chrome evidence had not arrived yet.',
+      captureStatus: 'verified',
+    });
+    const telemetry = ingestTelemetryEvents([{
+      version: 1,
+      eventId: 'route-browser-telemetry',
+      deviceId: 'test-chrome',
+      source: 'browser_extension',
+      observedStart: new Date(intervalStart).toISOString(),
+      observedEnd: new Date(intervalEnd).toISOString(),
+      state: 'active',
+      sessionId,
+      application: { name: 'Google Chrome', bundleId: 'com.google.Chrome' },
+      window: { id: '1', title: 'Polynomial commitments paper', focused: true },
+      tab: {
+        id: 7, url: 'https://eprint.iacr.org/2020/081', domain: 'eprint.iacr.org',
+        title: 'Polynomial commitments paper', lastAccessed: intervalEnd, frozen: false, groupId: -1,
+      },
+      group: null,
+      provenance: { collector: 'extension', collectorVersion: '1.3.3', adaptedFrom: null },
+      privacy: { decision: 'allow', reason: 'guardian_focus_session' },
+    }]);
+    assert.equal(telemetry.accepted, 1);
 
     const eventResponse = await eventsPOST(
       new Request('http://lifeos.test/api/guardian/events', {
@@ -116,8 +157,8 @@ describe('guardian route lifecycle', () => {
           url: 'https://eprint.iacr.org/2020/081',
           title: 'Polynomial commitments paper',
           dwellSeconds: 30,
-          tabStartedAt: Date.now() - 30_000,
-          payload: { browserWindowFocused: true, collectorVersion: '1.3.2' },
+          tabStartedAt: intervalStart,
+          payload: { browserWindowFocused: true, collectorVersion: '1.3.3' },
         }),
       })
     );
@@ -126,6 +167,14 @@ describe('guardian route lifecycle', () => {
     assert.equal(event.success, true);
     assert.equal(event.session.currentUrl, 'https://eprint.iacr.org/2020/081');
     assert.equal(typeof event.decision.type, 'string');
+    const countedIntervals = db.prepare(`
+      SELECT source, SUM(duration_seconds) AS seconds
+      FROM session_activity_intervals
+      WHERE session_id = ? AND counted = 1
+      GROUP BY source
+      ORDER BY source
+    `).all(sessionId);
+    assert.deepEqual(countedIntervals, [{ source: 'chrome', seconds: 30 }]);
     await new Promise((resolve) => setTimeout(resolve, 25));
     const activity = db
       .prepare(

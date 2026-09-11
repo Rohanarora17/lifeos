@@ -2,9 +2,11 @@
 // Handles UI interventions (block overlay, classify toast) when commanded by the agent loop.
 // Completely inert unless a message is received from background.js.
 
-// Guard against double-injection (pre-existing tabs re-injected via chrome.scripting.executeScript)
-if (window.__lifeosGuardianLoaded) { /* already loaded */ } else {
-window.__lifeosGuardianLoaded = true;
+// Guard against double-injection (pre-existing tabs re-injected via chrome.scripting.executeScript).
+// The versioned marker lets a newly loaded extension replace a stale content script.
+const LIFEOS_GUARDIAN_SCRIPT_VERSION = '1.3.3';
+if (window.__lifeosGuardianLoadedVersion === LIFEOS_GUARDIAN_SCRIPT_VERSION) { /* already loaded */ } else {
+window.__lifeosGuardianLoadedVersion = LIFEOS_GUARDIAN_SCRIPT_VERSION;
 
 let lifeosEvidenceStartedAt = Date.now();
 let lifeosLastInputAt = null;
@@ -13,6 +15,30 @@ let lifeosPointer = false;
 let lifeosScroll = false;
 let lifeosNavigation = true;
 const lifeosMediaTimes = new WeakMap();
+let lifeosEvidenceInterval = null;
+let lifeosMessagingStopped = false;
+
+function stopLifeOSMessaging() {
+    lifeosMessagingStopped = true;
+    if (lifeosEvidenceInterval !== null) clearInterval(lifeosEvidenceInterval);
+    lifeosEvidenceInterval = null;
+    window.__lifeosGuardianLoadedVersion = null;
+}
+
+async function sendLifeOSMessage(message) {
+    if (lifeosMessagingStopped) {
+        return { delivered: false, error: 'extension_context_invalidated', response: null };
+    }
+    const sender = globalThis.LifeOSRuntimeMessaging?.sendRuntimeMessage;
+    if (typeof sender !== 'function') {
+        stopLifeOSMessaging();
+        return { delivered: false, error: 'extension_context_invalidated', response: null };
+    }
+    const chromeApi = typeof chrome === 'undefined' ? null : chrome;
+    const delivery = await sender(chromeApi, message);
+    if (delivery.error === 'extension_context_invalidated') stopLifeOSMessaging();
+    return delivery;
+}
 
 function noteLifeOSEvidence(kind) {
     lifeosLastInputAt = new Date().toISOString();
@@ -44,7 +70,7 @@ async function collectLifeOSPageEvidence(force = false) {
         }
         lifeosMediaTimes.set(element, current);
     }
-    const result = await chrome.runtime.sendMessage({
+    const delivery = await sendLifeOSMessage({
         type: 'GUARDIAN_PAGE_EVIDENCE',
         observedStart: new Date(Math.min(lifeosEvidenceStartedAt, now - 1)).toISOString(),
         observedEnd: new Date(now).toISOString(),
@@ -63,16 +89,16 @@ async function collectLifeOSPageEvidence(force = false) {
             currentTime: mediaCurrentTime,
             title: mediaPlaying ? document.title : null,
         },
-    }).catch(() => ({ ok: false }));
+    });
     lifeosEvidenceStartedAt = now;
     lifeosKeyboard = false;
     lifeosPointer = false;
     lifeosScroll = false;
     lifeosNavigation = false;
-    return result;
+    return delivery.response || { ok: false, error: delivery.error };
 }
 
-setInterval(() => { void collectLifeOSPageEvidence(false); }, 10_000);
+lifeosEvidenceInterval = setInterval(() => { void collectLifeOSPageEvidence(false); }, 10_000);
 window.addEventListener('pagehide', () => { void collectLifeOSPageEvidence(true); });
 for (const mediaEvent of ['play', 'pause', 'ended', 'seeking']) {
     document.addEventListener(mediaEvent, () => { void collectLifeOSPageEvidence(true); }, {
@@ -185,7 +211,7 @@ function injectBlockOverlay(data) {
     document.body.appendChild(div.firstElementChild);
 
     document.getElementById('lifeos-btn-close-guardian').addEventListener('click', () => {
-        chrome.runtime.sendMessage({ type: 'CLOSE_TAB' });
+        void sendLifeOSMessage({ type: 'CLOSE_TAB' });
     });
     document.getElementById('lifeos-btn-stay-locked').addEventListener('click', () => {
         window.history.back();
@@ -209,7 +235,7 @@ function injectBlockOverlay(data) {
             overrideButton.textContent = 'Ask For Override';
         }, 1000);
     }
-    overrideButton.addEventListener('click', () => {
+    overrideButton.addEventListener('click', async () => {
         if (overrideButton.disabled) return;
         const reasonText = document.getElementById('lifeos-override-reason').value.trim();
         const requestedMinutes = parseInt(document.getElementById('lifeos-override-minutes').value, 10);
@@ -220,22 +246,23 @@ function injectBlockOverlay(data) {
         }
 
         status.textContent = 'Reviewing override request...';
-        chrome.runtime.sendMessage({
+        const delivery = await sendLifeOSMessage({
             type: 'REQUEST_OVERRIDE',
             url: location.href,
             title: document.title,
             reason: reasonText,
             requestedMinutes,
-        }, (response) => {
-            const decision = response?.decision;
-            if (!decision) {
-                status.textContent = 'Override review failed.';
-                return;
-            }
-            status.textContent = decision.approved
-                ? `Override approved for ${decision.ttlMinutes} minutes.`
-                : decision.explainability;
         });
+        const decision = delivery.response?.decision;
+        if (!decision) {
+            status.textContent = delivery.error === 'extension_context_invalidated'
+                ? 'Extension updated. Refresh this tab and try again.'
+                : 'Override review failed.';
+            return;
+        }
+        status.textContent = decision.approved
+            ? `Override approved for ${decision.ttlMinutes} minutes.`
+            : decision.explainability;
     });
 }
 
@@ -487,23 +514,23 @@ window.addEventListener('message', (event) => {
     // We only accept messages from ourselves
     if (event.source !== window) return;
     if (event.data && event.data.type === 'START_GUARDIAN') {
-        chrome.runtime.sendMessage(event.data);
+        void sendLifeOSMessage(event.data);
     }
     if (event.data && event.data.type === 'STOP_GUARDIAN') {
-        chrome.runtime.sendMessage(event.data, (result) => {
+        void sendLifeOSMessage(event.data).then(delivery => {
             window.postMessage({
                 type: 'LIFEOS_STOP_GUARDIAN_RESULT',
                 requestId: event.data.requestId || null,
-                result: result || { ok: false },
+                result: delivery.response || { ok: false, error: delivery.error },
             }, '*');
         });
     }
     if (event.data && event.data.type === 'LIFEOS_WAKE_COPILOT') {
-        chrome.runtime.sendMessage({ type: 'WAKE_COPILOT' }, (result) => {
+        void sendLifeOSMessage({ type: 'WAKE_COPILOT' }).then(delivery => {
             window.postMessage({
                 type: 'LIFEOS_WAKE_COPILOT_RESULT',
                 requestId: event.data.requestId || null,
-                result: result || { ok: false, error: 'No response from LifeOS extension' },
+                result: delivery.response || { ok: false, error: delivery.error || 'No response from LifeOS extension' },
             }, '*');
         });
     }
@@ -524,7 +551,7 @@ document.addEventListener('keydown', (event) => {
     if (!event.altKey || event.code !== 'KeyD' || event.metaKey || event.ctrlKey) return;
     event.preventDefault();
     const selectedText = lastLifeOSSelectedText || window.getSelection()?.toString().trim() || '';
-    chrome.runtime.sendMessage({
+    void sendLifeOSMessage({
         type: 'GUIDANCE_REQUEST',
         selectedText,
         question: selectedText
@@ -534,4 +561,4 @@ document.addEventListener('keydown', (event) => {
     });
 });
 
-} // end __lifeosGuardianLoaded guard
+} // end versioned __lifeosGuardianLoadedVersion guard

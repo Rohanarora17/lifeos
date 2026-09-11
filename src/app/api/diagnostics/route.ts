@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { assessFreshness } from '@/lib/diagnostic-freshness';
 import { getGuardianContext } from '@/lib/guardian-runtime';
 import { getSchedulerStatus } from '@/lib/scheduler';
+import { getAiServiceHealth } from '@/lib/ai-health';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,6 +59,7 @@ export async function GET(request: NextRequest) {
         process.env.GOOGLE_CLOUD_PROJECT
         && (process.env.GOOGLE_CLOUD_LOCATION || process.env.GOOGLE_CLOUD_REGION),
     );
+    const vertexHealth = getAiServiceHealth();
 
     const response = NextResponse.json({
         generatedAt: new Date().toISOString(),
@@ -102,7 +104,15 @@ export async function GET(request: NextRequest) {
             vertex: {
                 configured: vertexConfigured,
                 projectConfigured: Boolean(process.env.GOOGLE_CLOUD_PROJECT),
-                modelAvailabilityVerified: false,
+                status: vertexHealth.status,
+                model: vertexHealth.model,
+                failureCode: vertexHealth.failureCode,
+                message: vertexHealth.message,
+                firstFailureAt: vertexHealth.firstFailureAt,
+                lastFailureAt: vertexHealth.lastFailureAt,
+                lastSuccessAt: vertexHealth.lastSuccessAt,
+                consecutiveFailures: vertexHealth.consecutiveFailures,
+                modelAvailabilityVerified: vertexHealth.status === 'healthy',
             },
             pushToTalk: {
                 configured: Boolean(process.env.WHISPER_CPP_URL),

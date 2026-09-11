@@ -31,7 +31,7 @@ describe('telemetry event store', () => {
       group: null,
       provenance: {
         collector: 'extension',
-        collectorVersion: '1.3.2',
+        collectorVersion: '1.3.3',
         adaptedFrom: null,
       },
       privacy: { decision: 'allow', reason: 'waking_hours_metadata' },
@@ -70,7 +70,7 @@ describe('telemetry event store', () => {
       session_id: null,
       last_seen_at: observedEnd,
       window_focused: 1,
-      collector_version: '1.3.2',
+      collector_version: '1.3.3',
     });
     assert.equal(db.prepare('SELECT COUNT(*) FROM session_activity_intervals').pluck().get(), 0);
   });
@@ -94,7 +94,7 @@ describe('telemetry event store', () => {
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM telemetry_events_v1').get().count, 0);
   });
 
-  it('promotes session-scoped Chrome telemetry and replaces only overlapping Vision fallback', () => {
+  it('keeps session telemetry as raw evidence without creating a second counted activity path', () => {
     const sessionId = 'session_browser_telemetry';
     const now = Date.now();
     const iso = offset => new Date(now + offset).toISOString();
@@ -104,17 +104,11 @@ describe('telemetry event store', () => {
     `).run(sessionId, now - 60_000);
 
     const client = env.requireLib('guardian-client-status.ts');
-    const activity = env.requireLib('session-activity.ts');
     client.recordNativeClientHeartbeat({
       deviceId: 'test-macbook', clientVersion: '1.0.0',
       screenRecordingStatus: 'authorized', captureCapable: true,
       frontmostApp: 'Google Chrome', frontmostWindowTitle: 'GitHub',
       systemState: 'active', activeSessionId: sessionId,
-    });
-    activity.recordSessionActivityInterval({
-      sessionId, source: 'vision', observedStart: iso(-60_000), observedEnd: iso(0),
-      app: 'Google Chrome', title: 'Google Chrome', category: 'neutral',
-      selectionReason: 'Temporary Vision fallback.',
     });
 
     const browserEvent = event('guardian-browser', {
@@ -132,23 +126,16 @@ describe('telemetry event store', () => {
 
     assert.equal(ingestTelemetryEvents([browserEvent]).accepted, 1);
     assert.equal(client.getBrowserCollectorState(sessionId, now).fresh, true);
-    const rows = db.prepare(`
-      SELECT source, observed_start, observed_end, duration_seconds, domain, capture_status
-      FROM session_activity_intervals
-      WHERE session_id = ?
-      ORDER BY observed_start
-    `).all(sessionId);
-    assert.deepEqual(rows.map(row => [row.source, row.duration_seconds, row.domain]), [
-      ['vision', 20, null],
-      ['chrome', 30, 'github.com'],
-      ['vision', 10, null],
-    ]);
-    assert.equal(rows[1].capture_status, 'verified_browser_telemetry');
+    assert.equal(db.prepare(`
+      SELECT COUNT(*) FROM session_activity_intervals WHERE session_id = ?
+    `).pluck().get(sessionId), 0);
+    assert.equal(db.prepare(`
+      SELECT COUNT(*) FROM telemetry_events_v1 WHERE session_id = ?
+    `).pluck().get(sessionId), 1);
 
     assert.equal(ingestTelemetryEvents([browserEvent]).duplicates, 1);
     assert.equal(db.prepare(`
-      SELECT SUM(duration_seconds) AS seconds
-      FROM session_activity_intervals WHERE session_id = ?
-    `).get(sessionId).seconds, 60);
+      SELECT COUNT(*) FROM session_activity_intervals WHERE session_id = ?
+    `).pluck().get(sessionId), 0);
   });
 });

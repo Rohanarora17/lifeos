@@ -18,6 +18,7 @@ import {
     applyLegacyGuardianActivityCorrection,
     correctionClassification,
 } from '@/lib/activity-correction';
+import { getAiServiceHealth } from '@/lib/ai-health';
 
 // POST: Log a new activity from browser extension
 export async function POST(request: NextRequest) {
@@ -360,6 +361,7 @@ export async function GET(request: NextRequest) {
             },
             collectorStatus: getGuardianClientReadiness(),
             evidenceHealth: getGuardianEvidenceHealth(),
+            aiHealth: getAiServiceHealth(),
             diagnostics: diagnostics ? {
                 rawEvidence: diagnosticEvidence,
                 shadowRollout: getGuardianShadowRolloutStatus(10),

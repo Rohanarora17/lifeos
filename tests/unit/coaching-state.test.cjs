@@ -106,7 +106,7 @@ describe('active coaching engagement and recovery', () => {
     });
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'chrome:macbook',
-      collectorVersion: '1.3.2',
+      collectorVersion: '1.3.3',
       windowFocused: true,
       observedAt: new Date(now.getTime() - 5_000).toISOString(),
     });
@@ -152,7 +152,7 @@ describe('active coaching engagement and recovery', () => {
     });
     client.recordBrowserCollectorHeartbeat({
       deviceId: 'skewed-chrome',
-      collectorVersion: '1.3.2',
+      collectorVersion: '1.3.3',
       windowFocused: true,
       observedAt: ahead,
     });

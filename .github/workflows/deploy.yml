@@ -37,7 +37,8 @@ jobs:
           mkdir -p collector-artifacts
           BIN_DIR="$(swift build --package-path macos/LifeOSCopilot -c release --show-bin-path)"
           cp "${BIN_DIR}/LifeOSCopilot" collector-artifacts/LifeOSCopilot-0.3.0
-          ditto -c -k --keepParent extension collector-artifacts/LifeOS-Tracker-1.3.0.zip
+          EXTENSION_VERSION=$(node -p "require('./extension/manifest.json').version")
+          ditto -c -k --keepParent extension "collector-artifacts/LifeOS-Tracker-${EXTENSION_VERSION}.zip"
           shasum -a 256 collector-artifacts/* > collector-artifacts/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:

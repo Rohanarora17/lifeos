@@ -5,6 +5,7 @@ import { getSmartNudgeContext } from './behavior';
 import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_REALTIME_ACTIVITY, MODEL_THINKING } from './models';
 import type { PersonalizationSnapshot } from './personalization-context';
+import { recordAiServiceFailure, recordAiServiceSuccess } from './ai-health';
 
 
 let genAI: GoogleGenAI | null = null;
@@ -40,13 +41,18 @@ export function getGeminiRuntimeInfo(): GeminiRuntimeInfo {
 
 export function getGenAI(): GoogleGenAI {
     if (!genAI) {
-        const runtime = getGeminiRuntimeInfo();
-        genAI = new GoogleGenAI({
-            vertexai: true,
-            project: runtime.project,
-            location: runtime.location,
-        });
-        console.log(`[getGenAI] mode: vertex-ai-adc, project: ${runtime.project}, location: ${runtime.location}`);
+        try {
+            const runtime = getGeminiRuntimeInfo();
+            genAI = new GoogleGenAI({
+                vertexai: true,
+                project: runtime.project,
+                location: runtime.location,
+            });
+            console.log(`[getGenAI] mode: vertex-ai-adc, project: ${runtime.project}, location: ${runtime.location}`);
+        } catch (error) {
+            recordAiServiceFailure(error, 'vertex-configuration');
+            throw error;
+        }
     }
     return genAI;
 }
@@ -115,7 +121,9 @@ export async function generateWithFallback(
     // 3 attempts on primary model with backoff
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
-            return await ai.models.generateContent(params);
+            const result = await ai.models.generateContent(params);
+            recordAiServiceSuccess(originalModel);
+            return result;
         } catch (err: any) {
             primaryErr = err;
             if (!isOverloadedError(err)) break;
@@ -129,9 +137,19 @@ export async function generateWithFallback(
 
     // Stable model fallback stays on the same Vertex AI client and billing path.
     const fallback = fallbackModel(originalModel);
-    if (!fallback || fallback === originalModel) throw primaryErr;
+    if (!fallback || fallback === originalModel) {
+        recordAiServiceFailure(primaryErr, originalModel);
+        throw primaryErr;
+    }
     console.warn(`[AI] primary failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
-    return await ai.models.generateContent({ ...params, model: fallback });
+    try {
+        const result = await ai.models.generateContent({ ...params, model: fallback });
+        recordAiServiceSuccess(fallback);
+        return result;
+    } catch (error) {
+        recordAiServiceFailure(error, fallback);
+        throw error;
+    }
 }
 
 /**
@@ -146,7 +164,9 @@ export async function generateStreamWithFallback(
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
-            return await ai.models.generateContentStream(params);
+            const result = await ai.models.generateContentStream(params);
+            recordAiServiceSuccess(originalModel);
+            return result;
         } catch (err: any) {
             primaryErr = err;
             if (!isOverloadedError(err)) break;
@@ -159,9 +179,19 @@ export async function generateStreamWithFallback(
     }
 
     const fallback = fallbackModel(originalModel);
-    if (!fallback || fallback === originalModel) throw primaryErr;
+    if (!fallback || fallback === originalModel) {
+        recordAiServiceFailure(primaryErr, originalModel);
+        throw primaryErr;
+    }
     console.warn(`[AI] primary stream failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
-    return await ai.models.generateContentStream({ ...params, model: fallback });
+    try {
+        const result = await ai.models.generateContentStream({ ...params, model: fallback });
+        recordAiServiceSuccess(fallback);
+        return result;
+    } catch (error) {
+        recordAiServiceFailure(error, fallback);
+        throw error;
+    }
 }
 
 // Helper to extract YouTube video ID

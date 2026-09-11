@@ -89,6 +89,16 @@ interface ActivityResponse {
         totalSources: number;
         lastEvidenceAt: string | null;
     };
+    aiHealth?: {
+        status: 'unknown' | 'healthy' | 'failed';
+        model: string | null;
+        failureCode: string | null;
+        message: string | null;
+        firstFailureAt: string | null;
+        lastFailureAt: string | null;
+        lastSuccessAt: string | null;
+        consecutiveFailures: number;
+    };
     diagnostics?: {
         rawEvidence?: Array<{ event_id: string; collector: string; compatible: number; late_after_watermark: number }>;
         shadowRollout?: {
@@ -132,6 +142,7 @@ export default function ActivityPage() {
     const [sourceSummary, setSourceSummary] = useState<NonNullable<ActivityResponse['sourceSummary']> | null>(null);
     const [collectorStatus, setCollectorStatus] = useState<NonNullable<ActivityResponse['collectorStatus']> | null>(null);
     const [evidenceHealth, setEvidenceHealth] = useState<NonNullable<ActivityResponse['evidenceHealth']> | null>(null);
+    const [aiHealth, setAiHealth] = useState<NonNullable<ActivityResponse['aiHealth']> | null>(null);
     const [diagnostics, setDiagnostics] = useState(false);
     const [diagnosticCount, setDiagnosticCount] = useState(0);
     const [shadowRollout, setShadowRollout] = useState<NonNullable<NonNullable<ActivityResponse['diagnostics']>['shadowRollout']> | null>(null);
@@ -154,6 +165,7 @@ export default function ActivityPage() {
         setSourceSummary(data.sourceSummary || null);
         setCollectorStatus(data.collectorStatus || null);
         setEvidenceHealth(data.evidenceHealth || null);
+        setAiHealth(data.aiHealth || null);
         setDiagnosticCount(data.diagnostics?.rawEvidence?.length || 0);
         setShadowRollout(data.diagnostics?.shadowRollout || null);
     }, []);
@@ -215,6 +227,29 @@ export default function ActivityPage() {
                     onChange={e => setDate(e.target.value)}
                 />
             </div>
+
+            {aiHealth?.status === 'failed' && (
+                <div className="mb-6 rounded-xl border border-red-400/40 bg-red-400/10 p-4">
+                    <p className="text-sm font-semibold text-red-200">AI activity classification is failing</p>
+                    <p className="mt-1 text-xs text-red-100/90">
+                        {aiHealth.failureCode === 'BILLING_DISABLED'
+                            ? 'Vertex AI billing is disabled. Captured activity will remain neutral until billing is restored and a classification succeeds.'
+                            : 'LifeOS is still capturing activity, but it cannot classify it. Captured activity will remain neutral until the AI service recovers.'}
+                    </p>
+                    <p className="mt-2 break-words text-xs" style={{ color: 'var(--text-muted)' }}>
+                        {aiHealth.failureCode || 'AI_REQUEST_FAILED'}
+                        {aiHealth.model ? ` · ${aiHealth.model}` : ''}
+                        {aiHealth.lastFailureAt ? ` · last failed ${formatTimestamp(aiHealth.lastFailureAt)}` : ''}
+                        {aiHealth.consecutiveFailures > 1 ? ` · ${aiHealth.consecutiveFailures} consecutive failures` : ''}
+                    </p>
+                    {aiHealth.message && (
+                        <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer text-red-200">Show error</summary>
+                            <p className="mt-1 break-words" style={{ color: 'var(--text-muted)' }}>{aiHealth.message}</p>
+                        </details>
+                    )}
+                </div>
+            )}
 
             {/* Stats Bar */}
             {stats && (
