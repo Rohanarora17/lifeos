@@ -66,6 +66,26 @@ interface AnalyticsPersonalization {
     };
 }
 
+interface AiUsageAggregate {
+    requests: number;
+    successfulRequests: number;
+    failedRequests: number;
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+}
+
+interface AiUsageSummary {
+    periods: { today: AiUsageAggregate; sevenDays: AiUsageAggregate; thirtyDays: AiUsageAggregate; allTime: AiUsageAggregate };
+    byModel: Array<{ model: string; requests: number; totalTokens: number; estimatedCostUsd: number }>;
+    byFeature: Array<{ feature: string; requests: number; failedRequests: number; totalTokens: number; estimatedCostUsd: number }>;
+    coverage: { startedAt: string | null; latestAt: string | null };
+    pricing: { source: string; version: string; estimateOnly: boolean };
+    limitations: string[];
+}
+
 const FIT_LABEL: Record<AnalyticsPolicyDay['capacityFit'], string> = {
     above_capacity: 'above capacity',
     on_track: 'on track',
@@ -82,6 +102,16 @@ const FIT_COLOR: Record<AnalyticsPolicyDay['capacityFit'], string> = {
 
 function formatMinutes(minutes: number): string {
     return minutes < 60 ? `${Math.round(minutes)}m` : `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`;
+}
+
+function formatTokens(tokens: number) {
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+    return String(tokens);
+}
+
+function formatUsd(cost: number) {
+    return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
 }
 
 function buildInsightEmptyMessage(policy: AnalyticsPolicy | null, personalization: AnalyticsPersonalization | null): string {
@@ -139,6 +169,7 @@ export default function AnalyticsPage() {
     const [insights, setInsights] = useState<Insight[]>([]);
     const [analyticsPolicy, setAnalyticsPolicy] = useState<AnalyticsPolicy | null>(null);
     const [personalization, setPersonalization] = useState<AnalyticsPersonalization | null>(null);
+    const [aiUsage, setAiUsage] = useState<AiUsageSummary | null>(null);
     const [generating, setGenerating] = useState(false);
 
     useEffect(() => {
@@ -154,6 +185,11 @@ export default function AnalyticsPage() {
         fetch('/api/analytics/insights')
             .then(r => r.json())
             .then(data => setInsights(data.insights || []));
+
+        fetch('/api/ai/usage')
+            .then(r => r.json())
+            .then(data => { if (data?.periods) setAiUsage(data); })
+            .catch(() => null);
     }, []);
 
     const generateInsights = async () => {
@@ -223,6 +259,47 @@ export default function AnalyticsPage() {
                                 : ''}
                         </p>
                     )}
+                </section>
+            )}
+
+            {aiUsage && (
+                <section className="card mb-6" style={{ padding: '1.25rem', border: '1px solid rgba(96,165,250,0.24)' }}>
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                        <div>
+                            <h2 className="text-sm font-bold uppercase tracking-wider" style={{ color: '#60a5fa' }}>AI usage and estimated cost</h2>
+                            <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                                Every server-side Gemini attempt is recorded with returned token metadata. Billing starts here from the first recorded event.
+                            </p>
+                        </div>
+                        <a className="text-xs font-semibold" style={{ color: '#93c5fd' }} href={aiUsage.pricing.source} target="_blank" rel="noreferrer">
+                            Vertex pricing source ↗
+                        </a>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+                        <UsageMetric label="Today" value={formatUsd(aiUsage.periods.today.estimatedCostUsd)} detail={`${aiUsage.periods.today.requests} attempts`} />
+                        <UsageMetric label="Last 7 days" value={formatUsd(aiUsage.periods.sevenDays.estimatedCostUsd)} detail={`${formatTokens(aiUsage.periods.sevenDays.totalTokens)} tokens`} />
+                        <UsageMetric label="Last 30 days" value={formatUsd(aiUsage.periods.thirtyDays.estimatedCostUsd)} detail={`${aiUsage.periods.thirtyDays.successfulRequests} successful`} />
+                        <UsageMetric label="Failures" value={String(aiUsage.periods.thirtyDays.failedRequests)} detail="uncharged attempts" />
+                    </div>
+                    {aiUsage.byModel.length > 0 ? (
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                            <UsageBreakdown title="By model" rows={aiUsage.byModel.slice(0, 5).map(row => ({
+                                label: row.model, cost: row.estimatedCostUsd,
+                                detail: `${row.requests} attempts · ${formatTokens(row.totalTokens)} tokens`,
+                            }))} />
+                            <UsageBreakdown title="By LifeOS feature" rows={aiUsage.byFeature.slice(0, 5).map(row => ({
+                                label: row.feature, cost: row.estimatedCostUsd,
+                                detail: `${row.requests} attempts${row.failedRequests ? ` · ${row.failedRequests} failed` : ''}`,
+                            }))} />
+                        </div>
+                    ) : (
+                        <p className="mt-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                            No metered calls yet. The first Gemini request after deployment will start this ledger.
+                        </p>
+                    )}
+                    <p className="mt-4 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                        Estimate uses {aiUsage.pricing.version}. Cloud invoices, credits, discounts, taxes, and Live voice audio are outside this total.
+                    </p>
                 </section>
             )}
 
@@ -382,6 +459,35 @@ export default function AnalyticsPage() {
                 ) : (
                     <p className="text-center py-10" style={{ color: 'var(--text-muted)' }}>{buildDomainEmptyMessage(analyticsPolicy, personalization)}</p>
                 )}
+            </div>
+        </div>
+    );
+}
+
+function UsageMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+    return (
+        <div className="rounded-lg px-3 py-3" style={{ background: 'var(--bg-secondary)' }}>
+            <p className="text-[10px] font-bold uppercase" style={{ color: 'var(--text-muted)' }}>{label}</p>
+            <p className="mt-1 text-lg font-bold">{value}</p>
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{detail}</p>
+        </div>
+    );
+}
+
+function UsageBreakdown({ title, rows }: { title: string; rows: Array<{ label: string; cost: number; detail: string }> }) {
+    return (
+        <div>
+            <p className="mb-2 text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>{title}</p>
+            <div className="space-y-2">
+                {rows.map(row => (
+                    <div key={row.label} className="flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                            <p className="truncate font-medium">{row.label}</p>
+                            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{row.detail}</p>
+                        </div>
+                        <span className="font-mono">{formatUsd(row.cost)}</span>
+                    </div>
+                ))}
             </div>
         </div>
     );

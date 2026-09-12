@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, type GenerateContentResponse, type GenerateContentResponseUsageMetadata } from '@google/genai';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
@@ -6,6 +6,9 @@ import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_REALTIME_ACTIVITY, MODEL_THINKING } from './models';
 import type { PersonalizationSnapshot } from './personalization-context';
 import { recordAiServiceFailure, recordAiServiceSuccess } from './ai-health';
+import { randomUUID } from 'crypto';
+import { inferAiFeatureFromStack, recordAiUsageAttempt } from './ai-usage';
+import { parseActivityClassificationResponse } from './ai-response-parsing';
 
 
 let genAI: GoogleGenAI | null = null;
@@ -116,16 +119,33 @@ export async function generateWithFallback(
     params: Parameters<GoogleGenAI['models']['generateContent']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContent']> {
     const originalModel = typeof params.model === 'string' ? params.model : '';
+    const logicalRequestId = randomUUID();
+    const feature = inferAiFeatureFromStack();
     let primaryErr: any;
 
     // 3 attempts on primary model with backoff
     for (let attempt = 0; attempt < 3; attempt++) {
+        const startedAt = new Date().toISOString();
+        const startedMs = Date.now();
         try {
             const result = await ai.models.generateContent(params);
+            recordAiUsageAttempt({
+                requestId: `${logicalRequestId}:primary:${attempt + 1}`,
+                requestedModel: originalModel, actualModel: originalModel,
+                operation: 'generate', feature, status: 'success', attempt: attempt + 1,
+                usedFallback: false, latencyMs: Date.now() - startedMs,
+                usageMetadata: result.usageMetadata, startedAt,
+            });
             recordAiServiceSuccess(originalModel);
             return result;
         } catch (err: any) {
             primaryErr = err;
+            recordAiUsageAttempt({
+                requestId: `${logicalRequestId}:primary:${attempt + 1}`,
+                requestedModel: originalModel, actualModel: originalModel,
+                operation: 'generate', feature, status: 'failed', attempt: attempt + 1,
+                usedFallback: false, latencyMs: Date.now() - startedMs, error: err, startedAt,
+            });
             if (!isOverloadedError(err)) break;
             if (attempt < 2) {
                 const delay = (attempt + 1) * 4000;
@@ -142,11 +162,27 @@ export async function generateWithFallback(
         throw primaryErr;
     }
     console.warn(`[AI] primary failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
+    const fallbackStartedAt = new Date().toISOString();
+    const fallbackStartedMs = Date.now();
     try {
         const result = await ai.models.generateContent({ ...params, model: fallback });
+        recordAiUsageAttempt({
+            requestId: `${logicalRequestId}:fallback:1`,
+            requestedModel: originalModel, actualModel: fallback,
+            operation: 'generate', feature, status: 'success', attempt: 1,
+            usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
+            usageMetadata: result.usageMetadata, startedAt: fallbackStartedAt,
+        });
         recordAiServiceSuccess(fallback);
         return result;
     } catch (error) {
+        recordAiUsageAttempt({
+            requestId: `${logicalRequestId}:fallback:1`,
+            requestedModel: originalModel, actualModel: fallback,
+            operation: 'generate', feature, status: 'failed', attempt: 1,
+            usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
+            error, startedAt: fallbackStartedAt,
+        });
         recordAiServiceFailure(error, fallback);
         throw error;
     }
@@ -160,15 +196,29 @@ export async function generateStreamWithFallback(
     params: Parameters<GoogleGenAI['models']['generateContentStream']>[0]
 ): ReturnType<GoogleGenAI['models']['generateContentStream']> {
     const originalModel = typeof params.model === 'string' ? params.model : '';
+    const logicalRequestId = randomUUID();
+    const feature = inferAiFeatureFromStack();
     let primaryErr: any;
 
     for (let attempt = 0; attempt < 3; attempt++) {
+        const startedAt = new Date().toISOString();
+        const startedMs = Date.now();
         try {
             const result = await ai.models.generateContentStream(params);
             recordAiServiceSuccess(originalModel);
-            return result;
+            return trackAiStream(result, {
+                requestId: `${logicalRequestId}:primary:${attempt + 1}`,
+                requestedModel: originalModel, actualModel: originalModel,
+                feature, attempt: attempt + 1, usedFallback: false, startedAt, startedMs,
+            }) as Awaited<ReturnType<GoogleGenAI['models']['generateContentStream']>>;
         } catch (err: any) {
             primaryErr = err;
+            recordAiUsageAttempt({
+                requestId: `${logicalRequestId}:primary:${attempt + 1}`,
+                requestedModel: originalModel, actualModel: originalModel,
+                operation: 'stream', feature, status: 'failed', attempt: attempt + 1,
+                usedFallback: false, latencyMs: Date.now() - startedMs, error: err, startedAt,
+            });
             if (!isOverloadedError(err)) break;
             if (attempt < 2) {
                 const delay = (attempt + 1) * 4000;
@@ -184,14 +234,71 @@ export async function generateStreamWithFallback(
         throw primaryErr;
     }
     console.warn(`[AI] primary stream failed for ${originalModel} — retrying Vertex model fallback ${fallback}`);
+    const fallbackStartedAt = new Date().toISOString();
+    const fallbackStartedMs = Date.now();
     try {
         const result = await ai.models.generateContentStream({ ...params, model: fallback });
         recordAiServiceSuccess(fallback);
-        return result;
+        return trackAiStream(result, {
+            requestId: `${logicalRequestId}:fallback:1`,
+            requestedModel: originalModel, actualModel: fallback,
+            feature, attempt: 1, usedFallback: true,
+            startedAt: fallbackStartedAt, startedMs: fallbackStartedMs,
+        }) as Awaited<ReturnType<GoogleGenAI['models']['generateContentStream']>>;
     } catch (error) {
+        recordAiUsageAttempt({
+            requestId: `${logicalRequestId}:fallback:1`,
+            requestedModel: originalModel, actualModel: fallback,
+            operation: 'stream', feature, status: 'failed', attempt: 1,
+            usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
+            error, startedAt: fallbackStartedAt,
+        });
         recordAiServiceFailure(error, fallback);
         throw error;
     }
+}
+
+function trackAiStream(stream: AsyncIterable<GenerateContentResponse>, context: {
+    requestId: string;
+    requestedModel: string;
+    actualModel: string;
+    feature: string;
+    attempt: number;
+    usedFallback: boolean;
+    startedAt: string;
+    startedMs: number;
+}) {
+    return (async function* () {
+        let usageMetadata: GenerateContentResponseUsageMetadata | null = null;
+        let recorded = false;
+        try {
+            for await (const chunk of stream) {
+                if (chunk?.usageMetadata) usageMetadata = chunk.usageMetadata;
+                yield chunk;
+            }
+            recordAiUsageAttempt({
+                ...context, operation: 'stream', status: 'success',
+                latencyMs: Date.now() - context.startedMs, usageMetadata,
+            });
+            recorded = true;
+        } catch (error) {
+            recordAiUsageAttempt({
+                ...context, operation: 'stream', status: 'failed',
+                latencyMs: Date.now() - context.startedMs, usageMetadata, error,
+            });
+            recorded = true;
+            throw error;
+        } finally {
+            // A consumer may stop reading before the provider's final chunk.
+            // Preserve the attempt and whatever usage metadata arrived first.
+            if (!recorded) {
+                recordAiUsageAttempt({
+                    ...context, operation: 'stream', status: 'cancelled',
+                    latencyMs: Date.now() - context.startedMs, usageMetadata,
+                });
+            }
+        }
+    })();
 }
 
 // Helper to extract YouTube video ID
@@ -405,20 +512,41 @@ ${sessionRules}`;
                 contents: prompt,
                 config: {
                     systemInstruction: "You are a precise productivity classification engine.",
-                    responseMimeType: 'application/json'
+                    responseMimeType: 'application/json',
+                    temperature: 0,
+                    responseJsonSchema: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            required: ['id', 'category', 'subcategory', 'confidence', 'reasoning'],
+                            properties: {
+                                id: { type: 'integer' },
+                                category: { type: 'string', enum: ['productive', 'neutral', 'distraction'] },
+                                subcategory: { type: 'string' },
+                                confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+                                reasoning: { type: 'string' },
+                            },
+                        },
+                    },
                 }
             });
             const text = (result.text || '').trim();
-            const parsedArray = JSON.parse(text);
+            const parsedArray = parseActivityClassificationResponse(text);
 
             for (const parsed of parsedArray) {
-                const originalIdx = parsed.id;
-                if (originalIdx !== undefined && originalIdx < results.length) {
-                    const aiResult = {
-                        category: parsed.category as Category,
-                        subcategory: parsed.subcategory as Subcategory,
-                        confidence: parsed.confidence || 'medium',
-                        reasoning: parsed.reasoning
+                const originalIdx = typeof parsed.id === 'number' ? parsed.id : Number(parsed.id);
+                if (Number.isInteger(originalIdx) && originalIdx >= 0 && originalIdx < results.length) {
+                    const category = parsed.category === 'productive' || parsed.category === 'distraction'
+                        ? parsed.category
+                        : 'neutral';
+                    const confidence = parsed.confidence === 'high' || parsed.confidence === 'low'
+                        ? parsed.confidence
+                        : 'medium';
+                    const aiResult: CategoryResult & { reasoning?: string } = {
+                        category: category as Category,
+                        subcategory: (typeof parsed.subcategory === 'string' ? parsed.subcategory : 'other') as Subcategory,
+                        confidence,
+                        reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
                     };
                     results[originalIdx] = aiResult;
 
@@ -448,6 +576,19 @@ ${sessionRules}`;
         }
     } catch (err) {
         console.error('Batch AI classification failed:', err);
+        const pipelineError = new Error(`INVALID_MODEL_OUTPUT: ${err instanceof Error ? err.message : String(err)}`);
+        recordAiUsageAttempt({
+            requestedModel: MODEL_REALTIME_ACTIVITY,
+            actualModel: MODEL_REALTIME_ACTIVITY,
+            operation: 'generate',
+            feature: 'activity-classification-parser',
+            status: 'failed',
+            attempt: 1,
+            usedFallback: false,
+            latencyMs: 0,
+            error: pipelineError,
+        });
+        recordAiServiceFailure(pipelineError, MODEL_REALTIME_ACTIVITY);
     }
 
     // Fill any remaining failures with fallback

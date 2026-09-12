@@ -73,6 +73,7 @@ interface ActivityResponse {
     };
     collectorStatus?: {
         ready: boolean; reason: string; frontmostApp: string | null; activeSessionId?: string | null;
+        clockSkewMs?: number | null;
         nativeCollector?: { ready: boolean; compatible: boolean; version: string | null; minimumVersion: string };
         chromeCollector?: { detected: boolean; ready: boolean; compatible: boolean; version: string | null; minimumVersion: string; updateRequired: boolean };
         selectedSource?: string;
@@ -339,7 +340,7 @@ export default function ActivityPage() {
                         Validation capture checks the new evidence pipeline against the counted timeline. It is shown separately and does not affect today’s score until the rollout passes its comparison gates.
                     </div>
                 )}
-                {collectorStatus?.activeSessionId && (collectorStatus?.updateInstructions?.length || 0) > 0 && (
+                {(collectorStatus?.updateInstructions?.length || 0) > 0 && (
                     <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         {collectorStatus?.updateInstructions?.join(' ')}
                     </div>

@@ -42,6 +42,7 @@ export interface GuardianClientReadiness {
   systemState: ClientSystemState;
   activeSessionId: string | null;
   wakeSupported: boolean;
+  clockSkewMs: number | null;
   nativeCollector?: {
     ready: boolean;
     compatible: boolean;
@@ -59,6 +60,7 @@ export interface GuardianClientReadiness {
     lastSeenAt: string | null;
     windowFocused: boolean;
     updateRequired: boolean;
+    clockSkewMs: number | null;
   };
   evidenceSchemaVersion?: number;
   selectedSource?: 'chrome' | 'vision' | 'vision_fallback' | 'idle' | 'unavailable';
@@ -206,6 +208,9 @@ function browserCollectorReadiness(sessionId: string | null, nowMs: number) {
   const row = readyRow ?? rows[0];
   const compatible = Boolean(row && collectorIsCompatible('chrome', row.collector_version));
   const ready = Boolean(readyRow);
+  const clockSkewMs = row
+    ? Date.parse(row.last_seen_at) - parseServerTime(row.updated_at)
+    : null;
   return {
     row,
     state: {
@@ -214,6 +219,7 @@ function browserCollectorReadiness(sessionId: string | null, nowMs: number) {
       lastSeenAt: row?.last_seen_at ?? null,
       windowFocused: row?.window_focused === 1,
       updateRequired: Boolean(row && !compatible),
+      clockSkewMs: Number.isFinite(clockSkewMs) ? clockSkewMs : null,
     },
   };
 }
@@ -268,6 +274,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
       screenRecordingStatus: 'disabled', captureCapable: true,
       frontmostApp: null, frontmostWindowTitle: null, systemState: 'active',
       activeSessionId: null, wakeSupported: true,
+      clockSkewMs: browser.state.clockSkewMs,
       nativeCollector: {
         ready: true, compatible: true, version: null, minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
         lastSeenAt: null, permissions: { screenRecording: 'disabled', captureCapable: true },
@@ -293,6 +300,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
       screenRecordingStatus: 'unknown', captureCapable: false,
       frontmostApp: null, frontmostWindowTitle: null, systemState: 'active',
       activeSessionId: null, wakeSupported: true,
+      clockSkewMs: browser.state.clockSkewMs,
       nativeCollector: {
         ready: false, compatible: false, version: null, minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
         lastSeenAt: null, permissions: { screenRecording: 'unknown', captureCapable: false },
@@ -324,6 +332,15 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
   const browserReady = browser.state.ready;
   const nativeCompatible = collectorIsCompatible('native', String(row.client_version || 'unknown'));
   const chromeFrontmost = isChromeApplication(row.frontmost_app ? String(row.frontmost_app) : null);
+  const nativeClockSkewMs = Date.parse(lastSeenAt) - parseServerTime(row.updated_at);
+  const clockSkewValues = [nativeClockSkewMs, browser.state.clockSkewMs]
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const clockSkewMs = clockSkewValues.length > 0
+    ? clockSkewValues.sort((left, right) => Math.abs(right) - Math.abs(left))[0]
+    : null;
+  const clockWarning = clockSkewMs !== null && Math.abs(clockSkewMs) > 60_000
+    ? [`Collector and LifeOS server clocks differ by about ${Math.round(Math.abs(clockSkewMs) / 1_000)} seconds. Sync the Mac Mini clock; session start/end times and validation windows can otherwise disagree.`]
+    : [];
 
   return {
     ready: reason === 'ready', required: true, reason,
@@ -338,6 +355,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
     systemState: row.system_state === 'idle' || row.system_state === 'locked' ? row.system_state : 'active',
     activeSessionId,
     wakeSupported: true,
+    clockSkewMs,
     nativeCollector: {
       ready: reason === 'ready', compatible: nativeCompatible,
       version: String(row.client_version || 'unknown'), minimumVersion: MIN_NATIVE_COLLECTOR_VERSION,
@@ -356,6 +374,7 @@ export function getGuardianClientReadiness(nowMs = Date.now()): GuardianClientRe
       ...(!nativeCompatible ? ['Update the MacBook collector with scripts/install-native-copilot.sh --update.'] : []),
       ...(browserRow && !browserCompatible ? ['Reload or update the LifeOS Chrome extension.'] : []),
       ...(!browserRow ? ['Chrome detail is unavailable until the LifeOS extension reports evidence; Vision fallback will be used.'] : []),
+      ...clockWarning,
     ],
   };
 }

@@ -72,6 +72,9 @@ describe('Guardian capture arbitration', () => {
 
     assert.equal(client.getBrowserCollectorState(sessionId, serverNow).fresh, true);
     assert.equal(activity.arbitrateSessionActivity(sessionId, 'chrome').accepted, true);
+    const readiness = client.getGuardianClientReadiness(serverNow);
+    assert.ok(Math.abs(readiness.clockSkewMs) >= 179_000);
+    assert.match(readiness.updateInstructions.join(' '), /clocks differ/);
   });
 
   it('keeps focused Evidence V2 fresh when generic telemetry reports input idle', () => {

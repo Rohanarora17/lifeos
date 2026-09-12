@@ -54,6 +54,11 @@ import { getSessionActivityEvidenceCount, getSessionScoringIntervals } from './s
 import { configuredGuardianEvidenceMode, recordGuardianScoreSnapshot } from './guardian-evidence-store';
 import { shouldSuppressRoutineCoaching } from './coaching-state';
 import {
+  averageContinuousDwellSeconds,
+  countDistractionRevisits,
+  countMeaningfulContextSwitches,
+} from './guardian-continuity';
+import {
   recordSessionOutcomeForCommitment,
   recordSessionStartedForCommitment,
 } from './coaching-commitments';
@@ -1094,15 +1099,16 @@ function decide(session: GuardianState, policy: GuardianPolicyBundle): GuardianD
   const focusScore = session.focusScoreHistory[session.focusScoreHistory.length - 1] ?? 100;
   const history = session.focusScoreHistory;
   const recentEvents = session.tabEventLog.filter((event) => event.timestamp >= Date.now() - 300_000);
-  const tabSwitchesLast5Min = recentEvents.filter((event) => isContinuityEvent(event)).length;
-  const distractionRevisits = recentEvents.filter((event) => isContinuityEvent(event) && getEventClassification(session, event) === 'distraction').length;
+  const classifiedRecentEvents = recentEvents.map(event => ({
+    ...event,
+    payload: { ...event.payload, classification: getEventClassification(session, event) },
+  }));
+  const tabSwitchesLast5Min = countMeaningfulContextSwitches(classifiedRecentEvents);
+  const distractionRevisits = countDistractionRevisits(classifiedRecentEvents);
   const idleSeconds = recentEvents
     .filter((event) => event.type === 'idle')
     .reduce((sum, event) => sum + (event.idleSeconds || 0), 0);
-  const recentDwells = recentEvents
-    .filter((event) => isContinuityEvent(event) && typeof event.dwellSeconds === 'number')
-    .map((event) => event.dwellSeconds || 0);
-  const avgRecentDwell = recentDwells.length > 0 ? recentDwells.reduce((sum, dwell) => sum + dwell, 0) / recentDwells.length : 0;
+  const avgRecentDwell = averageContinuousDwellSeconds(classifiedRecentEvents);
   const cooldownPassed = decisionCooldownPassed(session, policy);
   const inFlow = focusScore >= policy.thresholds.flowSilenceThreshold;
   const attentionCategory = getAttentionCategory(session, session.currentUrl);
