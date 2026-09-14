@@ -24,13 +24,37 @@ import {
 } from './cognitive-active-coach';
 import { tryGetGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
+import {
+  interpretPlanningContext,
+  type PlannerCalendarEvent,
+} from './planner-context';
+
+export { interpretPlanningContext } from './planner-context';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
 
-interface CalendarEventRow {
-  title: string;
-  start_time: string;
-  end_time: string;
+type CalendarEventRow = PlannerCalendarEvent;
+
+export interface PlanningLoadSlice {
+  sessionCount: number;
+  focusedMinutes: number;
+  averageFocusScore: number | null;
+  sessionTitles: string[];
+}
+
+export interface PlanningFocusLoad {
+  currentPlanningDay: PlanningLoadSlice;
+  last24Hours: PlanningLoadSlice;
+}
+
+export interface PlanningDayContext {
+  relation: 'today' | 'tomorrow' | 'future' | 'past';
+  windowStart: string;
+  windowEnd: string;
+  spansMidnight: boolean;
+  signals: string[];
+  ignoredCalendarEventIds: string[];
+  focusLoad: PlanningFocusLoad;
 }
 
 interface LLMPlannedSessionSpec {
@@ -43,6 +67,44 @@ interface LLMPlannedSessionSpec {
   taskId?: number | null;
 }
 
+export function validatePlannedSessionSpecs(input: {
+  specs: LLMPlannedSessionSpec[];
+  windowStart: Date;
+  windowEnd: Date;
+  notBefore: Date | null;
+  calendarEvents: CalendarEventRow[];
+}): {
+  valid: LLMPlannedSessionSpec[];
+  rejected: Array<{ spec: LLMPlannedSessionSpec; reason: string }>;
+} {
+  const valid: LLMPlannedSessionSpec[] = [];
+  const rejected: Array<{ spec: LLMPlannedSessionSpec; reason: string }> = [];
+
+  for (const spec of input.specs) {
+    const start = new Date(spec.startIso);
+    const end = new Date(spec.endIso);
+    let reason: string | null = null;
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+      reason = 'invalid time range';
+    } else if (start < input.windowStart || end > input.windowEnd) {
+      reason = 'outside wake-to-sleep planning window';
+    } else if (input.notBefore && start < input.notBefore) {
+      reason = 'before live replanning boundary';
+    } else {
+      const conflict = input.calendarEvents.find(event => {
+        const eventStart = new Date(event.start_time);
+        const eventEnd = new Date(event.end_time);
+        return start < eventEnd && end > eventStart;
+      });
+      if (conflict) reason = `overlaps ${conflict.title}`;
+    }
+
+    if (reason) rejected.push({ spec, reason });
+    else valid.push(spec);
+  }
+  return { valid, rejected };
+}
+
 async function synthesizePlanWithLLM(input: {
   planDate: string;
   intention: string | null;
@@ -52,6 +114,9 @@ async function synthesizePlanWithLLM(input: {
   calendarEvents: CalendarEventRow[];
   candidateTasks: CandidateTask[];
   snapshot: PersonalizationSnapshot;
+  focusLoad: PlanningFocusLoad;
+  appliedSignals: string[];
+  notBefore: Date | null;
 }): Promise<LLMPlannedSessionSpec[] | null> {
   const ai = tryGetGenAI();
   if (!ai) return null;
@@ -66,13 +131,20 @@ DATE: ${input.planDate}
 USER SLEEP WINDOW: Sleep around ${input.sleepTime}, Wake around ${input.wakeEstimate}.
 USER INTENTION FOR TOMORROW: "${input.intention || 'None'}"
 EVENING NOTES / TODAY'S REFLECTION: "${input.eveningNotes || 'None'}"
+APPLIED CONTEXT: ${input.appliedSignals.length ? input.appliedSignals.join('; ') : 'No explicit overrides'}
+EARLIEST ALLOWED NEW START: ${input.notBefore?.toISOString() ?? 'Start of the wake-to-sleep planning window'}
+
+=== RECENT FOCUS LOAD (USE AS CAPACITY EVIDENCE) ===
+- Current wake-to-sleep planning day: ${input.focusLoad.currentPlanningDay.sessionCount} sessions, ${input.focusLoad.currentPlanningDay.focusedMinutes} focused minutes, average focus ${input.focusLoad.currentPlanningDay.averageFocusScore ?? 'unknown'}.
+- Rolling last 24 hours: ${input.focusLoad.last24Hours.sessionCount} sessions, ${input.focusLoad.last24Hours.focusedMinutes} focused minutes, average focus ${input.focusLoad.last24Hours.averageFocusScore ?? 'unknown'}.
+- Recent targets: ${input.focusLoad.last24Hours.sessionTitles.join(', ') || 'none'}.
 
 === UNIFIED INTELLIGENCE LAYER (SHARED COGNITIVE MODEL) ===
 ${personalizationContext}
 
 ${uilContext}
 
-=== FIXED CALENDAR COMMITMENTS (DO NOT OVERLAP WITH THESE) ===
+=== EFFECTIVE FIXED CALENDAR COMMITMENTS (USER-IGNORED EVENTS ARE ALREADY REMOVED) ===
 ${input.calendarEvents.length > 0 ? input.calendarEvents.map(e => `- ${e.title}: ${e.start_time} to ${e.end_time}`).join('\n') : '- No fixed calendar commitments'}
 
 === CANDIDATE TASKS / WORKLOAD ===
@@ -83,9 +155,10 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
 2. DO NOT schedule sessions during times the user said they are busy, tired, at the gym, or eating dinner.
 3. If the user explicitly requested late-night work (e.g. 11pm to 2am) or morning gaps, YOU MUST schedule sessions during those exact requested time windows!
 4. Align session placement with the Shared Cognitive Model's peak focus hours, learned energy patterns, and risk thresholds.
-5. Do not overlap with fixed calendar commitments or sleep hours.
-6. All startIso and endIso timestamps MUST be ISO 8601 strings in IST timezone (+05:30), format: YYYY-MM-DDTHH:mm:ss.000+05:30.
-7. Return ONLY a valid JSON object matching this schema:
+5. Treat recent completed focus as real cognitive load. Do not reschedule work already credited, and reduce optional load when the rolling 24-hour load is already substantial unless the user explicitly asks to push further.
+6. Do not overlap with the effective fixed calendar commitments below, sleep hours, or the earliest allowed start.
+7. All startIso and endIso timestamps MUST be ISO 8601 strings in IST timezone (+05:30), format: YYYY-MM-DDTHH:mm:ss.000+05:30.
+8. Return ONLY a valid JSON object matching this schema:
 {
   "reasoning": "Brief 1-2 sentence explanation of how you parsed the natural language intention and placed sessions",
   "sessions": [
@@ -120,8 +193,21 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
     throw new Error('AI Next-Day Planning Engine returned 0 planned sessions.');
   }
 
+  const planningWindow = buildPlanningDayWindow(input.planDate, input.wakeEstimate, input.sleepTime);
+  const validation = validatePlannedSessionSpecs({
+    specs: parsed.sessions,
+    windowStart: planningWindow.start,
+    windowEnd: planningWindow.end,
+    notBefore: input.notBefore,
+    calendarEvents: input.calendarEvents,
+  });
+  if (validation.rejected.length > 0) {
+    const detail = validation.rejected.map(item => `${item.spec.title}: ${item.reason}`).join('; ');
+    throw new Error(`AI Next-Day Planning Engine returned unsafe schedule blocks: ${detail}`);
+  }
+
   console.log(`[LLM Planner] Successfully synthesized ${parsed.sessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
-  return parsed.sessions;
+  return validation.valid;
 }
 
 interface CandidateTask {
@@ -230,6 +316,7 @@ export interface NextDayPlanPayload {
   };
   suggestedInputs: PlanningSuggestedInputs;
   calendarConfigured: boolean;
+  dayContext: PlanningDayContext;
 }
 
 export interface PlanningSuggestedInputs {
@@ -313,6 +400,88 @@ function shiftTime(value: string, deltaMinutes: number): string {
 function istDate(date: string, time: string): Date {
   return new Date(`${date}T${time}:00+05:30`);
 }
+
+export function buildPlanningDayWindow(date: string, wakeEstimate: string, sleepTime: string): {
+  start: Date;
+  end: Date;
+  spansMidnight: boolean;
+} {
+  const start = istDate(date, wakeEstimate);
+  let end = istDate(date, sleepTime);
+  const spansMidnight = end <= start;
+  if (spansMidnight) end = new Date(end.getTime() + 24 * 3600_000);
+  return { start, end, spansMidnight };
+}
+
+export function filterCalendarEventsForPlanningWindow(
+  events: CalendarEventRow[],
+  window: { start: Date; end: Date },
+): CalendarEventRow[] {
+  return events.filter(event => {
+    const start = new Date(event.start_time);
+    const end = new Date(event.end_time);
+    return Number.isFinite(start.getTime())
+      && Number.isFinite(end.getTime())
+      && end > window.start
+      && start < window.end;
+  });
+}
+
+function planningDateRelation(date: string): PlanningDayContext['relation'] {
+  const today = todayIst();
+  if (date === today) return 'today';
+  if (date === addDays(today, 1)) return 'tomorrow';
+  return date < today ? 'past' : 'future';
+}
+
+function summarizeFocusRows(rows: Array<{
+  target_title: string;
+  elapsed_minutes: number;
+  final_focus_score: number;
+}>): PlanningLoadSlice {
+  const minutes = rows.reduce((sum, row) => sum + Math.max(0, Number(row.elapsed_minutes || 0)), 0);
+  const scored = rows.map(row => Number(row.final_focus_score)).filter(Number.isFinite);
+  return {
+    sessionCount: rows.length,
+    focusedMinutes: Math.round(minutes),
+    averageFocusScore: scored.length
+      ? Math.round(scored.reduce((sum, value) => sum + value, 0) / scored.length)
+      : null,
+    sessionTitles: rows.map(row => row.target_title).filter(Boolean).slice(0, 6),
+  };
+}
+
+export function loadPlanningFocusLoad(input: {
+  windowStart: Date;
+  now?: Date;
+}): PlanningFocusLoad {
+  const db = getDb();
+  const now = input.now ?? new Date();
+  const since24Hours = new Date(now.getTime() - 24 * 3600_000);
+  const loadRows = (since: Date) => {
+    try {
+      return db.prepare(`
+        SELECT target_title, elapsed_minutes, final_focus_score
+        FROM guardian_session_summaries
+        WHERE julianday(COALESCE(completed_at, started_at)) >= julianday(?)
+          AND julianday(COALESCE(completed_at, started_at)) <= julianday(?)
+        ORDER BY COALESCE(completed_at, started_at) DESC
+      `).all(since.toISOString(), now.toISOString()) as Array<{
+        target_title: string;
+        elapsed_minutes: number;
+        final_focus_score: number;
+      }>;
+    } catch {
+      return [];
+    }
+  };
+
+  return {
+    currentPlanningDay: summarizeFocusRows(input.windowStart <= now ? loadRows(input.windowStart) : []),
+    last24Hours: summarizeFocusRows(loadRows(since24Hours)),
+  };
+}
+
 
 function toSqlDateTime(date: Date): string {
   return date.toISOString();
@@ -1092,10 +1261,16 @@ function computeReward(task: CandidateTask, durationMinutes: number, rule: Sessi
   };
 }
 
-function buildAvailability(date: string, wakeEstimate: string, sleepTime: string, calendarEvents: CalendarEventRow[]): Window[] {
-  const dayStart = istDate(date, wakeEstimate);
-  let dayEnd = istDate(date, sleepTime);
-  if (dayEnd <= dayStart) dayEnd = new Date(dayEnd.getTime() + 24 * 3600_000);
+function buildAvailability(
+  date: string,
+  wakeEstimate: string,
+  sleepTime: string,
+  calendarEvents: CalendarEventRow[],
+  notBefore: Date | null = null,
+): Window[] {
+  const planningWindow = buildPlanningDayWindow(date, wakeEstimate, sleepTime);
+  const dayStart = planningWindow.start;
+  const dayEnd = planningWindow.end;
 
   const busy = calendarEvents
     .map(event => ({
@@ -1106,7 +1281,10 @@ function buildAvailability(date: string, wakeEstimate: string, sleepTime: string
     .sort((a, b) => a.start.getTime() - b.start.getTime());
 
   const windows: Window[] = [];
-  let cursor = new Date(dayStart.getTime() + 45 * 60000);
+  let cursor = new Date(Math.max(
+    dayStart.getTime() + 45 * 60000,
+    notBefore?.getTime() ?? Number.NEGATIVE_INFINITY,
+  ));
   for (const event of busy) {
     const start = new Date(Math.max(event.start.getTime() - 10 * 60000, dayStart.getTime()));
     if (minutesBetween(cursor, start) >= 25) windows.push({ start: cursor, end: start });
@@ -1280,15 +1458,60 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   const planEnergy = input.energy ?? latestCheckin?.energy ?? baseSnapshot.userState.energy;
   const snapshot = applyPlanningStateToSnapshot(baseSnapshot, { mood: planMood, energy: planEnergy });
   const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
-  const calendarEvents = getCalendarEvents(planDate, planDate) as CalendarEventRow[];
+  const planningWindow = buildPlanningDayWindow(planDate, wakeEstimate, sleepTime);
+  const calendarEndDate = planningWindow.spansMidnight ? addDays(planDate, 1) : planDate;
+  const rawCalendarEvents = filterCalendarEventsForPlanningWindow(
+    getCalendarEvents(planDate, calendarEndDate) as CalendarEventRow[],
+    planningWindow,
+  );
+  const interpretedContext = interpretPlanningContext({
+    intention,
+    eveningNotes,
+    calendarEvents: rawCalendarEvents,
+  });
+  const focusLoad = loadPlanningFocusLoad({ windowStart: planningWindow.start });
+  const relation = planningDateRelation(planDate);
+  const notBefore = relation === 'today'
+    ? new Date(Date.now() + 10 * 60_000)
+    : null;
+  const appliedSignals = [...interpretedContext.signals];
+  if (focusLoad.last24Hours.sessionCount > 0) {
+    appliedSignals.push(
+      `${focusLoad.last24Hours.sessionCount} focus session${focusLoad.last24Hours.sessionCount === 1 ? '' : 's'} / ${focusLoad.last24Hours.focusedMinutes}m in the last 24h`,
+    );
+  }
+  const wakingMinutes = minutesBetween(planningWindow.start, planningWindow.end);
+  const sleepMinutes = Math.max(0, 24 * 60 - wakingMinutes);
+  if (sleepMinutes <= 6 * 60) appliedSignals.push(`${Math.round(sleepMinutes / 60)}h sleep window needs recovery protection`);
+  const existingPlan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(planDate) as { id: number } | undefined;
+  const protectedSessions = existingPlan
+    ? db.prepare(`
+        SELECT * FROM planned_focus_sessions
+        WHERE plan_id = ? AND status IN ('started', 'completed')
+        ORDER BY planned_start ASC
+      `).all(existingPlan.id) as PlannedFocusSession[]
+    : [];
+  const protectedBusy = protectedSessions
+    .filter(session => session.status === 'started')
+    .map(session => ({
+      id: `protected:${session.id}`,
+      title: `Active focus: ${session.title}`,
+      start_time: session.planned_start,
+      end_time: session.planned_end,
+    }));
+  const effectiveCalendarEvents = [...interpretedContext.effectiveCalendarEvents, ...protectedBusy];
   const experimentBias = getCombinedPlannerBias({ snapshot, planDate });
   const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate, experimentBias);
-  const windows = buildAvailability(planDate, wakeEstimate, sleepTime, calendarEvents);
+  const windows = buildAvailability(planDate, wakeEstimate, sleepTime, effectiveCalendarEvents, notBefore);
 
   const summaryParts = [
     intention ? `intention: ${intention}` : 'no stated intention',
     `${candidateTasks.length} candidate task${candidateTasks.length === 1 ? '' : 's'}`,
     `${windows.length} open calendar window${windows.length === 1 ? '' : 's'}`,
+    `${focusLoad.last24Hours.sessionCount} sessions / ${focusLoad.last24Hours.focusedMinutes}m in the last 24h`,
+    interpretedContext.ignoredCalendarEventIds.length
+      ? `${interpretedContext.ignoredCalendarEventIds.length} calendar item${interpretedContext.ignoredCalendarEventIds.length === 1 ? '' : 's'} ignored for this plan`
+      : null,
     `${planEnergy} energy`,
     planMood ? `${planMood} mood` : null,
     experimentBias.active
@@ -1326,15 +1549,6 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
     );
 
     const plan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(planDate) as { id: number };
-    if (input.regenerate !== false) {
-      const existing = db.prepare('SELECT id, soft_watch_id FROM planned_focus_sessions WHERE plan_id = ?').all(plan.id) as Array<{ id: string; soft_watch_id: string | null }>;
-      for (const row of existing) {
-        if (row.soft_watch_id) {
-          db.prepare("UPDATE soft_watch_commitments SET status = 'dismissed' WHERE id = ? AND status = 'pending'").run(row.soft_watch_id);
-        }
-      }
-      db.prepare('DELETE FROM planned_focus_sessions WHERE plan_id = ?').run(plan.id);
-    }
     return plan.id;
   })();
 
@@ -1345,10 +1559,31 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
       eveningNotes,
       sleepTime,
       wakeEstimate,
-      calendarEvents,
+      calendarEvents: effectiveCalendarEvents,
       candidateTasks,
       snapshot,
+      focusLoad,
+      appliedSignals,
+      notBefore,
     });
+
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE planned_focus_sessions
+        SET status = 'skipped', updated_at = datetime('now', 'localtime')
+        WHERE plan_id = ? AND status = 'planned' AND julianday(planned_start) <= julianday(?)
+      `).run(planId, new Date().toISOString());
+      const replaceable = db.prepare(`
+        SELECT id, soft_watch_id FROM planned_focus_sessions
+        WHERE plan_id = ? AND status IN ('planned', 'cancelled')
+      `).all(planId) as Array<{ id: string; soft_watch_id: string | null }>;
+      for (const row of replaceable) {
+        if (row.soft_watch_id) {
+          db.prepare("UPDATE soft_watch_commitments SET status = 'dismissed' WHERE id = ? AND status = 'pending'").run(row.soft_watch_id);
+        }
+      }
+      db.prepare("DELETE FROM planned_focus_sessions WHERE plan_id = ? AND status IN ('planned', 'cancelled')").run(planId);
+    })();
 
     if (llmSessions && llmSessions.length > 0) {
       for (const spec of llmSessions) {
@@ -1661,12 +1896,35 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
       `).all(plan.id) as PlannedFocusSession[]
 	    : [];
   const suggestedInputs = buildPlanningSuggestedInputs({ plan, latestCheckin, snapshot });
+  const sleepTime = normalizeTime(plan?.sleep_time, suggestedInputs.sleepTime);
+  const wakeEstimate = normalizeTime(plan?.wake_estimate, suggestedInputs.wakeEstimate);
+  const planningWindow = buildPlanningDayWindow(normalizedDate, wakeEstimate, sleepTime);
+  const calendarEndDate = planningWindow.spansMidnight ? addDays(normalizedDate, 1) : normalizedDate;
+  const rawCalendarEvents = filterCalendarEventsForPlanningWindow(
+    getCalendarEvents(normalizedDate, calendarEndDate) as CalendarEventRow[],
+    planningWindow,
+  );
+  const interpretedContext = interpretPlanningContext({
+    intention: plan?.tomorrow_intention ?? intention,
+    eveningNotes: plan?.evening_notes ?? latestCheckin?.day_events ?? null,
+    calendarEvents: rawCalendarEvents,
+  });
+  const focusLoad = loadPlanningFocusLoad({ windowStart: planningWindow.start });
+  const signals = [...interpretedContext.signals];
+  if (focusLoad.last24Hours.sessionCount > 0) {
+    signals.push(
+      `${focusLoad.last24Hours.sessionCount} focus session${focusLoad.last24Hours.sessionCount === 1 ? '' : 's'} / ${focusLoad.last24Hours.focusedMinutes}m in the last 24h`,
+    );
+  }
+  const wakingMinutes = minutesBetween(planningWindow.start, planningWindow.end);
+  const sleepMinutes = Math.max(0, 24 * 60 - wakingMinutes);
+  if (sleepMinutes <= 6 * 60) signals.push(`${Math.round(sleepMinutes / 60)}h sleep window needs recovery protection`);
 
   const readBias = getCombinedPlannerBias({ snapshot, planDate: normalizedDate });
   return {
     plan: plan ?? null,
     sessions,
-    calendarEvents: getCalendarEvents(normalizedDate, normalizedDate) as CalendarEventRow[],
+    calendarEvents: interpretedContext.calendarEvents,
     candidateTasks: loadCandidateTasks(
       snapshot,
       plan?.tomorrow_intention ?? intention,
@@ -1683,6 +1941,15 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
     },
     suggestedInputs,
     calendarConfigured: isCalendarConfigured(),
+    dayContext: {
+      relation: planningDateRelation(normalizedDate),
+      windowStart: planningWindow.start.toISOString(),
+      windowEnd: planningWindow.end.toISOString(),
+      spansMidnight: planningWindow.spansMidnight,
+      signals,
+      ignoredCalendarEventIds: interpretedContext.ignoredCalendarEventIds,
+      focusLoad,
+    },
   };
 }
 

@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { formatPlannerSessionStart, getPlannerLabels, plannerApiErrorMessage } from '@/lib/planner-presentation';
+import { interpretPlanningContext } from '@/lib/planner-context';
 
 interface CandidateTask {
     id: number;
@@ -37,9 +39,12 @@ interface PlannedFocusSession {
 }
 
 interface CalendarEvent {
+    id?: string;
     title: string;
     start_time: string;
     end_time: string;
+    ignoredForPlan?: boolean;
+    ignoreReason?: string | null;
 }
 
 interface DailyPlan {
@@ -76,6 +81,18 @@ interface PlannerPayload {
         reason: string;
     };
     calendarConfigured: boolean;
+    dayContext: {
+        relation: 'today' | 'tomorrow' | 'future' | 'past';
+        windowStart: string;
+        windowEnd: string;
+        spansMidnight: boolean;
+        signals: string[];
+        ignoredCalendarEventIds: string[];
+        focusLoad: {
+            currentPlanningDay: { sessionCount: number; focusedMinutes: number; averageFocusScore: number | null; sessionTitles: string[] };
+            last24Hours: { sessionCount: number; focusedMinutes: number; averageFocusScore: number | null; sessionTitles: string[] };
+        };
+    };
 }
 
 const moodOptions = ['low', 'medium', 'high'];
@@ -279,6 +296,7 @@ export default function PlannerPage() {
     const [tomorrowIntention, setTomorrowIntention] = useState('');
     const [eveningNotes, setEveningNotes] = useState('');
     const [syncCalendar, setSyncCalendar] = useState(false);
+    const [generationError, setGenerationError] = useState<string | null>(null);
 
     const applyPayload = useCallback((payload: PlannerPayload) => {
         setData(payload);
@@ -332,16 +350,31 @@ export default function PlannerPage() {
 
     const totalPlannedMinutes = useMemo(() => {
         return data?.sessions
-            .filter(session => session.status !== 'cancelled')
+            .filter(session => session.status === 'planned' || session.status === 'started')
             .reduce((sum, session) => sum + session.duration_minutes, 0) ?? 0;
     }, [data]);
+    const plannerLabels = getPlannerLabels(data?.dayContext.relation ?? 'tomorrow');
+    const liveContextPreview = useMemo(() => interpretPlanningContext({
+        intention: tomorrowIntention,
+        eveningNotes,
+        calendarEvents: data?.calendarEvents ?? [],
+    }), [data?.calendarEvents, eveningNotes, tomorrowIntention]);
+    const effectiveCalendarCount = liveContextPreview.effectiveCalendarEvents.length;
+    const displayedContextSignals = useMemo(() => {
+        const measured = data?.dayContext.signals.filter(signal => /focus sessions?/i.test(signal)) ?? [];
+        const currentSleepMinutes = sleepWindowMinutes(sleepTime, wakeEstimate);
+        const sleepSignal = currentSleepMinutes !== null && currentSleepMinutes <= 360
+            ? `${formatDuration(currentSleepMinutes)} sleep window needs recovery protection`
+            : null;
+        return [...new Set([...liveContextPreview.signals, ...measured, ...(sleepSignal ? [sleepSignal] : [])])];
+    }, [data?.dayContext.signals, liveContextPreview.signals, sleepTime, wakeEstimate]);
     const planningHint = data ? buildEveningPlanningHint({
         sleepTime,
         wakeEstimate,
         mood,
         energy,
         selectedMinutes,
-        calendarEvents: data.calendarEvents.length,
+        calendarEvents: effectiveCalendarCount,
         learnedSprintMinutes: data.personalization.learnedSprintMinutes,
         bestFocusWindow: data.personalization.bestFocusWindow,
     }) : null;
@@ -356,24 +389,36 @@ export default function PlannerPage() {
 
     const generatePlan = async () => {
         setGenerating(true);
-        const res = await fetch('/api/next-day-plan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                planDate: date,
-                sleepTime,
-                wakeEstimate,
-                mood,
-                energy,
-                tomorrowIntention,
-                eveningNotes,
-                selectedTaskIds: Array.from(selectedIds),
-                syncCalendar,
-            }),
-        });
-        const payload = await res.json() as PlannerPayload;
-        setData(payload);
-        setGenerating(false);
+        setGenerationError(null);
+        try {
+            const res = await fetch('/api/next-day-plan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    planDate: date,
+                    sleepTime,
+                    wakeEstimate,
+                    mood,
+                    energy,
+                    tomorrowIntention,
+                    eveningNotes,
+                    selectedTaskIds: Array.from(selectedIds),
+                    syncCalendar,
+                    regenerate: true,
+                }),
+            });
+            const payload = await res.json() as PlannerPayload & { error?: string };
+            const error = plannerApiErrorMessage(payload);
+            if (!res.ok || error) {
+                setGenerationError(error || `Replan failed (${res.status}). Your current plan was kept.`);
+                return;
+            }
+            applyPayload(payload);
+        } catch (error) {
+            setGenerationError(`Replan failed: ${String(error)}. Your current plan was kept.`);
+        } finally {
+            setGenerating(false);
+        }
     };
 
     const updateSession = async (session: PlannedFocusSession, patch: Partial<{
@@ -440,9 +485,9 @@ export default function PlannerPage() {
         <div className="max-w-[1180px] mx-auto animate-fade-in">
             <div className="flex items-start justify-between gap-4 mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold">Next-Day Planner</h1>
+                    <h1 className="text-2xl font-bold">{plannerLabels.title}</h1>
                     <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
-                        Evening inputs, calendar load, task progress, and learned session patterns shape tomorrow.
+                        A living wake-to-sleep plan shaped by completed focus, calendar reality, and the context you provide.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -527,6 +572,17 @@ export default function PlannerPage() {
                                 </div>
                             )}
 
+                            {displayedContextSignals.length > 0 && (
+                                <div className="mb-3">
+                                    <div className="text-[10px] font-bold uppercase tracking-wide mb-2" style={{ color: 'var(--text-muted)' }}>LifeOS will act on when you replan</div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {displayedContextSignals.map(signal => (
+                                            <span key={signal} style={pillStyle('var(--accent-blue)', 'var(--accent-blue-glow)')}>{signal}</span>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-2 gap-3 mb-3">
                                 <label className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                                     Mood
@@ -543,7 +599,7 @@ export default function PlannerPage() {
                             </div>
 
                             <label className="text-xs block mb-3" style={{ color: 'var(--text-secondary)' }}>
-                                Tomorrow intention
+                                {plannerLabels.intentionLabel}
                                 <input
                                     className="input mt-1"
                                     value={tomorrowIntention}
@@ -557,7 +613,7 @@ export default function PlannerPage() {
                             </label>
 
                             <label className="text-xs block" style={{ color: 'var(--text-secondary)' }}>
-                                Notes from today
+                                {data.dayContext.relation === 'today' ? 'What changed today?' : 'Notes from today'}
                                 <textarea
                                     className="input mt-1"
                                     value={eveningNotes}
@@ -580,8 +636,13 @@ export default function PlannerPage() {
                                 onClick={() => void generatePlan()}
                                 disabled={generating || (data.candidateTasks.length > 0 && selectedIds.size === 0 && !tomorrowIntention.trim())}
                             >
-                                {generating ? 'Generating...' : data.plan ? 'Regenerate Tomorrow' : 'Generate Tomorrow'}
+                                {generating ? 'Replanning...' : data.plan ? plannerLabels.generateLabel : plannerLabels.generateLabel.replace('Regenerate', 'Generate')}
                             </button>
+                            {generationError && (
+                                <div className="text-xs mt-3" style={{ color: 'var(--accent-red)', lineHeight: 1.45 }}>
+                                    {generationError}
+                                </div>
+                            )}
                         </div>
 
                         <div className="card" style={{ borderRadius: 8 }}>
@@ -595,7 +656,7 @@ export default function PlannerPage() {
                                     if (realCandidateTasks.length === 0) {
                                         return (
                                             <div className="text-xs p-3 rounded-lg" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                                                No active tasks in your pool. The AI engine will synthesize tomorrow's focus blocks directly from your <strong>Tomorrow Intention</strong> and calendar schedule.
+                                                {buildTaskPoolEmptyMessage(data, energy, mood)} The AI engine can also synthesize focus blocks directly from your stated context and effective calendar.
                                             </div>
                                         );
                                     }
@@ -647,23 +708,34 @@ export default function PlannerPage() {
                     <section className="space-y-5">
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <div className="stat-card blue" style={{ borderRadius: 8 }}>
-                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Planned Focus</div>
+                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Remaining Focus</div>
                                 <div className="text-2xl font-bold mt-2">{formatDuration(totalPlannedMinutes)}</div>
                             </div>
                             <div className="stat-card green" style={{ borderRadius: 8 }}>
-                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Sessions</div>
-                                <div className="text-2xl font-bold mt-2">{data.sessions.filter(s => s.status !== 'cancelled').length}</div>
+                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Focus in Last 24h</div>
+                                <div className="text-2xl font-bold mt-2">{formatDuration(data.dayContext.focusLoad.last24Hours.focusedMinutes)}</div>
+                                <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                    {data.dayContext.focusLoad.last24Hours.sessionCount} sessions
+                                    {data.dayContext.focusLoad.last24Hours.averageFocusScore !== null
+                                        ? ` · ${data.dayContext.focusLoad.last24Hours.averageFocusScore} avg focus`
+                                        : ''}
+                                </div>
                             </div>
                             <div className="stat-card orange" style={{ borderRadius: 8 }}>
-                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Calendar Load</div>
-                                <div className="text-2xl font-bold mt-2">{data.calendarEvents.length}</div>
+                                <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Effective Calendar</div>
+                                <div className="text-2xl font-bold mt-2">{effectiveCalendarCount}</div>
+                                {liveContextPreview.ignoredCalendarEventIds.length > 0 && (
+                                    <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                        {liveContextPreview.ignoredCalendarEventIds.length} ignored for this plan
+                                    </div>
+                                )}
                             </div>
                         </div>
 
                         <div className="card" style={{ borderRadius: 8 }}>
                             <div className="flex items-center justify-between mb-4">
                                 <div>
-                                    <div className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>Tomorrow Blocks</div>
+                                    <div className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{plannerLabels.blocksLabel}</div>
                                     <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
                                         {data.plan?.generated_summary || data.personalization.bestFocusWindow}
                                     </div>
@@ -695,7 +767,7 @@ export default function PlannerPage() {
                                                 }}
                                             >
                                                 <div>
-                                                    <div className="text-base font-bold">{formatClock(session.planned_start)}</div>
+                                                    <div className="text-base font-bold">{formatPlannerSessionStart(session.planned_start)}</div>
                                                     <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
                                                         {formatClock(session.planned_end)} · {session.duration_minutes}m
                                                     </div>
@@ -829,15 +901,16 @@ export default function PlannerPage() {
 
                         <div className="card" style={{ borderRadius: 8 }}>
                             <div className="text-xs font-bold uppercase tracking-wide mb-3" style={{ color: 'var(--text-muted)' }}>Calendar Context</div>
-                            {data.calendarEvents.length === 0 ? (
+                            {liveContextPreview.calendarEvents.length === 0 ? (
                                 <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No calendar events on this date.</div>
                             ) : (
                                 <div className="space-y-2">
-                                    {data.calendarEvents.map((event, index) => (
-                                        <div key={`${event.start_time}-${event.title}-${index}`} className="flex items-center justify-between gap-3" style={{ padding: '9px 10px', borderRadius: 8, background: 'var(--bg-secondary)' }}>
-                                            <div className="text-sm truncate">{event.title}</div>
-                                            <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                                                {timeValue(event.start_time)}-{timeValue(event.end_time)}
+                                    {liveContextPreview.calendarEvents.map((event, index) => (
+                                        <div key={`${event.start_time}-${event.title}-${index}`} className="flex items-center justify-between gap-3" style={{ padding: '9px 10px', borderRadius: 8, background: 'var(--bg-secondary)', opacity: event.ignoredForPlan ? 0.58 : 1 }}>
+                                            <div className="text-sm truncate" style={{ textDecoration: event.ignoredForPlan ? 'line-through' : 'none' }}>{event.title}</div>
+                                            <div className="text-xs flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+                                                <span>{formatPlannerSessionStart(event.start_time)}-{timeValue(event.end_time)}</span>
+                                                {event.ignoredForPlan && <span style={pillStyle('var(--text-muted)', 'var(--bg-card)')}>ignored</span>}
                                             </div>
                                         </div>
                                     ))}
