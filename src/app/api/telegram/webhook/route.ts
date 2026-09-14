@@ -587,7 +587,7 @@ async function handleActionCallback(payload: string) {
             const reviews = db.prepare(`
         SELECT sc.id, sc.session_id, sc.task_id,
                t.title as task_title,
-               gss.target_title, gss.elapsed_minutes, gss.average_focus_score, gss.mood
+               gss.target_title, gss.elapsed_minutes, gss.final_focus_score AS focus_score, gss.mood
         FROM session_completions sc
         LEFT JOIN tasks t ON t.id = sc.task_id
         LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id
@@ -596,7 +596,7 @@ async function handleActionCallback(payload: string) {
       `).all() as Array<{
                 id: number; session_id: string; task_id: number | null;
                 task_title: string | null; target_title: string | null;
-                elapsed_minutes: number | null; average_focus_score: number | null; mood: string | null;
+                elapsed_minutes: number | null; focus_score: number | null; mood: string | null;
             }>;
             if (reviews.length === 0) {
                 await sendTelegram(`📝 <b>Review Queue</b>\n\nAll caught up! 🎉`, 'HTML', FULL_MENU_KEYBOARD);
@@ -612,7 +612,7 @@ async function handleActionCallback(payload: string) {
 
             const sessionsRow = db.prepare(`
         SELECT COUNT(*) as count,
-               COALESCE(AVG(average_focus_score), 0) as avg_focus,
+               COALESCE(AVG(final_focus_score), 0) as avg_focus,
                COALESCE(SUM(elapsed_minutes), 0) as total_minutes
         FROM guardian_session_summaries
         WHERE date(completed_at, 'localtime') = ?
@@ -759,13 +759,13 @@ async function handleReviewCallback(rest: string) {
     const next = db.prepare(`
     SELECT sc.id, sc.session_id, sc.task_id,
            t.title as task_title,
-           gss.target_title, gss.elapsed_minutes, gss.average_focus_score, gss.mood
+           gss.target_title, gss.elapsed_minutes, gss.final_focus_score AS focus_score, gss.mood
     FROM session_completions sc
     LEFT JOIN tasks t ON t.id = sc.task_id
     LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id
     WHERE sc.status = 'pending' AND sc.id != ?
     ORDER BY sc.created_at DESC LIMIT 1
-  `).get(id) as { id: number; session_id: string; task_id: number | null; task_title: string | null; target_title: string | null; elapsed_minutes: number | null; average_focus_score: number | null; mood: string | null } | undefined;
+  `).get(id) as { id: number; session_id: string; task_id: number | null; task_title: string | null; target_title: string | null; elapsed_minutes: number | null; focus_score: number | null; mood: string | null } | undefined;
 
     if (next) {
         await sendTelegram(`${msg}\n\n` + formatPendingReviews([next]), 'HTML', buildReviewKeyboard(next.id));

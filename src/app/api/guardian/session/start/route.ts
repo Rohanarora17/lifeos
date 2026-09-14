@@ -10,6 +10,7 @@ import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
 import { VisionClientUnavailableError } from '@/lib/guardian-client-status';
 import { lifeosDateKey } from '@/lib/timezone';
 import { acceptRecoveryRestart, getCoachingState, recordHumanContact } from '@/lib/coaching-state';
+import type { GuardianStartRequest } from '@/lib/guardian-types';
 
 interface PlannedSessionStartMatch {
   id: string;
@@ -170,7 +171,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const transcript = body.transcript as string | undefined;
 
-    let startInput = {
+    let startInput: GuardianStartRequest = {
       topic: body.topic as string | undefined,
       goalId: body.goalId as string | null | undefined,
       goalTitle: body.goalTitle as string | null | undefined,
@@ -181,6 +182,7 @@ export async function POST(req: Request) {
       source: (body.source as 'voice' | 'dashboard' | 'extension' | 'api' | undefined) || 'api',
       sessionContext: body.sessionContext as string | undefined,
       startRequestId: body.startRequestId as string | undefined,
+      plannedSessionId: body.plannedSessionId as string | null | undefined,
     };
     recordHumanContact('guardian_start_request', { source: startInput.source });
 
@@ -212,6 +214,7 @@ export async function POST(req: Request) {
           startInput.sessionContext,
           plannedSessionContext(plannedMatch),
         ].filter(Boolean).join('\n\n'),
+        plannedSessionId: plannedMatch.id,
       };
     }
 

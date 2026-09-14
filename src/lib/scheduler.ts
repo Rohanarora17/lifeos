@@ -519,7 +519,7 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             const hourlyData = db.prepare(`
                 SELECT
                     CAST(strftime('%H', started_at, 'localtime') AS INTEGER) as hour,
-                    AVG(average_focus_score) as avg_score,
+                    AVG(final_focus_score) as avg_score,
                     COUNT(*) as session_count
                 FROM guardian_session_summaries
                 WHERE completed_at >= datetime('now', '-14 days')

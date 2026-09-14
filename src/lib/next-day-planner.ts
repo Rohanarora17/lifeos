@@ -1829,7 +1829,11 @@ export async function syncAllPlannedSessionsToCalendar(planDate = normalizeDate(
 }> {
   const db = getDb();
   const normalizedDate = normalizeDate(planDate);
-  const plan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(normalizedDate) as { id: number } | undefined;
+  let plan = db.prepare('SELECT id, plan_date FROM daily_plans WHERE plan_date = ?').get(normalizedDate) as { id: number; plan_date: string } | undefined;
+
+  if (!plan) {
+    plan = db.prepare('SELECT id, plan_date FROM daily_plans ORDER BY plan_date DESC, created_at DESC LIMIT 1').get() as { id: number; plan_date: string } | undefined;
+  }
 
   if (!plan) {
     return {

@@ -149,7 +149,8 @@ export default function GuardianDashboard({ sessionId, plannedMinutes, targetTit
             <div className="grid grid-cols-3 gap-8 mb-12">
                 {/* Live Focus Score */}
                 <div className="col-span-1 border border-zinc-800 rounded-xl p-6 flex flex-col items-center justify-center relative bg-zinc-900/50">
-                    <div className="text-zinc-500 text-xs font-bold tracking-widest uppercase mb-4">Live Focus</div>
+                    <div className="text-zinc-500 text-xs font-bold tracking-widest uppercase mb-1">Live Focus</div>
+                    <div className="text-zinc-600 text-[10px] font-medium uppercase tracking-wider mb-3">Provisional estimate</div>
                     <div className="relative group flex items-center justify-center">
                         <svg className="w-48 h-48 transform -rotate-90">
                             <circle cx="96" cy="96" r="88" fill="none" stroke="#27272a" strokeWidth="8" />

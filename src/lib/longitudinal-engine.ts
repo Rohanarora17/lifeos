@@ -24,15 +24,15 @@ function average(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function titleFrequency(rows: Array<{ targetTitle: string; averageFocusScore: number }>, highWaterMark: number, lowWaterMark: number) {
+function titleFrequency(rows: Array<{ targetTitle: string; focusScore: number }>, highWaterMark: number, lowWaterMark: number) {
   const strong = new Map<string, number>();
   const friction = new Map<string, number>();
 
   for (const row of rows) {
-    if (row.averageFocusScore >= highWaterMark) {
+    if (row.focusScore >= highWaterMark) {
       strong.set(row.targetTitle, (strong.get(row.targetTitle) || 0) + 1);
     }
-    if (row.averageFocusScore <= lowWaterMark) {
+    if (row.focusScore <= lowWaterMark) {
       friction.set(row.targetTitle, (friction.get(row.targetTitle) || 0) + 1);
     }
   }
@@ -82,7 +82,8 @@ export function listRecentGuardianSessionSummaries(limit: number = 20): Guardian
       mood,
       duration_minutes as durationMinutes,
       elapsed_minutes as elapsedMinutes,
-      average_focus_score as averageFocusScore,
+      average_focus_score as trajectoryAverageFocusScore,
+      final_focus_score as focusScore,
       final_focus_score as finalFocusScore,
       blocked_count as blockedCount,
       override_count as overrideCount,
@@ -142,7 +143,7 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
   const recent = db.prepare(`
     SELECT
       target_title as targetTitle,
-      average_focus_score as averageFocusScore,
+      final_focus_score as focusScore,
       override_count as overrideCount,
       dominant_distraction_domain as dominantDistractionDomain,
       CAST(strftime('%H', datetime(completed_at, '-' || elapsed_minutes || ' minutes')) as INTEGER) as startHour
@@ -151,7 +152,7 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
     LIMIT 20
   `).all() as Array<{
     targetTitle: string;
-    averageFocusScore: number;
+    focusScore: number;
     overrideCount: number;
     dominantDistractionDomain: string | null;
     startHour: number | null;
@@ -161,11 +162,11 @@ export function updateGuardianSemanticProfile(userId: string = 'default') {
     return getGuardianSemanticProfile(userId);
   }
 
-  const avgFocusScore = average(recent.map((row) => row.averageFocusScore));
+  const avgFocusScore = average(recent.map((row) => row.focusScore));
   const avgOverrides = average(recent.map((row) => row.overrideCount));
   const bestStartHour = recent
-    .filter((row) => row.startHour !== null && row.averageFocusScore >= avgFocusScore)
-    .sort((a, b) => b.averageFocusScore - a.averageFocusScore)[0]?.startHour ?? null;
+    .filter((row) => row.startHour !== null && row.focusScore >= avgFocusScore)
+    .sort((a, b) => b.focusScore - a.focusScore)[0]?.startHour ?? null;
   const bands = getAdaptiveBands();
   const { strongTopics, frictionTopics } = titleFrequency(recent, bands.focusExcellent, bands.focusNeutral);
   const recurringDistractionDomains = distractionFrequency(recent);
@@ -293,7 +294,7 @@ export function getDayBriefing(userId: string = 'default'): DayBriefing {
     LIMIT 5
   `).all() as Array<{ title: string }>;
 
-  const avgFocusScore = recent.length > 0 ? average(recent.map((session) => session.averageFocusScore)) : 0;
+  const avgFocusScore = recent.length > 0 ? average(recent.map((session) => session.focusScore)) : 0;
   const activeGoalTitles = activeGoals.map((goal) => goal.title);
   const activeTaskTitles = activeTasks.map((task) => task.title);
   const upcomingFocusTarget =

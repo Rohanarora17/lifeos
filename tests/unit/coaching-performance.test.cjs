@@ -14,7 +14,7 @@ describe('session performance learning', () => {
     performance = env.requireLib('coaching-performance.ts');
   });
 
-  function addSession({ id, daysAgo, hour, planned, elapsed, focus }) {
+  function addSession({ id, daysAgo, hour, planned, elapsed, focus, trajectoryAverage = focus }) {
     const at = new Date(Date.now() - daysAgo * 86_400_000);
     at.setHours(hour, 0, 0, 0);
     const timestamp = at.toISOString();
@@ -23,7 +23,7 @@ describe('session performance learning', () => {
         session_id, target_title, duration_minutes, elapsed_minutes,
         average_focus_score, final_focus_score, completed_at, started_at
       ) VALUES (?, 'Study', ?, ?, ?, ?, ?, ?)
-    `).run(id, planned, elapsed, focus, focus, timestamp, timestamp);
+    `).run(id, planned, elapsed, trajectoryAverage, focus, timestamp, timestamp);
   }
 
   it('learns duration from sessions that were substantially completed', () => {
@@ -54,5 +54,19 @@ describe('session performance learning', () => {
     assert.equal(profile.confidence, 'insufficient');
     assert.equal(profile.recommendedMinutes, null);
     assert.equal(profile.trend, 'unknown');
+  });
+
+  it('learns from the full-evidence completed score rather than the live trajectory average', () => {
+    addSession({
+      id: 'different-live-and-final',
+      daysAgo: 1,
+      hour: 9,
+      planned: 20,
+      elapsed: 20,
+      trajectoryAverage: 77,
+      focus: 83,
+    });
+
+    assert.equal(performance.getSessionPerformanceProfile().averageFocusScore, 83);
   });
 });

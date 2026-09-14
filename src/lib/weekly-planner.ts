@@ -120,7 +120,7 @@ function computeDayEnergyMap(): Record<number, number> {
     const db = getDb();
     const rows = db.prepare(`
       SELECT strftime('%w', started_at, 'localtime') as dow,
-             AVG(average_focus_score / 100.0) as avg_focus
+             AVG(final_focus_score / 100.0) as avg_focus
       FROM guardian_session_summaries
       WHERE started_at IS NOT NULL
       GROUP BY dow

@@ -132,11 +132,11 @@ function computeAdaptiveBands(): AdaptiveBands {
     }
 
     const sessionRows = db.prepare(`
-      SELECT elapsed_minutes, average_focus_score
+      SELECT elapsed_minutes, final_focus_score AS focus_score
       FROM guardian_session_summaries
       WHERE completed_at >= datetime('now', '-30 days')
       ORDER BY completed_at DESC LIMIT 30
-    `).all() as Array<{ elapsed_minutes: number; average_focus_score: number }>;
+    `).all() as Array<{ elapsed_minutes: number; focus_score: number }>;
 
     if (sessionRows.length >= 5) {
       const durations = sessionRows.map(r => r.elapsed_minutes).sort((a, b) => a - b);
@@ -145,7 +145,7 @@ function computeAdaptiveBands(): AdaptiveBands {
       bands.flowMinMinutes = Math.round(percentile(durations, 70));
     }
 
-    const focusScores = sessionRows.map(r => r.average_focus_score).filter(s => s > 0).sort((a, b) => a - b);
+    const focusScores = sessionRows.map(r => r.focus_score).filter(s => s > 0).sort((a, b) => a - b);
     if (focusScores.length >= 5) {
       bands.focusExcellent = percentile(focusScores, 80);
       bands.focusGood = percentile(focusScores, 60);

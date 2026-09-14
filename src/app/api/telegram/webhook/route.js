@@ -231,7 +231,7 @@ function handleActionCallback(payload) {
                     return [3 /*break*/, 43];
                 case 20:
                     db = (0, db_1.getDb)();
-                    reviews = db.prepare("\n        SELECT sc.id, sc.session_id, sc.task_id,\n               t.title as task_title,\n               gss.target_title, gss.elapsed_minutes, gss.average_focus_score, gss.mood\n        FROM session_completions sc\n        LEFT JOIN tasks t ON t.id = sc.task_id\n        LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id\n        WHERE sc.status = 'pending'\n        ORDER BY sc.created_at DESC LIMIT 5\n      ").all();
+                    reviews = db.prepare("\n        SELECT sc.id, sc.session_id, sc.task_id,\n               t.title as task_title,\n               gss.target_title, gss.elapsed_minutes, gss.final_focus_score AS focus_score, gss.mood\n        FROM session_completions sc\n        LEFT JOIN tasks t ON t.id = sc.task_id\n        LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id\n        WHERE sc.status = 'pending'\n        ORDER BY sc.created_at DESC LIMIT 5\n      ").all();
                     if (!(reviews.length === 0)) return [3 /*break*/, 22];
                     return [4 /*yield*/, (0, telegram_1.sendTelegram)("\uD83D\uDCDD <b>Review Queue</b>\n\nAll caught up! \uD83C\uDF89", 'HTML', telegram_1.FULL_MENU_KEYBOARD)];
                 case 21:
@@ -244,7 +244,7 @@ function handleActionCallback(payload) {
                 case 24:
                     db = (0, db_1.getDb)();
                     today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-                    sessionsRow = db.prepare("\n        SELECT COUNT(*) as count,\n               COALESCE(AVG(average_focus_score), 0) as avg_focus,\n               COALESCE(SUM(elapsed_minutes), 0) as total_minutes\n        FROM guardian_session_summaries\n        WHERE date(completed_at, 'localtime') = ?\n      ").get(today);
+                    sessionsRow = db.prepare("\n        SELECT COUNT(*) as count,\n               COALESCE(AVG(final_focus_score), 0) as avg_focus,\n               COALESCE(SUM(elapsed_minutes), 0) as total_minutes\n        FROM guardian_session_summaries\n        WHERE date(completed_at, 'localtime') = ?\n      ").get(today);
                     tasksRow = db.prepare("\n        SELECT COUNT(*) as total,\n               SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done\n        FROM tasks WHERE status IN ('done', 'today', 'doing', 'this_week')\n      ").get();
                     habitsRow = db.prepare("\n        SELECT COUNT(*) as total,\n               SUM(CASE WHEN hc.completed = 1 THEN 1 ELSE 0 END) as done\n        FROM habits h\n        LEFT JOIN habit_checkins hc ON hc.habit_id = h.id AND hc.date = ?\n        WHERE h.archived = 0\n      ").get(today);
                     scoreEmoji = sessionsRow.avg_focus >= 85 ? '🔥' : sessionsRow.avg_focus >= 70 ? '✅' : sessionsRow.avg_focus >= 50 ? '🟡' : '🔴';
@@ -346,7 +346,7 @@ function handleReviewCallback(rest) {
                         db.prepare("UPDATE session_completions SET status = 'skipped', actioned_at = datetime('now') WHERE id = ?").run(id);
                         msg = '⏭ Skipped.';
                     }
-                    next = db.prepare("\n    SELECT sc.id, sc.session_id, sc.task_id,\n           t.title as task_title,\n           gss.target_title, gss.elapsed_minutes, gss.average_focus_score, gss.mood\n    FROM session_completions sc\n    LEFT JOIN tasks t ON t.id = sc.task_id\n    LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id\n    WHERE sc.status = 'pending' AND sc.id != ?\n    ORDER BY sc.created_at DESC LIMIT 1\n  ").get(id);
+                    next = db.prepare("\n    SELECT sc.id, sc.session_id, sc.task_id,\n           t.title as task_title,\n           gss.target_title, gss.elapsed_minutes, gss.final_focus_score AS focus_score, gss.mood\n    FROM session_completions sc\n    LEFT JOIN tasks t ON t.id = sc.task_id\n    LEFT JOIN guardian_session_summaries gss ON gss.session_id = sc.session_id\n    WHERE sc.status = 'pending' AND sc.id != ?\n    ORDER BY sc.created_at DESC LIMIT 1\n  ").get(id);
                     if (!next) return [3 /*break*/, 6];
                     return [4 /*yield*/, (0, telegram_1.sendTelegram)("".concat(msg, "\n\n") + (0, telegram_1.formatPendingReviews)([next]), 'HTML', (0, telegram_1.buildReviewKeyboard)(next.id))];
                 case 5:

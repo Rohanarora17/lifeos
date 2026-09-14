@@ -591,7 +591,7 @@ export function persistVisionSignal(signal: ScreenVisionSignal, sessionId: strin
        specific_content, productive_for_goals, confidence, session_id,
        task_alignment, engagement_depth, distraction_indicators, progress_indicator, change_magnitude)
      VALUES
-      (?, 'screen_vision', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (?, 'screen_vision', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     new Date(signal.capturedAt).toISOString(),
     signal.appInFocus,

@@ -478,7 +478,7 @@ interface RecentSessionSummary {
   target_title: string;
   duration_minutes: number;
   elapsed_minutes: number;
-  average_focus_score: number;
+  focus_score: number;
   blocked_count: number;
   override_count: number;
   mood: string | null;
@@ -497,7 +497,7 @@ function buildMutationContext(): { recentSessions: RecentSessionSummary[]; lastE
   const recentSessions = db.prepare(`
     SELECT
       s.target_title, s.duration_minutes, s.elapsed_minutes,
-      s.average_focus_score, s.blocked_count, s.override_count, s.mood,
+      s.final_focus_score AS focus_score, s.blocked_count, s.override_count, s.mood,
       r.reflection_text
     FROM guardian_session_summaries s
     LEFT JOIN guardian_session_reflections r ON r.session_id = s.session_id
@@ -585,7 +585,7 @@ async function generateLLMMutations(
   const sessionLines = context.recentSessions.length > 0
     ? context.recentSessions.map((s) =>
         `- "${s.target_title}" (${s.elapsed_minutes}/${s.duration_minutes}min, mood:${s.mood ?? 'unknown'}): ` +
-        `focus=${s.average_focus_score}/100, blocks=${s.blocked_count}, overrides=${s.override_count}` +
+        `focus=${s.focus_score}/100, blocks=${s.blocked_count}, overrides=${s.override_count}` +
         (s.reflection_text ? `, reflection: "${s.reflection_text.slice(0, 100)}"` : '')
       ).join('\n')
     : `No completed sessions yet. Use the current personalization context as the live prior:

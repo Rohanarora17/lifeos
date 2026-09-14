@@ -456,7 +456,7 @@ export function computeConsistencyIndex(days: number = 30): ConsistencyResult {
   const focusByDay = db.prepare(`
     SELECT date(started_at, 'localtime') as session_date, SUM(elapsed_minutes) as deep_mins
     FROM guardian_session_summaries
-    WHERE started_at >= datetime('now', '-${days} days') AND average_focus_score >= 50
+    WHERE started_at >= datetime('now', '-${days} days') AND final_focus_score >= 50
     GROUP BY date(started_at, 'localtime')
   `).all() as { session_date: string; deep_mins: number }[];
 
@@ -611,7 +611,7 @@ function measureGoalMetric(metric: string, period: string, previous: boolean = f
     case 'deep_work_minutes': {
       const r = db.prepare(`
         SELECT COALESCE(SUM(elapsed_minutes), 0) as v
-        FROM guardian_session_summaries WHERE average_focus_score >= 70
+        FROM guardian_session_summaries WHERE final_focus_score >= 70
         AND date(started_at, 'localtime') >= date('now', '${range}', '${offset}')
         AND date(started_at, 'localtime') < date('now', '${baseOffset}')
       `).get() as { v: number };
@@ -701,17 +701,17 @@ export function classifyArchetype(days: number = 30): Archetype {
 
   // Work style: session duration distribution
   const sessionDurations = db.prepare(`
-    SELECT elapsed_minutes as duration_minutes, average_focus_score FROM guardian_session_summaries
+    SELECT elapsed_minutes as duration_minutes, final_focus_score AS focus_score FROM guardian_session_summaries
     WHERE started_at >= datetime('now', '-${days} days')
-  `).all() as { duration_minutes: number; average_focus_score: number }[];
+  `).all() as { duration_minutes: number; focus_score: number }[];
 
   const avgSessionDuration = sessionDurations.length > 0
     ? sessionDurations.reduce((s, d) => s + d.duration_minutes, 0) / sessionDurations.length
     : 15;
 
   const bands = getAdaptiveBands();
-  const deepSessions = sessionDurations.filter(s => s.average_focus_score >= bands.focusGood).length;
-  const fragmentedSessions = sessionDurations.filter(s => s.average_focus_score < bands.focusPoor).length;
+  const deepSessions = sessionDurations.filter(s => s.focus_score >= bands.focusGood).length;
+  const fragmentedSessions = sessionDurations.filter(s => s.focus_score < bands.focusPoor).length;
 
   let workStyle = 'sprinter';
   if (avgSessionDuration > bands.flowMinMinutes && deepSessions > sessionDurations.length * bands.deepWorkSessionRatio) workStyle = 'deep-diver';

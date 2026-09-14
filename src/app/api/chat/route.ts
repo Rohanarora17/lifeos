@@ -198,7 +198,8 @@ function executeTool(name: string, args: ToolArgs, personalization: Personalizat
         const focusSessions = db.prepare(`
             SELECT session_id as id, goal_title, concept_node_name as task_title,
                    elapsed_minutes as duration_minutes, started_at, completed_at as ended_at,
-                   average_focus_score, final_focus_score
+                   average_focus_score as trajectory_average_focus_score,
+                   final_focus_score as focus_score
             FROM guardian_session_summaries
             ORDER BY COALESCE(started_at, completed_at) DESC
             LIMIT ?

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { getCommitmentPresentation } from '@/lib/coaching-commitment-presentation';
 
 type EngagementState = 'active' | 'slipping' | 'disengaged' | 'reconnecting' | 'paused';
 
@@ -58,6 +59,8 @@ interface SessionPerformance {
 
 interface CoachingCommitment {
   id: number;
+  sourceType: 'planned_focus' | 'soft_watch' | 'recovery';
+  sourceId: string;
   title: string;
   plannedStartAt: string;
   plannedMinutes: number;
@@ -116,6 +119,9 @@ export default function CoachPage() {
   const currentEvidenceSources = state
     ? Object.values(state.coverageSources).filter(value => value === 'current').length
     : 0;
+  const commitmentPresentation = commitment
+    ? getCommitmentPresentation(commitment)
+    : null;
 
   const refresh = useCallback(async () => {
     const response = await fetch('/api/coaching/state');
@@ -189,6 +195,9 @@ export default function CoachPage() {
         durationMinutes: accepted.startPlan.minutes,
         source: 'dashboard',
         sessionContext: `Started from coaching commitment ${commitment.id}.`,
+        plannedSessionId: accepted.startPlan.commitment.sourceType === 'planned_focus'
+          ? accepted.startPlan.commitment.sourceId
+          : null,
       }),
     });
     const payload = await response.json();
@@ -241,6 +250,9 @@ export default function CoachPage() {
               <p className="mt-1 text-sm" style={{ color: 'var(--text-secondary)' }}>
                 {new Date(commitment.plannedStartAt).toLocaleString()} · {commitment.plannedMinutes} minutes
               </p>
+              {commitmentPresentation?.statusMessage && (
+                <p className="mt-2 text-sm" style={{ color: 'var(--text-muted)' }}>{commitmentPresentation.statusMessage}</p>
+              )}
               {commitment.blockerText && <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>Recorded blocker: “{commitment.blockerText}”</p>}
               {commitment.outcomeReason && <p className="mt-2 text-sm" style={{ color: 'var(--text-secondary)' }}>{commitment.outcomeReason}</p>}
             </div>
@@ -250,26 +262,28 @@ export default function CoachPage() {
               <div className="space-y-3">
                 <div className="flex flex-wrap gap-3">
                   <button type="button" disabled={saving} onClick={() => startCommitment().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-primary">
-                    Start now
+                    {commitmentPresentation?.primaryActionLabel ?? 'Start now'}
                   </button>
                   <button type="button" disabled={saving} onClick={() => rescheduleCurrentCommitment().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-ghost">
                     Move 30 minutes
                   </button>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <label htmlFor="commitment-blocker" className="sr-only">Why did this commitment not start?</label>
-                  <input
-                    id="commitment-blocker"
-                    value={commitmentBlocker}
-                    onChange={event => setCommitmentBlocker(event.target.value)}
-                    placeholder="What stopped the start?"
-                    className="min-w-0 flex-1 rounded-xl border bg-transparent px-3 py-2 outline-none"
-                    style={{ borderColor: 'var(--border)', color: 'var(--text-primary)' }}
-                  />
-                  <button type="button" disabled={saving || !commitmentBlocker.trim()} onClick={() => saveCommitmentBlocker().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-ghost">
-                    Record blocker
-                  </button>
-                </div>
+                {commitmentPresentation?.showBlockerPrompt && (
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <label htmlFor="commitment-blocker" className="sr-only">Why did this commitment not start?</label>
+                    <input
+                      id="commitment-blocker"
+                      value={commitmentBlocker}
+                      onChange={event => setCommitmentBlocker(event.target.value)}
+                      placeholder="What stopped the start?"
+                      className="min-w-0 flex-1 rounded-xl border bg-transparent px-3 py-2 outline-none"
+                      style={{ borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+                    />
+                    <button type="button" disabled={saving || !commitmentBlocker.trim()} onClick={() => saveCommitmentBlocker().catch(error => setError(error instanceof Error ? error.message : String(error)))} className="btn btn-ghost">
+                      Record blocker
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </>

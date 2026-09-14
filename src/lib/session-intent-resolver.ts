@@ -34,7 +34,7 @@ function loadSimilarSessionHistory(topic: string, personalization: Personalizati
 
     const sessions = (likeClause
       ? db.prepare(`
-          SELECT target_title, mood, elapsed_minutes, average_focus_score,
+          SELECT target_title, mood, elapsed_minutes, final_focus_score AS focus_score,
                  override_count, blocked_count, distraction_events, productive_events
           FROM guardian_session_summaries
           WHERE ${likeClause}
@@ -45,7 +45,7 @@ function loadSimilarSessionHistory(topic: string, personalization: Personalizati
         target_title: string;
         mood: string | null;
         elapsed_minutes: number;
-        average_focus_score: number;
+        focus_score: number;
         override_count: number;
         blocked_count: number;
         distraction_events: number;
@@ -56,7 +56,7 @@ function loadSimilarSessionHistory(topic: string, personalization: Personalizati
 
     return sessions.map(s =>
       `- "${s.target_title}" (${s.mood || '?'} energy): ${s.elapsed_minutes}min, ` +
-      `focus=${Math.round(s.average_focus_score)}, overrides=${s.override_count}, ` +
+      `focus=${Math.round(s.focus_score)}, overrides=${s.override_count}, ` +
       `blocked=${s.blocked_count}, distractions=${s.distraction_events}, productive=${s.productive_events}`
     ).join('\n');
   } catch {

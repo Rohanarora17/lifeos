@@ -279,7 +279,7 @@ function evaluateTriggers(state: ContinuityState): string | null {
     if (daysAgo >= topicNeglectThreshold && hour >= 14 && hour < 16) {
       const db = getDb();
       const lastSession = db.prepare(`
-        SELECT elapsed_minutes, ROUND(average_focus_score) as score
+        SELECT elapsed_minutes, ROUND(final_focus_score) as score
         FROM guardian_session_summaries
         WHERE target_title LIKE ?
         ORDER BY completed_at DESC LIMIT 1

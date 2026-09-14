@@ -89,7 +89,7 @@ function computeTimeOfDayPrior(hourNow: number): number {
   try {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT average_focus_score / 100.0 as ratio
+      SELECT final_focus_score / 100.0 as ratio
       FROM guardian_session_summaries
       WHERE started_at IS NOT NULL
         AND CAST(strftime('%H', started_at) AS INTEGER) BETWEEN ? AND ?
@@ -113,13 +113,13 @@ function computeRecentFocusQuality(): number {
   try {
     const db = getDb();
     const rows = db.prepare(`
-      SELECT average_focus_score, distraction_events, productive_events, neutral_events
+      SELECT final_focus_score AS focus_score, distraction_events, productive_events, neutral_events
       FROM guardian_session_summaries
       WHERE elapsed_minutes > 0
       ORDER BY started_at DESC
       LIMIT 3
     `).all() as {
-      average_focus_score: number;
+      focus_score: number;
       distraction_events: number;
       productive_events: number;
       neutral_events: number;
@@ -128,7 +128,7 @@ function computeRecentFocusQuality(): number {
     if (rows.length === 0) return 0.6;
 
     const qualities = rows.map(r => {
-      const focusScore = Math.min(1, (r.average_focus_score || 0) / 100);
+      const focusScore = Math.min(1, (r.focus_score || 0) / 100);
       const totalEvents = (r.productive_events || 0) + (r.distraction_events || 0) + (r.neutral_events || 0);
       const distractionRatio = totalEvents > 0 ? Math.min(1, (r.distraction_events || 0) / totalEvents) : 0;
       return focusScore * (1 - distractionRatio);

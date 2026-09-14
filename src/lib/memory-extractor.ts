@@ -358,7 +358,7 @@ export async function extractMemoryFromCheckin(checkin: {
       const todayEnd = `${checkin.date} 23:59:59`;
 
       const sessions = db.prepare(`
-        SELECT target_title, elapsed_minutes, ROUND(average_focus_score) as score
+        SELECT target_title, elapsed_minutes, ROUND(final_focus_score) as score
         FROM guardian_session_summaries
         WHERE completed_at BETWEEN ? AND ?
         ORDER BY completed_at DESC LIMIT 5

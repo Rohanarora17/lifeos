@@ -26,12 +26,11 @@ export async function POST(req: Request) {
     // Load session metrics from DB for error computation
     const db = getDb();
     const session = db.prepare(`
-      SELECT average_focus_score, final_focus_score, elapsed_minutes, duration_minutes,
+      SELECT final_focus_score, elapsed_minutes, duration_minutes,
              blocked_count, override_count
       FROM guardian_session_summaries
       WHERE session_id = ?
     `).get(sessionId) as {
-      average_focus_score: number | null;
       final_focus_score: number | null;
       elapsed_minutes: number | null;
       duration_minutes: number | null;
@@ -46,7 +45,7 @@ export async function POST(req: Request) {
 
     const metrics = {
       system_energy_composite: energyRow?.composite_score ?? null,
-      system_focus_score: session?.average_focus_score ?? null,
+      system_focus_score: session?.final_focus_score ?? null,
       system_distraction_events: session?.blocked_count ?? null,
       system_tab_switch_count: null,
       system_idle_minutes: null,

@@ -15,7 +15,7 @@ export interface SessionPerformanceProfile {
 interface SessionRow {
   duration_minutes: number;
   elapsed_minutes: number;
-  average_focus_score: number;
+  focus_score: number;
   started_at: string | null;
   completed_at: string | null;
 }
@@ -55,7 +55,7 @@ function parseHour(value: string | null): number | null {
 function normalize(row: SessionRow): NormalizedSession | null {
   const duration = Number(row.duration_minutes);
   const elapsed = Number(row.elapsed_minutes);
-  const focus = Number(row.average_focus_score);
+  const focus = Number(row.focus_score);
   if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(elapsed) || elapsed < 0) return null;
   const safeFocus = Number.isFinite(focus) ? Math.max(0, Math.min(100, focus)) : 0;
   const completion = Math.max(0, Math.min(1, elapsed / duration));
@@ -73,7 +73,7 @@ export function getSessionPerformanceProfile(limit = 30): SessionPerformanceProf
   let rows: SessionRow[] = [];
   try {
     rows = getDb().prepare(`
-      SELECT duration_minutes, elapsed_minutes, average_focus_score, started_at, completed_at
+      SELECT duration_minutes, elapsed_minutes, final_focus_score AS focus_score, started_at, completed_at
       FROM guardian_session_summaries
       WHERE duration_minutes > 0
         AND COALESCE(completed_at, started_at) >= datetime('now', '-45 days')

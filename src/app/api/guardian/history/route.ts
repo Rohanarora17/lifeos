@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getSessionScoringIntervals } from '@/lib/session-activity';
 
 export async function GET() {
   try {
@@ -23,14 +24,16 @@ export async function GET() {
       created_at: string;
     }>;
 
-    const sessions = db.prepare(`
-      SELECT session_id, target_title, goal_title, mood,
-             duration_minutes, elapsed_minutes, average_focus_score,
-             final_focus_score, blocked_count, override_count,
-             distraction_events, productive_events,
-             dominant_distraction_domain, completed_at
-      FROM guardian_session_summaries
-      ORDER BY id DESC LIMIT 7
+    const sessionRows = db.prepare(`
+      SELECT gs.session_id, gs.target_title, gs.goal_title, gs.mood,
+             gs.duration_minutes, gs.elapsed_minutes,
+             gs.average_focus_score AS trajectory_average_focus_score,
+             gs.final_focus_score, gs.final_focus_score AS focus_score,
+             gs.blocked_count, gs.override_count,
+             gs.distraction_events, gs.productive_events,
+             gs.dominant_distraction_domain, gs.completed_at
+      FROM guardian_session_summaries gs
+      ORDER BY gs.id DESC LIMIT 7
     `).all() as Array<{
       session_id: string;
       target_title: string;
@@ -38,8 +41,9 @@ export async function GET() {
       mood: string | null;
       duration_minutes: number;
       elapsed_minutes: number;
-      average_focus_score: number;
+      trajectory_average_focus_score: number;
       final_focus_score: number;
+      focus_score: number;
       blocked_count: number;
       override_count: number;
       distraction_events: number;
@@ -48,12 +52,33 @@ export async function GET() {
       completed_at: string;
     }>;
 
+    const sessions = sessionRows.map((session) => {
+      const seconds = { productive: 0, neutral: 0, distraction: 0 };
+      for (const interval of getSessionScoringIntervals(session.session_id)) {
+        if (!interval.scoreEligible) continue;
+        seconds[interval.category] += Math.max(0, interval.durationSeconds);
+      }
+      const observedSeconds = seconds.productive + seconds.neutral + seconds.distraction;
+      const minutes = (value: number) => Math.round(value / 6) / 10;
+      const plannedEvidenceSeconds = Math.max(0, session.elapsed_minutes * 60);
+      const evidenceCoveragePercent = plannedEvidenceSeconds > 0
+        ? Math.min(100, Math.round(observedSeconds * 100 / plannedEvidenceSeconds))
+        : 0;
+      return {
+        ...session,
+        productive_minutes: minutes(seconds.productive),
+        neutral_minutes: minutes(seconds.neutral),
+        distraction_minutes: minutes(seconds.distraction),
+        evidence_coverage_percent: evidenceCoveragePercent,
+      };
+    });
+
     // Pending session completions (post-session review queue)
     const pendingCompletions = db.prepare(`
       SELECT sc.id, sc.session_id, sc.task_id, sc.status,
              sc.completion_note, sc.blocker_note, sc.created_at,
              t.title as task_title,
-             gs.target_title, gs.average_focus_score, gs.elapsed_minutes,
+             gs.target_title, gs.final_focus_score AS focus_score, gs.elapsed_minutes,
              gs.mood, gs.completed_at as session_completed_at
       FROM session_completions sc
       LEFT JOIN tasks t ON t.id = sc.task_id
@@ -71,7 +96,7 @@ export async function GET() {
       created_at: string;
       task_title: string | null;
       target_title: string | null;
-      average_focus_score: number | null;
+      focus_score: number | null;
       elapsed_minutes: number | null;
       mood: string | null;
       session_completed_at: string | null;

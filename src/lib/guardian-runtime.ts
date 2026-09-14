@@ -214,7 +214,7 @@ function queryPersonalBestFocusScore(): number | null {
   try {
     const db = getDb();
     const row = db.prepare(`
-      SELECT MAX(average_focus_score) as best FROM guardian_session_summaries
+      SELECT MAX(final_focus_score) as best FROM guardian_session_summaries
     `).get() as { best: number | null } | undefined;
     return row?.best ?? null;
   } catch {
@@ -521,8 +521,8 @@ function persistSessionSummary(session: GuardianState) {
     const db = getDb();
     const elapsedMinutes = Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000));
     const focusScores = session.focusScoreHistory.length > 0 ? session.focusScoreHistory : [100];
-    const averageFocusScore = focusScores.reduce((sum, score) => sum + score, 0) / focusScores.length;
-    const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
+    const trajectoryAverageFocusScore = focusScores.reduce((sum, score) => sum + score, 0) / focusScores.length;
+    const completedFocusScore = focusScores[focusScores.length - 1] ?? 100;
     const domainCounts = new Map<string, number>();
     let distractionEvents = 0;
     let productiveEvents = 0;
@@ -591,8 +591,8 @@ function persistSessionSummary(session: GuardianState) {
       startedAtIso,
       session.durationMinutes,
       elapsedMinutes,
-      averageFocusScore,
-      finalFocusScore,
+      trajectoryAverageFocusScore,
+      completedFocusScore,
       session.blockedCount,
       session.overrideCount,
       distractionEvents,
@@ -612,13 +612,12 @@ async function generateSessionReflection(session: GuardianState) {
   try {
     const db = getDb();
     const focusScores = session.focusScoreHistory.length > 0 ? session.focusScoreHistory : [100];
-    const averageFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
-    const finalFocusScore = focusScores[focusScores.length - 1] ?? 100;
+    const completedFocusScore = Math.round(focusScores[focusScores.length - 1] ?? 100);
     const elapsedMinutes = Math.max(1, Math.round(activeSessionElapsedMs(session) / 60000));
     const distractionCount = getSessionScoringIntervals(session.sessionId)
       .filter(interval => interval.scoreEligible && interval.category === 'distraction').length;
 
-    const focusQuality = adaptiveFocusQuality(averageFocusScore);
+    const focusQuality = adaptiveFocusQuality(completedFocusScore);
 
     const ai = tryGetGenAI();
     if (!ai) return;
@@ -636,7 +635,7 @@ async function generateSessionReflection(session: GuardianState) {
 Current time: ${currentTimeStr}
 Session: ${session.targetTitle}
 Planned: ${session.durationMinutes} min | Elapsed: ${elapsedMinutes} min
-Average focus: ${averageFocusScore}/100 | Final focus: ${finalFocusScore}/100
+Session focus score: ${completedFocusScore}/100
 Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distraction events: ${distractionCount}
 
 ${uilContext}`;
@@ -1644,10 +1643,11 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     console.error('[guardian] Failed to persist session to DB:', err);
   }
 
-  linkSoftWatchToSession(sessionId, targetTitle);
+  linkSoftWatchToSession(sessionId, targetTitle, input.plannedSessionId);
   recordSessionStartedForCommitment({
     sessionId,
     title: targetTitle,
+    plannedSessionId: input.plannedSessionId,
     startedAt: new Date(session.startedAt),
     plannedMinutes: durationMinutes,
   });
@@ -1821,12 +1821,11 @@ export function endGuardianSession(sessionId: string) {
   } catch (err) {
     console.error('[guardian] habit checkin write failed:', err);
   }
-  const focusScores = session.focusScoreHistory.length ? session.focusScoreHistory : [100];
-  const avgFocusScore = Math.round(focusScores.reduce((s, v) => s + v, 0) / focusScores.length);
+  const completedFocusScore = Math.round(session.focusScoreHistory.at(-1) ?? 100);
   recordSessionOutcomeForCommitment({
     sessionId,
     elapsedMinutes,
-    focusScore: avgFocusScore,
+    focusScore: completedFocusScore,
     verifiedEvidence: true,
   });
 
@@ -1834,7 +1833,7 @@ export function endGuardianSession(sessionId: string) {
   void (async () => {
     // Assess task completion while reflection generates in parallel
     try {
-      await evaluateSessionTaskCompletion(sessionId, session.targetTitle, elapsedMinutes, avgFocusScore);
+      await evaluateSessionTaskCompletion(sessionId, session.targetTitle, elapsedMinutes, completedFocusScore);
     } catch (err) {
       console.error('[guardian] evaluateSessionTaskCompletion failed:', err);
     }
@@ -1861,7 +1860,7 @@ export function endGuardianSession(sessionId: string) {
     if (totalIdleSeconds > 120) breakdownParts.push(`${Math.round(totalIdleSeconds / 60)}min idle`);
     const breakdown = breakdownParts.length > 0 ? breakdownParts.join(' · ') : undefined;
 
-    await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, avgFocusScore, session.blockedCount, reflection, breakdown), 'HTML', SESSION_END_KEYBOARD);
+    await sendTelegram(formatSessionEnd(session.targetTitle, elapsedMinutes, completedFocusScore, session.blockedCount, reflection, breakdown), 'HTML', SESSION_END_KEYBOARD);
 
     // Post-session insight delivery — top insights from UIL profile (max once per 6h)
     void (async () => {
@@ -1911,10 +1910,10 @@ export function endGuardianSession(sessionId: string) {
     // Update calendar event with actual duration and focus score
     const eventId = calendarEventIds.get(sessionId);
     if (eventId && isCalendarConfigured()) {
-      const focusQuality = adaptiveFocusQuality(avgFocusScore);
+      const focusQuality = adaptiveFocusQuality(completedFocusScore);
       await updateCalendarEvent(eventId, {
-        summary: `📚 ${session.targetTitle} — ${focusQuality.label} focus (${avgFocusScore}/100)`,
-        description: `LifeOS Guardian session\nElapsed: ${elapsedMinutes} min\nFocus score: ${avgFocusScore}/100\nAdaptive quality: ${focusQuality.reason}\nBlocks: ${session.blockedCount}\n\n${reflection ?? ''}`.trim(),
+        summary: `📚 ${session.targetTitle} — ${focusQuality.label} focus (${completedFocusScore}/100)`,
+        description: `LifeOS Guardian session\nElapsed: ${elapsedMinutes} min\nFocus score: ${completedFocusScore}/100\nAdaptive quality: ${focusQuality.reason}\nBlocks: ${session.blockedCount}\n\n${reflection ?? ''}`.trim(),
         endTime: new Date(),
         colorId: focusQuality.calendarColorId,
       });
@@ -1937,7 +1936,7 @@ export function endGuardianSession(sessionId: string) {
         const db = getDb();
         const node = db.prepare(`SELECT id, mastery FROM knowledge_nodes WHERE id = ?`).get(nodeId) as { id: number; mastery: number } | undefined;
         if (node) {
-          const quality = Math.max(0.1, avgFocusScore / 100);
+          const quality = Math.max(0.1, completedFocusScore / 100);
           const increment = quality * 0.05 * Math.min(1, elapsedMinutes / 30);
           const newMastery = Math.min(1.0, node.mastery + increment);
           db.prepare(`UPDATE knowledge_nodes SET mastery = ?, updated_at = datetime('now') WHERE id = ?`).run(newMastery, nodeId);
@@ -1971,7 +1970,7 @@ export function endGuardianSession(sessionId: string) {
       sessionId,
       topic: session.targetTitle,
       durationMinutes: elapsedMinutes,
-      focusScore: avgFocusScore,
+      focusScore: completedFocusScore,
       domains,
       interventions: session.blockedCount,
       overrides: session.overrideCount,
@@ -3143,14 +3142,38 @@ function hydratePendingSoftWatchesForTarget(targetTitle: string) {
   }
 }
 
-function linkSoftWatchToSession(sessionId: string, targetTitle: string) {
+function linkSoftWatchToSession(sessionId: string, targetTitle: string, plannedSessionId?: string | null) {
+  if (plannedSessionId) {
+    const exact = getDb().prepare(`
+      SELECT sw.id, sw.target_title as targetTitle, sw.goal_id as goalId, sw.task_id as taskId,
+        sw.intended_start_at as intendedStartAt, sw.planned_minutes as plannedMinutes,
+        sw.source, sw.reminder_sent_at as reminderSentAt, sw.check_in_sent_at as checkInSentAt,
+        sw.status, sw.locked_in_session_id as lockedInSessionId,
+        sw.calendar_event_id as calendarEventId, sw.created_at as createdAt
+      FROM planned_focus_sessions pfs
+      JOIN soft_watch_commitments sw ON sw.id = pfs.soft_watch_id
+      WHERE pfs.id = ? AND sw.status = 'pending'
+      LIMIT 1
+    `).get(plannedSessionId) as SoftWatchCommitment | undefined;
+    if (exact) {
+      exact.status = 'locked_in';
+      exact.lockedInSessionId = sessionId;
+      softWatchMap.set(exact.id, exact);
+      persistSoftWatch(exact);
+      updateCommitmentFollowThroughRate();
+    }
+    return;
+  }
+
   hydratePendingSoftWatchesForTarget(targetTitle);
   for (const [id, commitment] of softWatchMap) {
     if (commitment.status !== 'pending') continue;
     if (commitment.targetTitle.toLowerCase() !== targetTitle.toLowerCase()) continue;
     const now = Date.now();
-    // Link if intended start was within the last 90 minutes
-    if (now - commitment.intendedStartAt <= 90 * 60_000) {
+    // A title match is only safe after its intended start. Early starts must
+    // identify the exact planned session so a future same-title plan is not consumed.
+    const elapsedSinceStart = now - commitment.intendedStartAt;
+    if (elapsedSinceStart >= 0 && elapsedSinceStart <= 90 * 60_000) {
       commitment.status = 'locked_in';
       commitment.lockedInSessionId = sessionId;
       softWatchMap.set(id, commitment);

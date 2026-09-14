@@ -146,7 +146,7 @@ interface PendingReviewSession {
   task_title: string | null;
   target_title: string | null;
   elapsed_minutes: number | null;
-  average_focus_score: number | null;
+  focus_score: number | null;
   mood: string | null;
 }
 
@@ -315,7 +315,7 @@ function buildSessionFeedbackPlaceholder(
   session: PendingReviewSession,
   personalization?: GuardianInsights['personalization'],
 ) {
-  const score = session.average_focus_score;
+  const score = session.focus_score;
   const duration = session.elapsed_minutes;
 
   if (score !== null && score !== undefined && score < 55) {
@@ -474,14 +474,16 @@ export default function GuardianPage() {
     sessions: Array<{
       session_id: string; target_title: string; goal_title: string | null;
       mood: string | null; duration_minutes: number; elapsed_minutes: number;
-      average_focus_score: number; final_focus_score: number;
+      trajectory_average_focus_score: number; final_focus_score: number; focus_score: number;
       blocked_count: number; override_count: number;
       dominant_distraction_domain: string | null; completed_at: string;
+      productive_minutes: number; neutral_minutes: number; distraction_minutes: number;
+      evidence_coverage_percent: number;
     }>;
     pendingCompletions: Array<{
       id: number; session_id: string; task_id: number | null;
       task_title: string | null; target_title: string | null;
-      average_focus_score: number | null; elapsed_minutes: number | null;
+      focus_score: number | null; elapsed_minutes: number | null;
       mood: string | null; session_completed_at: string | null;
     }>;
   } | null>(null);
@@ -1498,16 +1500,16 @@ export default function GuardianPage() {
                     </div>
                     <div style={{ fontSize: '11px', color: '#555570', marginTop: '2px' }}>
                       {c.elapsed_minutes != null && `${c.elapsed_minutes}m`}
-                      {c.average_focus_score != null && ` · focus ${Math.round(c.average_focus_score)}`}
+                      {c.focus_score != null && ` · focus ${Math.round(c.focus_score)}`}
                       {c.mood && ` · ${c.mood} energy`}
                     </div>
                   </div>
-                  {c.average_focus_score != null && (
+                  {c.focus_score != null && (
                     <div style={{
                       fontSize: '18px', fontWeight: 800,
-                      color: scoreColor(c.average_focus_score),
+                      color: scoreColor(c.focus_score),
                     }}>
-                      {Math.round(c.average_focus_score)}
+                      {Math.round(c.focus_score)}
                     </div>
                   )}
                 </div>
@@ -1602,13 +1604,16 @@ export default function GuardianPage() {
                 <div>
                   <div style={{ fontSize: '13px', fontWeight: 600, color: '#c0c0d5' }}>{s.target_title}</div>
                   {s.goal_title && <div style={{ fontSize: '10px', color: '#555570' }}>{s.goal_title}</div>}
+                  <div style={{ fontSize: '10px', color: '#555570', marginTop: '2px' }}>
+                    {formatDuration(s.productive_minutes)} productive · {formatDuration(s.neutral_minutes)} neutral · {formatDuration(s.distraction_minutes)} distraction · {Math.round(s.evidence_coverage_percent)}% score coverage
+                  </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{
                     fontSize: '14px', fontWeight: 800,
-                    color: scoreColor(s.average_focus_score),
+                    color: scoreColor(s.focus_score),
                   }}>
-                    {Math.round(s.average_focus_score)}
+                    {Math.round(s.focus_score)}
                   </div>
                   <div style={{ fontSize: '10px', color: '#555570' }}>focus</div>
                 </div>

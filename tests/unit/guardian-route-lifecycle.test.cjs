@@ -229,4 +229,120 @@ describe('guardian route lifecycle', () => {
     );
     sessionId = null;
   });
+
+  it('uses the planned-session identity when a coaching commitment starts early', async () => {
+    const plan = db.prepare('SELECT id FROM daily_plans ORDER BY id DESC LIMIT 1').get();
+    const plannedStart = new Date(Date.now() + 18 * 60 * 60_000);
+    const plannedId = 'future-explicit-planned-session';
+    const softWatchId = 'future-explicit-soft-watch';
+    db.prepare(`
+      INSERT INTO planned_focus_sessions (
+        id, plan_id, title, planned_start, planned_end, duration_minutes,
+        soft_watch_id, status
+      ) VALUES (?, ?, 'DSA Short Burst (Graphs)', ?, ?, 20, ?, 'planned')
+    `).run(
+      plannedId,
+      plan.id,
+      plannedStart.toISOString(),
+      new Date(plannedStart.getTime() + 20 * 60_000).toISOString(),
+      softWatchId,
+    );
+    db.prepare(`
+      INSERT INTO soft_watch_commitments (
+        id, target_title, intended_start_at, planned_minutes, source, status, created_at
+      ) VALUES (?, 'DSA Short Burst (Graphs)', ?, 20, 'next_day_plan', 'pending', ?)
+    `).run(softWatchId, plannedStart.getTime(), Date.now());
+    const commitments = require('../../src/lib/coaching-commitments.ts');
+    commitments.syncCommitmentSources();
+
+    const startResponse = await startPOST(
+      new Request('http://lifeos.test/api/guardian/session/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          topic: 'DSA Short Burst (Graphs)',
+          durationMinutes: 20,
+          source: 'dashboard',
+          plannedSessionId: plannedId,
+          startRequestId: 'future-explicit-start',
+        }),
+      }),
+    );
+    assert.equal(startResponse.status, 200);
+    const started = await startResponse.json();
+    sessionId = started.session.sessionId;
+
+    const commitment = db.prepare(`
+      SELECT state, session_id FROM coaching_commitments
+      WHERE source_type='planned_focus' AND source_id=?
+    `).get(plannedId);
+    assert.deepEqual(commitment, { state: 'started', session_id: sessionId });
+    assert.equal(
+      db.prepare('SELECT status FROM planned_focus_sessions WHERE id=?').pluck().get(plannedId),
+      'started',
+    );
+    assert.deepEqual(
+      db.prepare('SELECT status, locked_in_session_id FROM soft_watch_commitments WHERE id=?').get(softWatchId),
+      { status: 'locked_in', locked_in_session_id: sessionId },
+    );
+
+    await endPOST(new Request('http://lifeos.test/api/guardian/session/end', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    }));
+    sessionId = null;
+  });
+
+  it('does not claim a far-future same-title plan for an ordinary Guardian start', async () => {
+    const plan = db.prepare('SELECT id FROM daily_plans ORDER BY id DESC LIMIT 1').get();
+    const plannedStart = new Date(Date.now() + 18 * 60 * 60_000);
+    const plannedId = 'future-unrelated-planned-session';
+    const softWatchId = 'future-unrelated-soft-watch';
+    db.prepare(`
+      INSERT INTO planned_focus_sessions (
+        id, plan_id, title, planned_start, planned_end, duration_minutes,
+        soft_watch_id, status
+      ) VALUES (?, ?, 'Repeatable title', ?, ?, 20, ?, 'planned')
+    `).run(
+      plannedId,
+      plan.id,
+      plannedStart.toISOString(),
+      new Date(plannedStart.getTime() + 20 * 60_000).toISOString(),
+      softWatchId,
+    );
+    db.prepare(`
+      INSERT INTO soft_watch_commitments (
+        id, target_title, intended_start_at, planned_minutes, source, status, created_at
+      ) VALUES (?, 'Repeatable title', ?, 20, 'next_day_plan', 'pending', ?)
+    `).run(softWatchId, plannedStart.getTime(), Date.now());
+
+    const startResponse = await startPOST(
+      new Request('http://lifeos.test/api/guardian/session/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          topic: 'Repeatable title',
+          durationMinutes: 20,
+          source: 'dashboard',
+          startRequestId: 'future-unrelated-start',
+        }),
+      }),
+    );
+    assert.equal(startResponse.status, 200);
+    const started = await startResponse.json();
+    sessionId = started.session.sessionId;
+
+    assert.deepEqual(
+      db.prepare('SELECT status, locked_in_session_id FROM soft_watch_commitments WHERE id=?').get(softWatchId),
+      { status: 'pending', locked_in_session_id: null },
+    );
+    assert.equal(
+      db.prepare('SELECT status FROM planned_focus_sessions WHERE id=?').pluck().get(plannedId),
+      'planned',
+    );
+
+    await endPOST(new Request('http://lifeos.test/api/guardian/session/end', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    }));
+    sessionId = null;
+  });
 });

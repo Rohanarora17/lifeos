@@ -1111,11 +1111,11 @@ export async function sendWeeklyEmail(): Promise<void> {
 
         // Guardian sessions for the week
         const sessions = db.prepare(`
-            SELECT target_title, elapsed_minutes, average_focus_score, completed_at
+            SELECT target_title, elapsed_minutes, final_focus_score AS focus_score, completed_at
             FROM guardian_session_summaries
             WHERE completed_at >= datetime(?, 'localtime')
             ORDER BY completed_at DESC LIMIT 10
-        `).all(weekStartStr) as { target_title: string; elapsed_minutes: number; average_focus_score: number; completed_at: string }[];
+        `).all(weekStartStr) as { target_title: string; elapsed_minutes: number; focus_score: number; completed_at: string }[];
 
         // Goals progress
         const goals = db.prepare(`
@@ -1137,7 +1137,7 @@ export async function sendWeeklyEmail(): Promise<void> {
 
         const totalSessions = sessions.length;
         const avgScore = sessions.length
-            ? Math.round(sessions.reduce((s, r) => s + r.average_focus_score, 0) / sessions.length)
+            ? Math.round(sessions.reduce((s, r) => s + r.focus_score, 0) / sessions.length)
             : 0;
         const totalFocusMin = sessions.reduce((s, r) => s + r.elapsed_minutes, 0);
         const avgScoreIcon = avgScore >= 85 ? '🔥' : avgScore >= 70 ? '✅' : avgScore >= 55 ? '🟡' : '🔴';
@@ -1177,7 +1177,7 @@ export async function sendWeeklyEmail(): Promise<void> {
 
         // Build session rows
         const sessionRows = sessions.slice(0, 6).map(s => {
-            const score = Math.round(s.average_focus_score);
+            const score = Math.round(s.focus_score);
             const scoreColor = score >= 85 ? '#4CAF50' : score >= 70 ? '#8BC34A' : score >= 55 ? '#FFC107' : '#F44336';
             const dateStr = new Date(s.completed_at).toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' });
             return `

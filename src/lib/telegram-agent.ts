@@ -733,7 +733,7 @@ function fetchPendingReviews() {
         return db.prepare(`
       SELECT sc.id, sc.session_id, sc.task_id,
              t.title as task_title,
-             gss.target_title, gss.elapsed_minutes, gss.average_focus_score,
+             gss.target_title, gss.elapsed_minutes, gss.final_focus_score AS focus_score,
              gss.mood
       FROM session_completions sc
       LEFT JOIN tasks t ON t.id = sc.task_id
@@ -744,7 +744,7 @@ function fetchPendingReviews() {
     `).all() as Array<{
             id: number; session_id: string; task_id: number | null;
             task_title: string | null; target_title: string | null;
-            elapsed_minutes: number | null; average_focus_score: number | null;
+            elapsed_minutes: number | null; focus_score: number | null;
             mood: string | null;
         }>;
     } catch {
@@ -763,15 +763,15 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             const { processSessionFeedback } = require('./guardian-calibration') as typeof import('./guardian-calibration');
             const db = getDb();
             const session = db.prepare(`
-        SELECT average_focus_score, elapsed_minutes, duration_minutes, blocked_count, override_count
+        SELECT final_focus_score AS focus_score, elapsed_minutes, duration_minutes, blocked_count, override_count
         FROM guardian_session_summaries WHERE session_id = ? LIMIT 1
-      `).get(awaitingFeedbackSession) as { average_focus_score: number | null; elapsed_minutes: number | null; duration_minutes: number | null; blocked_count: number | null; override_count: number | null } | undefined;
+      `).get(awaitingFeedbackSession) as { focus_score: number | null; elapsed_minutes: number | null; duration_minutes: number | null; blocked_count: number | null; override_count: number | null } | undefined;
 
             const energyRow = db.prepare(`SELECT composite_score FROM energy_readings WHERE session_id = ? ORDER BY recorded_at DESC LIMIT 1`).get(awaitingFeedbackSession) as { composite_score: number } | undefined;
 
             const result = await processSessionFeedback(awaitingFeedbackSession, text, {
                 system_energy_composite: energyRow?.composite_score ?? null,
-                system_focus_score: session?.average_focus_score ?? null,
+                system_focus_score: session?.focus_score ?? null,
                 system_distraction_events: session?.blocked_count ?? null,
                 system_tab_switch_count: null,
                 system_idle_minutes: null,
@@ -857,7 +857,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         // Reuse the action:report webhook path via executeAction-like call
         const db = getDb();
         const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
-        const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(average_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
+        const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(final_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
         const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','todo','doing')`).get() as { total: number; done: number };
         const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
         const avgFocus = Number(sessRow.avg_focus ?? 0);

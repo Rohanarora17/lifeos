@@ -214,6 +214,7 @@ export interface GuardianStartRequest {
   source?: 'voice' | 'dashboard' | 'extension' | 'api';
   sessionContext?: string;  // free-form context: what they'll be doing, tools, tab-switching intent, etc.
   startRequestId?: string;
+  plannedSessionId?: string | null;
 }
 
 export type WorkMode = 'deep_work' | 'research' | 'urgent_sprint' | 'learning' | 'recovery';
@@ -370,7 +371,8 @@ export interface GuardianSessionSummary {
   mood: 'high' | 'medium' | 'low' | null;
   durationMinutes: number;
   elapsedMinutes: number;
-  averageFocusScore: number;
+  trajectoryAverageFocusScore: number;
+  focusScore: number;
   finalFocusScore: number;
   blockedCount: number;
   overrideCount: number;

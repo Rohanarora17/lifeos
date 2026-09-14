@@ -54,13 +54,13 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile, snapshot: P
 
     type SessionRow = {
       target_title: string; mood: string | null;
-      elapsed_minutes: number; average_focus_score: number;
+      elapsed_minutes: number; focus_score: number;
       override_count: number; blocked_count: number;
       distraction_events: number; productive_events: number;
     };
 
     const topicSessions: SessionRow[] = likeClause ? (db.prepare(`
-      SELECT target_title, mood, elapsed_minutes, average_focus_score,
+      SELECT target_title, mood, elapsed_minutes, final_focus_score AS focus_score,
              override_count, blocked_count, distraction_events, productive_events
       FROM guardian_session_summaries
       WHERE ${likeClause}
@@ -68,7 +68,7 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile, snapshot: P
     `).all(...likeParams)) as SessionRow[] : [];
 
     const recentSessions: SessionRow[] = db.prepare(`
-      SELECT target_title, mood, elapsed_minutes, average_focus_score,
+      SELECT target_title, mood, elapsed_minutes, final_focus_score AS focus_score,
              override_count, blocked_count, distraction_events, productive_events
       FROM guardian_session_summaries
       ORDER BY completed_at DESC LIMIT 8
@@ -88,7 +88,7 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile, snapshot: P
       for (const s of topicSessions) {
         lines.push(
           `"${s.target_title}" (${s.mood || '?'}): ${s.elapsed_minutes}min, ` +
-          `focus=${Math.round(s.average_focus_score)}, ` +
+          `focus=${Math.round(s.focus_score)}, ` +
           `overrides=${s.override_count}, blocked=${s.blocked_count}, ` +
           `distractions=${s.distraction_events}, productive=${s.productive_events}`
         );
@@ -98,7 +98,7 @@ function loadSessionPerformanceHistory(intent: SessionIntentProfile, snapshot: P
     }
 
     if (recentSessions.length > 0) {
-      const avgFocus = recentSessions.reduce((s, r) => s + r.average_focus_score, 0) / recentSessions.length;
+      const avgFocus = recentSessions.reduce((s, r) => s + r.focus_score, 0) / recentSessions.length;
       const avgOverrides = recentSessions.reduce((s, r) => s + r.override_count, 0) / recentSessions.length;
       const avgBlocked = recentSessions.reduce((s, r) => s + r.blocked_count, 0) / recentSessions.length;
       lines.push(`\n--- Recent baseline (last ${recentSessions.length} sessions) ---`);

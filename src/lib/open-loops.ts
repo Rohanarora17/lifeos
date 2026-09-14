@@ -36,7 +36,7 @@ export function getOpenLoops(): OpenLoop[] {
       g.updated_at,
       MAX(s.completed_at) as last_session_at,
       COUNT(s.session_id) as session_count,
-      AVG(s.average_focus_score) as avg_score,
+      AVG(s.final_focus_score) as avg_score,
       AVG(s.elapsed_minutes) as avg_minutes
     FROM goals g
     LEFT JOIN guardian_session_summaries s ON s.target_title LIKE '%' || g.title || '%'
@@ -212,7 +212,7 @@ export async function sendMonthlyPatternLetter(): Promise<void> {
     const monthStats = db.prepare(`
       SELECT
         COUNT(DISTINCT session_id) as total_sessions,
-        ROUND(AVG(average_focus_score)) as avg_score,
+        ROUND(AVG(final_focus_score)) as avg_score,
         COUNT(DISTINCT date(completed_at)) as days_with_sessions,
         SUM(elapsed_minutes) as total_minutes
       FROM guardian_session_summaries

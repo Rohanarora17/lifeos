@@ -93,19 +93,19 @@ function formatPlanContext(db: ReturnType<typeof getDb>, date: string): string {
             SELECT
               sw.id as softWatchId,
               gss.elapsed_minutes as elapsedMinutes,
-              gss.average_focus_score as averageFocusScore
+              gss.final_focus_score as focusScore
             FROM soft_watch_commitments sw
             LEFT JOIN guardian_session_summaries gss ON gss.session_id = sw.locked_in_session_id
             WHERE sw.id IN (${softWatchIds.map(() => '?').join(',')})
         `).all(...softWatchIds) as Array<{
             softWatchId: string;
             elapsedMinutes: number | null;
-            averageFocusScore: number | null;
+            focusScore: number | null;
         }> : [];
         const actualBySoftWatch = new Map(actualRows.map(row => [row.softWatchId, row]));
         const actualMinutes = actualRows.reduce((sum, row) => sum + Math.max(0, Math.round(row.elapsedMinutes ?? 0)), 0);
         const focusScores = actualRows
-            .map(row => Number(row.averageFocusScore))
+            .map(row => Number(row.focusScore))
             .filter(score => Number.isFinite(score));
         const avgFocusScore = focusScores.length
             ? Math.round(focusScores.reduce((sum, score) => sum + score, 0) / focusScores.length)

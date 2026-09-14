@@ -1745,13 +1745,13 @@ export async function processGuardianVoiceCommand(input: ProcessVoiceCommandInpu
 
       const db = getDb();
       const recentSessions = db.prepare(`
-        SELECT target_title, elapsed_minutes, average_focus_score, completed_at
+        SELECT target_title, elapsed_minutes, final_focus_score AS focus_score, completed_at
         FROM guardian_session_summaries
         WHERE date(completed_at, 'localtime') >= date('now', '-7 days', 'localtime')
         ORDER BY completed_at DESC LIMIT 8
-      `).all() as { target_title: string; elapsed_minutes: number; average_focus_score: number; completed_at: string }[];
+      `).all() as { target_title: string; elapsed_minutes: number; focus_score: number; completed_at: string }[];
       const sessionsStr = recentSessions.map(s =>
-        `${s.completed_at.slice(0, 10)}: ${s.target_title} (${s.elapsed_minutes}min, score ${Math.round(s.average_focus_score)})`
+        `${s.completed_at.slice(0, 10)}: ${s.target_title} (${s.elapsed_minutes}min, score ${Math.round(s.focus_score)})`
       ).join('\n');
 
       let cognitiveGrounding = '';

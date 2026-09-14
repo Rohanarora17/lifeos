@@ -429,7 +429,7 @@ function aggregateSignals(): string {
   // Guardian sessions (post-epoch only)
   try {
     const rows = db.prepare(`
-      SELECT target_title, goal_title, mood, elapsed_minutes, average_focus_score,
+      SELECT target_title, goal_title, mood, elapsed_minutes, final_focus_score AS focus_score,
              blocked_count, override_count,
              strftime('%H', started_at, 'localtime') as hour,
              date(completed_at, 'localtime') as day
@@ -440,7 +440,7 @@ function aggregateSignals(): string {
     if (rows.length) {
       sections.push('\n=== GUARDIAN SESSIONS (this run) ===');
       for (const s of rows) {
-        sections.push(`[${s.day} ${s.hour}:00] "${s.target_title}" — ${s.elapsed_minutes}min, score=${Math.round(Number(s.average_focus_score))}, mood=${s.mood ?? 'unknown'}, blocks=${s.blocked_count}`);
+        sections.push(`[${s.day} ${s.hour}:00] "${s.target_title}" — ${s.elapsed_minutes}min, score=${Math.round(Number(s.focus_score))}, mood=${s.mood ?? 'unknown'}, blocks=${s.blocked_count}`);
       }
     } else if (epochInfo.isFreshStart) {
       sections.push('\n=== GUARDIAN SESSIONS ===');
@@ -452,7 +452,7 @@ function aggregateSignals(): string {
   try {
     const rows = db.prepare(`
       SELECT CAST(strftime('%H', started_at, 'localtime') AS INTEGER) as hour,
-             ROUND(AVG(average_focus_score)) as avg_score, COUNT(*) as count
+             ROUND(AVG(final_focus_score)) as avg_score, COUNT(*) as count
       FROM guardian_session_summaries
       WHERE date(COALESCE(completed_at, started_at), 'localtime') >= ?
       GROUP BY hour ORDER BY hour

@@ -24,11 +24,11 @@ export async function sendWeeklyReckoning(): Promise<void> {
 
     // Sessions this week
     const sessions = db.prepare(`
-      SELECT target_title, elapsed_minutes, average_focus_score, completed_at
+      SELECT target_title, elapsed_minutes, final_focus_score AS focus_score, completed_at
       FROM guardian_session_summaries
       WHERE date(completed_at) >= ?
       ORDER BY completed_at ASC
-    `).all(weekStart) as Array<{ target_title: string; elapsed_minutes: number; average_focus_score: number; completed_at: string }>;
+    `).all(weekStart) as Array<{ target_title: string; elapsed_minutes: number; focus_score: number; completed_at: string }>;
 
     // Days laptop was opened (from screen observations)
     const laptopDays = (db.prepare(`
@@ -97,7 +97,7 @@ export async function sendWeeklyReckoning(): Promise<void> {
       sessionsByTopic[key].sessions++;
       sessionsByTopic[key].totalMins += s.elapsed_minutes;
       sessionsByTopic[key].avgScore = Math.round(
-        (sessionsByTopic[key].avgScore * (sessionsByTopic[key].sessions - 1) + s.average_focus_score) / sessionsByTopic[key].sessions
+        (sessionsByTopic[key].avgScore * (sessionsByTopic[key].sessions - 1) + s.focus_score) / sessionsByTopic[key].sessions
       );
     }
 

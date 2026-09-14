@@ -380,19 +380,19 @@ export function formatSessionStart(targetTitle: string, durationMinutes: number,
 export function formatSessionEnd(
   targetTitle: string,
   elapsedMinutes: number,
-  avgFocusScore: number,
+  focusScore: number,
   blockedCount: number,
   reflection?: string,
   breakdown?: string,
 ): string {
   const snapshot = getTelegramSnapshot();
-  const focusEmoji = scoreEmoji(avgFocusScore, snapshot, 'focus');
+  const focusEmoji = scoreEmoji(focusScore, snapshot, 'focus');
   const lines = [
     `🏁 <b>Session Complete</b>`,
     ``,
     `📚 <b>${targetTitle}</b>`,
     `⏱️ <b>Elapsed:</b> ${elapsedMinutes} min`,
-    `${focusEmoji} <b>Focus score:</b> ${avgFocusScore}/100`,
+    `${focusEmoji} <b>Focus score:</b> ${focusScore}/100`,
     modeLine(snapshot),
     breakdown ? `<i>${breakdown}</i>` : null,
     `🚫 <b>Blocks fired:</b> ${blockedCount}`,
@@ -646,7 +646,7 @@ export function formatPendingReviews(reviews: Array<{
   target_title: string | null;
   session_id: string;
   elapsed_minutes: number | null;
-  average_focus_score: number | null;
+  focus_score: number | null;
   mood: string | null;
 }>): string {
   const snapshot = getTelegramSnapshot();
@@ -655,7 +655,7 @@ export function formatPendingReviews(reviews: Array<{
   }
   const r = reviews[0];
   const name = r.task_title ?? r.target_title ?? 'Session';
-  const score = r.average_focus_score != null ? `${Math.round(r.average_focus_score)}/100` : '—';
+  const score = r.focus_score != null ? `${Math.round(r.focus_score)}/100` : '—';
   const mins = r.elapsed_minutes != null ? `${r.elapsed_minutes}m` : '—';
   const mood = r.mood ? ` · ${r.mood} energy` : '';
   const remaining = reviews.length > 1 ? `\n<i>${reviews.length - 1} more in queue</i>` : '';
