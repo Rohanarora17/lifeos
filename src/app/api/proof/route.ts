@@ -73,7 +73,7 @@ Return EXACTLY a JSON object with this schema:
         const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: [prompt, imagePart]
-        });
+        }, { feature: 'proof_generation' });
         let text = (result.text || '').trim();
 
         // Remove markdown tags if any

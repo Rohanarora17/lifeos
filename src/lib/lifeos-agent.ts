@@ -88,7 +88,7 @@ Before advising, adapt to the current moment mode. If the user is in recovery, r
       model: MODEL_PRO,
       contents: prompt,
       config: { temperature: 0.3, maxOutputTokens: 500 },
-    });
+    }, { feature: 'lifeos_agent' });
     responseText = result.text ?? 'No response generated.';
   } catch (err) {
     console.error('[lifeos-agent] LLM call failed:', err);

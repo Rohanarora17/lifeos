@@ -149,7 +149,7 @@ ${domainList.map(d => `- ${d}`).join('\n')}
 Task 2: From this list of context-sensitive domains, identify which are ON-TOPIC for this session goal: ${contextSensitive}
 Respond ONLY with a JSON object (no markdown): {"blockDomains": [...filtered from candidates above...], "onTopicDomains": ["youtube.com", ...]}`;
 
-    const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: prompt });
+    const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: prompt }, { feature: 'guardian_session_domains' });
     const text = (result.text ?? '').trim().replace(/```json\n?|\n?```/g, '');
     const parsed = JSON.parse(text) as { blockDomains?: unknown; onTopicDomains?: unknown };
     const blockArr = Array.isArray(parsed.blockDomains)

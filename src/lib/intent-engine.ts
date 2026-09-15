@@ -32,7 +32,7 @@ JSON Schema:
                 systemInstruction: "You are Jarvis, extracting structured intent from voice transcripts.",
                 responseMimeType: 'application/json'
             }
-        });
+        }, { feature: 'lockin_intent' });
 
         const text = (result.text || '').trim();
         if (!text) return null;

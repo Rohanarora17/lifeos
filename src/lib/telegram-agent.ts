@@ -1107,7 +1107,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
             model: MODEL_PRO,
             contents: `${TELEGRAM_SYSTEM_PROMPT}\n${contextBlock}${turnHistoryBlock}\n\nUSER: "${text}"`,
             config: { responseMimeType: 'application/json' },
-        });
+        }, { feature: 'telegram_agent' });
 
         const parsed = JSON.parse((response.text || '{}').trim()) as {
             action: string;

@@ -3,8 +3,8 @@
  *
  * Model assignment strategy:
  *   PRO      (gemini-3.1-pro-preview) — Planning, reasoning, and deep analysis.
- *   VISION   (gemini-3.1-pro-preview) — Screen and multimodal interpretation.
- *   REALTIME (gemini-3.1-flash-lite)  — Activity classification and nudges only.
+ * Callers declare capability intent with these constants. ai-execution-policy.ts
+ * owns the actual per-feature model, reasoning level, timeout, and output cap.
  *   VOICE    (gemini-live-2.5-flash) — Live Guardian conversations.
  */
 
@@ -14,7 +14,7 @@ export const MODEL_THINKING = 'gemini-3.1-pro-preview';
 /** Deep synthesis model — for summaries, reports, behavioral analysis */
 export const MODEL_PRO = 'gemini-3.1-pro-preview';
 
-/** Strong multimodal model — screen and screenshot understanding */
+/** Capability marker for multimodal calls; the unified policy routes the request. */
 export const MODEL_VISION = MODEL_PRO;
 
 /** Low-latency model — activity classification and distraction nudges only */

@@ -253,7 +253,7 @@ Respond ONLY with valid JSON (no markdown):
             model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' },
-        });
+        }, { feature: 'task_prioritization' });
 
         const parsed = JSON.parse((res.text || '{}').trim()) as {
             prioritized: RankedPriorityItem[];

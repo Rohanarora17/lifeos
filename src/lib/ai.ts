@@ -1,4 +1,4 @@
-import { GoogleGenAI, type GenerateContentResponse, type GenerateContentResponseUsageMetadata } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, type GenerateContentResponse, type GenerateContentResponseUsageMetadata } from '@google/genai';
 import { getSetting, getDb } from './db';
 import { Category, Subcategory, CategoryResult } from './categories';
 import { getSmartNudgeContext } from './behavior';
@@ -6,14 +6,21 @@ import { getIntelligenceContext } from './intelligence';
 import { MODEL_PRO, MODEL_REALTIME_ACTIVITY, MODEL_THINKING } from './models';
 import type { PersonalizationSnapshot } from './personalization-context';
 import { recordAiServiceFailure, recordAiServiceSuccess } from './ai-health';
-import { randomUUID } from 'crypto';
-import { inferAiFeatureFromStack, recordAiUsageAttempt } from './ai-usage';
+import { createHash, randomUUID } from 'crypto';
+import { recordAiUsageAttempt } from './ai-usage';
 import { parseActivityClassificationResponse } from './ai-response-parsing';
+import { resolveAiExecutionPolicy, type AiCallContext, type AiExecutionPolicy } from './ai-execution-policy';
+import { unifiedAiCircuitBreaker } from './ai-circuit-breaker';
 
 
 let genAI: GoogleGenAI | null = null;
 let geminiRuntimeInfo: GeminiRuntimeInfo | null = null;
 let optionalGeminiUnavailableLogged = false;
+const aiRuntimeGlobal = globalThis as typeof globalThis & {
+    lifeosInFlightAiRequests?: Map<string, Promise<GenerateContentResponse>>;
+};
+const inFlightAiRequests = aiRuntimeGlobal.lifeosInFlightAiRequests ?? new Map<string, Promise<GenerateContentResponse>>();
+aiRuntimeGlobal.lifeosInFlightAiRequests = inFlightAiRequests;
 
 export type GeminiRuntimeInfo = {
     apiProduct: 'vertex_ai';
@@ -81,13 +88,25 @@ const FALLBACK_THINKING = 'gemini-2.5-pro'; // best stable thinking-capable mode
 
 /**
  * Returns true for errors that mean "model overloaded / unreachable" —
- * covers HTTP 503, UNAVAILABLE status, undici timeouts, and network errors.
+ * covers transient HTTP 500/503, UNAVAILABLE status, undici timeouts, and
+ * network errors. Retry policy separately decides whether a timeout is safe to
+ * repeat on the primary model.
  */
-function isOverloadedError(err: any): boolean {
-    const msg: string = (err?.message || '').toLowerCase();
+function isOverloadedError(err: unknown): boolean {
+    const detail = err as {
+        status?: unknown;
+        message?: unknown;
+        cause?: { code?: unknown; message?: unknown };
+    } | null;
+    const msg = String(detail?.message || '').toLowerCase();
+    const causeCode = String(detail?.cause?.code || '');
+    const causeMessage = String(detail?.cause?.message || '');
     return (
-        err?.status === 503 ||
+        detail?.status === 500 ||
+        detail?.status === 503 ||
+        msg.includes('500') ||
         msg.includes('503') ||
+        msg.includes('internal') ||
         msg.includes('unavailable') ||
         msg.includes('high demand') ||
         msg.includes('overloaded') ||
@@ -95,10 +114,10 @@ function isOverloadedError(err: any): boolean {
         msg.includes('fetch failed') ||
         msg.includes('econnreset') ||
         msg.includes('socket hang up') ||
-        err?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
-        err?.cause?.message?.includes('Headers Timeout') ||
-        err?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
-        err?.cause?.code === 'UND_ERR_SOCKET'
+        causeCode === 'UND_ERR_HEADERS_TIMEOUT' ||
+        causeMessage.includes('Headers Timeout') ||
+        causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+        causeCode === 'UND_ERR_SOCKET'
     );
 }
 
@@ -108,48 +127,169 @@ function fallbackModel(originalModel: string): string {
     return originalModel.includes('pro') ? FALLBACK_PRO : FALLBACK_FLASH;
 }
 
+function thinkingLevelValue(level: AiExecutionPolicy['thinkingLevel']): ThinkingLevel {
+    if (level === 'minimal') return ThinkingLevel.MINIMAL;
+    if (level === 'medium') return ThinkingLevel.MEDIUM;
+    if (level === 'high') return ThinkingLevel.HIGH;
+    return ThinkingLevel.LOW;
+}
+
+function applyExecutionPolicy(
+    params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+    policy: AiExecutionPolicy,
+    context: AiCallContext,
+) {
+    return {
+        ...params,
+        model: policy.model,
+        config: {
+            ...params.config,
+            httpOptions: { ...params.config?.httpOptions, timeout: policy.timeoutMs },
+            maxOutputTokens: Math.min(params.config?.maxOutputTokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
+            thinkingConfig: {
+                ...params.config?.thinkingConfig,
+                thinkingLevel: thinkingLevelValue(policy.thinkingLevel),
+            },
+            labels: {
+                ...params.config?.labels,
+                lifeos_feature: contextSafeLabel(context.feature),
+                lifeos_work_class: contextSafeLabel(policy.workClass),
+            },
+        },
+    };
+}
+
+function contextSafeLabel(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, 63);
+}
+
+function applyFallbackThinkingPolicy(
+    params: ReturnType<typeof applyExecutionPolicy>,
+    fallback: string,
+    policy: AiExecutionPolicy,
+) {
+    const existingThinking = {
+        includeThoughts: params.config.thinkingConfig?.includeThoughts,
+        thinkingBudget: params.config.thinkingConfig?.thinkingBudget,
+    };
+    const thinkingBudget = fallback.includes('pro')
+        ? (policy.qualityTier === 'deep' ? 2_048 : 1_024)
+        : (policy.qualityTier === 'routine' ? 0 : 1_024);
+    return {
+        ...params,
+        model: fallback,
+        config: {
+            ...params.config,
+            thinkingConfig: { ...existingThinking, thinkingBudget },
+        },
+    };
+}
+
+function shouldRetryPrimary(error: unknown): boolean {
+    const status = Number((error as { status?: unknown } | null)?.status || 0);
+    const message = String((error as { message?: unknown } | null)?.message || '').toLowerCase();
+    const causeCode = String((error as { cause?: { code?: unknown } } | null)?.cause?.code || '').toLowerCase();
+    if (status === 429 || message.includes('resource_exhausted') || message.includes('quota_exceeded')) return false;
+    // A provider timeout has already consumed the whole latency budget. Move
+    // directly to the stable fallback instead of making the user wait twice.
+    if (message.includes('timeout') || causeCode.includes('timeout')) return false;
+    return isOverloadedError(error);
+}
+
+function usageContext(logicalRequestId: string, context: AiCallContext, policy: AiExecutionPolicy, requestFingerprint: string) {
+    return {
+        logicalRequestId,
+        feature: context.feature,
+        workClass: policy.workClass,
+        qualityTier: policy.qualityTier,
+        trigger: context.trigger,
+        entityId: context.entityId,
+        requestFingerprint,
+    };
+}
+
 
 /**
- * Wrapper around ai.models.generateContent with exponential backoff + model fallback.
- * Retries up to 3 times on overload/network errors (4s, 8s delays), then falls back
- * to a stable model for a final attempt.
+ * Shared execution path for routing, timeouts, one transient retry, circuit
+ * breaking, fallback, single-flight deduplication, health, and cost attribution.
  */
+function aiSingleFlightKey(
+    params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+    context: AiCallContext,
+): string {
+    const digest = createHash('sha256')
+        .update(JSON.stringify({ model: params.model, contents: params.contents, config: params.config, qualityTier: context.qualityTier, workClass: context.workClass }))
+        .digest('hex');
+    return `${context.feature}:${context.entityId || ''}:${digest}`;
+}
+
 export async function generateWithFallback(
     ai: GoogleGenAI,
-    params: Parameters<GoogleGenAI['models']['generateContent']>[0]
+    params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+    context: AiCallContext,
 ): ReturnType<GoogleGenAI['models']['generateContent']> {
-    const originalModel = typeof params.model === 'string' ? params.model : '';
-    const logicalRequestId = randomUUID();
-    const feature = inferAiFeatureFromStack();
-    let primaryErr: any;
+    const key = aiSingleFlightKey(params, context);
+    const existing = inFlightAiRequests.get(key);
+    if (existing) return existing;
+    const request = executeGenerateWithFallback(ai, params, context, key.split(':').at(-1) || key);
+    inFlightAiRequests.set(key, request);
+    try {
+        return await request;
+    } finally {
+        if (inFlightAiRequests.get(key) === request) inFlightAiRequests.delete(key);
+    }
+}
 
-    // 3 attempts on primary model with backoff
-    for (let attempt = 0; attempt < 3; attempt++) {
+async function executeGenerateWithFallback(
+    ai: GoogleGenAI,
+    params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+    context: AiCallContext,
+    requestFingerprint: string,
+): ReturnType<GoogleGenAI['models']['generateContent']> {
+    const requestedModel = typeof params.model === 'string' ? params.model : '';
+    const policy = resolveAiExecutionPolicy(requestedModel, context);
+    const routedParams = applyExecutionPolicy(params, policy, context);
+    const originalModel = policy.model;
+    const logicalRequestId = randomUUID();
+    const ledgerContext = usageContext(logicalRequestId, context, policy, requestFingerprint);
+    let primaryErr: unknown;
+
+    // One retry for transient transport/5xx errors. Capacity errors fall back immediately.
+    const canAttemptPrimary = unifiedAiCircuitBreaker.canAttempt(originalModel);
+    const primaryAttempts = canAttemptPrimary
+        ? (unifiedAiCircuitBreaker.isHalfOpenProbe(originalModel) ? 1 : 2)
+        : 0;
+    if (primaryAttempts === 0) primaryErr = new Error(`AI_CIRCUIT_OPEN: ${originalModel}`);
+    for (let attempt = 0; attempt < primaryAttempts; attempt++) {
         const startedAt = new Date().toISOString();
         const startedMs = Date.now();
         try {
-            const result = await ai.models.generateContent(params);
+            const result = await ai.models.generateContent(routedParams);
             recordAiUsageAttempt({
+                ...ledgerContext,
                 requestId: `${logicalRequestId}:primary:${attempt + 1}`,
-                requestedModel: originalModel, actualModel: originalModel,
-                operation: 'generate', feature, status: 'success', attempt: attempt + 1,
+                requestedModel, actualModel: originalModel,
+                operation: 'generate', status: 'success', attempt: attempt + 1,
                 usedFallback: false, latencyMs: Date.now() - startedMs,
                 usageMetadata: result.usageMetadata, startedAt,
             });
+            unifiedAiCircuitBreaker.recordSuccess(originalModel);
             recordAiServiceSuccess(originalModel);
             return result;
-        } catch (err: any) {
+        } catch (err: unknown) {
             primaryErr = err;
             recordAiUsageAttempt({
+                ...ledgerContext,
                 requestId: `${logicalRequestId}:primary:${attempt + 1}`,
-                requestedModel: originalModel, actualModel: originalModel,
-                operation: 'generate', feature, status: 'failed', attempt: attempt + 1,
+                requestedModel, actualModel: originalModel,
+                operation: 'generate', status: 'failed', attempt: attempt + 1,
                 usedFallback: false, latencyMs: Date.now() - startedMs, error: err, startedAt,
             });
-            if (!isOverloadedError(err)) break;
-            if (attempt < 2) {
-                const delay = (attempt + 1) * 4000;
-                console.warn(`[AI] ${originalModel} overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
+            unifiedAiCircuitBreaker.recordFailure(originalModel, err);
+            if (!shouldRetryPrimary(err)) break;
+            if (attempt < 1) {
+                const delay = 1_000 + Math.floor(Math.random() * 500);
+                console.warn(`[AI] ${originalModel} unavailable — retrying once in ${delay}ms`);
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -165,24 +305,28 @@ export async function generateWithFallback(
     const fallbackStartedAt = new Date().toISOString();
     const fallbackStartedMs = Date.now();
     try {
-        const result = await ai.models.generateContent({ ...params, model: fallback });
+        const result = await ai.models.generateContent(applyFallbackThinkingPolicy(routedParams, fallback, policy));
         recordAiUsageAttempt({
+            ...ledgerContext,
             requestId: `${logicalRequestId}:fallback:1`,
-            requestedModel: originalModel, actualModel: fallback,
-            operation: 'generate', feature, status: 'success', attempt: 1,
+            requestedModel, actualModel: fallback,
+            operation: 'generate', status: 'success', attempt: 1,
             usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
             usageMetadata: result.usageMetadata, startedAt: fallbackStartedAt,
         });
+        unifiedAiCircuitBreaker.recordSuccess(fallback);
         recordAiServiceSuccess(fallback);
         return result;
     } catch (error) {
         recordAiUsageAttempt({
+            ...ledgerContext,
             requestId: `${logicalRequestId}:fallback:1`,
-            requestedModel: originalModel, actualModel: fallback,
-            operation: 'generate', feature, status: 'failed', attempt: 1,
+            requestedModel, actualModel: fallback,
+            operation: 'generate', status: 'failed', attempt: 1,
             usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
             error, startedAt: fallbackStartedAt,
         });
+        unifiedAiCircuitBreaker.recordFailure(fallback, error);
         recordAiServiceFailure(error, fallback);
         throw error;
     }
@@ -193,36 +337,47 @@ export async function generateWithFallback(
  */
 export async function generateStreamWithFallback(
     ai: GoogleGenAI,
-    params: Parameters<GoogleGenAI['models']['generateContentStream']>[0]
+    params: Parameters<GoogleGenAI['models']['generateContentStream']>[0],
+    context: AiCallContext,
 ): ReturnType<GoogleGenAI['models']['generateContentStream']> {
-    const originalModel = typeof params.model === 'string' ? params.model : '';
+    const requestedModel = typeof params.model === 'string' ? params.model : '';
+    const policy = resolveAiExecutionPolicy(requestedModel, context);
+    const routedParams = applyExecutionPolicy(params, policy, context);
+    const originalModel = policy.model;
     const logicalRequestId = randomUUID();
-    const feature = inferAiFeatureFromStack();
-    let primaryErr: any;
+    const requestFingerprint = aiSingleFlightKey(params, context).split(':').at(-1) || randomUUID();
+    const ledgerContext = usageContext(logicalRequestId, context, policy, requestFingerprint);
+    let primaryErr: unknown;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const canAttemptPrimary = unifiedAiCircuitBreaker.canAttempt(originalModel);
+    const primaryAttempts = canAttemptPrimary
+        ? (unifiedAiCircuitBreaker.isHalfOpenProbe(originalModel) ? 1 : 2)
+        : 0;
+    if (primaryAttempts === 0) primaryErr = new Error(`AI_CIRCUIT_OPEN: ${originalModel}`);
+    for (let attempt = 0; attempt < primaryAttempts; attempt++) {
         const startedAt = new Date().toISOString();
         const startedMs = Date.now();
         try {
-            const result = await ai.models.generateContentStream(params);
-            recordAiServiceSuccess(originalModel);
+            const result = await ai.models.generateContentStream(routedParams);
             return trackAiStream(result, {
                 requestId: `${logicalRequestId}:primary:${attempt + 1}`,
-                requestedModel: originalModel, actualModel: originalModel,
-                feature, attempt: attempt + 1, usedFallback: false, startedAt, startedMs,
+                requestedModel, actualModel: originalModel,
+                ...ledgerContext, attempt: attempt + 1, usedFallback: false, startedAt, startedMs,
             }) as Awaited<ReturnType<GoogleGenAI['models']['generateContentStream']>>;
-        } catch (err: any) {
+        } catch (err: unknown) {
             primaryErr = err;
             recordAiUsageAttempt({
+                ...ledgerContext,
                 requestId: `${logicalRequestId}:primary:${attempt + 1}`,
-                requestedModel: originalModel, actualModel: originalModel,
-                operation: 'stream', feature, status: 'failed', attempt: attempt + 1,
+                requestedModel, actualModel: originalModel,
+                operation: 'stream', status: 'failed', attempt: attempt + 1,
                 usedFallback: false, latencyMs: Date.now() - startedMs, error: err, startedAt,
             });
-            if (!isOverloadedError(err)) break;
-            if (attempt < 2) {
-                const delay = (attempt + 1) * 4000;
-                console.warn(`[AI] ${originalModel} stream overloaded — retry ${attempt + 1}/2 in ${delay}ms`);
+            unifiedAiCircuitBreaker.recordFailure(originalModel, err);
+            if (!shouldRetryPrimary(err)) break;
+            if (attempt < 1) {
+                const delay = 1_000 + Math.floor(Math.random() * 500);
+                console.warn(`[AI] ${originalModel} stream unavailable — retrying once in ${delay}ms`);
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -237,22 +392,23 @@ export async function generateStreamWithFallback(
     const fallbackStartedAt = new Date().toISOString();
     const fallbackStartedMs = Date.now();
     try {
-        const result = await ai.models.generateContentStream({ ...params, model: fallback });
-        recordAiServiceSuccess(fallback);
+        const result = await ai.models.generateContentStream(applyFallbackThinkingPolicy(routedParams, fallback, policy));
         return trackAiStream(result, {
             requestId: `${logicalRequestId}:fallback:1`,
-            requestedModel: originalModel, actualModel: fallback,
-            feature, attempt: 1, usedFallback: true,
+            requestedModel, actualModel: fallback,
+            ...ledgerContext, attempt: 1, usedFallback: true,
             startedAt: fallbackStartedAt, startedMs: fallbackStartedMs,
         }) as Awaited<ReturnType<GoogleGenAI['models']['generateContentStream']>>;
     } catch (error) {
         recordAiUsageAttempt({
+            ...ledgerContext,
             requestId: `${logicalRequestId}:fallback:1`,
-            requestedModel: originalModel, actualModel: fallback,
-            operation: 'stream', feature, status: 'failed', attempt: 1,
+            requestedModel, actualModel: fallback,
+            operation: 'stream', status: 'failed', attempt: 1,
             usedFallback: true, latencyMs: Date.now() - fallbackStartedMs,
             error, startedAt: fallbackStartedAt,
         });
+        unifiedAiCircuitBreaker.recordFailure(fallback, error);
         recordAiServiceFailure(error, fallback);
         throw error;
     }
@@ -260,9 +416,15 @@ export async function generateStreamWithFallback(
 
 function trackAiStream(stream: AsyncIterable<GenerateContentResponse>, context: {
     requestId: string;
+    logicalRequestId: string;
     requestedModel: string;
     actualModel: string;
     feature: string;
+    workClass: 'interactive' | 'active_session' | 'background';
+    qualityTier: 'routine' | 'reasoning' | 'deep';
+    trigger?: string;
+    entityId?: string;
+    requestFingerprint?: string;
     attempt: number;
     usedFallback: boolean;
     startedAt: string;
@@ -280,12 +442,16 @@ function trackAiStream(stream: AsyncIterable<GenerateContentResponse>, context: 
                 ...context, operation: 'stream', status: 'success',
                 latencyMs: Date.now() - context.startedMs, usageMetadata,
             });
+            unifiedAiCircuitBreaker.recordSuccess(context.actualModel);
+            recordAiServiceSuccess(context.actualModel);
             recorded = true;
         } catch (error) {
             recordAiUsageAttempt({
                 ...context, operation: 'stream', status: 'failed',
                 latencyMs: Date.now() - context.startedMs, usageMetadata, error,
             });
+            unifiedAiCircuitBreaker.recordFailure(context.actualModel, error);
+            recordAiServiceFailure(error, context.actualModel);
             recorded = true;
             throw error;
         } finally {
@@ -529,6 +695,10 @@ ${sessionRules}`;
                         },
                     },
                 }
+            }, {
+                feature: 'activity_classification',
+                trigger: hasSessionContext ? 'guardian_activity' : 'background_activity',
+                entityId: sessionContext?.targetTitle,
             });
             const text = (result.text || '').trim();
             const parsedArray = parseActivityClassificationResponse(text);
@@ -577,11 +747,17 @@ ${sessionRules}`;
     } catch (err) {
         console.error('Batch AI classification failed:', err);
         const pipelineError = new Error(`INVALID_MODEL_OUTPUT: ${err instanceof Error ? err.message : String(err)}`);
+        const logicalRequestId = randomUUID();
         recordAiUsageAttempt({
+            logicalRequestId,
+            requestId: `${logicalRequestId}:parser:1`,
             requestedModel: MODEL_REALTIME_ACTIVITY,
             actualModel: MODEL_REALTIME_ACTIVITY,
             operation: 'generate',
-            feature: 'activity-classification-parser',
+            feature: 'activity_classification',
+            workClass: 'active_session',
+            qualityTier: 'routine',
+            trigger: 'response_parser',
             status: 'failed',
             attempt: 1,
             usedFallback: false,
@@ -731,7 +907,7 @@ Instructions:
         const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: prompt
-        });
+        }, { feature: 'daily_summary' });
         return (result.text || '').trim();
     } catch (err) {
         console.error('AI summary failed:', err);
@@ -790,7 +966,7 @@ Instructions:
         const result = await generateWithFallback(ai, {
             model: MODEL_PRO,
             contents: prompt
-        });
+        }, { feature: 'morning_brief' });
         return (result.text || '').trim();
     } catch (err) {
         console.error('AI morning brief failed:', err);
@@ -1046,7 +1222,7 @@ Respond with ONLY JSON: {"nudge": true/false, "reason": "brief, personalized rea
             config: {
                 responseMimeType: 'application/json'
             }
-        });
+        }, { feature: 'distraction_nudge' });
         const text = (result.text || '').trim();
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {

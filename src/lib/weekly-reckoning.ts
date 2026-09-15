@@ -201,7 +201,7 @@ Keep total length under 400 words. No filler. No encouragement. Facts and one ho
       model: MODEL_PRO,
       contents: prompt,
       config: { temperature: 0.3, maxOutputTokens: 600 },
-    });
+    }, { feature: 'weekly_reckoning' });
 
 
     const reckoningText = result.text;

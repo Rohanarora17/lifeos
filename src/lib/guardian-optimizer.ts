@@ -663,7 +663,7 @@ Each bundle must contain ALL fields. Include a "_rationale" field (not part of t
       model: MODEL_PRO,
       contents: prompt,
       config: { responseMimeType: 'application/json' },
-    });
+    }, { feature: 'guardian_optimizer' });
 
     const raw = JSON.parse((result.text || '').trim()) as unknown[];
     if (!Array.isArray(raw)) return [];

@@ -47,7 +47,7 @@ describe('diagnostics route', () => {
     };
 
     await assert.rejects(
-      ai.generateWithFallback(failingClient, { model: 'gemini-3.1-flash-lite', contents: 'health probe' }),
+      ai.generateWithFallback(failingClient, { model: 'gemini-3.1-flash-lite', contents: 'health probe' }, { feature: 'activity_classification', trigger: 'health_probe' }),
       /BILLING_DISABLED/,
     );
 
@@ -71,7 +71,7 @@ describe('diagnostics route', () => {
     await ai.generateWithFallback(successfulClient, {
       model: 'gemini-3.1-flash-lite',
       contents: 'recovery probe',
-    });
+    }, { feature: 'activity_classification', trigger: 'health_probe' });
     const recoveredResponse = await GET({ headers: { get: () => null } });
     const recovered = await recoveredResponse.json();
     assert.equal(recovered.models.vertex.status, 'healthy');

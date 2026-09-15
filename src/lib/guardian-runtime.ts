@@ -640,7 +640,7 @@ Blocks: ${session.blockedCount} | Overrides: ${session.overrideCount} | Distract
 
 ${uilContext}`;
 
-    const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: prompt });
+    const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: prompt }, { feature: 'session_reflection' });
     const reflectionText = (result.text ?? '').trim().slice(0, 400);
 
     db.prepare(`
@@ -886,7 +886,7 @@ ${context}
 
 Return ONLY the sentence. No quotes, no explanation.`,
       config: { temperature: 0.7, maxOutputTokens: 50 },
-    });
+    }, { feature: 'guardian_speech' });
     const text = result.text?.trim().replace(/^["']|["']$/g, '');
     if (text && text.length > 3) {
       void speak(session.sessionId, text, kind === 'block' ? 'urgent' : 'normal', kind === 'block' ? 'direct_push' : 'grounding_nudge');
@@ -2552,7 +2552,7 @@ JSON schema:
           responseMimeType: 'application/json',
           temperature: 0.1,
         },
-      });
+      }, { feature: 'override_adjudication' });
 
       const parsed = JSON.parse((result.text || '').trim() || '{}') as Partial<OverrideDecision>;
       if (typeof parsed.approved === 'boolean' && parsed.reason && parsed.explainability) {

@@ -57,7 +57,7 @@ Return JSON matching this schema:
             config: {
                 responseMimeType: 'application/json',
             }
-        });
+        }, { feature: 'extension_task_parse' });
 
         const extracted = JSON.parse(result.text || '{}') as {
             title?: string;

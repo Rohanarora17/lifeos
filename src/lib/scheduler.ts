@@ -7,7 +7,7 @@ import {
   DAILY_REPORT_KEYBOARD,
 } from './telegram';
 import { listUpcomingEvents } from './google-calendar';
-import { forceSynthesis } from './intelligence';
+import { forceSynthesis, isIntelligenceDirty } from './intelligence';
 import { consolidateFacts } from './memory-extractor';
 import { sendMorningCheckin, sendEveningReflection, getWakeEstimate } from './checkin';
 import { getActiveGuardianSession } from './guardian-runtime';
@@ -646,11 +646,20 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
         });
     });
 
-    // UIL synthesis — runs every 2 hours during active day to keep profile fresh
-    registerIntervalJob('uil_synthesis', 2 * 60 * 60 * 1000, async () => {
+    // UIL synthesis is a six-hour backstop. Event hooks mark the profile dirty;
+    // routine telemetry never rebuilds it while Guardian is measuring a session.
+    registerIntervalJob('uil_synthesis', 6 * 60 * 60 * 1000, async () => {
         await runAdaptiveSchedulerJob('uil_synthesis', async () => {
+            if (!isIntelligenceDirty()) {
+                console.log('[Scheduler] UIL profile is clean; skipping synthesis.');
+                return;
+            }
+            if (getActiveGuardianSession()) {
+                console.log('[Scheduler] Guardian session active; deferring UIL synthesis.');
+                return;
+            }
             console.log('[Scheduler] Running UIL background synthesis...');
-            await forceSynthesis('scheduled_2h');
+            await forceSynthesis('scheduled_6h');
         });
     });
 
@@ -916,8 +925,8 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
     }), async () => {
         try {
             // Trigger intelligence synthesis if function exists
-            const { forceSynthesis } = await import('./intelligence');
-            if (typeof forceSynthesis === 'function') {
+            const { forceSynthesis, isIntelligenceDirty } = await import('./intelligence');
+            if (typeof forceSynthesis === 'function' && isIntelligenceDirty()) {
                 await forceSynthesis('morning_adaptive');
             }
             console.log('[Scheduler] Morning UIL synthesis complete');

@@ -162,7 +162,7 @@ Rules:
       model: MODEL_PRO,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 400 },
-    });
+    }, { feature: 'open_loops_audit' });
 
     const auditText = result.text;
     if (!auditText) {
@@ -246,7 +246,7 @@ Max 350 words. Direct. Specific. No filler.`;
       model: MODEL_PRO,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { temperature: 0.4, maxOutputTokens: 700 },
-    });
+    }, { feature: 'monthly_pattern_letter' });
 
     const letter = result.text;
     if (!letter) {

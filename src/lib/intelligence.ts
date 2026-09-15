@@ -13,6 +13,7 @@ import {
   isInCurrentHistory,
   lookbackStartDate,
 } from './history-epoch';
+import { intelligenceRefreshDisposition } from './intelligence-refresh-policy';
 
 // ============================================================
 //  COGNITIVE INTELLIGENCE ENGINE
@@ -356,6 +357,9 @@ let uilProfile: UserIntelligenceProfile | null = null;
 let uilCacheTs = 0;
 let uilSynthesisRunning = false;
 let uilSynthesisQueued = false;
+let uilDirty = false;
+let uilDirtyGeneration = 0;
+const uilPendingTriggers = new Set<string>();
 
 function isUILSynthesisDisabled(): boolean {
   return process.env.LIFEOS_DISABLE_UIL_SYNTHESIS === '1' || process.env.LIFEOS_DISABLE_UIL_SYNTHESIS === 'true';
@@ -817,7 +821,7 @@ Return ONLY valid JSON (no markdown, no explanation):
   "weeklyProgressSummary": "5 sessions this week (up from 3), avg focus 74 (improving). 3/5 habits on track."
 }`,
       config: { responseMimeType: 'application/json', temperature: 0 },
-    });
+    }, { feature: 'unified_intelligence_synthesis', trigger });
 
     const raw = JSON.parse((result.text || '').trim()) as Partial<UserIntelligenceProfile>;
     if (!raw.currentNarrative) return null;
@@ -985,7 +989,7 @@ function applyLearningPhaseGuards(profile: UserIntelligenceProfile): UserIntelli
 export function getIntelligenceProfile(): UserIntelligenceProfile {
   if (uilProfile && Date.now() - uilCacheTs < UIL_CACHE_TTL) {
     if (isProfilePreHistory(uilProfile)) {
-      if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
+      markIntelligenceDirty('history_epoch_refresh');
       return applyLearningPhaseGuards(freshStartDefaultProfile());
     }
     return applyLearningPhaseGuards(uilProfile);
@@ -1000,19 +1004,28 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
       if (isProfilePreHistory(p)) {
         uilProfile = null;
         uilCacheTs = 0;
-        if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('history_epoch_refresh');
+        markIntelligenceDirty('history_epoch_refresh');
         return applyLearningPhaseGuards(freshStartDefaultProfile());
       }
       uilProfile = p;
       uilCacheTs = Date.now();
-      const staleMs = Date.now() - (p.synthesizedAt || 0);
-      if (staleMs > UIL_CACHE_TTL && !uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('cache_stale');
       return applyLearningPhaseGuards(p);
     }
   } catch { /* */ }
 
-  if (!uilSynthesisRunning && !isUILSynthesisDisabled()) void _runSynthesisBackground('initial');
+  markIntelligenceDirty('initial');
   return applyLearningPhaseGuards(freshStartDefaultProfile());
+}
+
+function markIntelligenceDirty(trigger: string, preserveConcurrentEvidence = false): void {
+  const isNewSignalClass = preserveConcurrentEvidence || !uilDirty || !uilPendingTriggers.has(trigger);
+  uilDirty = true;
+  if (isNewSignalClass) uilDirtyGeneration += 1;
+  uilPendingTriggers.add(trigger);
+}
+
+export function isIntelligenceDirty(): boolean {
+  return uilDirty;
 }
 
 /**
@@ -1021,6 +1034,10 @@ export function getIntelligenceProfile(): UserIntelligenceProfile {
  */
 export function touchIntelligence(trigger: string): void {
   if (isUILSynthesisDisabled()) return;
+  const disposition = intelligenceRefreshDisposition(trigger);
+  if (disposition === 'ignore') return;
+  markIntelligenceDirty(trigger, disposition === 'synthesize');
+  if (disposition === 'dirty_only') return;
   if (uilSynthesisQueued || uilSynthesisRunning) return;
   uilSynthesisQueued = true;
   setTimeout(() => {
@@ -1032,9 +1049,21 @@ export function touchIntelligence(trigger: string): void {
 async function _runSynthesisBackground(trigger: string): Promise<void> {
   if (uilSynthesisRunning) return;
   uilSynthesisRunning = true;
+  const generationAtStart = uilDirtyGeneration;
+  const coalescedTriggers = Array.from(uilPendingTriggers);
+  const synthesisTrigger = coalescedTriggers.length > 0
+    ? coalescedTriggers.slice(-8).join(',')
+    : trigger;
   try {
-    const p = await runUILSynthesis(trigger);
-    if (p) { uilProfile = p; uilCacheTs = Date.now(); }
+    const p = await runUILSynthesis(synthesisTrigger);
+    if (p) {
+      uilProfile = p;
+      uilCacheTs = Date.now();
+      if (uilDirtyGeneration === generationAtStart) {
+        uilDirty = false;
+        uilPendingTriggers.clear();
+      }
+    }
   } finally {
     uilSynthesisRunning = false;
   }

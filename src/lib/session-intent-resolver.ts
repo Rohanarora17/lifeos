@@ -231,7 +231,7 @@ REASON FROM THE DATA:
 Return ONLY valid JSON:
 {"workMode": "deep_work"|"research"|"urgent_sprint"|"learning"|"recovery", "confidence": "high"|"medium"|"low", "reason": "<one sentence based on the actual data>"}`,
       config: { responseMimeType: 'application/json' },
-    });
+    }, { feature: 'session_intent' });
 
     const parsed = JSON.parse((result.text || '{}').trim()) as {
       workMode: WorkMode;

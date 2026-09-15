@@ -61,24 +61,32 @@ export function estimateAiCostUsd(model: string, usage: TokenUsage) {
 function errorDetails(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || 'Unknown AI request failure');
   const upper = message.toUpperCase();
-  const code = ['INVALID_MODEL_OUTPUT', 'RESOURCE_EXHAUSTED', 'QUOTA_EXCEEDED', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'UNAVAILABLE']
-    .find(value => upper.includes(value)) || 'AI_REQUEST_FAILED';
+  const status = Number((error as { status?: unknown } | null)?.status || 0);
+  const causeCode = String((error as { cause?: { code?: unknown } } | null)?.cause?.code || '').toUpperCase();
+  let code = 'AI_REQUEST_FAILED';
+  if (status === 429 || upper.includes('RESOURCE_EXHAUSTED') || upper.includes('QUOTA_EXCEEDED')) code = 'HTTP_429_RESOURCE_EXHAUSTED';
+  else if (status === 500 || upper.includes('INTERNAL')) code = 'HTTP_500_INTERNAL';
+  else if (status === 503 || upper.includes('UNAVAILABLE') || upper.includes('OVERLOADED')) code = 'HTTP_503_UNAVAILABLE';
+  else if (upper.includes('TIMEOUT') || causeCode.includes('TIMEOUT')) code = 'TRANSPORT_TIMEOUT';
+  else if (upper.includes('FETCH FAILED')) code = 'FETCH_FAILED';
+  else if (upper.includes('INVALID_MODEL_OUTPUT')) code = 'INVALID_MODEL_OUTPUT';
+  else if (upper.includes('PERMISSION_DENIED')) code = 'PERMISSION_DENIED';
+  else if (upper.includes('UNAUTHENTICATED')) code = 'UNAUTHENTICATED';
   return { code, message: message.slice(0, 1_000) };
-}
-
-export function inferAiFeatureFromStack(stack = new Error().stack || '') {
-  const line = stack.split('\n').find(item =>
-    item.includes('/src/') && !item.includes('/src/lib/ai.ts') && !item.includes('/src/lib/ai-usage.ts'));
-  const match = line?.match(/\/src\/(.+?):\d+:\d+/);
-  return match?.[1]?.replace(/\.(?:ts|tsx)$/, '') || 'unknown';
 }
 
 export function recordAiUsageAttempt(input: {
   requestId?: string;
+  logicalRequestId: string;
   requestedModel: string;
   actualModel: string;
   operation: 'generate' | 'stream';
   feature: string;
+  workClass: 'interactive' | 'active_session' | 'background';
+  qualityTier: 'routine' | 'reasoning' | 'deep';
+  trigger?: string;
+  entityId?: string;
+  requestFingerprint?: string;
   status: 'success' | 'failed' | 'cancelled';
   attempt: number;
   usedFallback: boolean;
@@ -97,14 +105,15 @@ export function recordAiUsageAttempt(input: {
     const completedAt = new Date().toISOString();
     getDb().prepare(`
       INSERT OR IGNORE INTO ai_usage_events (
-        request_id, provider, project_id, location, requested_model, actual_model,
+        request_id, logical_request_id, provider, project_id, location, requested_model, actual_model,
         operation, feature, status, attempt, used_fallback, input_tokens,
         cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         estimated_cost_usd, pricing_version, latency_ms, error_code, error_message,
-        metadata_json, started_at, completed_at
-      ) VALUES (?, 'vertex_ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        metadata_json, work_class, quality_tier, trigger, entity_id, request_fingerprint, started_at, completed_at
+      ) VALUES (?, ?, 'vertex_ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.requestId || randomUUID(),
+      input.logicalRequestId,
       process.env.GOOGLE_CLOUD_PROJECT || null,
       process.env.GOOGLE_CLOUD_LOCATION || 'global',
       input.requestedModel,
@@ -125,6 +134,11 @@ export function recordAiUsageAttempt(input: {
       error.code,
       error.message,
       JSON.stringify(input.metadata || {}),
+      input.workClass,
+      input.qualityTier,
+      input.trigger || null,
+      input.entityId || null,
+      input.requestFingerprint || null,
       input.startedAt || completedAt,
       completedAt,
     );

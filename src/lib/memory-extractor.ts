@@ -130,7 +130,7 @@ Return ONLY a JSON array, no markdown:
       model: MODEL_PRO,
       contents: prompt,
       config: { responseMimeType: 'application/json' },
-    });
+    }, { feature: 'memory_extraction' });
     const text = (result.text || '').trim();
     const ops = JSON.parse(text) as MemoryOp[];
     return Array.isArray(ops) ? ops : [];
@@ -446,7 +446,7 @@ Return JSON ONLY:
             model: MODEL_PRO,
             contents: responsePrompt,
             config: { responseMimeType: 'application/json' },
-          });
+          }, { feature: 'memory_extraction' });
           const parsed = JSON.parse((result.text || '').trim()) as { respond: boolean; text: string | null };
           if (parsed.respond && parsed.text) {
             const { sendTelegram } = await import('./telegram');

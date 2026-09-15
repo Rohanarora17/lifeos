@@ -718,7 +718,7 @@ KNOWLEDGE:
         responseMimeType: 'application/json',
         temperature: 0,
       },
-    });
+    }, { feature: 'voice_intent' });
 
     const parsed = JSON.parse((result.text || '').trim() || '{}') as Partial<ParsedVoiceIntent>;
     if (!parsed.action) return heuristicParseVoiceIntent(transcript);
@@ -835,7 +835,7 @@ async function runTutorMode(
         systemInstruction,
         temperature: 0.2,
       },
-    });
+    }, { feature: 'voice_tutor' });
 
     return (result.text || '').trim() || 'Tutor mode is ready — ask me anything.';
   } catch {
@@ -887,7 +887,7 @@ async function runFreeformConversation(
         systemInstruction,
         temperature: 0.3,
       },
-    });
+    }, { feature: 'voice_conversation' });
 
     return (result.text || '').trim() || 'I heard you, but could not map that to an action.';
   } catch {
@@ -1792,7 +1792,7 @@ COACHING INSIGHTS: ${profile.coachingInsights?.join('; ') || 'none'}
 
 RESPOND: Voice-friendly, direct, 2-4 sentences. No bullet lists. Refer to specific data. Be a great coach. If COGNITIVE SELF-ANSWER is present, do not invent patterns that contradict it.`;
 
-      const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: analysisPrompt, config: { temperature: 0.3 } });
+      const result = await generateWithFallback(ai, { model: MODEL_PRO, contents: analysisPrompt, config: { temperature: 0.3 } }, { feature: 'voice_session_analysis' });
       const response = (result.text || '').trim().replace(/[•\*\-] /g, '').replace(/\n+/g, ' ').slice(0, 300);
       await maybeSpeakVoiceResponse(activeSessionId, response);
       addVoiceTurn(hKey, { role: 'model', text: response, timestamp: Date.now(), action: intent.action });

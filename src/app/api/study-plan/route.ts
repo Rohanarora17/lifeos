@@ -321,7 +321,7 @@ CRITICAL RULES:
                 config: {
                     responseMimeType: 'application/json'
                 }
-            });
+            }, { feature: 'study_plan' });
 
             const text = result.text || '';
             const jsonMatch = text.match(/\{[\s\S]*\}/);

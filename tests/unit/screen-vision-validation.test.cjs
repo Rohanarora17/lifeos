@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { createIsolatedDb } = require('../helpers/temp-db.cjs');
 
 const env = createIsolatedDb('lifeos-screen-vision-validation-');
-const { parseVisionAssessment } = env.requireLib('screen-vision.ts');
+const { parseVisionAssessment, shouldEscalateVisionAssessment } = env.requireLib('screen-vision.ts');
 
 function validAssessment(overrides = {}) {
   return JSON.stringify({
@@ -21,6 +21,12 @@ function validAssessment(overrides = {}) {
 }
 
 describe('screen vision assessment validation', () => {
+  it('escalates invalid or low-confidence Flash-Lite assessments', () => {
+    assert.equal(shouldEscalateVisionAssessment(null), true);
+    assert.equal(shouldEscalateVisionAssessment({ confidence: 0.64 }), true);
+    assert.equal(shouldEscalateVisionAssessment({ confidence: 0.65 }), false);
+  });
+
   it('accepts a complete supported assessment', () => {
     const result = parseVisionAssessment(validAssessment());
     assert.equal(result.taskAlignment, 82);

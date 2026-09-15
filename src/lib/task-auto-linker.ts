@@ -58,7 +58,7 @@ Respond ONLY with valid JSON (no markdown):
       model: MODEL_PRO,
       contents: prompt,
       config: { responseMimeType: 'application/json' },
-    });
+    }, { feature: 'task_goal_linking' });
     const parsed = JSON.parse((res.text || '{}').trim()) as {
       goalId: number | null;
       confidence: string;

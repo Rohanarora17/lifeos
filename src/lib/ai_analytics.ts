@@ -256,7 +256,7 @@ Rules:
             model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' },
-        });
+        }, { feature: 'deep_correlations' });
         // Strip markdown code fences the model sometimes wraps output in
         const text = (result.text || '').trim();
         const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();

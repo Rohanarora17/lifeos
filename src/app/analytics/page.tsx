@@ -67,10 +67,17 @@ interface AnalyticsPersonalization {
 }
 
 interface AiUsageAggregate {
-    requests: number;
-    successfulRequests: number;
-    failedRequests: number;
+    attempts: number;
+    successfulAttempts: number;
+    failedAttempts: number;
+    fallbackAttempts: number;
+    logicalOperations: number;
+    firstTrySuccesses: number;
+    recoveredOperations: number;
+    terminalFailures: number;
+    cancelledOperations: number;
     inputTokens: number;
+    cachedInputTokens: number;
     outputTokens: number;
     reasoningTokens: number;
     totalTokens: number;
@@ -79,8 +86,13 @@ interface AiUsageAggregate {
 
 interface AiUsageSummary {
     periods: { today: AiUsageAggregate; sevenDays: AiUsageAggregate; thirtyDays: AiUsageAggregate; allTime: AiUsageAggregate };
-    byModel: Array<{ model: string; requests: number; totalTokens: number; estimatedCostUsd: number }>;
-    byFeature: Array<{ feature: string; requests: number; failedRequests: number; totalTokens: number; estimatedCostUsd: number }>;
+    byModel: Array<{ model: string; attempts: number; logicalOperations: number; failedAttempts: number; terminalFailures: number; reasoningTokens: number; totalTokens: number; estimatedCostUsd: number }>;
+    byFeature: Array<{ feature: string; attempts: number; logicalOperations: number; failedAttempts: number; terminalFailures: number; reasoningTokens: number; totalTokens: number; estimatedCostUsd: number }>;
+    byWorkClass: Array<{ workClass: string; attempts: number; logicalOperations: number; failedAttempts: number; terminalFailures: number; reasoningTokens: number; totalTokens: number; estimatedCostUsd: number }>;
+    byError: Array<{ errorCode: string; attempts: number }>;
+    circuit: Array<{ model: string; failuresInWindow: number; open: boolean; openUntil: number | null }>;
+    projection: { monthlyCostUsd: number; enforcement: 'none' };
+    optimizationSignals: { unattributedAttempts: number; repeatedSuccessfulAttempts: number; repeatedRequestCostUsd: number; reasoningSharePercent: number };
     coverage: { startedAt: string | null; latestAt: string | null };
     pricing: { source: string; version: string; estimateOnly: boolean };
     limitations: string[];
@@ -268,28 +280,34 @@ export default function AnalyticsPage() {
                         <div>
                             <h2 className="text-sm font-bold uppercase tracking-wider" style={{ color: '#60a5fa' }}>AI usage and estimated cost</h2>
                             <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                                Every server-side Gemini attempt is recorded with returned token metadata. Billing starts here from the first recorded event.
+                                Every Gemini call now uses the same feature policy, retry path, and usage ledger. Operations remain connected across retries and fallbacks.
                             </p>
                         </div>
                         <a className="text-xs font-semibold" style={{ color: '#93c5fd' }} href={aiUsage.pricing.source} target="_blank" rel="noreferrer">
                             Vertex pricing source ↗
                         </a>
                     </div>
-                    <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
-                        <UsageMetric label="Today" value={formatUsd(aiUsage.periods.today.estimatedCostUsd)} detail={`${aiUsage.periods.today.requests} attempts`} />
+                    <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+                        <UsageMetric label="Today" value={formatUsd(aiUsage.periods.today.estimatedCostUsd)} detail={`${aiUsage.periods.today.logicalOperations} operations · ${aiUsage.periods.today.attempts} attempts`} />
                         <UsageMetric label="Last 7 days" value={formatUsd(aiUsage.periods.sevenDays.estimatedCostUsd)} detail={`${formatTokens(aiUsage.periods.sevenDays.totalTokens)} tokens`} />
-                        <UsageMetric label="Last 30 days" value={formatUsd(aiUsage.periods.thirtyDays.estimatedCostUsd)} detail={`${aiUsage.periods.thirtyDays.successfulRequests} successful`} />
-                        <UsageMetric label="Failures" value={String(aiUsage.periods.thirtyDays.failedRequests)} detail="uncharged attempts" />
+                        <UsageMetric label="Monthly projection" value={formatUsd(aiUsage.projection.monthlyCostUsd)} detail="informational · no spending cap" />
+                        <UsageMetric label="Recovered operations" value={String(aiUsage.periods.thirtyDays.recoveredOperations)} detail={`${aiUsage.periods.thirtyDays.fallbackAttempts} fallback attempts`} />
+                        <UsageMetric label="Terminal failures" value={String(aiUsage.periods.thirtyDays.terminalFailures)} detail={`${aiUsage.periods.thirtyDays.failedAttempts} failed attempts · ${aiUsage.periods.thirtyDays.cancelledOperations} cancelled operations`} />
+                        <UsageMetric label="Reasoning share" value={`${Math.round((aiUsage.periods.thirtyDays.reasoningTokens / Math.max(1, aiUsage.periods.thirtyDays.totalTokens)) * 100)}%`} detail={`${formatTokens(aiUsage.periods.thirtyDays.reasoningTokens)} reasoning tokens`} />
                     </div>
                     {aiUsage.byModel.length > 0 ? (
-                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        <div className="mt-4 grid gap-4 md:grid-cols-3">
                             <UsageBreakdown title="By model" rows={aiUsage.byModel.slice(0, 5).map(row => ({
                                 label: row.model, cost: row.estimatedCostUsd,
-                                detail: `${row.requests} attempts · ${formatTokens(row.totalTokens)} tokens`,
+                                detail: `${row.logicalOperations} operations · ${row.attempts} attempts · ${formatTokens(row.reasoningTokens)} reasoning`,
                             }))} />
                             <UsageBreakdown title="By LifeOS feature" rows={aiUsage.byFeature.slice(0, 5).map(row => ({
-                                label: row.feature, cost: row.estimatedCostUsd,
-                                detail: `${row.requests} attempts${row.failedRequests ? ` · ${row.failedRequests} failed` : ''}`,
+                                label: row.feature.replace(/_/g, ' '), cost: row.estimatedCostUsd,
+                                detail: `${row.logicalOperations} operations${row.terminalFailures ? ` · ${row.terminalFailures} terminal` : ''}`,
+                            }))} />
+                            <UsageBreakdown title="By work class" rows={aiUsage.byWorkClass.slice(0, 5).map(row => ({
+                                label: row.workClass.replace(/_/g, ' '), cost: row.estimatedCostUsd,
+                                detail: `${row.logicalOperations} operations · ${formatTokens(row.totalTokens)} tokens`,
                             }))} />
                         </div>
                     ) : (
@@ -297,6 +315,28 @@ export default function AnalyticsPage() {
                             No metered calls yet. The first Gemini request after deployment will start this ledger.
                         </p>
                     )}
+                    {aiUsage.byError.length > 0 && (
+                        <div className="mt-4 rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.16)' }}>
+                            <p className="text-xs font-semibold" style={{ color: '#fca5a5' }}>Failed attempt causes</p>
+                            <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                {aiUsage.byError.map(row => `${row.errorCode.replace(/_/g, ' ').toLowerCase()}: ${row.attempts}`).join(' · ')}
+                            </p>
+                        </div>
+                    )}
+                    {aiUsage.circuit.some(item => item.open) && (
+                        <div className="mt-4 rounded-xl p-3" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.18)' }}>
+                            <p className="text-xs font-semibold" style={{ color: '#fbbf24' }}>Provider circuit active</p>
+                            <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                {aiUsage.circuit.filter(item => item.open).map(item => `${item.model} is using fallback after ${item.failuresInWindow} recent capacity failures`).join(' · ')}
+                            </p>
+                        </div>
+                    )}
+                    <div className="mt-4 rounded-xl p-3" style={{ background: 'rgba(96,165,250,0.05)', border: '1px solid rgba(96,165,250,0.14)' }}>
+                        <p className="text-xs font-semibold" style={{ color: '#93c5fd' }}>Optimization signals</p>
+                        <p className="mt-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                            {aiUsage.optimizationSignals.unattributedAttempts} unattributed attempts · {aiUsage.optimizationSignals.repeatedSuccessfulAttempts} repeated successful requests · {formatUsd(aiUsage.optimizationSignals.repeatedRequestCostUsd)} tied to repeated fingerprints · {aiUsage.optimizationSignals.reasoningSharePercent}% reasoning share
+                        </p>
+                    </div>
                     <p className="mt-4 text-[11px]" style={{ color: 'var(--text-muted)' }}>
                         Estimate uses {aiUsage.pricing.version}. Cloud invoices, credits, discounts, taxes, and Live voice audio are outside this total.
                     </p>

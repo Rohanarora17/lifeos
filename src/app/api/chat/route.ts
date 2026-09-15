@@ -431,7 +431,7 @@ export async function POST(request: NextRequest) {
                     tools: tools as never,
                     temperature: 0.2
                 }
-            });
+            }, { feature: 'assistant_chat' });
 
             if (response.functionCalls && response.functionCalls.length > 0) {
                 const functionResponses: FunctionResponsePart[] = [];
@@ -497,7 +497,7 @@ export async function POST(request: NextRequest) {
                         tools: tools as never,
                         temperature: 0.2,
                     },
-                });
+                }, { feature: 'assistant_chat' });
 
                 const encoder = new TextEncoder();
                 let fullText = '';

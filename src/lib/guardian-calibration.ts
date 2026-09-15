@@ -216,7 +216,7 @@ Return ONLY valid JSON matching this schema:
   "selfAwarenessScore": number
 }`,
       config: { responseMimeType: 'application/json', temperature: 0 },
-    });
+    }, { feature: 'guardian_calibration' });
 
     const parsed = JSON.parse((result.text || '').trim()) as LLMCalibrationSignal;
     if (typeof parsed.focusOverEstimated === 'boolean') return parsed;

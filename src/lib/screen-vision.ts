@@ -333,6 +333,7 @@ export function computeCaptureState(
 // ---------------------------------------------------------------------------
 
 export interface AnalyzeScreenshotInput {
+  sessionId: string;
   base64Jpeg: string;
   appInFocus: string;
   windowTitle: string;
@@ -396,6 +397,10 @@ export function parseVisionAssessment(text: string): VisionModelOutput | null {
   }
 }
 
+export function shouldEscalateVisionAssessment(assessment: { confidence: number } | null): boolean {
+  return !assessment || assessment.confidence < 0.65;
+}
+
 export async function analyzeScreenshot(input: AnalyzeScreenshotInput): Promise<ScreenVisionSignal | null> {
   const ai = getGenAI();
 
@@ -429,9 +434,9 @@ engagementDepth definitions:
 
 Return ONLY the JSON object, no markdown, no explanation.`;
 
-  const result = await generateWithFallback(ai, {
-    model: MODEL_VISION,
-    contents: [
+  const request = (qualityTier?: 'reasoning') => generateWithFallback(ai, {
+      model: MODEL_VISION,
+      contents: [
       {
         role: 'user',
         parts: [
@@ -444,12 +449,23 @@ Return ONLY the JSON object, no markdown, no explanation.`;
           { text: prompt },
         ],
       },
-    ],
-    config: { temperature: 0.1 },
-  });
+      ],
+      config: { temperature: 0.1 },
+    }, {
+      feature: 'screen_vision',
+      qualityTier,
+      trigger: qualityTier ? 'low_confidence_escalation' : 'primary_assessment',
+      entityId: input.sessionId,
+    });
 
-  const text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  const parsed = parseVisionAssessment(text);
+  let result = await request();
+  let text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  let parsed = parseVisionAssessment(text);
+  if (shouldEscalateVisionAssessment(parsed)) {
+    result = await request('reasoning');
+    text = result.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    parsed = parseVisionAssessment(text);
+  }
   if (!parsed) return null;
 
   return {
@@ -574,7 +590,7 @@ Write a 2-3 sentence narrative describing what this person has been doing. Be sp
       },
     ],
     config: { temperature: 0.3 },
-  });
+  }, { feature: 'screen_narrative' });
 
   return result.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
 }

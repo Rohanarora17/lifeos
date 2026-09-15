@@ -432,7 +432,7 @@ Rules:
         model: MODEL_PRO,
         contents: prompt,
         config: { temperature: 0.7, maxOutputTokens: 60 },
-      });
+      }, { feature: 'longitudinal_opening' });
       const text = result.text;
       if (text && text.trim().length > 0) {
         return text.trim().replace(/^["']|["']$/g, '');

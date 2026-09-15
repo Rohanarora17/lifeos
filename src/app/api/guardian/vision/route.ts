@@ -198,6 +198,7 @@ export async function POST(req: Request) {
 
     // Full Gemini Vision analysis
     const signal = await analyzeScreenshot({
+      sessionId,
       base64Jpeg,
       appInFocus,
       windowTitle: windowTitle ?? '',

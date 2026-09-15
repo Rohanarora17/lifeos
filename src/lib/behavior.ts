@@ -1298,7 +1298,7 @@ Generate 3-5 behavioral_memories — these are durable patterns you want to reme
         model: MODEL_PRO,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
-      });
+      }, { feature: 'behavior_deep_analysis' });
       const text = (result.text || '').trim();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
 

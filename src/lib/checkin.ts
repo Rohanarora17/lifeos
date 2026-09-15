@@ -284,7 +284,7 @@ ${intelligenceContext}
 
 Return ONLY the message text. No quotes.`,
         config: { temperature: 0.7, maxOutputTokens: 80 },
-      });
+      }, { feature: 'morning_checkin_message' });
       const generated = result.text?.trim();
       if (generated && generated.length > 20) message = generated;
     }
@@ -440,7 +440,7 @@ export async function extractEveningCheckinSignalsFromText(text: string): Promis
     model: MODEL_PRO,
     contents: buildEveningSignalExtractionPrompt(text),
     config: { temperature: 0.1, maxOutputTokens: 200 },
-  });
+  }, { feature: 'checkin_signal_extraction' });
   const raw = result.text ?? '';
   const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
   return parseEveningCheckinSignals(cleaned);
@@ -480,7 +480,7 @@ export async function extractMorningCheckinSignalsFromText(text: string): Promis
       model: MODEL_PRO,
       contents: buildMorningSignalExtractionPrompt(text),
       config: { temperature: 0.1, maxOutputTokens: 250 },
-    });
+    }, { feature: 'checkin_signal_extraction' });
     const raw = result.text ?? '';
     const cleaned = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(cleaned) as Partial<MorningCheckinSignals>;
@@ -598,7 +598,7 @@ ${intelligenceContext}
 
 Return ONLY the response. No quotes.`,
         config: { temperature: 0.7, maxOutputTokens: 70 },
-      });
+      }, { feature: 'morning_checkin_response' });
       const generated = result.text?.trim();
       if (generated && generated.length > 5) response = generated;
       else response = buildFallbackCheckinResponse(likelihoodScore);
@@ -649,7 +649,7 @@ Their reflection: "${text.slice(0, 200)}"
 
 Return ONLY the response. No quotes.`,
         config: { temperature: 0.7, maxOutputTokens: 40 },
-      });
+      }, { feature: 'evening_reflection' });
       const generated = result.text?.trim();
       if (generated && generated.length > 5) ackMessage = generated;
     }

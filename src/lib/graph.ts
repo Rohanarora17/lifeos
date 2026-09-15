@@ -285,7 +285,7 @@ Order from foundational to advanced. Ensure a clear dependency chain.`;
             model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' }
-        });
+        }, { feature: 'concept_generation' });
 
         const text = result.text || '';
         const jsonMatch = text.match(/\[[\s\S]*\]/);

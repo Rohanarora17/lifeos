@@ -271,7 +271,7 @@ export async function generateDynamicPolicy(
       model: MODEL_PRO,
       contents: buildPolicyPrompt(base, intent, uil, sessionHistory, memoryFacts, personalizationContext, feedbackSignals),
       config: { responseMimeType: 'application/json', temperature: 0 },
-    });
+    }, { feature: 'dynamic_guardian_policy' });
 
     const rawText = (result.text || '').trim();
     if (!rawText) throw new Error('Empty response from Gemini');

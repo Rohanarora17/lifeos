@@ -34,7 +34,7 @@ Return ONLY a JSON object:
             model: MODEL_PRO,
             contents: prompt,
             config: { responseMimeType: 'application/json' }
-        });
+        }, { feature: 'activity_graph_mapping' });
 
         const text = (result.text || '').trim();
         const parsed = JSON.parse(text);

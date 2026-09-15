@@ -812,7 +812,7 @@ Extra context: ${JSON.stringify(opts?.context ?? {})}
 
 ${contextBlock}`,
             config: { responseMimeType: 'application/json', temperature: 0.2 },
-        });
+        }, { feature: 'alert_rewrite', trigger: type, entityId: decision.typeKey });
         const parsed = JSON.parse((result.text || '').trim()) as { message?: string; severity?: Severity };
         if (!parsed.message || parsed.message.length > 260) return decision;
         return {
@@ -841,22 +841,23 @@ export async function sendAlert(
 ): Promise<boolean> {
     const db = getDb();
     const deterministic = deterministicAlertDecision(type, message, severity, opts);
-    const decision = await rewriteAlertWithAi(type, deterministic, opts);
 
-    if (!decision.shouldSend) {
-        console.log(`[Alert] Suppressed ${decision.typeKey}: ${decision.reason}`);
-        touchIntelligence(`alert_suppressed:${type}`);
+    if (!deterministic.shouldSend) {
+        console.log(`[Alert] Suppressed ${deterministic.typeKey}: ${deterministic.reason}`);
         return false;
     }
 
-    // Dedup check: has this alert type been sent recently?
+    // Deduplicate before AI rewriting. A five-minute scheduler tick must not pay
+    // to generate copy that will be discarded moments later.
     const recent = db.prepare(`
     SELECT id FROM alerts 
-    WHERE type = ? AND created_at >= datetime('now', '-${decision.dedupMinutes} minutes')
+    WHERE type = ? AND created_at >= datetime('now', '-${deterministic.dedupMinutes} minutes')
     LIMIT 1
-  `).get(decision.typeKey);
+  `).get(deterministic.typeKey);
 
     if (recent) return false; // Already alerted recently
+
+    const decision = await rewriteAlertWithAi(type, deterministic, opts);
 
     const outcome = db.prepare(`
         INSERT INTO agent_action_outcomes (action_type, inferred_value, actual_outcome, helpful)

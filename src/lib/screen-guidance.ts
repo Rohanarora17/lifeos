@@ -323,7 +323,7 @@ export async function assembleGuidanceResponse(input: GuidanceInput): Promise<Gu
       systemInstruction,
       temperature: 0.2,
     },
-  });
+  }, { feature: 'screen_guidance' });
 
   const rawText = (result.text || '').trim();
 

@@ -181,7 +181,7 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
       systemInstruction: 'You are a precise, context-aware focus session scheduling engine.',
       responseMimeType: 'application/json',
     },
-  });
+  }, { feature: 'next_day_planner' });
 
   const text = (res.text || '').trim();
   if (!text) {
