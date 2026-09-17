@@ -14,6 +14,7 @@ import { buildAdaptiveAnalyticsPolicy } from '@/lib/adaptive-analytics-policy';
 import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 import { syncCalendarIfStale } from '@/lib/calendar';
 import { getCoachingState } from '@/lib/coaching-state';
+import { reconcilePlanningState } from '@/lib/planning-reconciliation';
 
 // GET: Dashboard overview data
 export async function GET() {
@@ -22,6 +23,7 @@ export async function GET() {
     const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
 
     await syncCalendarIfStale();
+    await reconcilePlanningState(today);
 
     const activityStats = getDailyActivityStats(db, today);
 

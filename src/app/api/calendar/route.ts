@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { syncCalendarFromICS, syncCalendarIfStale, getTodayEvents, getUpcomingEvents, getCalendarEvents } from '@/lib/calendar';
 import { buildAdaptiveCalendarPolicy } from '@/lib/adaptive-calendar-policy';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { reconcileActivePlanningState } from '@/lib/planning-reconciliation';
 
 // GET — Fetch calendar events
 export async function GET(request: Request) {
@@ -44,5 +45,6 @@ export async function GET(request: Request) {
 // POST — Trigger calendar sync from ICS feed
 export async function POST() {
     const result = await syncCalendarFromICS();
+    await reconcileActivePlanningState(new Date(), { regenerate: true });
     return NextResponse.json(result);
 }

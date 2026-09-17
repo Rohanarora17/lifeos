@@ -10,6 +10,7 @@ import { getTaskTimeProgress } from '@/lib/task-time-sessions';
 import { getAdaptiveRewardDecision, getAdaptiveTaskRewardBase } from '@/lib/adaptive-rewards';
 import { getAdaptiveSessionMinutes } from '@/lib/adaptive-command-defaults';
 import { buildAdaptiveTaskDefaults } from '@/lib/adaptive-task-defaults';
+import { reconcileActivePlanningState } from '@/lib/planning-reconciliation';
 
 type TaskRow = Record<string, unknown> & {
     id: number;
@@ -220,6 +221,7 @@ export async function POST(request: NextRequest) {
             autoLinkTaskToGoal(taskId).catch(console.error);
         }
         triggerPrioritize();
+        await reconcileActivePlanningState(new Date(), { regenerate: true });
 
         return NextResponse.json({
             id: taskId,
@@ -395,6 +397,8 @@ export async function PATCH(request: NextRequest) {
         // Re-rank if deadline, title, or type changed
         if (needsRerank) triggerPrioritize();
 
+        await reconcileActivePlanningState(new Date(), { regenerate: true });
+
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error('Tasks PATCH error:', error);
@@ -414,6 +418,7 @@ export async function DELETE(request: NextRequest) {
 
         const db = getDb();
         db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+        await reconcileActivePlanningState(new Date(), { regenerate: true });
 
         return NextResponse.json({ success: true });
     } catch (error) {

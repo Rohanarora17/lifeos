@@ -25,6 +25,10 @@ import {
 import { tryGetGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import {
+  reconcilePlanningState,
+  type PlanningReconciliationOutcome,
+} from './planning-reconciliation';
+import {
   extractTypedPlanConstraints,
   interpretPlanningContext,
   stripConstraintText,
@@ -60,6 +64,18 @@ export interface PlanningDayContext {
   focusLoad: PlanningFocusLoad;
 }
 
+interface LLMProposedTask {
+  title: string;
+  sourceQuote: string;
+}
+
+interface LLMConstraintSpec {
+  title: string;
+  startIso: string;
+  endIso: string;
+  sourceQuote: string;
+}
+
 interface LLMPlannedSessionSpec {
   title: string;
   startIso: string;
@@ -68,6 +84,87 @@ interface LLMPlannedSessionSpec {
   sessionType?: 'problem_practice' | 'research_reading' | 'coding_build' | 'study';
   reason?: string;
   taskId?: number | null;
+  proposedTask?: LLMProposedTask | null;
+}
+
+interface LLMPlannerSynthesis {
+  constraints: LLMConstraintSpec[];
+  focusSessions: LLMPlannedSessionSpec[];
+  reasoning?: string;
+}
+
+const ALLOWED_SESSION_TYPES = new Set(['problem_practice', 'research_reading', 'coding_build', 'study']);
+
+export function validatePlannerSynthesis(input: {
+  result: LLMPlannerSynthesis;
+  freshText: string;
+  candidateTaskIds: number[];
+  windowStart: Date;
+  windowEnd: Date;
+  notBefore: Date | null;
+  calendarEvents: CalendarEventRow[];
+}): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const freshText = input.freshText.trim();
+  const candidateIds = new Set(input.candidateTaskIds);
+  if (!Array.isArray(input.result.constraints) || !Array.isArray(input.result.focusSessions)) {
+    return { valid: false, errors: ['planner result must contain constraints[] and focusSessions[]'] };
+  }
+
+  const constraintEvents: CalendarEventRow[] = [];
+  for (const constraint of input.result.constraints) {
+    const sourceQuote = constraint.sourceQuote?.trim();
+    if (!sourceQuote || !freshText.includes(sourceQuote)) {
+      errors.push(`invented source quote for constraint ${constraint.title || '<untitled>'}`);
+    }
+    const start = new Date(constraint.startIso);
+    const end = new Date(constraint.endIso);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+      errors.push(`invalid constraint time for ${constraint.title || '<untitled>'}`);
+    } else {
+      constraintEvents.push({ title: constraint.title, start_time: constraint.startIso, end_time: constraint.endIso });
+    }
+  }
+
+  for (const session of input.result.focusSessions) {
+    if (!session.sessionType || !ALLOWED_SESSION_TYPES.has(session.sessionType)) {
+      errors.push(`unknown session type for ${session.title || '<untitled>'}`);
+    }
+    const existingTask = typeof session.taskId === 'number' && candidateIds.has(session.taskId);
+    const proposed = session.proposedTask;
+    const groundedProposal = Boolean(
+      proposed?.title?.trim()
+      && proposed.sourceQuote?.trim()
+      && freshText.includes(proposed.sourceQuote.trim())
+    );
+    if (!existingTask && !groundedProposal) {
+      errors.push(`missing or invalid task linkage for ${session.title || '<untitled>'}`);
+    }
+    if (proposed && !groundedProposal) {
+      errors.push(`invented source quote for proposed task ${proposed.title || '<untitled>'}`);
+    }
+  }
+
+  const temporal = validatePlannedSessionSpecs({
+    specs: input.result.focusSessions,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    notBefore: input.notBefore,
+    calendarEvents: [...input.calendarEvents, ...constraintEvents],
+  });
+  for (const rejected of temporal.rejected) errors.push(`${rejected.spec.title}: ${rejected.reason}`);
+
+  const sorted = input.result.focusSessions
+    .map(session => ({ session, start: new Date(session.startIso), end: new Date(session.endIso) }))
+    .filter(item => Number.isFinite(item.start.getTime()) && Number.isFinite(item.end.getTime()))
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+  for (let index = 1; index < sorted.length; index += 1) {
+    if (sorted[index].start < sorted[index - 1].end) {
+      errors.push(`${sorted[index].session.title}: overlaps another focus session`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
 }
 
 export function validatePlannedSessionSpecs(input: {
@@ -120,6 +217,7 @@ async function synthesizePlanWithLLM(input: {
   focusLoad: PlanningFocusLoad;
   appliedSignals: string[];
   notBefore: Date | null;
+  freshText: string;
 }): Promise<LLMPlannedSessionSpec[] | null> {
   const ai = tryGetGenAI();
   if (!ai) return null;
@@ -161,12 +259,23 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
 5. Treat recent completed focus as real cognitive load. Do not reschedule work already credited, and reduce optional load when the rolling 24-hour load is already substantial unless the user explicitly asks to push further.
 6. Do not overlap with the effective fixed calendar commitments below, sleep hours, or the earliest allowed start.
 7. All startIso and endIso timestamps MUST be ISO 8601 strings in IST timezone (+05:30), format: YYYY-MM-DDTHH:mm:ss.000+05:30.
-8. Return ONLY a valid JSON object matching this schema:
+8. Every fixed commitment must quote an exact substring from the fresh dated input in sourceQuote. Never add specificity absent from that quote.
+9. Every focus session must use either a listed candidate taskId or a proposedTask with a sourceQuote copied exactly from the fresh dated input.
+10. Return ONLY a valid JSON object matching this schema:
 {
   "reasoning": "Brief 1-2 sentence explanation of how you parsed the natural language intention and placed sessions",
-  "sessions": [
+  "constraints": [
+    {
+      "title": "<generic fixed commitment title>",
+      "startIso": "<ISO timestamp>",
+      "endIso": "<ISO timestamp>",
+      "sourceQuote": "<exact quote from fresh dated input>"
+    }
+  ],
+  "focusSessions": [
     {
       "taskId": <candidate task ID as integer or null>,
+      "proposedTask": <null or {"title":"<work title>","sourceQuote":"<exact work quote>"}>,
       "title": "<session title>",
       "startIso": "<ISO timestamp>",
       "endIso": "<ISO timestamp>",
@@ -191,26 +300,27 @@ CRITICAL INSTRUCTIONS FOR NATURAL LANGUAGE SCHEDULE REASONING:
     throw new Error('AI Next-Day Planning Engine returned empty output.');
   }
 
-  const parsed = JSON.parse(text) as { reasoning?: string; sessions?: LLMPlannedSessionSpec[] };
-  if (!Array.isArray(parsed.sessions) || parsed.sessions.length === 0) {
+  const parsed = JSON.parse(text) as LLMPlannerSynthesis;
+  if (!Array.isArray(parsed.focusSessions) || parsed.focusSessions.length === 0) {
     throw new Error('AI Next-Day Planning Engine returned 0 planned sessions.');
   }
 
   const planningWindow = buildPlanningDayWindow(input.planDate, input.wakeEstimate, input.sleepTime);
-  const validation = validatePlannedSessionSpecs({
-    specs: parsed.sessions,
+  const validation = validatePlannerSynthesis({
+    result: parsed,
+    freshText: input.freshText,
+    candidateTaskIds: input.candidateTasks.map(task => task.id).filter(id => id > 0),
     windowStart: planningWindow.start,
     windowEnd: planningWindow.end,
     notBefore: input.notBefore,
     calendarEvents: input.calendarEvents,
   });
-  if (validation.rejected.length > 0) {
-    const detail = validation.rejected.map(item => `${item.spec.title}: ${item.reason}`).join('; ');
-    throw new Error(`AI Next-Day Planning Engine returned unsafe schedule blocks: ${detail}`);
+  if (!validation.valid) {
+    throw new Error(`AI Next-Day Planning Engine returned unsafe schedule blocks: ${validation.errors.join('; ')}`);
   }
 
-  console.log(`[LLM Planner] Successfully synthesized ${parsed.sessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
-  return validation.valid;
+  console.log(`[LLM Planner] Successfully synthesized ${parsed.focusSessions.length} sessions via Gemini. Reasoning: ${parsed.reasoning}`);
+  return parsed.focusSessions;
 }
 
 interface CandidateTask {
@@ -342,6 +452,7 @@ export interface NextDayPlanPayload {
     sourceCheckinId: number | null;
     fresh: boolean;
   };
+  reconciliation: PlanningReconciliationOutcome;
 }
 
 export interface PlanningSuggestedInputs {
@@ -1626,19 +1737,26 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   })();
 
   if (input.regenerate !== false) {
-    const llmSessions = await synthesizePlanWithLLM({
-      planDate,
-      intention: workIntention,
-      eveningNotes,
-      sleepTime,
-      wakeEstimate,
-      calendarEvents: effectiveCalendarEvents,
-      candidateTasks,
-      snapshot,
-      focusLoad,
-      appliedSignals,
-      notBefore,
-    });
+    let llmSessions: LLMPlannedSessionSpec[] | null = null;
+    try {
+      llmSessions = await synthesizePlanWithLLM({
+        planDate,
+        intention: workIntention,
+        eveningNotes,
+        sleepTime,
+        wakeEstimate,
+        calendarEvents: effectiveCalendarEvents,
+        candidateTasks,
+        snapshot,
+        focusLoad,
+        appliedSignals,
+        notBefore,
+        freshText: [intention, eveningNotes].filter(Boolean).join('\n'),
+      });
+    } catch (error) {
+      console.warn(`[LLM Planner] Rejected complete AI result; using deterministic fallback: ${String(error)}`);
+      llmSessions = null;
+    }
 
     db.transaction(() => {
       db.prepare(`
@@ -1648,25 +1766,26 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
       `).run(planId, new Date().toISOString());
       const replaceable = db.prepare(`
         SELECT id, soft_watch_id FROM planned_focus_sessions
-        WHERE plan_id = ? AND status IN ('planned', 'cancelled')
+        WHERE plan_id = ? AND status = 'planned'
       `).all(planId) as Array<{ id: string; soft_watch_id: string | null }>;
       for (const row of replaceable) {
         if (row.soft_watch_id) {
           db.prepare("UPDATE soft_watch_commitments SET status = 'dismissed' WHERE id = ? AND status = 'pending'").run(row.soft_watch_id);
         }
       }
-      db.prepare("DELETE FROM planned_focus_sessions WHERE plan_id = ? AND status IN ('planned', 'cancelled')").run(planId);
+      db.prepare("DELETE FROM planned_focus_sessions WHERE plan_id = ? AND status = 'planned'").run(planId);
     })();
 
     if (llmSessions && llmSessions.length > 0) {
       for (const spec of llmSessions) {
-        let finalTaskId: number | null = null;
-        let matchingTask: CandidateTask;
+        const { row, pricedRule } = db.transaction(() => {
+          let finalTaskId: number | null = null;
+          let matchingTask: CandidateTask;
 
-        const existingCandidate = candidateTasks.find(t => t.id === spec.taskId && t.id > 0);
-        if (existingCandidate) {
-          matchingTask = existingCandidate;
-          finalTaskId = existingCandidate.id;
+          const existingCandidate = candidateTasks.find(t => t.id === spec.taskId && t.id > 0);
+          if (existingCandidate) {
+            matchingTask = existingCandidate;
+            finalTaskId = existingCandidate.id;
           // Synchronize existing task's target focus minutes with the AI planned session block duration
           try {
             db.prepare('UPDATE tasks SET estimated_minutes = ?, due_date = ? WHERE id = ?')
@@ -1674,7 +1793,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           } catch { /* non-critical */ }
           matchingTask.estimated_minutes = spec.durationMinutes;
           matchingTask.remaining_minutes = spec.durationMinutes;
-        } else {
+          } else {
           // Auto-materialize task card in `tasks` table so it appears in /tasks
           const maxPos = db.prepare(
             'SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM tasks WHERE status = ?'
@@ -1686,8 +1805,9 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
             ) VALUES (?, ?, 'todo', ?, ?, ?, 'high', ?, ?)
           `);
 
+          const proposedTitle = spec.proposedTask?.title?.trim() || spec.title;
           const res = stmt.run(
-            spec.title,
+            proposedTitle,
             spec.reason || 'Synthesized from next-day planner intention',
             planDate,
             spec.sessionType || 'study',
@@ -1699,7 +1819,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           finalTaskId = Number(res.lastInsertRowid);
           matchingTask = {
             id: finalTaskId,
-            title: spec.title,
+            title: proposedTitle,
             status: 'todo',
             priority: 'high',
             task_type: spec.sessionType || 'study',
@@ -1719,9 +1839,9 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
             score: 100,
             reason: spec.reason || 'synthesized from natural language intention',
           };
-        }
+          }
 
-        const rule: SessionRule = {
+          const rule: SessionRule = {
           mode: spec.sessionType || 'study',
           preferredMinutes: spec.durationMinutes,
           minMinutes: 15,
@@ -1731,12 +1851,12 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           tools: ['notes'],
         };
 
-        const reward = computeReward(matchingTask, spec.durationMinutes, rule, snapshot);
-        const pricedRule = { ...rule, rewardReason: reward.reason, taskReason: spec.reason };
-        const sessionId = `pfs_${randomUUID()}`;
-        const softWatchId = `nextday_${sessionId}`;
+          const reward = computeReward(matchingTask, spec.durationMinutes, rule, snapshot);
+          const pricedRule = { ...rule, rewardReason: reward.reason, taskReason: spec.reason };
+          const sessionId = `pfs_${randomUUID()}`;
+          const softWatchId = `nextday_${sessionId}`;
 
-        const row: PlannedFocusSession = {
+          const row: PlannedFocusSession = {
           id: sessionId,
           plan_id: planId,
           task_id: finalTaskId,
@@ -1752,13 +1872,14 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           calendar_status: 'not_configured',
           soft_watch_id: softWatchId,
           status: 'planned',
+          origin: existingCandidate ? 'ai_existing_task' : 'ai_proposed_task',
         };
 
-        db.prepare(`
+          db.prepare(`
           INSERT INTO planned_focus_sessions (
             id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-            session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
+            session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status, origin
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)
         `).run(
           row.id,
           row.plan_id,
@@ -1772,17 +1893,20 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           row.reward_xp,
           row.reward_coins,
           row.calendar_status,
-          row.soft_watch_id
+          row.soft_watch_id,
+          row.origin
         );
 
-        insertSoftWatch({
+          insertSoftWatch({
           id: softWatchId,
           title: row.title,
           taskId: matchingTask.id > 0 ? matchingTask.id : null,
           goalId: matchingTask.goal_id,
           start: new Date(spec.startIso),
-          durationMinutes: row.duration_minutes,
-        });
+            durationMinutes: row.duration_minutes,
+          });
+          return { row, pricedRule };
+        })();
 
         if (input.syncCalendar || isCalendarConfigured()) {
           const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
@@ -1847,8 +1971,9 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
           const sessionId = `pfs_${randomUUID()}`;
           const softWatchId = `nextday_${sessionId}`;
 
-          let fallbackTaskId: number | null = task.id > 0 ? task.id : null;
-          if (!fallbackTaskId) {
+          const row = db.transaction(() => {
+            let fallbackTaskId: number | null = task.id > 0 ? task.id : null;
+            if (!fallbackTaskId) {
             const maxPos = db.prepare(
               'SELECT COALESCE(MAX(position), 0) + 1 as next_pos FROM tasks WHERE status = ?'
             ).get('todo') as { next_pos: number };
@@ -1868,10 +1993,10 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
               task.estimated_minutes,
               snapshot.userState.energy
             );
-            fallbackTaskId = Number(res.lastInsertRowid);
-          }
+              fallbackTaskId = Number(res.lastInsertRowid);
+            }
 
-          const row: PlannedFocusSession = {
+            const plannedRow: PlannedFocusSession = {
             id: sessionId,
             plan_id: planId,
             task_id: fallbackTaskId,
@@ -1887,37 +2012,41 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
             calendar_status: 'not_configured',
             soft_watch_id: softWatchId,
             status: 'planned',
+            origin: 'deterministic_task',
           };
 
-          db.prepare(`
+            db.prepare(`
             INSERT INTO planned_focus_sessions (
               id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-              session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned')
+              session_type, rule_json, reward_xp, reward_coins, calendar_status, soft_watch_id, status, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)
           `).run(
-            row.id,
-            row.plan_id,
-            row.task_id,
-            row.title,
-            row.planned_start,
-            row.planned_end,
-            row.duration_minutes,
-            row.session_type,
-            row.rule_json,
-            row.reward_xp,
-            row.reward_coins,
-            row.calendar_status,
-            row.soft_watch_id
+            plannedRow.id,
+            plannedRow.plan_id,
+            plannedRow.task_id,
+            plannedRow.title,
+            plannedRow.planned_start,
+            plannedRow.planned_end,
+            plannedRow.duration_minutes,
+            plannedRow.session_type,
+            plannedRow.rule_json,
+            plannedRow.reward_xp,
+            plannedRow.reward_coins,
+            plannedRow.calendar_status,
+            plannedRow.soft_watch_id,
+            plannedRow.origin
           );
 
-          insertSoftWatch({
-            id: softWatchId,
-            title: row.title,
-            taskId: task.id > 0 ? task.id : null,
-            goalId: task.goal_id,
-            start,
-            durationMinutes: row.duration_minutes,
-          });
+            insertSoftWatch({
+              id: softWatchId,
+              title: plannedRow.title,
+              taskId: fallbackTaskId,
+              goalId: task.goal_id,
+              start,
+              durationMinutes: plannedRow.duration_minutes,
+            });
+            return plannedRow;
+          })();
 
           if (input.syncCalendar) {
             const calendar = await syncSessionCalendar(row, pricedRule, snapshot);
@@ -1939,7 +2068,8 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
     }
   }
 
-  return getNextDayPlan(planDate);
+  const reconciliation = await reconcilePlanningState(planDate, new Date(), { regenerate: false });
+  return { ...getNextDayPlan(planDate), reconciliation };
 }
 
 export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
@@ -2053,6 +2183,14 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
       sourceCheckinId: effectivePlan?.source_checkin_id ?? exactCheckin?.id ?? null,
       fresh: Boolean(effectivePlan || exactCheckin) || !plan,
     },
+    reconciliation: {
+      planDate: normalizedDate,
+      repairedSessionIds: [],
+      repairedConstraintIds: [],
+      reasonCodes: [],
+      calendarDeletionFailures: [],
+      regenerated: false,
+    },
   };
 }
 
@@ -2164,6 +2302,13 @@ export async function updatePlannedFocusSession(id: string, patch: {
     }
   }
 
+  const planRow = db.prepare(`
+    SELECT dp.plan_date
+    FROM planned_focus_sessions pfs
+    JOIN daily_plans dp ON dp.id = pfs.plan_id
+    WHERE pfs.id = ?
+  `).get(id) as { plan_date: string } | undefined;
+  if (planRow) await reconcilePlanningState(planRow.plan_date, new Date(), { regenerate: false });
   return db.prepare('SELECT * FROM planned_focus_sessions WHERE id = ?').get(id) as PlannedFocusSession;
 }
 
@@ -2187,6 +2332,14 @@ export async function cancelPlannedFocusSession(id: string, syncCalendar = true)
     SET status = 'cancelled', calendar_status = ?, updated_at = datetime('now', 'localtime')
     WHERE id = ?
   `).run(calendarStatus, id);
+
+  const planRow = db.prepare(`
+    SELECT dp.plan_date
+    FROM planned_focus_sessions pfs
+    JOIN daily_plans dp ON dp.id = pfs.plan_id
+    WHERE pfs.id = ?
+  `).get(id) as { plan_date: string } | undefined;
+  if (planRow) await reconcilePlanningState(planRow.plan_date, new Date(), { regenerate: false });
 
   return true;
 }
@@ -2263,6 +2416,8 @@ export async function syncAllPlannedSessionsToCalendar(planDate = normalizeDate(
       syncedCount++;
     }
   }
+
+  await reconcilePlanningState(plan.plan_date, new Date(), { regenerate: false });
 
   return {
     configured: true,

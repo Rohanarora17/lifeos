@@ -496,6 +496,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
 
     console.log('[Scheduler] Initializing LifeOS cron jobs...');
 
+    registerIntervalJob('planning_state_reconciliation', 5 * 60 * 1000, async () => {
+        const { reconcilePlanningState } = await import('./planning-reconciliation');
+        const now = new Date();
+        await reconcilePlanningState(todayIst(), now);
+        await reconcilePlanningState(tomorrowIst(), now);
+    });
+
     // Morning brief — runs at a user override when present, otherwise learned from recent starts.
     const morningTime = configuredOrInferredTime('morning_brief_time', '08:00', inferMorningTime);
     registerDailyJob('morning_brief', morningTime, async () => {
