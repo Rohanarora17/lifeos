@@ -23,7 +23,11 @@ import {
   observeStaticActivity,
   STATIC_ACTIVITY_GRACE_MS,
 } from '@/lib/guardian-presence';
-import { getSessionEvidenceMode } from '@/lib/guardian-evidence-store';
+import {
+  getVisionActivityClassification,
+  getSessionEvidenceMode,
+  resolveVisionActivityCategory,
+} from '@/lib/guardian-evidence-store';
 
 function clampConfidence(value: unknown): number {
   return Math.max(0, Math.min(1, typeof value === 'number' ? value : 0.7));
@@ -195,9 +199,29 @@ export async function POST(req: Request) {
         sessionTargetTitle: activeSession.targetTitle,
       });
 
-      const activityCategory = classified.activityCategory;
       const startedAt = body.startedAt || new Date(Date.now() - durationSeconds * 1000).toISOString();
       const endedAt = new Date(Date.parse(startedAt) + durationSeconds * 1_000).toISOString();
+      const visionAssessment = getVisionActivityClassification(
+        sessionId,
+        app,
+        Date.parse(startedAt),
+        Date.parse(endedAt),
+      );
+      const semanticCategory = resolveVisionActivityCategory(
+        sessionId,
+        app,
+        Date.parse(startedAt),
+        Date.parse(endedAt),
+      );
+      // A durable user correction (or native preference) wins; otherwise a
+      // time-aligned Vision assessment supplies the page-independent category.
+      const activityCategory = classified.source === 'user_preference'
+        ? classified.activityCategory
+        : semanticCategory ?? classified.activityCategory;
+      const needsUserAsk = classified.needsUserAsk
+        && !(semanticCategory === 'productive' || semanticCategory === 'distraction');
+      const effectiveConfidence = visionAssessment?.confidence
+        ?? (semanticCategory ? 1 : classified.confidence);
       const arbitration = arbitrateSessionActivity(sessionId, 'vision');
       const evidenceMode = getSessionEvidenceMode(sessionId);
       const inferred = {
@@ -208,16 +232,16 @@ export async function POST(req: Request) {
         internal: classified.internal,
         category: activityCategory,
         activityCategory,
-        confidence: classified.confidence,
-        needsUserAsk: classified.needsUserAsk,
+        confidence: effectiveConfidence,
+        needsUserAsk,
         reason: classified.reason,
         preferenceDomain: classified.preferenceDomain,
         classifySource: classified.source,
       };
 
       const confidenceLabel =
-        classified.confidence >= 0.85 ? 'high' :
-        classified.confidence >= 0.55 ? 'medium' : 'low';
+        effectiveConfidence >= 0.85 ? 'high' :
+        effectiveConfidence >= 0.55 ? 'medium' : 'low';
 
       const result = db.prepare(`
         INSERT INTO activities
@@ -267,7 +291,11 @@ export async function POST(req: Request) {
           category: activityCategory,
           subcategory: 'native_app',
           selectionReason: arbitration.reason,
-          evidence: { rawActivityId: activityId, confidence: classified.confidence },
+          evidence: {
+            rawActivityId: activityId,
+            confidence: effectiveConfidence,
+            ...(visionAssessment ? { visionAssessment } : {}),
+          },
         });
       }
 
@@ -285,7 +313,7 @@ export async function POST(req: Request) {
           windowTitle: title,
           category: activityCategory,
           internal: classified.internal,
-          needsUserAsk: classified.needsUserAsk,
+          needsUserAsk,
           metadata: body.metadata ?? {},
           captureSource: 'vision',
           sourceVerified: true,
@@ -295,7 +323,7 @@ export async function POST(req: Request) {
       touchIntelligence('native_app_dwell');
 
       let asked = false;
-      if (classified.needsUserAsk && activityId > 0) {
+      if (needsUserAsk && activityId > 0) {
         try {
           const askResult = await maybeAskNativeCategory({
             app,
@@ -315,9 +343,9 @@ export async function POST(req: Request) {
         stored: 'activities',
         category: activityCategory,
         internal: classified.internal,
-        needsUserAsk: classified.needsUserAsk,
+        needsUserAsk,
         asked,
-        confidence: classified.confidence,
+        confidence: effectiveConfidence,
         counted: true,
         selectedSource: 'vision',
       });

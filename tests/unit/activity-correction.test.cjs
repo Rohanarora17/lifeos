@@ -15,6 +15,9 @@ describe('Guardian activity correction propagation', () => {
   beforeEach(() => {
     const env = createIsolatedDb('lifeos-activity-correction-');
     db = env.db;
+    // The route imports lib modules at load time. Drop its cache as well as
+    // the lib cache so each isolated database is used by the handler.
+    delete require.cache[require.resolve('../../src/app/api/activity/route.ts')];
     ({ PATCH: patchActivity, GET: getActivity } = require('../../src/app/api/activity/route.ts'));
     personalization = require('../../src/lib/personalization-context.ts');
 
@@ -165,5 +168,54 @@ describe('Guardian activity correction propagation', () => {
       db.prepare(`SELECT category FROM session_activity_intervals WHERE interval_id = ?`).pluck().get(intervalId),
       'productive',
     );
+  });
+
+  it('applies a native-app correction to legacy and Evidence V2 records and future sessions', async () => {
+    const nativeIntervalId = 'interval-native-correction';
+    const observedStart = new Date(Date.now() - 8 * 60_000).toISOString();
+    const observedEnd = new Date(Date.now() - 2 * 60_000).toISOString();
+    db.prepare(`
+      INSERT INTO session_activity_intervals (
+        interval_id, session_id, device_id, source, observed_start, observed_end,
+        duration_seconds, state, app, domain, title, category, subcategory,
+        score_eligible, counted, selection_reason, capture_status, evidence_json,
+        engagement_state
+      ) VALUES (?, ?, 'macbook-primary', 'vision', ?, ?, 360, 'active',
+        'Research Player', 'native:research player', 'Probability lecture',
+        'neutral', 'native_app', 1, 1, 'Vision selected', 'vision_assessed',
+        '{}', 'passive_engaged')
+    `).run(nativeIntervalId, sessionId, observedStart, observedEnd);
+    db.prepare(`
+      INSERT INTO guardian_activity_slices (
+        slice_id, session_id, slice_bucket, slice_start, slice_end,
+        duration_seconds, source, state, app, domain, title, category,
+        subcategory, engagement_state, engagement_confidence, score_eligible,
+        counted, selection_reason, provisional, pipeline_mode
+      ) VALUES (
+        'native-correction-slice', ?, ?, ?, ?, 5, 'vision', 'active',
+        'Research Player', 'native:research player', 'Probability lecture',
+        'neutral', 'native_app', 'passive_engaged', 0.95, 1, 0,
+        'Task-aligned Vision evidence', 0, 'shadow'
+      )
+    `).run(sessionId, observedStart, observedStart, new Date(Date.parse(observedStart) + 5_000).toISOString());
+
+    const response = await patchActivity(new Request('http://lifeos.test/api/activity', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: `interval:${nativeIntervalId}`, category: 'productive' }),
+    }));
+
+    assert.equal(response.status, 200);
+    assert.equal(db.prepare(`
+      SELECT category FROM guardian_activity_slices WHERE slice_id = 'native-correction-slice'
+    `).pluck().get(), 'productive');
+
+    const nativeClassification = require('../../src/lib/native-app-classification.ts');
+    assert.equal(nativeClassification.classifyNativeAppActivity({
+      app: 'Research Player',
+      title: 'Another lesson',
+      sessionActive: true,
+      sessionTargetTitle: 'Learn probability',
+    }).activityCategory, 'productive');
   });
 });

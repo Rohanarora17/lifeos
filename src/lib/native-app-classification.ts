@@ -79,11 +79,13 @@ function lookupUserPreference(app: string): { category: ActivityCategory; reason
       SELECT category, confidence, ai_reasoning FROM domain_categories WHERE domain = ?
     `).get(domain) as { category: string; confidence: number; ai_reasoning: string | null } | undefined;
     if (!row) return null;
+    const reasoning = typeof row.ai_reasoning === 'string'
+      ? row.ai_reasoning.trim().toLowerCase()
+      : '';
     const isUser =
-      typeof row.ai_reasoning === 'string' &&
-      (row.ai_reasoning.startsWith('user confirm') ||
-        row.ai_reasoning.startsWith('user correct') ||
-        row.ai_reasoning.startsWith('user native'));
+      reasoning.startsWith('user confirm') ||
+      reasoning.startsWith('user correct') ||
+      reasoning.startsWith('user native');
     if (!isUser || Number(row.confidence) < 0.9) return null;
     return {
       category: toActivityCategory(row.category),
@@ -213,7 +215,7 @@ function ruleClassify(app: string, title: string): {
       activityCategory: 'neutral',
       confidence: 0.5,
       sessionAmbiguous: false,
-      reason: 'browser shell; page-level category comes from extension + LLM, not native dwell',
+      reason: 'browser shell; page-level category comes from compatible extension or Vision evidence',
     };
   }
 

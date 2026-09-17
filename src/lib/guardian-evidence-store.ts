@@ -61,17 +61,110 @@ function bestEvidence(rows: EvidenceRow[], startMs: number, endMs: number) {
   })[0] ?? null;
 }
 
-function sessionCategory(sessionId: string, domain: string | null, app: string | null) {
-  if (domain) {
-    const classification = getDb().prepare(`
+export type VisionActivityCategory = 'productive' | 'neutral' | 'distraction';
+
+export interface VisionActivityClassification {
+  category: VisionActivityCategory;
+  alignment: number;
+  confidence: number;
+  observationCount: number;
+}
+
+const VISION_ALIGNMENT_PRODUCTIVE = 60;
+const VISION_ALIGNMENT_DISTRACTION = 35;
+const VISION_CONFIDENCE_MIN = 0.6;
+
+/**
+ * Translate task-alignment evidence into the same three buckets used by the
+ * Guardian timeline. This deliberately keys on the selected app, not a
+ * browser name, so a Vision capture can classify any foreground application.
+ */
+export function getVisionActivityClassification(
+  sessionId: string,
+  app: string,
+  startMs: number,
+  endMs: number,
+): VisionActivityClassification | null {
+  const row = getDb().prepare(`
+    SELECT
+      COUNT(*) AS observation_count,
+      SUM(task_alignment * confidence) / NULLIF(SUM(confidence), 0) AS alignment,
+      SUM(confidence) / COUNT(*) AS confidence
+    FROM screen_observations
+    WHERE session_id = ?
+      AND source = 'screen_vision'
+      AND LOWER(COALESCE(app, '')) = LOWER(?)
+      AND task_alignment IS NOT NULL
+      AND confidence >= ?
+      AND observed_at >= ?
+      AND observed_at < ?
+  `).get(
+    sessionId,
+    app,
+    VISION_CONFIDENCE_MIN,
+    new Date(startMs - GUARDIAN_WATERMARK_MS).toISOString(),
+    new Date(endMs + GUARDIAN_WATERMARK_MS).toISOString(),
+  ) as { observation_count: number; alignment: number | null; confidence: number | null };
+
+  const observationCount = Number(row?.observation_count ?? 0);
+  const alignment = Number(row?.alignment);
+  const confidence = Number(row?.confidence);
+  if (!observationCount || !Number.isFinite(alignment) || !Number.isFinite(confidence)) return null;
+
+  const category = alignment >= VISION_ALIGNMENT_PRODUCTIVE
+    ? 'productive'
+    : alignment <= VISION_ALIGNMENT_DISTRACTION
+      ? 'distraction'
+      : 'neutral';
+  return { category, alignment, confidence, observationCount };
+}
+
+function explicitSessionCategory(sessionId: string, domain: string | null, app: string | null) {
+  const db = getDb();
+  const domains = [domain, app ? `native:${app.toLowerCase()}` : null]
+    .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+  if (domains.length > 0) {
+    const placeholders = domains.map(() => '?').join(',');
+    const classification = db.prepare(`
       SELECT classification FROM session_domain_classifications
-      WHERE session_id = ? AND domain = ?
-    `).pluck().get(sessionId, domain);
+      WHERE session_id = ? AND LOWER(domain) IN (${placeholders})
+      ORDER BY classified_at DESC LIMIT 1
+    `).pluck().get(sessionId, ...domains.map(value => value.toLowerCase()));
     if (classification === 'on_topic') return 'productive' as const;
     if (classification === 'distraction') return 'distraction' as const;
+    if (classification === 'unknown') return 'neutral' as const;
   }
+  return null;
+}
+
+function userPreferenceCategory(app: string | null): VisionActivityCategory | null {
+  if (!app) return null;
+  const nativeDomain = `native:${app.toLowerCase().replace(/[^a-z0-9]+/g, '')}`;
+  const preference = getDb().prepare(`
+    SELECT category FROM domain_categories
+    WHERE domain = ? AND confidence >= 0.9
+      AND LOWER(COALESCE(ai_reasoning, '')) LIKE 'user %'
+    LIMIT 1
+  `).pluck().get(nativeDomain);
+  return preference === 'productive' || preference === 'neutral' || preference === 'distraction'
+    ? preference
+    : null;
+}
+
+function sessionCategory(
+  sessionId: string,
+  domain: string | null,
+  app: string | null,
+  semanticCategory: VisionActivityCategory | null = null,
+) {
+  const db = getDb();
+  const explicit = explicitSessionCategory(sessionId, domain, app);
+  if (explicit) return explicit;
   if (app) {
-    const category = getDb().prepare(`
+    const preference = userPreferenceCategory(app);
+    if (preference) return preference;
+    if (semanticCategory) return semanticCategory;
+    const category = db.prepare(`
       SELECT category FROM activities
       WHERE guardian_session_id = ? AND domain = ?
       ORDER BY started_at DESC LIMIT 1
@@ -79,6 +172,21 @@ function sessionCategory(sessionId: string, domain: string | null, app: string |
     if (category === 'productive' || category === 'distraction') return category;
   }
   return 'neutral' as const;
+}
+
+/** Resolve a Vision-derived native category without inventing one when no
+ * semantic observation or durable user correction covers the interval. */
+export function resolveVisionActivityCategory(
+  sessionId: string,
+  app: string,
+  startMs: number,
+  endMs: number,
+): VisionActivityCategory | null {
+  const assessment = getVisionActivityClassification(sessionId, app, startMs, endMs);
+  return explicitSessionCategory(sessionId, `native:${app.toLowerCase()}`, app)
+    ?? userPreferenceCategory(app)
+    ?? assessment?.category
+    ?? null;
 }
 
 function hasTaskAlignedVisionEvidence(sessionId: string, app: string, startMs: number, endMs: number) {
@@ -167,27 +275,42 @@ function canonicalDecision(
       } as const;
     }
     const active = nativePayload.inputIdleSeconds < 180;
+    const visionAssessment = getVisionActivityClassification(sessionId, app, startMs, endMs);
+    const category = sessionCategory(
+      sessionId,
+      `native:${app.toLowerCase()}`,
+      app,
+      visionAssessment?.category ?? null,
+    );
     return {
       source: 'vision', state: 'active', app, windowTitle: nativePayload.windowTitle,
       url: 'native://google-chrome', domain: 'native:google chrome', title: nativePayload.windowTitle || app,
-      category: sessionCategory(sessionId, null, app), subcategory: 'chrome_vision_fallback',
+      category, subcategory: 'chrome_vision_fallback',
       engagementState: active ? 'interactive' : 'uncertain', engagementConfidence: active ? 0.8 : 0.3,
-      scoreEligible: active, counted: true,
+      scoreEligible: Boolean(visionAssessment) || active, counted: true,
       reason: 'Native evidence confirmed Chrome was frontmost, but compatible extension evidence was unavailable.',
       evidenceIds: [nativeRow.event_id],
     } as const;
   }
 
-  const visionProgress = hasTaskAlignedVisionEvidence(sessionId, app, startMs, endMs);
+  const visionAssessment = getVisionActivityClassification(sessionId, app, startMs, endMs);
+  const visionProgress = visionAssessment?.category === 'productive'
+    || hasTaskAlignedVisionEvidence(sessionId, app, startMs, endMs);
   const interactive = nativePayload.inputIdleSeconds < 180;
   const engagementState = visionProgress ? 'passive_engaged' : interactive ? 'interactive' : 'uncertain';
+  const category = sessionCategory(
+    sessionId,
+    `native:${app.toLowerCase()}`,
+    app,
+    visionAssessment?.category ?? null,
+  );
   return {
     source: 'vision', state: 'active', app, windowTitle: nativePayload.windowTitle,
     url: `native://${encodeURIComponent(app)}`, domain: `native:${app.toLowerCase()}`,
-    title: nativePayload.windowTitle || app, category: sessionCategory(sessionId, null, app),
+    title: nativePayload.windowTitle || app, category,
     subcategory: 'native_app', engagementState,
     engagementConfidence: visionProgress ? 0.9 : interactive ? 0.85 : 0.3,
-    scoreEligible: visionProgress || interactive, counted: true,
+    scoreEligible: Boolean(visionAssessment) || visionProgress || interactive, counted: true,
     reason: visionProgress
       ? 'A non-Chrome app was frontmost and privacy-filtered vision evidence showed task-aligned progress.'
       : interactive

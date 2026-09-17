@@ -22,6 +22,7 @@ type ActivityContext = {
   domain: string | null;
   app: string | null;
   startedAt: string | null;
+  endedAt: string | null;
 };
 
 function categoryToClassification(category: CorrectedActivityCategory) {
@@ -111,7 +112,11 @@ function finalizeCorrection(
         category = excluded.category, confidence = 1.0,
         ai_reasoning = excluded.ai_reasoning, updated_at = datetime('now')
     `).run(context.domain, category, `User correction via activity UI to ${category}`);
-  } else if (context.app && !isChromeApplication(context.app)) {
+  }
+  // Native corrections carry a session domain such as native:research player,
+  // but future native events are keyed by the normalized app preference
+  // domain (native:researchplayer). Persist both representations.
+  if (context.app && !isChromeApplication(context.app)) {
     saveNativeAppPreference(context.app, category, `user correction via activity UI to ${category}`);
   }
 
@@ -153,7 +158,8 @@ export function applyGuardianActivityCorrection(
 
   if (recordType === 'guardian_interval') {
     context = db.prepare(`
-      SELECT session_id as sessionId, domain, app, observed_start as startedAt
+      SELECT session_id as sessionId, domain, app,
+             observed_start as startedAt, observed_end as endedAt
       FROM session_activity_intervals WHERE interval_id = ?
     `).get(recordId) as ActivityContext | undefined;
     if (!context) throw new Error('interval not found');
@@ -162,6 +168,21 @@ export function applyGuardianActivityCorrection(
       SET category = ?, updated_at = datetime('now')
       WHERE interval_id = ?
     `).run(category, recordId);
+    db.prepare(`
+      UPDATE guardian_activity_slices
+      SET category = ?, canonical_revision = canonical_revision + 1,
+          updated_at = datetime('now')
+      WHERE session_id = ? AND slice_start < ? AND slice_end > ?
+        AND COALESCE(app, '') = COALESCE(?, '')
+        AND COALESCE(domain, '') = COALESCE(?, '')
+    `).run(
+      category,
+      context.sessionId,
+      context.endedAt,
+      context.startedAt,
+      context.app,
+      context.domain,
+    );
   } else {
     const segment = db.prepare(`
       SELECT session_id as sessionId, domain, app, observed_start as startedAt,
@@ -172,9 +193,33 @@ export function applyGuardianActivityCorrection(
     context = segment;
     db.prepare(`
       UPDATE guardian_activity_slices
+      SET category = ?, canonical_revision = canonical_revision + 1,
+          updated_at = datetime('now')
+      WHERE session_id = ? AND slice_start < ? AND slice_end > ?
+        AND COALESCE(app, '') = COALESCE(?, '')
+        AND COALESCE(domain, '') = COALESCE(?, '')
+    `).run(
+      category,
+      segment.sessionId,
+      segment.endedAt,
+      segment.startedAt,
+      segment.app,
+      segment.domain,
+    );
+    db.prepare(`
+      UPDATE session_activity_intervals
       SET category = ?, updated_at = datetime('now')
-      WHERE session_id = ? AND slice_start >= ? AND slice_end <= ?
-    `).run(category, segment.sessionId, segment.startedAt, segment.endedAt);
+      WHERE session_id = ? AND observed_start < ? AND observed_end > ?
+        AND COALESCE(app, '') = COALESCE(?, '')
+        AND COALESCE(domain, '') = COALESCE(?, '')
+    `).run(
+      category,
+      segment.sessionId,
+      segment.endedAt,
+      segment.startedAt,
+      segment.app,
+      segment.domain,
+    );
   }
 
   const revisedScore = context.sessionId ? recomputeCompletedSummary(context.sessionId) : null;
@@ -192,7 +237,8 @@ export function applyLegacyGuardianActivityCorrection(
 ): ActivityCorrectionResult {
   const db = getDb();
   const activity = db.prepare(`
-    SELECT guardian_session_id as sessionId, domain, device_name as app, started_at as startedAt
+    SELECT guardian_session_id as sessionId, domain, device_name as app,
+           started_at as startedAt, ended_at as endedAt
     FROM activities WHERE id = ?
   `).get(activityId) as ActivityContext | undefined;
   if (!activity) throw new Error('activity not found');
@@ -201,17 +247,35 @@ export function applyLegacyGuardianActivityCorrection(
 
   if (activity.sessionId) {
     const linkedIntervals = db.prepare(`
-      SELECT interval_id
+      SELECT interval_id, observed_start as startedAt, observed_end as endedAt,
+             app, domain
       FROM session_activity_intervals
       WHERE session_id = ?
         AND json_extract(COALESCE(evidence_json, '{}'), '$.rawActivityId') = ?
-    `).all(activity.sessionId, activityId) as Array<{ interval_id: string }>;
+    `).all(activity.sessionId, activityId) as Array<{
+      interval_id: string; startedAt: string; endedAt: string; app: string | null; domain: string | null;
+    }>;
     for (const interval of linkedIntervals) {
       db.prepare(`
         UPDATE session_activity_intervals
         SET category = ?, updated_at = datetime('now')
         WHERE interval_id = ? AND session_id = ?
       `).run(category, interval.interval_id, activity.sessionId);
+      db.prepare(`
+        UPDATE guardian_activity_slices
+        SET category = ?, canonical_revision = canonical_revision + 1,
+            updated_at = datetime('now')
+        WHERE session_id = ? AND slice_start < ? AND slice_end > ?
+          AND COALESCE(app, '') = COALESCE(?, '')
+          AND COALESCE(domain, '') = COALESCE(?, '')
+      `).run(
+        category,
+        activity.sessionId,
+        interval.endedAt,
+        interval.startedAt,
+        interval.app,
+        interval.domain,
+      );
     }
   }
 

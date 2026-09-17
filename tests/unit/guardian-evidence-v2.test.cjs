@@ -134,6 +134,109 @@ describe('Guardian Evidence V2 canonical timeline', { concurrency: false }, () =
     assert.equal(sources.includes('chrome'), false);
   });
 
+  it('uses high-confidence task alignment to classify every Vision-selected app', () => {
+    const context = setup();
+    const { db, store, base, sessionId } = context;
+    db.prepare(`
+      INSERT INTO screen_observations (
+        observed_at, source, app, window_title, activity, category,
+        productive_for_goals, confidence, session_id, task_alignment,
+        engagement_depth
+      ) VALUES (?, 'screen_vision', ?, ?, ?, 'consumption', ?, ?, ?, ?, ?)
+    `).run(
+      new Date(base + 2_000).toISOString(),
+      'Research Player',
+      'Probability lecture',
+      'Watching a probability lecture',
+      1,
+      0.98,
+      sessionId,
+      96,
+      'passive_consumption',
+    );
+
+    store.ingestGuardianEvidence([
+      native(context, 'native-semantic-productivity', 0, 10_000, {
+        frontmostApp: 'Research Player',
+        windowTitle: 'Probability lecture',
+      }),
+    ], base + 30_000);
+
+    assert.deepEqual(db.prepare(`
+      SELECT DISTINCT category, engagement_state, score_eligible
+      FROM guardian_activity_slices
+      WHERE session_id = ? AND app = 'Research Player' AND provisional = 0
+    `).all(sessionId), [{
+      category: 'productive',
+      engagement_state: 'passive_engaged',
+      score_eligible: 1,
+    }]);
+  });
+
+  it('classifies clearly unrelated Vision content as distraction without app-specific rules', () => {
+    const context = setup();
+    const { db, store, base, sessionId } = context;
+    db.prepare(`
+      INSERT INTO screen_observations (
+        observed_at, source, app, window_title, activity, category,
+        productive_for_goals, confidence, session_id, task_alignment,
+        engagement_depth
+      ) VALUES (?, 'screen_vision', ?, ?, ?, 'distraction', 0, ?, ?, ?, ?)
+    `).run(
+      new Date(base + 2_000).toISOString(),
+      'Media Viewer',
+      'Unrelated entertainment',
+      'Watching unrelated entertainment',
+      0.97,
+      sessionId,
+      10,
+      'distraction',
+    );
+
+    store.ingestGuardianEvidence([
+      native(context, 'native-semantic-distraction', 0, 10_000, {
+        frontmostApp: 'Media Viewer',
+        windowTitle: 'Unrelated entertainment',
+      }),
+    ], base + 30_000);
+
+    assert.equal(db.prepare(`
+      SELECT DISTINCT category FROM guardian_activity_slices
+      WHERE session_id = ? AND app = 'Media Viewer' AND provisional = 0
+    `).pluck().get(sessionId), 'distraction');
+  });
+
+  it('uses semantic Vision for a browser fallback when extension telemetry is unavailable', () => {
+    const context = setup();
+    const { db, store, base, sessionId } = context;
+    db.prepare(`
+      INSERT INTO screen_observations (
+        observed_at, source, app, window_title, activity, category,
+        productive_for_goals, confidence, session_id, task_alignment,
+        engagement_depth
+      ) VALUES (?, 'screen_vision', 'Google Chrome', ?, ?, 'consumption',
+        1, 0.95, ?, 88, 'passive_consumption')
+    `).run(
+      new Date(base + 2_000).toISOString(),
+      'Statistics lecture',
+      'Watching probability lecture',
+      sessionId,
+    );
+
+    store.ingestGuardianEvidence([
+      native(context, 'native-chrome-fallback-semantic', 0, 10_000, {
+        frontmostApp: 'Google Chrome',
+        windowTitle: 'Statistics lecture',
+      }),
+    ], base + 30_000);
+
+    assert.equal(db.prepare(`
+      SELECT category FROM guardian_activity_slices
+      WHERE session_id = ? AND app = 'Google Chrome' AND provisional = 0
+      LIMIT 1
+    `).pluck().get(sessionId), 'productive');
+  });
+
   it('falls back to Vision when Chrome evidence is absent and never rewrites a finalized slice', () => {
     const context = setup();
     const { db, store, base, sessionId } = context;
