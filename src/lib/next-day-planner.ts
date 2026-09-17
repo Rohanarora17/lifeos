@@ -25,11 +25,14 @@ import {
 import { tryGetGenAI, generateWithFallback } from './ai';
 import { MODEL_PRO } from './models';
 import {
+  extractTypedPlanConstraints,
   interpretPlanningContext,
+  stripConstraintText,
   type PlannerCalendarEvent,
+  type TypedPlanConstraint,
 } from './planner-context';
 
-export { interpretPlanningContext } from './planner-context';
+export { extractTypedPlanConstraints, interpretPlanningContext } from './planner-context';
 
 type SessionStatus = 'planned' | 'started' | 'completed' | 'skipped' | 'cancelled';
 
@@ -286,6 +289,20 @@ export interface PlannedFocusSession {
   calendar_status: 'not_configured' | 'created' | 'synced' | 'failed' | 'deleted';
   soft_watch_id: string | null;
   status: SessionStatus;
+  origin?: string;
+  invalidated_reason?: string | null;
+  invalidated_at?: string | null;
+}
+
+export interface PlanConstraint {
+  id: string;
+  plan_id: number;
+  title: string;
+  start_time: string;
+  end_time: string;
+  source_text: string;
+  source_checkin_id: number | null;
+  status: 'active' | 'superseded' | 'cancelled';
 }
 
 export interface DailyPlan {
@@ -300,11 +317,13 @@ export interface DailyPlan {
   tomorrow_intention: string | null;
   generated_summary: string | null;
   status: 'draft' | 'active' | 'archived';
+  generation_source?: string;
 }
 
 export interface NextDayPlanPayload {
   plan: DailyPlan | null;
   sessions: PlannedFocusSession[];
+  constraints: PlanConstraint[];
   calendarEvents: CalendarEventRow[];
   candidateTasks: CandidateTask[];
   personalization: {
@@ -317,6 +336,12 @@ export interface NextDayPlanPayload {
   suggestedInputs: PlanningSuggestedInputs;
   calendarConfigured: boolean;
   dayContext: PlanningDayContext;
+  contextProvenance: {
+    source: 'submitted_input' | 'saved_plan' | 'exact_date_checkin' | 'live_truth';
+    appliesToPlanDate: string;
+    sourceCheckinId: number | null;
+    fresh: boolean;
+  };
 }
 
 export interface PlanningSuggestedInputs {
@@ -324,7 +349,7 @@ export interface PlanningSuggestedInputs {
   wakeEstimate: string;
   mood: PersonalizationSnapshot['userState']['mood'] | 'medium';
   energy: PersonalizationSnapshot['userState']['energy'];
-  source: 'existing_plan' | 'latest_evening_checkin' | 'sleep_history' | 'adaptive_baseline';
+  source: 'existing_plan' | 'exact_date_checkin' | 'sleep_history' | 'adaptive_baseline';
   reason: string;
 }
 
@@ -535,14 +560,15 @@ function textMatches(text: string, query: string | null | undefined): boolean {
     .some(term => haystack.includes(term));
 }
 
-function loadLatestEveningCheckin() {
+function loadEveningCheckinForPlanDate(planDate: string) {
   return getDb().prepare(`
-    SELECT id, sleep_time, wake_estimate, mood, energy, day_events, tomorrow_intention, raw_transcript
+    SELECT id, sleep_time, wake_estimate, mood, energy, day_events, tomorrow_intention,
+           raw_transcript, applies_to_plan_date
     FROM daily_checkins
-    WHERE checkin_type = 'evening'
+    WHERE checkin_type = 'evening' AND applies_to_plan_date = ?
     ORDER BY received_at DESC, id DESC
     LIMIT 1
-  `).get() as {
+  `).get(planDate) as {
     id: number;
     sleep_time: string | null;
     wake_estimate: string | null;
@@ -551,6 +577,7 @@ function loadLatestEveningCheckin() {
     day_events: string | null;
     tomorrow_intention: string | null;
     raw_transcript: string | null;
+    applies_to_plan_date: string;
   } | undefined;
 }
 
@@ -582,7 +609,7 @@ function loadSleepWakeAverages(): { sleepTime: string | null; wakeEstimate: stri
 
 function buildPlanningSuggestedInputs(input: {
   plan?: DailyPlan | null;
-  latestCheckin?: ReturnType<typeof loadLatestEveningCheckin>;
+  exactCheckin?: ReturnType<typeof loadEveningCheckinForPlanDate>;
   snapshot: PersonalizationSnapshot;
 }): PlanningSuggestedInputs {
   if (input.plan?.sleep_time || input.plan?.wake_estimate) {
@@ -597,15 +624,15 @@ function buildPlanningSuggestedInputs(input: {
     };
   }
 
-  if (input.latestCheckin?.sleep_time || input.latestCheckin?.wake_estimate) {
-    const wake = normalizeTime(input.latestCheckin.wake_estimate, normalizeTime(getSetting('morning_brief_time'), '08:00'));
+  if (input.exactCheckin?.sleep_time || input.exactCheckin?.wake_estimate) {
+    const wake = normalizeTime(input.exactCheckin.wake_estimate, normalizeTime(getSetting('morning_brief_time'), '08:00'));
     return {
-      sleepTime: normalizeTime(input.latestCheckin.sleep_time, shiftTime(wake, -8 * 60)),
+      sleepTime: normalizeTime(input.exactCheckin.sleep_time, shiftTime(wake, -8 * 60)),
       wakeEstimate: wake,
-      mood: (input.latestCheckin.mood as PlanningSuggestedInputs['mood']) || input.snapshot.userState.mood || 'medium',
-      energy: (input.latestCheckin.energy as PlanningSuggestedInputs['energy']) || input.snapshot.userState.energy,
-      source: 'latest_evening_checkin',
-      reason: 'using your latest evening sleep/wake update',
+      mood: (input.exactCheckin.mood as PlanningSuggestedInputs['mood']) || input.snapshot.userState.mood || 'medium',
+      energy: (input.exactCheckin.energy as PlanningSuggestedInputs['energy']) || input.snapshot.userState.energy,
+      source: 'exact_date_checkin',
+      reason: 'using the evening update bound to this plan date',
     };
   }
 
@@ -654,10 +681,10 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
 
   const existing = db.prepare(`
     SELECT id FROM daily_checkins
-    WHERE checkin_date = ? AND checkin_type = 'evening'
+    WHERE checkin_date = ? AND checkin_type = 'evening' AND applies_to_plan_date = ?
     ORDER BY received_at DESC, id DESC
     LIMIT 1
-  `).get(today) as { id: number } | undefined;
+  `).get(today, planDate) as { id: number } | undefined;
 
   if (existing) {
     db.prepare(`
@@ -668,6 +695,7 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
           energy = COALESCE(?, energy),
           day_events = COALESCE(?, day_events),
           tomorrow_intention = COALESCE(?, tomorrow_intention),
+          applies_to_plan_date = ?,
           raw_transcript = CASE WHEN ? != '' THEN ? ELSE raw_transcript END
       WHERE id = ?
     `).run(
@@ -677,6 +705,7 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
       input.energy ?? null,
       input.eveningNotes ?? null,
       input.tomorrowIntention ?? null,
+      planDate,
       raw,
       raw,
       existing.id
@@ -687,9 +716,9 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
   const result = db.prepare(`
     INSERT INTO daily_checkins (
       checkin_date, checkin_type, sleep_time, wake_estimate, mood, energy,
-      day_events, tomorrow_intention, raw_transcript
+      day_events, tomorrow_intention, applies_to_plan_date, raw_transcript
     )
-    VALUES (?, 'evening', ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, 'evening', ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     today,
     input.sleepTime ?? null,
@@ -698,6 +727,7 @@ function upsertEveningCheckin(input: NextDayPlanInput, planDate: string): number
     input.energy ?? null,
     input.eveningNotes ?? null,
     input.tomorrowIntention ?? null,
+    planDate,
     raw
   );
   return Number(result.lastInsertRowid);
@@ -1443,21 +1473,39 @@ function candidateForPlannedSession(input: {
 export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise<NextDayPlanPayload> {
   const db = getDb();
   const planDate = normalizeDate(input.planDate);
-  const latestCheckin = loadLatestEveningCheckin();
+  const submittedCheckinId = upsertEveningCheckin(input, planDate);
+  const exactCheckin = loadEveningCheckinForPlanDate(planDate);
+  const savedPlan = db.prepare(`
+    SELECT * FROM daily_plans WHERE plan_date = ? AND status != 'archived' LIMIT 1
+  `).get(planDate) as DailyPlan | undefined;
+  const savedPlanHasFreshSource = !savedPlan?.source_checkin_id
+    || savedPlan.source_checkin_id === exactCheckin?.id;
+  const exactSavedPlan = savedPlanHasFreshSource ? savedPlan : undefined;
   const baseSnapshot = buildPersonalizationSnapshot({
     surface: 'scheduler',
     maxInsights: 3,
     includeMemoryFacts: 4,
   });
-  const suggestedInputs = buildPlanningSuggestedInputs({ latestCheckin, snapshot: baseSnapshot });
-  const sourceCheckinId = upsertEveningCheckin(input, planDate) ?? latestCheckin?.id ?? null;
-  const sleepTime = normalizeTime(input.sleepTime ?? latestCheckin?.sleep_time, suggestedInputs.sleepTime);
-  const wakeEstimate = normalizeTime(input.wakeEstimate ?? latestCheckin?.wake_estimate, suggestedInputs.wakeEstimate);
-  const intention = (input.tomorrowIntention ?? latestCheckin?.tomorrow_intention ?? '').trim() || null;
-  const planMood = input.mood ?? latestCheckin?.mood ?? baseSnapshot.userState.mood;
-  const planEnergy = input.energy ?? latestCheckin?.energy ?? baseSnapshot.userState.energy;
+  const suggestedInputs = buildPlanningSuggestedInputs({ plan: exactSavedPlan, exactCheckin, snapshot: baseSnapshot });
+  const sourceCheckinId = submittedCheckinId ?? exactSavedPlan?.source_checkin_id ?? exactCheckin?.id ?? null;
+  const sleepTime = normalizeTime(input.sleepTime ?? exactSavedPlan?.sleep_time ?? exactCheckin?.sleep_time, suggestedInputs.sleepTime);
+  const wakeEstimate = normalizeTime(input.wakeEstimate ?? exactSavedPlan?.wake_estimate ?? exactCheckin?.wake_estimate, suggestedInputs.wakeEstimate);
+  const intention = (input.tomorrowIntention ?? exactSavedPlan?.tomorrow_intention ?? exactCheckin?.tomorrow_intention ?? '').trim() || null;
+  const planMood = input.mood ?? exactSavedPlan?.mood ?? exactCheckin?.mood ?? baseSnapshot.userState.mood;
+  const planEnergy = input.energy ?? exactSavedPlan?.energy ?? exactCheckin?.energy ?? baseSnapshot.userState.energy;
   const snapshot = applyPlanningStateToSnapshot(baseSnapshot, { mood: planMood, energy: planEnergy });
-  const eveningNotes = input.eveningNotes ?? latestCheckin?.day_events ?? null;
+  const eveningNotes = input.eveningNotes ?? exactSavedPlan?.evening_notes ?? exactCheckin?.day_events ?? null;
+  const submittedSignal = Boolean(input.sleepTime || input.wakeEstimate || input.mood || input.energy || input.tomorrowIntention || input.eveningNotes);
+  const contextSource: NextDayPlanPayload['contextProvenance']['source'] = submittedSignal
+    ? 'submitted_input'
+    : exactSavedPlan ? 'saved_plan'
+      : exactCheckin ? 'exact_date_checkin'
+        : 'live_truth';
+  const typedConstraints = extractTypedPlanConstraints({
+    planDate,
+    text: [intention, eveningNotes].filter(Boolean).join('\n'),
+  });
+  const workIntention = stripConstraintText(intention, typedConstraints);
   const planningWindow = buildPlanningDayWindow(planDate, wakeEstimate, sleepTime);
   const calendarEndDate = planningWindow.spansMidnight ? addDays(planDate, 1) : planDate;
   const rawCalendarEvents = filterCalendarEventsForPlanningWindow(
@@ -1483,7 +1531,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
   const wakingMinutes = minutesBetween(planningWindow.start, planningWindow.end);
   const sleepMinutes = Math.max(0, 24 * 60 - wakingMinutes);
   if (sleepMinutes <= 6 * 60) appliedSignals.push(`${Math.round(sleepMinutes / 60)}h sleep window needs recovery protection`);
-  const existingPlan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(planDate) as { id: number } | undefined;
+  const existingPlan = savedPlan ? { id: savedPlan.id } : undefined;
   const protectedSessions = existingPlan
     ? db.prepare(`
         SELECT * FROM planned_focus_sessions
@@ -1499,9 +1547,15 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
       start_time: session.planned_start,
       end_time: session.planned_end,
     }));
-  const effectiveCalendarEvents = [...interpretedContext.effectiveCalendarEvents, ...protectedBusy];
+  const constraintEvents = typedConstraints.map((constraint, index) => ({
+    id: `typed:${index}`,
+    title: constraint.title,
+    start_time: constraint.startIso,
+    end_time: constraint.endIso,
+  }));
+  const effectiveCalendarEvents = [...interpretedContext.effectiveCalendarEvents, ...constraintEvents, ...protectedBusy];
   const experimentBias = getCombinedPlannerBias({ snapshot, planDate });
-  const candidateTasks = loadCandidateTasks(snapshot, intention, input.selectedTaskIds, planDate, experimentBias);
+  const candidateTasks = loadCandidateTasks(snapshot, workIntention, input.selectedTaskIds, planDate, experimentBias);
   const windows = buildAvailability(planDate, wakeEstimate, sleepTime, effectiveCalendarEvents, notBefore);
 
   const summaryParts = [
@@ -1523,8 +1577,8 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
     db.prepare(`
       INSERT INTO daily_plans (
         plan_date, source_checkin_id, sleep_time, wake_estimate, mood, energy,
-        evening_notes, tomorrow_intention, generated_summary, status, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now', 'localtime'))
+        evening_notes, tomorrow_intention, generated_summary, generation_source, status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', datetime('now', 'localtime'))
       ON CONFLICT(plan_date) DO UPDATE SET
         source_checkin_id = excluded.source_checkin_id,
         sleep_time = excluded.sleep_time,
@@ -1534,6 +1588,7 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
         evening_notes = excluded.evening_notes,
         tomorrow_intention = excluded.tomorrow_intention,
         generated_summary = excluded.generated_summary,
+        generation_source = excluded.generation_source,
         status = 'active',
         updated_at = datetime('now', 'localtime')
     `).run(
@@ -1545,17 +1600,35 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
       planEnergy,
       eveningNotes,
       intention,
-      summaryParts.filter(Boolean).join('; ')
+      summaryParts.filter(Boolean).join('; '),
+      contextSource,
     );
 
     const plan = db.prepare('SELECT id FROM daily_plans WHERE plan_date = ?').get(planDate) as { id: number };
+    db.prepare("UPDATE plan_constraints SET status='superseded', updated_at=datetime('now','localtime') WHERE plan_id=? AND status='active'").run(plan.id);
+    const insertConstraint = db.prepare(`
+      INSERT INTO plan_constraints (
+        id, plan_id, title, start_time, end_time, source_text, source_checkin_id, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+    `);
+    for (const constraint of typedConstraints) {
+      insertConstraint.run(
+        `pc_${randomUUID()}`,
+        plan.id,
+        constraint.title,
+        constraint.startIso,
+        constraint.endIso,
+        constraint.sourceText,
+        sourceCheckinId,
+      );
+    }
     return plan.id;
   })();
 
   if (input.regenerate !== false) {
     const llmSessions = await synthesizePlanWithLLM({
       planDate,
-      intention,
+      intention: workIntention,
       eveningNotes,
       sleepTime,
       wakeEstimate,
@@ -1877,16 +1950,22 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
     maxInsights: 3,
     includeMemoryFacts: 4,
   });
-  const latestCheckin = loadLatestEveningCheckin();
-  const intention = latestCheckin?.tomorrow_intention ?? null;
+  const exactCheckin = loadEveningCheckinForPlanDate(normalizedDate);
   const plan = db.prepare(`
     SELECT * FROM daily_plans
     WHERE plan_date = ? AND status != 'archived'
     LIMIT 1
   `).get(normalizedDate) as DailyPlan | undefined;
+  const planContextIsFresh = Boolean(plan && (
+    plan.generation_source === 'live_truth'
+    || plan.generation_source === 'submitted_input'
+    || (plan.source_checkin_id && plan.source_checkin_id === exactCheckin?.id)
+    || (!plan.source_checkin_id && !plan.tomorrow_intention && !plan.evening_notes)
+  ));
+  const effectivePlan = planContextIsFresh ? plan : undefined;
   const snapshot = applyPlanningStateToSnapshot(baseSnapshot, {
-    mood: plan?.mood ?? latestCheckin?.mood,
-    energy: plan?.energy ?? latestCheckin?.energy,
+    mood: effectivePlan?.mood ?? exactCheckin?.mood,
+    energy: effectivePlan?.energy ?? exactCheckin?.energy,
   });
   const sessions = plan
     ? db.prepare(`
@@ -1895,9 +1974,16 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
         ORDER BY planned_start ASC
       `).all(plan.id) as PlannedFocusSession[]
 	    : [];
-  const suggestedInputs = buildPlanningSuggestedInputs({ plan, latestCheckin, snapshot });
-  const sleepTime = normalizeTime(plan?.sleep_time, suggestedInputs.sleepTime);
-  const wakeEstimate = normalizeTime(plan?.wake_estimate, suggestedInputs.wakeEstimate);
+  const constraints = plan
+    ? db.prepare(`
+        SELECT * FROM plan_constraints
+        WHERE plan_id = ? AND status = 'active'
+        ORDER BY start_time ASC
+      `).all(plan.id) as PlanConstraint[]
+    : [];
+  const suggestedInputs = buildPlanningSuggestedInputs({ plan: effectivePlan, exactCheckin, snapshot });
+  const sleepTime = normalizeTime(effectivePlan?.sleep_time, suggestedInputs.sleepTime);
+  const wakeEstimate = normalizeTime(effectivePlan?.wake_estimate, suggestedInputs.wakeEstimate);
   const planningWindow = buildPlanningDayWindow(normalizedDate, wakeEstimate, sleepTime);
   const calendarEndDate = planningWindow.spansMidnight ? addDays(normalizedDate, 1) : normalizedDate;
   const rawCalendarEvents = filterCalendarEventsForPlanningWindow(
@@ -1905,8 +1991,8 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
     planningWindow,
   );
   const interpretedContext = interpretPlanningContext({
-    intention: plan?.tomorrow_intention ?? intention,
-    eveningNotes: plan?.evening_notes ?? latestCheckin?.day_events ?? null,
+    intention: effectivePlan?.tomorrow_intention ?? exactCheckin?.tomorrow_intention ?? null,
+    eveningNotes: effectivePlan?.evening_notes ?? exactCheckin?.day_events ?? null,
     calendarEvents: rawCalendarEvents,
   });
   const focusLoad = loadPlanningFocusLoad({ windowStart: planningWindow.start });
@@ -1924,10 +2010,19 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
   return {
     plan: plan ?? null,
     sessions,
+    constraints,
     calendarEvents: interpretedContext.calendarEvents,
     candidateTasks: loadCandidateTasks(
       snapshot,
-      plan?.tomorrow_intention ?? intention,
+      stripConstraintText(
+        effectivePlan?.tomorrow_intention ?? exactCheckin?.tomorrow_intention ?? null,
+        constraints.map(constraint => ({
+          title: constraint.title,
+          startIso: constraint.start_time,
+          endIso: constraint.end_time,
+          sourceText: constraint.source_text,
+        })),
+      ),
       undefined,
       normalizedDate,
       readBias,
@@ -1949,6 +2044,14 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
       signals,
       ignoredCalendarEventIds: interpretedContext.ignoredCalendarEventIds,
       focusLoad,
+    },
+    contextProvenance: {
+      source: effectivePlan && ['submitted_input', 'saved_plan', 'exact_date_checkin', 'live_truth'].includes(effectivePlan.generation_source || '')
+        ? effectivePlan.generation_source as NextDayPlanPayload['contextProvenance']['source']
+        : exactCheckin ? 'exact_date_checkin' : 'live_truth',
+      appliesToPlanDate: normalizedDate,
+      sourceCheckinId: effectivePlan?.source_checkin_id ?? exactCheckin?.id ?? null,
+      fresh: Boolean(effectivePlan || exactCheckin) || !plan,
     },
   };
 }
