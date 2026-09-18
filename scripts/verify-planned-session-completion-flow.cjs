@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+/* eslint-disable @typescript-eslint/no-require-imports */
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -10,6 +12,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifeos-planned-session-fl
 const dbPath = path.join(tempDir, 'lifeos.db');
 process.env.LIFEOS_DB_PATH = dbPath;
 process.env.LIFEOS_DISABLE_UIL_SYNTHESIS = '1';
+process.env.LIFEOS_REQUIRE_VISION_CLIENT = 'false';
 
 registerTypescript(root);
 
@@ -43,6 +46,7 @@ const {
   endGuardianSession,
   startGuardianSession,
 } = require('../src/lib/guardian-runtime.ts');
+const { recordSessionActivityInterval } = require('../src/lib/session-activity.ts');
 const { getTaskTimeProgress } = require('../src/lib/task-time-sessions.ts');
 
 async function main() {
@@ -58,8 +62,13 @@ async function main() {
   const taskId = Number(taskResult.lastInsertRowid);
 
   const planResult = db.prepare(`
-    INSERT INTO daily_plans (plan_date, sleep_time, wake_estimate, mood, energy, tomorrow_intention, status)
-    VALUES (?, '00:30', '09:30', 'medium', 'high', 'Finish ZK proof study', 'active')
+    INSERT INTO daily_plans (
+      plan_date, sleep_time, wake_estimate, mood, energy, tomorrow_intention,
+      generation_source, status
+    ) VALUES (
+      ?, '00:30', '09:30', 'medium', 'high', 'Finish ZK proof study',
+      'live_truth', 'active'
+    )
   `).run(planDate);
   const planId = Number(planResult.lastInsertRowid);
 
@@ -74,10 +83,10 @@ async function main() {
   db.prepare(`
     INSERT INTO planned_focus_sessions (
       id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-      session_type, rule_json, reward_xp, reward_coins, soft_watch_id, status
+      session_type, rule_json, reward_xp, reward_coins, soft_watch_id, status, origin
     ) VALUES (
       'planned-session-flow', ?, ?, 'Study ZK proofs', ?, ?, 50,
-      'study', '{}', 50, 25, ?, 'planned'
+      'study', '{}', 50, 25, ?, 'planned', 'deterministic_task'
     )
   `).run(
     planId,
@@ -91,6 +100,7 @@ async function main() {
     topic: 'Study ZK proofs',
     durationMinutes: 50,
     mood: 'medium',
+    plannedSessionId: 'planned-session-flow',
   });
   assert(started?.sessionId, 'Expected guardian session to start.');
 
@@ -101,6 +111,20 @@ async function main() {
   `).get(softWatch.id);
   assert(locked.status === 'locked_in', `Expected soft watch locked_in, got ${locked.status}.`);
   assert(locked.locked_in_session_id === started.sessionId, 'Expected soft watch to lock to the started Guardian session.');
+
+  recordSessionActivityInterval({
+    intervalId: 'planned-session-flow-verified-evidence',
+    sessionId: started.sessionId,
+    deviceId: 'verification-fixture',
+    source: 'vision',
+    observedStart: new Date(baseNow - 30_000).toISOString(),
+    observedEnd: new Date(baseNow).toISOString(),
+    app: 'Preview',
+    windowTitle: 'Study ZK proofs',
+    category: 'productive',
+    selectionReason: 'Deterministic verification fixture for planned-session completion.',
+    captureStatus: 'verified',
+  });
 
   Date.now = () => baseNow + 50 * 60_000;
   try {

@@ -66,6 +66,7 @@ describe('planning state reconciliation', () => {
         '2030-02-03T18:00:00.000+05:30', 30, 'scheduled', '2030-02-01', '2030-02-01'
       )
     `).run();
+    const revisionBefore = db.prepare(`SELECT revision FROM domain_revisions WHERE scope='global'`).get().revision;
 
     const first = await reconcilePlanningState('2030-02-03', new Date('2030-02-03T10:00:00.000+05:30'), { regenerate: false });
     const second = await reconcilePlanningState('2030-02-03', new Date('2030-02-03T10:00:00.000+05:30'), { regenerate: false });
@@ -78,7 +79,9 @@ describe('planning state reconciliation', () => {
     assert.equal(db.prepare(`SELECT state FROM coaching_commitments WHERE source_id='team-meeting'`).get().state, 'cancelled');
     assert.deepEqual(first.reasonCodes, ['stale_source_date']);
     assert.equal(first.repairedSessionIds.length, 1);
+    assert.deepEqual(second.repairedPlanIds, []);
     assert.equal(second.repairedSessionIds.length, 0);
+    assert.ok(db.prepare(`SELECT revision FROM domain_revisions WHERE scope='global'`).get().revision > revisionBefore);
   });
 
   it('skips elapsed valid work but never rewrites started or completed evidence', async () => {

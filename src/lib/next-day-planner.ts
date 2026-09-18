@@ -33,7 +33,6 @@ import {
   interpretPlanningContext,
   stripConstraintText,
   type PlannerCalendarEvent,
-  type TypedPlanConstraint,
 } from './planner-context';
 
 export { extractTypedPlanConstraints, interpretPlanningContext } from './planner-context';
@@ -1915,6 +1914,10 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
             SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
             WHERE id = ?
           `).run(calendar.eventId, calendar.status, row.id);
+          if (calendar.eventId && row.soft_watch_id) {
+            db.prepare('UPDATE soft_watch_commitments SET calendar_event_id = ? WHERE id = ?')
+              .run(calendar.eventId, row.soft_watch_id);
+          }
         }
       }
 
@@ -2055,6 +2058,10 @@ export async function generateNextDayPlan(input: NextDayPlanInput = {}): Promise
               SET calendar_event_id = ?, calendar_status = ?, updated_at = datetime('now', 'localtime')
               WHERE id = ?
             `).run(calendar.eventId, calendar.status, row.id);
+            if (calendar.eventId && row.soft_watch_id) {
+              db.prepare('UPDATE soft_watch_commitments SET calendar_event_id = ? WHERE id = ?')
+                .run(calendar.eventId, row.soft_watch_id);
+            }
           }
 
           remaining -= roundedDuration;
@@ -2185,6 +2192,7 @@ export function getNextDayPlan(planDate = normalizeDate()): NextDayPlanPayload {
     },
     reconciliation: {
       planDate: normalizedDate,
+      repairedPlanIds: [],
       repairedSessionIds: [],
       repairedConstraintIds: [],
       reasonCodes: [],
@@ -2413,6 +2421,10 @@ export async function syncAllPlannedSessionsToCalendar(planDate = normalizeDate(
         SET calendar_event_id = ?, calendar_status = 'created', updated_at = datetime('now', 'localtime')
         WHERE id = ?
       `).run(calendar.eventId, session.id);
+      if (session.soft_watch_id) {
+        db.prepare('UPDATE soft_watch_commitments SET calendar_event_id = ? WHERE id = ?')
+          .run(calendar.eventId, session.soft_watch_id);
+      }
       syncedCount++;
     }
   }

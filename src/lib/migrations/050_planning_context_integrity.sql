@@ -9,6 +9,9 @@ SET applies_to_plan_date = substr(
 WHERE applies_to_plan_date IS NULL
   AND raw_transcript LIKE '%Planning date: ____-__-__%';
 
+CREATE INDEX IF NOT EXISTS idx_daily_checkins_plan_date
+  ON daily_checkins(applies_to_plan_date, checkin_type, received_at DESC);
+
 ALTER TABLE daily_plans ADD COLUMN generation_source TEXT NOT NULL DEFAULT 'legacy';
 
 CREATE TABLE IF NOT EXISTS plan_constraints (

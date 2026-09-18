@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { shouldReloadForDomainRevision } from '@/lib/domain-sync';
 
 const ENDPOINT = '/api/system/revision';
@@ -9,7 +9,7 @@ const STORAGE_KEY = 'lifeos:domain-revision';
 
 export default function LifeOSSyncProvider() {
   const known = useRef<number | null>(null);
-  const tabId = useRef(`tab-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const tabId = useId();
 
   useEffect(() => {
     let active = true;
@@ -34,7 +34,7 @@ export default function LifeOSSyncProvider() {
       }
       if (local) {
         known.current = incoming;
-        const message = { revision: incoming, origin: tabId.current };
+        const message = { revision: incoming, origin: tabId };
         channel?.postMessage(message);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(message)); } catch { }
       } else if (shouldReloadForDomainRevision(known.current, incoming, false)) {
@@ -47,15 +47,17 @@ export default function LifeOSSyncProvider() {
       if (revision !== null) accept(revision, local);
     };
 
-    channel && (channel.onmessage = event => {
-      const message = event.data as { revision?: number; origin?: string };
-      if (message.origin !== tabId.current && Number.isFinite(message.revision)) accept(Number(message.revision), false);
-    });
+    if (channel) {
+      channel.onmessage = event => {
+        const message = event.data as { revision?: number; origin?: string };
+        if (message.origin !== tabId && Number.isFinite(message.revision)) accept(Number(message.revision), false);
+      };
+    }
     const onStorage = (event: StorageEvent) => {
       if (event.key !== STORAGE_KEY || !event.newValue) return;
       try {
         const message = JSON.parse(event.newValue) as { revision?: number; origin?: string };
-        if (message.origin !== tabId.current && Number.isFinite(message.revision)) accept(Number(message.revision), false);
+        if (message.origin !== tabId && Number.isFinite(message.revision)) accept(Number(message.revision), false);
       } catch { }
     };
     const onFocus = () => { void reconcile(); };
@@ -82,7 +84,7 @@ export default function LifeOSSyncProvider() {
       document.removeEventListener('visibilitychange', onVisible);
       channel?.close();
     };
-  }, []);
+  }, [tabId]);
 
   return null;
 }

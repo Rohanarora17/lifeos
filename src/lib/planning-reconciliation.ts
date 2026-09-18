@@ -12,6 +12,7 @@ export type PlanningInvalidationReason =
 
 export interface PlanningReconciliationOutcome {
   planDate: string;
+  repairedPlanIds: number[];
   repairedSessionIds: string[];
   repairedConstraintIds: string[];
   reasonCodes: PlanningInvalidationReason[];
@@ -84,6 +85,7 @@ export async function reconcilePlanningState(
   const db = getDb();
   const repairedSessionIds: string[] = [];
   const repairedConstraintIds: string[] = [];
+  const repairedPlanIds: number[] = [];
   const reasons: PlanningInvalidationReason[] = [];
   let invalidatedPlan = false;
 
@@ -106,7 +108,6 @@ export async function reconcilePlanningState(
       )
     );
     invalidatedPlan = staleSource;
-
     const constraints = db.prepare(`
       SELECT id, start_time, end_time, source_text, source_checkin_id
       FROM plan_constraints
@@ -197,6 +198,13 @@ export async function reconcilePlanningState(
         `).run(now.toISOString(), repair.row.id, repair.row.soft_watch_id ?? '');
       }
     })();
+
+    if (
+      staleSource
+      && (repairedSessionIds.length > 0 || repairedConstraintIds.length > 0 || options.regenerate !== false)
+    ) {
+      repairedPlanIds.push(plan.id);
+    }
   }
 
   const pendingCalendarDeletes = db.prepare(`
@@ -229,14 +237,19 @@ export async function reconcilePlanningState(
     }
   }
 
-  return {
+  const outcome = {
     planDate,
+    repairedPlanIds,
     repairedSessionIds,
     repairedConstraintIds,
     reasonCodes: uniqueReasons(reasons),
     calendarDeletionFailures,
     regenerated,
   };
+  if (repairedPlanIds.length || repairedSessionIds.length || repairedConstraintIds.length) {
+    console.info(`[PlanningReconciler] ${JSON.stringify(outcome)}`);
+  }
+  return outcome;
 }
 
 export async function reconcileActivePlanningState(
