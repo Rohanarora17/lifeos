@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+/* eslint-disable @typescript-eslint/no-require-imports */
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -14,6 +16,7 @@ const baseUrl = `http://127.0.0.1:${port}`;
 
 process.env.LIFEOS_DB_PATH = dbPath;
 process.env.LIFEOS_DISABLE_UIL_SYNTHESIS = '1';
+process.env.LIFEOS_DISABLE_SCHEDULER = 'true';
 process.env.LIFEOS_FAKE_GOOGLE_CALENDAR = '1';
 process.env.NEXT_TELEMETRY_DISABLED = '1';
 
@@ -112,20 +115,25 @@ async function seed() {
   `).run(today);
   const todayTaskId = Number(todayTask.lastInsertRowid);
   const todayPlan = db.prepare(`
-    INSERT INTO daily_plans (plan_date, sleep_time, wake_estimate, mood, energy, tomorrow_intention, status)
-    VALUES (?, '02:00', '10:30', 'low', 'low', 'Keep the current recovery block visible', 'active')
+    INSERT INTO daily_plans (
+      plan_date, sleep_time, wake_estimate, mood, energy, tomorrow_intention,
+      generation_source, status
+    ) VALUES (
+      ?, '02:00', '10:30', 'low', 'low', 'Keep the current recovery block visible',
+      'live_truth', 'active'
+    )
   `).run(today);
   const todayPlanId = Number(todayPlan.lastInsertRowid);
 
   db.prepare(`
     INSERT INTO planned_focus_sessions (
       id, plan_id, task_id, title, planned_start, planned_end, duration_minutes,
-      session_type, rule_json, reward_xp, reward_coins, status
+      session_type, rule_json, reward_xp, reward_coins, status, origin
     ) VALUES (
       'rendered-today-recovery-block', ?, ?, 'Recovery ZK flashcards',
       ?, ?, 25, 'study',
       '{"mode":"study","guidance":"Use a recovery-sized block; stop after the promised 25 minutes.","breakMinutes":8,"tools":["notes"],"rewardReason":"recovery mode shaped this visible block"}',
-      30, 15, 'planned'
+      30, 15, 'planned', 'deterministic_task'
     )
   `).run(todayPlanId, todayTaskId, isoMinutesFromNow(20), isoMinutesFromNow(45));
 
@@ -169,7 +177,7 @@ function waitForServer(server, url, timeoutMs = 45_000) {
         return;
       }
       try {
-        const res = await fetch(`${url}/api/dashboard`);
+        const res = await fetch(url);
         if (res.ok) {
           clearInterval(timer);
           resolve();
@@ -189,35 +197,8 @@ function waitForServer(server, url, timeoutMs = 45_000) {
 function runPlaywright(tomorrow) {
   const specPath = path.join(tempDir, 'rendered-adaptive-planner.spec.cjs');
   const configPath = path.join(tempDir, 'playwright.config.cjs');
-  const packageJsonPath = path.join(tempDir, 'package.json');
-  fs.writeFileSync(packageJsonPath, JSON.stringify({
-    private: true,
-    devDependencies: {
-      '@playwright/test': '1.61.1',
-    },
-  }, null, 2));
-
-  const install = spawnSync('npm', ['install', '--silent'], {
-    cwd: tempDir,
-    encoding: 'utf8',
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  if (install.stdout) process.stdout.write(install.stdout);
-  if (install.stderr) process.stderr.write(install.stderr);
-  assert(install.status === 0, `Failed to install temp Playwright runner with status ${install.status}.`);
-
-  const browserInstall = spawnSync(
-    path.join(tempDir, 'node_modules/.bin/playwright'),
-    ['install', 'chromium'],
-    {
-      cwd: tempDir,
-      encoding: 'utf8',
-      maxBuffer: 20 * 1024 * 1024,
-    }
-  );
-  if (browserInstall.stdout) process.stdout.write(browserInstall.stdout);
-  if (browserInstall.stderr) process.stderr.write(browserInstall.stderr);
-  assert(browserInstall.status === 0, `Failed to install Chromium for rendered smoke with status ${browserInstall.status}.`);
+  const playwrightBin = path.join(root, 'node_modules/.bin/playwright');
+  assert(fs.existsSync(playwrightBin), 'Project Playwright dependency is not installed. Run npm ci first.');
 
   fs.writeFileSync(specPath, `
 const { test, expect } = require('@playwright/test');
@@ -257,7 +238,7 @@ module.exports = {
 `);
 
   const result = spawnSync(
-    path.join(tempDir, 'node_modules/.bin/playwright'),
+    playwrightBin,
     ['test', '--config', configPath],
     {
       cwd: tempDir,
@@ -265,6 +246,7 @@ module.exports = {
         ...process.env,
         BASE_URL: baseUrl,
         PLAN_DATE: tomorrow,
+        NODE_PATH: path.join(root, 'node_modules'),
       },
       encoding: 'utf8',
       maxBuffer: 20 * 1024 * 1024,
@@ -280,13 +262,17 @@ async function main() {
   const { tomorrow } = await seed();
   const server = spawn(
     process.execPath,
-    [path.join(root, 'node_modules/next/dist/bin/next'), 'dev', '-p', String(port), '--hostname', '127.0.0.1'],
+    [
+      path.join(root, 'node_modules/next/dist/bin/next'),
+      'dev', '--webpack', '-p', String(port), '--hostname', '127.0.0.1',
+    ],
     {
       cwd: root,
       env: {
         ...process.env,
         LIFEOS_DB_PATH: dbPath,
         LIFEOS_DISABLE_UIL_SYNTHESIS: '1',
+        LIFEOS_DISABLE_SCHEDULER: 'true',
         LIFEOS_FAKE_GOOGLE_CALENDAR: '1',
         NEXT_TELEMETRY_DISABLED: '1',
       },

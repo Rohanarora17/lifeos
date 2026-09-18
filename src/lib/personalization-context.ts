@@ -73,6 +73,9 @@ export interface PersonalizationSnapshot {
       skippedToday: number;
       nextTitle: string | null;
       nextMinutes: number | null;
+      nextSessionId: string | null;
+      nextTaskId: number | null;
+      nextStart: string | null;
       recentFollowThroughRate: number | null;
     };
   };
@@ -198,14 +201,28 @@ function getPlannedFocusContext(date: string): PersonalizationSnapshot['today'][
     } | undefined;
 
     const next = getDb().prepare(`
-      SELECT pfs.title, pfs.duration_minutes as durationMinutes
+      SELECT
+        pfs.id as sessionId,
+        pfs.task_id as taskId,
+        t.title,
+        pfs.planned_start as plannedStart,
+        pfs.duration_minutes as durationMinutes
       FROM planned_focus_sessions pfs
       JOIN daily_plans dp ON dp.id = pfs.plan_id
+      JOIN tasks t ON t.id = pfs.task_id
       WHERE dp.plan_date = ?
         AND pfs.status IN ('planned', 'started')
+        AND pfs.invalidated_reason IS NULL
+        AND (pfs.status = 'started' OR julianday(pfs.planned_end) > julianday('now'))
       ORDER BY pfs.planned_start ASC
       LIMIT 1
-    `).get(date) as { title: string; durationMinutes: number } | undefined;
+    `).get(date) as {
+      sessionId: string;
+      taskId: number;
+      title: string;
+      plannedStart: string;
+      durationMinutes: number;
+    } | undefined;
 
     const recent = getDb().prepare(`
       SELECT
@@ -224,6 +241,9 @@ function getPlannedFocusContext(date: string): PersonalizationSnapshot['today'][
       skippedToday: Number(today?.skippedToday ?? 0),
       nextTitle: next?.title ?? null,
       nextMinutes: next?.durationMinutes ?? null,
+      nextSessionId: next?.sessionId ?? null,
+      nextTaskId: next?.taskId ?? null,
+      nextStart: next?.plannedStart ?? null,
       recentFollowThroughRate: resolved > 0 ? Number(recent?.completed ?? 0) / resolved : null,
     };
   } catch {
@@ -233,6 +253,9 @@ function getPlannedFocusContext(date: string): PersonalizationSnapshot['today'][
       skippedToday: 0,
       nextTitle: null,
       nextMinutes: null,
+      nextSessionId: null,
+      nextTaskId: null,
+      nextStart: null,
       recentFollowThroughRate: null,
     };
   }

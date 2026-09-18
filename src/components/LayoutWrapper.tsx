@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 import AdaptiveBandsLoader from './AdaptiveBandsLoader';
+import LifeOSSyncProvider from './LifeOSSyncProvider';
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
@@ -18,6 +19,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
         // Strip out the global sidebar and padding for the narrow Chrome Extension view
         return (
             <div className="min-h-screen bg-[#0a0a0c] text-white">
+                <LifeOSSyncProvider />
                 <AdaptiveBandsLoader onLoaded={handleBandsLoaded} />
                 <main className="p-4 h-full overflow-y-auto w-full">
                     {children}
@@ -29,6 +31,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     // Default LifeOS View
     return (
         <div className="min-h-screen">
+            <LifeOSSyncProvider />
             <AdaptiveBandsLoader onLoaded={handleBandsLoaded} />
             <button
                 type="button"

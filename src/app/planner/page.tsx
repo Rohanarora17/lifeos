@@ -47,6 +47,15 @@ interface CalendarEvent {
     ignoreReason?: string | null;
 }
 
+interface PlanConstraint {
+    id: string;
+    title: string;
+    start_time: string;
+    end_time: string;
+    source_text: string;
+    status: 'active' | 'superseded' | 'cancelled';
+}
+
 interface DailyPlan {
     id: number;
     plan_date: string;
@@ -63,6 +72,7 @@ interface PlannerPayload {
     success: boolean;
     plan: DailyPlan | null;
     sessions: PlannedFocusSession[];
+    constraints: PlanConstraint[];
     calendarEvents: CalendarEvent[];
     candidateTasks: CandidateTask[];
     personalization: {
@@ -77,7 +87,7 @@ interface PlannerPayload {
         wakeEstimate: string;
         mood: 'high' | 'medium' | 'low';
         energy: 'high' | 'medium' | 'low';
-        source: 'existing_plan' | 'latest_evening_checkin' | 'sleep_history' | 'adaptive_baseline';
+        source: 'existing_plan' | 'exact_date_checkin' | 'sleep_history' | 'adaptive_baseline';
         reason: string;
     };
     calendarConfigured: boolean;
@@ -644,6 +654,27 @@ export default function PlannerPage() {
                                 </div>
                             )}
                         </div>
+
+                        {data.constraints.length > 0 && (
+                            <div className="card" style={{ borderRadius: 8 }}>
+                                <div className="text-xs font-bold uppercase tracking-wide mb-3" style={{ color: 'var(--text-muted)' }}>Fixed Constraints</div>
+                                <div className="space-y-2">
+                                    {data.constraints.map(constraint => (
+                                        <div key={constraint.id} style={{ padding: '10px 11px', borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="text-sm font-semibold">{constraint.title}</div>
+                                                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                                                    {formatPlannerSessionStart(constraint.start_time)}-{timeValue(constraint.end_time)}
+                                                </div>
+                                            </div>
+                                            <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                                                Source: “{constraint.source_text}” · unavailable time, not focus work
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
 
                         <div className="card" style={{ borderRadius: 8 }}>
                             <div className="flex items-center justify-between mb-3">

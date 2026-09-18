@@ -222,12 +222,6 @@ export function getUpcomingCommitments(): SoftWatchCommitment[] {
     const windowEnd = Date.now() + 4 * 60 * 60_000; // next 4 hours
     db.prepare(`
       UPDATE soft_watch_commitments
-      SET status = 'expired'
-      WHERE status = 'pending'
-        AND intended_start_at < ?
-    `).run(windowStart);
-    db.prepare(`
-      UPDATE soft_watch_commitments
       SET status = 'dismissed'
       WHERE status = 'pending'
         AND id IN (
@@ -237,6 +231,18 @@ export function getUpcomingCommitments(): SoftWatchCommitment[] {
           WHERE pfs.status IN ('completed','skipped','cancelled')
         )
     `).run();
+    db.prepare(`
+      UPDATE soft_watch_commitments AS sw
+      SET status = 'expired'
+      WHERE sw.status = 'pending'
+        AND sw.intended_start_at < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM planned_focus_sessions pfs
+          WHERE pfs.soft_watch_id = sw.id
+            AND pfs.status IN ('planned','started')
+        )
+    `).run(windowStart);
     return db.prepare(`
       SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
         intended_start_at as intendedStartAt, planned_minutes as plannedMinutes,

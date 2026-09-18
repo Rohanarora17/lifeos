@@ -7,12 +7,15 @@ import {
   updatePlannedFocusSession,
   type NextDayPlanInput,
 } from '@/lib/next-day-planner';
+import { reconcilePlanningState } from '@/lib/planning-reconciliation';
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const date = url.searchParams.get('date') ?? undefined;
-    return NextResponse.json({ success: true, ...getNextDayPlan(date) });
+    const normalizedDate = date ?? new Date(Date.now() + 19_800_000).toISOString().slice(0, 10);
+    const reconciliation = await reconcilePlanningState(normalizedDate);
+    return NextResponse.json({ success: true, ...getNextDayPlan(normalizedDate), reconciliation });
   } catch (error) {
     return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
   }

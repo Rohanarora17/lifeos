@@ -47,6 +47,7 @@ export interface StartOptions {
   mood?: 'high' | 'medium' | 'low' | null;
   source?: 'dashboard' | 'extension' | 'voice' | 'api';
   sessionContext?: string;
+  plannedSessionId?: string | null;
 }
 
 export interface GuardianClientReadiness {

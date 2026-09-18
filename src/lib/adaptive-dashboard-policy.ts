@@ -18,7 +18,7 @@ export interface AdaptiveDashboardPolicy {
   primaryReason: string;
   focusTarget: {
     type: 'task' | 'session' | 'habit' | 'planning' | 'review';
-    id: number | null;
+    id: number | string | null;
     title: string;
   };
   sessionMinutes: number;
@@ -142,7 +142,11 @@ export function buildAdaptiveDashboardPolicy(input: DashboardPolicyInput): Adapt
       primaryReason: followThrough !== null && followThrough < 0.5
         ? `Recent planned-block follow-through is ${Math.round(followThrough * 100)}%, so the best move is to protect the block already scheduled.`
         : 'This is already on today’s plan, so the dashboard should protect the schedule before adding new work.',
-      focusTarget: { type: 'session', id: null, title: snapshot.today.plannedFocus.nextTitle },
+      focusTarget: {
+        type: 'session',
+        id: snapshot.today.plannedFocus.nextSessionId,
+        title: snapshot.today.plannedFocus.nextTitle,
+      },
       sessionMinutes: snapshot.today.plannedFocus.nextMinutes ?? session.minutes,
       sessionReason: 'inherited from the next planned focus block',
       ...notifications,

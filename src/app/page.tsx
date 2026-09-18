@@ -26,6 +26,9 @@ interface DashboardPersonalization {
     skippedToday: number;
     nextTitle: string | null;
     nextMinutes: number | null;
+    nextSessionId: string | null;
+    nextTaskId: number | null;
+    nextStart: string | null;
     recentFollowThroughRate: number | null;
   };
   standupGoal: string | null;
@@ -117,7 +120,7 @@ interface DashboardData {
       primaryReason: string;
       focusTarget: {
         type: 'task' | 'session' | 'habit' | 'planning' | 'review';
-        id: number | null;
+        id: number | string | null;
         title: string;
       };
       sessionMinutes: number;
@@ -402,13 +405,20 @@ export default function DashboardPage() {
     }
   }, [session.active, session.timeLeftSeconds, endSession]);
 
-  const startFocus = async (goalId: number | null, goalTitle: string | null, taskTitle: string | null, mins?: number) => {
+  const startFocus = async (
+    goalId: number | null,
+    goalTitle: string | null,
+    taskTitle: string | null,
+    mins?: number,
+    plannedSessionId?: string | null,
+  ) => {
     const durationMinutes = mins ?? data?.personalization?.recommendedSessionMinutes;
     await startSession({
       goalId: goalId ? String(goalId) : null,
       goalTitle,
       conceptNodeName: taskTitle || goalTitle || 'Focus Session',
       durationMinutes,
+      plannedSessionId,
     });
   };
 
@@ -417,10 +427,21 @@ export default function DashboardPage() {
     if (!policy) return;
 
     if (policy.focusTarget.type === 'task') {
-      if (policy.focusTarget.id) {
+      if (typeof policy.focusTarget.id === 'number') {
         sendRecommendationFeedback(policy.focusTarget.id, 'started', `started from dashboard policy: ${policy.primaryAction}`);
       }
       await startFocus(null, null, policy.focusTarget.title, policy.sessionMinutes);
+      return;
+    }
+
+    if (policy.focusTarget.type === 'session') {
+      await startFocus(
+        null,
+        null,
+        policy.focusTarget.title,
+        policy.sessionMinutes,
+        typeof policy.focusTarget.id === 'string' ? policy.focusTarget.id : null,
+      );
       return;
     }
 
