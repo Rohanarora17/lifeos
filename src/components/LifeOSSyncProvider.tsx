@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { shouldReloadForDomainRevision } from '@/lib/domain-sync';
 
 const ENDPOINT = '/api/system/revision';
@@ -9,10 +9,10 @@ const STORAGE_KEY = 'lifeos:domain-revision';
 
 export default function LifeOSSyncProvider() {
   const known = useRef<number | null>(null);
-  const tabId = useId();
 
   useEffect(() => {
     let active = true;
+    const tabId = crypto.randomUUID();
     const originalFetch = window.fetch.bind(window);
     const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
 
@@ -84,7 +84,7 @@ export default function LifeOSSyncProvider() {
       document.removeEventListener('visibilitychange', onVisible);
       channel?.close();
     };
-  }, [tabId]);
+  }, []);
 
   return null;
 }
