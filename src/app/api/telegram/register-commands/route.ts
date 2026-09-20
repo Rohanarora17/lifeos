@@ -1,32 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSetting } from '@/lib/db';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
-
-const COMMANDS = [
-  { command: 'menu', description: 'Show main menu with all buttons' },
-  { command: 'status', description: 'Current session status and energy' },
-  { command: 'tasks', description: "Today's ranked tasks" },
-  { command: 'task', description: 'Alias for /tasks' },
-  { command: 'habits', description: "Today's habit check-ins" },
-  { command: 'goals', description: 'Goal health status' },
-  { command: 'plan', description: 'Tomorrow adaptive plan' },
-  { command: 'standup', description: 'Morning standup brief' },
-  { command: 'morning', description: 'Start morning check-in' },
-  { command: 'journal', description: 'Start evening journal / reflection' },
-  { command: 'reflect', description: 'Alias for /journal evening reflection' },
-  { command: 'freshstart', description: 'Reset coaching history to today (ignore old past)' },
-  { command: 'review', description: 'Pending session reviews' },
-  { command: 'report', description: 'Daily productivity report' },
-  { command: 'calibration', description: 'Model calibration accuracy' },
-  { command: 'session', description: 'Start a focus session: /session Topic name' },
-  { command: 'endsession', description: 'End current focus session' },
-  { command: 'addtask', description: 'Create a task: /addtask Title here' },
-  { command: 'deletetask', description: 'Delete a task: /deletetask search term' },
-  { command: 'addgoal', description: 'Create a goal: /addgoal Title here' },
-  { command: 'addhabit', description: 'Create a habit: /addhabit Name here' },
-  { command: 'deletehabit', description: 'Archive a habit: /deletehabit search term' },
-  { command: 'help', description: 'Full command reference' },
-];
+import { registerTelegramCommands, TELEGRAM_COMMANDS } from '@/lib/telegram-command-catalog';
 
 function telegramTokenError(): string {
   try {
@@ -53,18 +28,12 @@ export async function POST() {
     return NextResponse.json({ error: telegramTokenError() }, { status: 400 });
   }
 
-  const res = await fetch(`https://api.telegram.org/bot${tok}/setMyCommands`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ commands: COMMANDS }),
-  });
-
-  const data = await res.json();
-  if (!data.ok) {
-    return NextResponse.json({ error: data.description }, { status: 500 });
+  const result = await registerTelegramCommands(tok);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.description || 'Telegram rejected the command list.' }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true, registered: COMMANDS.length, commands: COMMANDS });
+  return NextResponse.json({ success: true, registered: TELEGRAM_COMMANDS.length, commands: TELEGRAM_COMMANDS });
 }
 
 export async function GET() {

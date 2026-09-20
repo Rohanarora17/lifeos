@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import process from 'node:process';
+import { startTelegramPolling } from './lib/telegram-update-forwarder.mjs';
 
 const APP_URL = process.env.LIFEOS_APP_URL || 'http://127.0.0.1:3000';
 const PING_INTERVAL_MS = Number(process.env.LIFEOSD_PING_MS || '300000'); // 5 min default
@@ -31,6 +32,7 @@ console.log(`[lifeosd] telegram=${BOT_TOKEN ? 'configured' : 'not configured'}`)
 
 let appWasDown = false;
 let lastHeapAlertAt = 0;
+let telegramCommandsRegistered = false;
 const HEAP_ALERT_THRESHOLD_MB = Number(process.env.LIFEOSD_HEAP_ALERT_MB || '400');
 const HEAP_ALERT_COOLDOWN_MS = 60 * 60 * 1000; // max one heap alert per hour
 
@@ -44,6 +46,19 @@ async function pingGuardian(attempt = 0) {
     }
     const pingData = await pingRes.json();
     const pending = (pingData.commitments ?? []).filter(c => c.status === 'pending').length;
+
+    if (BOT_TOKEN && !telegramCommandsRegistered) {
+      try {
+        const commandsRes = await fetch(`${APP_URL}/api/telegram/register-commands`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(8000),
+        });
+        telegramCommandsRegistered = commandsRes.ok;
+        if (!commandsRes.ok) console.error(`[telegram] command registration failed: HTTP ${commandsRes.status}`);
+      } catch (error) {
+        console.error('[telegram] command registration unavailable; retrying on the next health cycle:', String(error));
+      }
+    }
 
     // Health check — fetch telemetry every ping
     let health = null;
@@ -115,7 +130,7 @@ setInterval(() => void pingGuardian(), PING_INTERVAL_MS);
 
 if (!BOT_TOKEN) {
   console.log('[telegram] BOT_TOKEN not set — polling disabled');
-} else {
+} else if (process.env.LIFEOS_ENABLE_LEGACY_TELEGRAM_POLLER === '1') {
   let offset = 0;
   let knownChatId = null;
 
@@ -695,4 +710,6 @@ if (!BOT_TOKEN) {
   }
 
   void startPolling();
+} else {
+  void startTelegramPolling({ appUrl: APP_URL, botToken: BOT_TOKEN });
 }

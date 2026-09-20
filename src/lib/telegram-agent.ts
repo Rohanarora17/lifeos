@@ -27,6 +27,8 @@ import { buildAdaptiveTaskDefaults } from './adaptive-task-defaults';
 import { generateNextDayPlan } from './next-day-planner';
 import { getTaskTimeProgress } from './task-time-sessions';
 import { VisionClientUnavailableError } from './guardian-client-status';
+import { formatTelegramCommandHelp } from './telegram-command-catalog';
+import { LIFEOS_TIME_ZONE, lifeosDateKey, lifeosTime } from './timezone';
 
 // Track LLM-parsed message count for memory extraction cadence
 let tgLlmTurnCount = 0;
@@ -74,8 +76,7 @@ function normalizeTelegramTime(value: unknown): string | null {
 }
 
 function nextIsoDate(): string {
-    const tomorrow = new Date(Date.now() + 19_800_000 + 86_400_000);
-    return tomorrow.toISOString().slice(0, 10);
+    return lifeosDateKey(Date.now() + 86_400_000);
 }
 
 function formatActiveSessionConflict(session: NonNullable<ReturnType<typeof getActiveGuardianSession>>): string {
@@ -152,6 +153,7 @@ export function formatTelegramMenuMessage(snapshot = buildPersonalizationSnapsho
 })): string {
     const lines = [
         `🛡️ <b>LifeOS Guardian</b>`,
+        `<i>Live as of ${lifeosTime(Date.now())} · ${LIFEOS_TIME_ZONE}</i>`,
         `<i>${formatCommandMomentLine(snapshot)}</i>`,
     ];
 
@@ -627,7 +629,7 @@ function fetchTasksData() {
 function fetchHabitsData() {
     try {
         const db = getDb();
-        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+        const today = lifeosDateKey();
         return db.prepare(`
       SELECT h.name as title, h.goal_metric, h.goal_target as target_value,
              COALESCE(hc.completed, 0) as completed,
@@ -650,7 +652,7 @@ function fetchStandupData() {
     try {
         const { computeEnergyComposite } = require('./energy-composite') as typeof import('./energy-composite');
         const { rankTasksForSession } = require('./session-task-ranker') as typeof import('./session-task-ranker');
-        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+        const today = lifeosDateKey();
         const goal = getSetting('standup_goal_today');
         const goalDate = getSetting('standup_goal_date');
         const mood = getSetting('standup_mood_today');
@@ -673,8 +675,7 @@ function fetchStandupData() {
             weakConcepts = weakConcepts.sort((a, b) => a.mastery - b.mastery).slice(0, 3);
         } catch { /* non-fatal */ }
 
-        const ist = Date.now() + 19800000;
-        const today2 = new Date(ist).toISOString().slice(0, 10);
+        const today2 = lifeosDateKey();
 
         // Upcoming deadlines this week
         let deadlines: Array<{ id: number; title: string; due_date: string; due_time: string | null; task_type: string; course: string | null; daysLeft: number }> = [];
@@ -841,6 +842,10 @@ export async function handleTelegramCommand(text: string): Promise<void> {
         await executeAction('NEXT_DAY_PLAN', '', {});
         return;
     }
+    if (cmdLower === '/weekly') {
+        await executeAction('WEEKLY_PLAN', '', {});
+        return;
+    }
     if (cmdLower === '/standup') {
         await executeAction('STANDUP', '', {});
         return;
@@ -856,7 +861,7 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     if (cmdLower === '/report') {
         // Reuse the action:report webhook path via executeAction-like call
         const db = getDb();
-        const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+        const today = lifeosDateKey();
         const sessRow = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(final_focus_score),0) as avg_focus, COALESCE(SUM(elapsed_minutes),0) as total_minutes FROM guardian_session_summaries WHERE date(completed_at,'localtime')=?`).get(today) as { count: number; avg_focus: number; total_minutes: number };
         const tasksRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as done FROM tasks WHERE status IN ('done','todo','doing')`).get() as { total: number; done: number };
         const habitsRow = db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN hc.completed=1 THEN 1 ELSE 0 END) as done FROM habits h LEFT JOIN habit_checkins hc ON hc.habit_id=h.id AND hc.date=? WHERE h.archived=0`).get(today) as { total: number; done: number };
@@ -953,7 +958,11 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     if (cmdLower === '/freshstart' || cmdLower.startsWith('/freshstart ')) {
         const { setHistoryStartDate, getHistoryEpochInfo } = require('./history-epoch') as typeof import('./history-epoch');
         const arg = cmd.slice('/freshstart'.length).trim();
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(arg) ? arg : undefined;
+        if (arg && !/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
+            await sendTelegram('Usage: <code>/freshstart</code> or <code>/freshstart YYYY-MM-DD</code>', 'HTML', FULL_MENU_KEYBOARD);
+            return;
+        }
+        const date = arg || undefined;
         try {
             const info = date ? setHistoryStartDate(date) : setHistoryStartDate();
             const { touchIntelligence } = require('./intelligence') as typeof import('./intelligence');
@@ -992,11 +1001,21 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     // /addgoal <title>
     if (cmdLower.startsWith('/addgoal ')) {
         const title = cmd.slice('/addgoal '.length).trim();
-        await executeAction('CREATE_GOAL', '', { title });
+        await executeAction('CREATE_GOAL', '', { title, type: 'general' });
         return;
     }
     if (cmdLower === '/addgoal') {
         await sendTelegram('Usage: <code>/addgoal Goal title here</code>', 'HTML');
+        return;
+    }
+    // /deletegoal <search>
+    if (cmdLower.startsWith('/deletegoal ')) {
+        const searchTitle = cmd.slice('/deletegoal '.length).trim();
+        await executeAction('DELETE_GOAL', '', { searchTitle });
+        return;
+    }
+    if (cmdLower === '/deletegoal') {
+        await sendTelegram('Usage: <code>/deletegoal partial goal name</code>', 'HTML');
         return;
     }
     // /addhabit <name>
@@ -1013,6 +1032,10 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     if (cmdLower.startsWith('/deletehabit ')) {
         const searchName = cmd.slice('/deletehabit '.length).trim();
         await executeAction('DELETE_HABIT', '', { searchName });
+        return;
+    }
+    if (cmdLower === '/deletehabit') {
+        await sendTelegram('Usage: <code>/deletehabit partial habit name</code>', 'HTML');
         return;
     }
     // /session <topic> or just /session
@@ -1034,13 +1057,11 @@ export async function handleTelegramCommand(text: string): Promise<void> {
     }
     if (cmdLower === '/help') {
         await sendTelegram(
-            `🛡️ <b>LifeOS Commands</b>\n\n` +
-            `<b>Sessions</b>\n/session &lt;topic&gt; — Start focus session\n/endsession — End current session\n/status — Current session status\n\n` +
-            `<b>Check-ins</b>\n/morning — Morning check-in\n/journal — Evening journal (/reflect also works)\n/freshstart — Start coaching history from today (ignore pre-epoch past)\n\n` +
-            `<b>View</b>\n/tasks — Today's ranked tasks\n/habits — Habit check-ins\n/goals — Goal health status\n/plan — Tomorrow plan\n/standup — Standup brief\n/review — Pending reviews\n/report — Daily report\n/calibration — Model accuracy\n\n` +
-            `<b>Create</b>\n/addtask &lt;title&gt;\n/addgoal &lt;title&gt;\n/addhabit &lt;name&gt;\n\n` +
-            `<b>Delete</b>\n/deletetask &lt;search&gt;\n/deletehabit &lt;search&gt;\n\n` +
-            `Or just send a natural language message — Jarvis understands context.`,
+            `🛡️ <b>LifeOS Commands</b>\n<i>Live as of ${lifeosTime(Date.now())} · ${LIFEOS_TIME_ZONE}</i>\n\n` +
+            formatTelegramCommandHelp()
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;'),
             'HTML', FULL_MENU_KEYBOARD
         );
         return;
@@ -1359,7 +1380,14 @@ export async function executeAction(
             const moodRaw = payload.mood as string | undefined;
             const mood = (moodRaw === 'high' || moodRaw === 'medium' || moodRaw === 'low') ? moodRaw : undefined;
             try {
-                startGuardianSession({ topic: title, durationMinutes: duration, mood, source: 'api' });
+                startGuardianSession({
+                    topic: title,
+                    durationMinutes: duration,
+                    mood,
+                    source: 'api',
+                    plannedSessionId: (payload.plannedSessionId as string | undefined) || null,
+                    softWatchId: (payload.softWatchId as string | undefined) || null,
+                });
             } catch (error) {
                 if (!(error instanceof VisionClientUnavailableError)) throw error;
                 const recovery = error.readiness.screenRecordingStatus !== 'authorized'
@@ -1430,7 +1458,7 @@ export async function executeAction(
             const title = payload.habitTitle as string | undefined;
             if (!title) { await sendTelegram(formatTelegramLookupPrompt('habit', 'log'), 'HTML', FULL_MENU_KEYBOARD); break; }
             const db = getDb();
-            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const today = lifeosDateKey();
             try {
                 const habit = db.prepare(`SELECT id FROM habits WHERE archived = 0 AND LOWER(name) LIKE ? LIMIT 1`).get(`%${title.toLowerCase()}%`) as { id: number } | undefined;
                 if (!habit) { await sendTelegram(formatTelegramLookupMiss('habit', title), 'HTML', FULL_MENU_KEYBOARD); break; }
@@ -1455,7 +1483,7 @@ export async function executeAction(
               await sendTelegram('What is your main focus goal for today? (e.g. "Finish ZK proofs chapter" or "Complete 3 DSA problems")', 'HTML', FULL_MENU_KEYBOARD);
               break;
             }
-            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const today = lifeosDateKey();
             setSetting('standup_goal_today', rawGoal);
             setSetting('standup_goal_date', today);
             if (mood) setSetting('standup_mood_today', mood);
@@ -1599,7 +1627,7 @@ export async function executeAction(
                     elapsedMinutes: Math.max(0, Math.round((Date.now() - session.startedAt) / 60_000)),
                 } : null,
             });
-            const lines: string[] = [];
+            const lines: string[] = [`<i>Live as of ${lifeosTime(Date.now())} · ${LIFEOS_TIME_ZONE}</i>`];
 
             if (session) {
                 const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
@@ -1710,7 +1738,7 @@ export async function executeAction(
             const task = db.prepare(`SELECT id, title FROM tasks WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!task) { await sendTelegram(formatTelegramLookupMiss('task', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM tasks WHERE id = ?`).run(task.id);
-            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const today = lifeosDateKey();
             db.prepare('UPDATE daily_scores SET ai_morning_brief = NULL WHERE date = ?').run(today);
             await sendTelegram(`🗑️ Deleted task: <b>${task.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;
@@ -1742,7 +1770,7 @@ export async function executeAction(
             const goal = db.prepare(`SELECT id, title FROM goals WHERE LOWER(title) LIKE ? LIMIT 1`).get(`%${search.toLowerCase()}%`) as { id: number; title: string } | undefined;
             if (!goal) { await sendTelegram(formatTelegramLookupMiss('goal', search), 'HTML', FULL_MENU_KEYBOARD); break; }
             db.prepare(`DELETE FROM goals WHERE id = ?`).run(goal.id);
-            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const today = lifeosDateKey();
             db.prepare('UPDATE daily_scores SET ai_morning_brief = NULL WHERE date = ?').run(today);
             await sendTelegram(`🗑️ Deleted goal: <b>${goal.title}</b>`, 'HTML', FULL_MENU_KEYBOARD);
             break;

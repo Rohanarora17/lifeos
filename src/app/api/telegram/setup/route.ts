@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
-import { captureChatId, formatTelegramSetupConfirmation, sendTelegram } from '@/lib/telegram';
+import { formatTelegramSetupConfirmation, sendTelegram } from '@/lib/telegram';
 import { buildPersonalizationSnapshot } from '@/lib/personalization-context';
+import { getSetting } from '@/lib/db';
+import { registerTelegramCommands } from '@/lib/telegram-command-catalog';
 
 function noTelegramMessageError(): string {
   try {
@@ -21,18 +23,25 @@ function noTelegramMessageError(): string {
   }
 }
 
-// POST: Query Telegram getUpdates to capture chat ID, then send a test message.
-// Call this after sending /start to your bot.
+// POST: Confirm an already-bound chat. The daemon owns getUpdates exclusively;
+// the webhook binds the first private /start without a competing poll request.
 export async function POST() {
-  const chatId = await captureChatId();
+  const chatId = process.env.TELEGRAM_CHAT_ID || getSetting('telegram_chat_id');
   if (!chatId) {
     return NextResponse.json(
       { error: noTelegramMessageError() },
-      { status: 404 }
+      { status: 409 }
     );
   }
 
+  const token = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
+  const registration = await registerTelegramCommands(token);
   await sendTelegram(formatTelegramSetupConfirmation());
 
-  return NextResponse.json({ success: true, chatId });
+  return NextResponse.json({
+    success: true,
+    chatId,
+    commandsRegistered: registration.ok,
+    commandRegistrationError: registration.ok ? null : registration.description,
+  });
 }

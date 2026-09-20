@@ -22,6 +22,15 @@ export function lifeosTime(value: Date | number, options?: Intl.DateTimeFormatOp
   });
 }
 
+export function lifeosHour(value: Date | number = new Date()) {
+  const date = typeof value === 'number' ? new Date(value) : value;
+  return Number(new Intl.DateTimeFormat('en-GB', {
+    timeZone: LIFEOS_TIME_ZONE,
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).format(date));
+}
+
 function zonedMidnightUtc(dateKey: string) {
   const [year, month, day] = dateKey.split('-').map(Number);
   if (!year || !month || !day) throw new Error(`Invalid LifeOS date: ${dateKey}`);

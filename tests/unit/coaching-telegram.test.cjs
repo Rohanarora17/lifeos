@@ -99,4 +99,26 @@ describe('closed-loop coaching Telegram controls', () => {
     assert.match(updated.blockerText, /reach for my phone/i);
     assert.equal(getSetting('coaching_pending_commitment_blocker'), '');
   });
+
+  it('rejects an old intervention button after the commitment is completed', async () => {
+    const seeded = await seedMissedCommitment();
+    db.prepare("UPDATE coaching_commitments SET state = 'completed' WHERE id = ?").run(seeded.commitment.id);
+    const before = commitments.getCommitment(seeded.commitment.id);
+
+    await webhookPOST(new Request('http://lifeos.test/api/telegram/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        callback_query: {
+          id: 'callback-completed',
+          data: `commit:snooze:${seeded.commitment.id}`,
+          message: { chat: { id: 12345 } },
+        },
+      }),
+    }));
+
+    const after = commitments.getCommitment(seeded.commitment.id);
+    assert.equal(after.state, 'completed');
+    assert.equal(after.plannedStartAt, before.plannedStartAt);
+  });
 });

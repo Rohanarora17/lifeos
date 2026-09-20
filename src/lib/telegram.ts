@@ -1,6 +1,7 @@
 import { getSetting, setSetting } from './db';
 import { classifyAccuracy, getAdaptiveBands } from './adaptive-bands';
 import { buildPersonalizationSnapshot, type PersonalizationSnapshot } from './personalization-context';
+import { lifeosDateKey, lifeosTime } from './timezone';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -173,22 +174,25 @@ export const MORNING_BRIEF_KEYBOARD: InlineKeyboard = [
   ],
 ];
 
-export const ALERT_KEYBOARD: InlineKeyboard = [
-  [
-    { text: '✅ Dismiss', callback_data: 'action:dismiss_alert' },
-    { text: '📊 Dashboard', callback_data: 'action:status' },
-  ],
-];
+export function buildAlertKeyboard(alertId: number): InlineKeyboard {
+  return [
+    [
+      { text: '👍 Helpful', callback_data: `alert:helpful:${alertId}` },
+      { text: '👎 Not helpful', callback_data: `alert:not_helpful:${alertId}` },
+    ],
+    [{ text: '✅ Dismiss', callback_data: `alert:dismiss:${alertId}` }],
+  ];
+}
 
-export const SOFT_WATCH_KEYBOARD: InlineKeyboard = [
-  [
-    { text: '🚀 Start Now', callback_data: 'action:new_session' },
-    { text: '⏰ Snooze', callback_data: 'action:snooze' },
-  ],
-  [
-    { text: '❌ Cancel', callback_data: 'action:cancel_softwatch' },
-  ],
-];
+export function buildSoftWatchKeyboard(commitmentId: string): InlineKeyboard {
+  return [
+    [
+      { text: '🚀 Start Now', callback_data: `softwatch:start:${commitmentId}` },
+      { text: '⏰ Snooze', callback_data: `softwatch:snooze:${commitmentId}` },
+    ],
+    [{ text: '❌ Cancel', callback_data: `softwatch:cancel:${commitmentId}` }],
+  ];
+}
 
 export const DAILY_REPORT_KEYBOARD: InlineKeyboard = [
   [
@@ -570,7 +574,7 @@ export function formatWeeklyPlanSummary(plan: {
   }>;
   summary: string;
 }): string {
-  const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+  const today = lifeosDateKey();
   const lines = [`🗓 <b>Weekly Plan</b>`, `<i>${plan.summary}</i>`, ``];
   for (const day of plan.days) {
     if (day.tasks.length === 0) continue;
@@ -609,7 +613,7 @@ export function formatNextDayPlanSummary(plan: {
     lines.push(`No focus blocks scheduled yet. ${emptySignalLine(snapshot, 'tomorrow')}`);
   } else {
     for (const session of plan.sessions.slice(0, 6)) {
-      const time = new Date(session.planned_start).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const time = lifeosTime(new Date(session.planned_start), { hour12: false });
       const calendar = plan.calendarConfigured ? ` · calendar ${session.calendar_status}` : '';
       lines.push(`• <b>${time}</b> ${session.title} — ${session.duration_minutes}m, ${session.reward_xp} XP / ${session.reward_coins} coins${calendar}`);
     }
@@ -794,8 +798,7 @@ export function formatTasksList(
     return [emptyTasksLine(snapshot), modeLine(snapshot)].filter(Boolean).join('\n');
   }
 
-  const ist = Date.now() + 19800000;
-  const today = new Date(ist).toISOString().slice(0, 10);
+  const today = lifeosDateKey();
 
   const lines = [
     modeLine(snapshot),

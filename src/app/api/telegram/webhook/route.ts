@@ -17,8 +17,9 @@ import {
     endGuardianSession,
     getActiveGuardianSession,
     applyUserClassificationFeedback,
-    dismissCurrentSoftWatchCommitment,
-    snoozeCurrentSoftWatchCommitment,
+    dismissSoftWatchCommitment,
+    getSoftWatchCommitment,
+    snoozeSoftWatchCommitment,
 } from '@/lib/guardian-runtime';
 import { learnMemory } from '@/lib/behavior';
 import { getPendingCheckinType, handleMorningCheckinResponse, handleEveningReflectionResponse, getRecentUnansweredFollowUp, handleOverrideFollowupResponse } from '@/lib/checkin';
@@ -42,9 +43,12 @@ import {
     recordCommitmentBlocker,
     rescheduleCommitment,
 } from '@/lib/coaching-commitments';
+import { registerTelegramCommands } from '@/lib/telegram-command-catalog';
+import { lifeosDateKey, lifeosHour, lifeosTime } from '@/lib/timezone';
+import { claimTelegramUpdate, completeTelegramUpdate } from '@/lib/telegram-update-integrity';
 
 function tomorrowIsoDate(): string {
-    return new Date(Date.now() + 19800000 + 86400_000).toISOString().slice(0, 10);
+    return lifeosDateKey(Date.now() + 86_400_000);
 }
 
 function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_active_session' | 'no_feedback_session' | 'no_softwatch' | 'review_missing' | 'session_start_failed' | 'task_missing' | 'voice_download_failed' | 'voice_transcribe_failed' | 'screentime_parse_failed'): string {
@@ -121,13 +125,41 @@ function webhookPersonalizedLine(kind: 'alert_dismissed' | 'no_active_session' |
 
 // POST: Telegram Webhook Entrypoint
 export async function POST(request: Request) {
+    let claimedUpdateId: number | null = null;
+    let processingFailed = false;
     try {
         const body = await request.json();
-        const authorizedChatId = getSetting('telegram_chat_id');
+        const updateId = Number(body.update_id);
+        if (Number.isSafeInteger(updateId) && updateId >= 0) {
+            const claim = claimTelegramUpdate(updateId);
+            if (claim === 'completed') {
+                return NextResponse.json({ ok: true, duplicate: true });
+            }
+            if (claim === 'in_progress') {
+                return NextResponse.json({ ok: false, retry: true }, { status: 503 });
+            }
+            claimedUpdateId = updateId;
+        }
+        let authorizedChatId = process.env.TELEGRAM_CHAT_ID || getSetting('telegram_chat_id');
 
         if (!authorizedChatId) {
-            console.warn('[Telegram Webhook] No configured chat ID.');
-            return NextResponse.json({ ok: true });
+            const candidateChatId = body.message?.chat?.id;
+            const candidateText = String(body.message?.text || '');
+            const isPrivateStart = candidateChatId &&
+                (body.message?.chat?.type === undefined || body.message?.chat?.type === 'private') &&
+                /^\s*\/start(?:@[^\s]+)?\s*$/i.test(candidateText);
+            if (!isPrivateStart) {
+                console.warn('[Telegram Webhook] No configured chat ID; waiting for a private /start.');
+                return NextResponse.json({ ok: true });
+            }
+            authorizedChatId = String(candidateChatId);
+            setSetting('telegram_chat_id', authorizedChatId);
+            console.log('[Telegram Webhook] Bound first private /start chat.');
+            const botToken = process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token');
+            const registration = await registerTelegramCommands(botToken);
+            if (!registration.ok) {
+                console.warn('[Telegram Webhook] Command registration failed:', registration.description);
+            }
         }
 
         // Handle Callback Queries (Button Clicks)
@@ -274,7 +306,7 @@ export async function POST(request: Request) {
 
             // Check if there's a pending check-in response or morning checkin text
             const pendingCheckin = getPendingCheckinType();
-            const nowIstHour = new Date(Date.now() + 19800000).getUTCHours();
+            const nowIstHour = lifeosHour();
             // Require more than a bare trigger word so "morning" alone starts check-in, not answers it
             const looksLikeMorningAnswer = (
                 nowIstHour >= 4 && nowIstHour <= 12 &&
@@ -356,8 +388,13 @@ export async function POST(request: Request) {
 
         return NextResponse.json({ ok: true });
     } catch (error) {
+        processingFailed = true;
         console.error('[Telegram Webhook] Error:', error);
         return NextResponse.json({ ok: false, error: 'Internal error' }, { status: 500 });
+    } finally {
+        if (claimedUpdateId !== null && !processingFailed) {
+            completeTelegramUpdate(claimedUpdateId);
+        }
     }
 }
 
@@ -421,6 +458,10 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
             await handleCoachCallback(rest);
         } else if (type === 'commit') {
             await handleCommitmentCallback(rest);
+        } else if (type === 'alert') {
+            await handleAlertCallback(rest);
+        } else if (type === 'softwatch') {
+            await handleSoftWatchCallback(rest);
         } else {
             await sendTelegram(`Unknown callback type: ${type}`, '', FULL_MENU_KEYBOARD);
         }
@@ -428,6 +469,69 @@ async function handleCallbackQuery(callbackId: string, actionData: string) {
         console.error(`[Callback] Handler threw for "${actionData}":`, err);
         await sendTelegram(`⚠️ Something went wrong processing that button.\n<code>${String(err).slice(0, 100)}</code>`, 'HTML', FULL_MENU_KEYBOARD).catch(() => {});
     }
+}
+
+async function handleAlertCallback(payload: string) {
+    const colonIdx = payload.lastIndexOf(':');
+    const action = colonIdx === -1 ? '' : payload.slice(0, colonIdx);
+    const alertId = Number(colonIdx === -1 ? '' : payload.slice(colonIdx + 1));
+    const feedback = action === 'helpful' ? 'helpful'
+        : action === 'not_helpful' ? 'not_helpful'
+            : action === 'dismiss' ? 'dismissed'
+                : null;
+    if (!feedback || !Number.isInteger(alertId) || alertId <= 0) {
+        await sendTelegram('That alert button is invalid or expired. Open the dashboard for current alerts.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+    const { recordAlertFeedback } = await import('@/lib/notifications');
+    const alert = recordAlertFeedback(alertId, feedback);
+    if (!alert) {
+        await sendTelegram('That alert no longer exists. Open the dashboard for current alerts.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+    const message = feedback === 'helpful' ? '👍 Marked helpful.'
+        : feedback === 'not_helpful' ? '👎 Marked not helpful. Future alert calibration will use this.'
+            : '✅ Alert dismissed.';
+    await sendTelegram(message, 'HTML', FULL_MENU_KEYBOARD);
+}
+
+async function handleSoftWatchCallback(payload: string) {
+    const colonIdx = payload.indexOf(':');
+    const action = colonIdx === -1 ? '' : payload.slice(0, colonIdx);
+    const commitmentId = colonIdx === -1 ? '' : payload.slice(colonIdx + 1);
+    const commitment = commitmentId ? getSoftWatchCommitment(commitmentId) : null;
+    if (!commitment || commitment.status !== 'pending') {
+        await sendTelegram('That reminder is expired or no longer pending. Use /status for the live state.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+
+    if (action === 'start') {
+        await executeAction('START_SESSION', '', {
+            targetTitle: commitment.targetTitle,
+            durationMinutes: commitment.plannedMinutes,
+            softWatchId: commitment.id,
+        });
+        return;
+    }
+    if (action === 'snooze') {
+        const result = snoozeSoftWatchCommitment(commitment.id);
+        await sendTelegram(
+            result.ok
+                ? `⏰ Snoozed <b>${result.targetTitle}</b> for ${result.snoozeMinutes} min. This button applies only to that reminder.`
+                : 'That reminder is expired or no longer pending.',
+            'HTML', FULL_MENU_KEYBOARD,
+        );
+        return;
+    }
+    if (action === 'cancel') {
+        const dismissed = dismissSoftWatchCommitment(commitment.id);
+        await sendTelegram(
+            dismissed ? `❌ Cancelled soft watch: <b>${commitment.targetTitle}</b>.` : 'That reminder is expired or no longer pending.',
+            'HTML', FULL_MENU_KEYBOARD,
+        );
+        return;
+    }
+    await sendTelegram('That reminder action is invalid or expired. Use /status for the live state.', 'HTML', FULL_MENU_KEYBOARD);
 }
 
 async function handleCommitmentCallback(payload: string) {
@@ -459,7 +563,7 @@ async function handleCommitmentCallback(payload: string) {
             return;
         }
         await sendTelegram(
-            `⏰ Rescheduled for <b>${new Date(commitment.plannedStartAt).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}</b>. I will evaluate the next start, not keep repeating this reminder.`,
+            `⏰ Rescheduled for <b>${lifeosTime(new Date(commitment.plannedStartAt), { hour: 'numeric' })}</b>. I will evaluate the next start, not keep repeating this reminder.`,
             'HTML', FULL_MENU_KEYBOARD
         );
         return;
@@ -608,7 +712,7 @@ async function handleActionCallback(payload: string) {
 
         case 'report': {
             const db = getDb();
-            const today = new Date(Date.now() + 19800000).toISOString().slice(0, 10);
+            const today = lifeosDateKey();
 
             const sessionsRow = db.prepare(`
         SELECT COUNT(*) as count,
@@ -683,31 +787,19 @@ async function handleActionCallback(payload: string) {
         }
 
         case 'dismiss_alert':
-            await sendTelegram(webhookPersonalizedLine('alert_dismissed'), 'HTML', FULL_MENU_KEYBOARD);
+            await sendTelegram('That older alert button has no exact alert ID and is expired. Current alerts use exact feedback buttons.', 'HTML', FULL_MENU_KEYBOARD);
             break;
 
         case 'cancel_softwatch':
-            {
-                const commitment = dismissCurrentSoftWatchCommitment();
-                await sendTelegram(
-                    commitment ? `❌ Cancelled soft watch: <b>${commitment.targetTitle}</b>.` : webhookPersonalizedLine('no_softwatch'),
-                    'HTML',
-                    FULL_MENU_KEYBOARD
-                );
-            }
+            await sendTelegram('That older reminder button has no exact commitment ID and is expired. Use the latest reminder.', 'HTML', FULL_MENU_KEYBOARD);
             break;
 
         case 'snooze':
-            {
-                const result = snoozeCurrentSoftWatchCommitment();
-                await sendTelegram(
-                    result.ok
-                        ? `⏰ Snoozed <b>${result.targetTitle}</b> for ${result.snoozeMinutes} min.\n<i>${result.reason}</i>`
-                        : webhookPersonalizedLine('no_softwatch'),
-                    'HTML',
-                    FULL_MENU_KEYBOARD
-                );
-            }
+            await sendTelegram('That older reminder button has no exact commitment ID and is expired. Use the latest reminder.', 'HTML', FULL_MENU_KEYBOARD);
+            break;
+
+        case 'cancel':
+            await sendTelegram('Cancelled. Use /menu for current actions.', 'HTML', FULL_MENU_KEYBOARD);
             break;
 
         default:
@@ -723,10 +815,17 @@ async function handleReviewCallback(rest: string) {
     const subAction = rest.slice(0, colonIdx);
     const id = parseInt(rest.slice(colonIdx + 1), 10);
     if (isNaN(id)) { await sendTelegram('Invalid review ID.', ''); return; }
+    if (!['done', 'blocked', 'skip'].includes(subAction)) {
+        await sendTelegram('That review action is invalid or expired.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
 
     const db = getDb();
-    const row = db.prepare(`SELECT id, task_id FROM session_completions WHERE id = ?`).get(id) as { id: number; task_id: number | null } | undefined;
-    if (!row) { await sendTelegram(webhookPersonalizedLine('review_missing'), 'HTML', FULL_MENU_KEYBOARD); return; }
+    const row = db.prepare(`SELECT id, task_id FROM session_completions WHERE id = ? AND status = 'pending'`).get(id) as { id: number; task_id: number | null } | undefined;
+    if (!row) {
+        await sendTelegram('That review is already handled or expired. Open /review for the live queue.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
 
     let msg = '';
     if (subAction === 'done') {
@@ -882,7 +981,7 @@ async function handleClassifyCallback(payload: string) {
 
     const db = getDb();
     const act = db.prepare(`
-        SELECT id, domain, category, subcategory, ai_classification, classification_confidence
+        SELECT id, domain, category, subcategory, ai_classification, classification_confidence, classification_reviewed
         FROM activities WHERE id = ?
     `).get(actId) as {
         id: number;
@@ -891,9 +990,18 @@ async function handleClassifyCallback(payload: string) {
         subcategory: string;
         ai_classification: string;
         classification_confidence: string;
+        classification_reviewed: number;
     } | undefined;
 
     if (!act) { await sendTelegram('⏰ This review has expired — the session data is no longer available. Run a new focus session to get fresh calibration prompts.', '', FULL_MENU_KEYBOARD); return; }
+    if (act.classification_reviewed) {
+        await sendTelegram('That classification was already reviewed. Use the latest calibration prompt.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
+    if (!['c', 'f', 's'].includes(action)) {
+        await sendTelegram('That classification action is invalid or expired.', 'HTML', FULL_MENU_KEYBOARD);
+        return;
+    }
 
     // Parse sessionTarget from the stored ai_classification JSON
     let sessionTarget: string | null = null;

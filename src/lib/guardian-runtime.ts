@@ -22,7 +22,7 @@ import {
   formatSoftWatchCheckIn,
   SESSION_START_KEYBOARD,
   SESSION_END_KEYBOARD,
-  SOFT_WATCH_KEYBOARD,
+  buildSoftWatchKeyboard,
   buildClassifyKeyboard,
 } from './telegram';
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent, isCalendarConfigured } from './google-calendar';
@@ -1643,7 +1643,7 @@ export function startGuardianSession(input: GuardianStartRequest): GuardianState
     console.error('[guardian] Failed to persist session to DB:', err);
   }
 
-  linkSoftWatchToSession(sessionId, targetTitle, input.plannedSessionId);
+  linkSoftWatchToSession(sessionId, targetTitle, input.plannedSessionId, input.softWatchId);
   recordSessionStartedForCommitment({
     sessionId,
     title: targetTitle,
@@ -2881,7 +2881,7 @@ function tickSoftWatchChecker() {
         reason: policy.reason,
         plannedMinutes: commitment.plannedMinutes,
         followThroughRate: policy.followThroughRate,
-      }), 'HTML', SOFT_WATCH_KEYBOARD);
+      }), 'HTML', buildSoftWatchKeyboard(commitment.id));
       continue;
     }
 
@@ -2904,7 +2904,7 @@ function tickSoftWatchChecker() {
         reason: policy.reason,
         plannedMinutes: commitment.plannedMinutes,
         followThroughRate: policy.followThroughRate,
-      }), 'HTML', SOFT_WATCH_KEYBOARD);
+      }), 'HTML', buildSoftWatchKeyboard(commitment.id));
     }
   }
 }
@@ -3034,6 +3034,27 @@ export function snoozeCurrentSoftWatchCommitment(): {
   };
 }
 
+export function snoozeSoftWatchCommitment(id: string): {
+  ok: boolean;
+  targetTitle?: string;
+  snoozeMinutes?: number;
+  reason?: string;
+} {
+  const commitment = getSoftWatchCommitment(id);
+  if (!commitment || commitment.status !== 'pending') {
+    return { ok: false, reason: 'soft watch is missing or no longer pending' };
+  }
+
+  const policy = buildSoftWatchPolicy(commitment);
+  const snoozeMinutes = Math.max(8, Math.min(45, formatPolicyMinutes(policy.checkInDelayMs)));
+  const ok = rescheduleSoftWatchCommitment(
+    id,
+    Date.now() + snoozeMinutes * 60_000,
+    commitment.plannedMinutes,
+  );
+  return { ok, targetTitle: commitment.targetTitle, snoozeMinutes, reason: policy.reason };
+}
+
 export function dismissCurrentSoftWatchCommitment(): SoftWatchCommitment | null {
   const commitment = loadCurrentPendingSoftWatch();
   if (!commitment) return null;
@@ -3041,7 +3062,7 @@ export function dismissCurrentSoftWatchCommitment(): SoftWatchCommitment | null 
 }
 
 export function dismissSoftWatchCommitment(id: string): boolean {
-  const commitment = softWatchMap.get(id);
+  const commitment = getSoftWatchCommitment(id);
   if (!commitment) return false;
   commitment.status = 'dismissed';
   softWatchMap.set(id, commitment);
@@ -3053,10 +3074,7 @@ export function dismissSoftWatchCommitment(id: string): boolean {
   return true;
 }
 
-function getSoftWatchCommitment(id: string): SoftWatchCommitment | null {
-  const cached = softWatchMap.get(id);
-  if (cached) return cached;
-
+export function getSoftWatchCommitment(id: string): SoftWatchCommitment | null {
   try {
     const row = getDb().prepare(`
       SELECT id, target_title as targetTitle, goal_id as goalId, task_id as taskId,
@@ -3070,7 +3088,8 @@ function getSoftWatchCommitment(id: string): SoftWatchCommitment | null {
     softWatchMap.set(row.id, row);
     return row;
   } catch {
-    return null;
+    const cached = softWatchMap.get(id);
+    return cached ? { ...cached } : null;
   }
 }
 
@@ -3142,7 +3161,23 @@ function hydratePendingSoftWatchesForTarget(targetTitle: string) {
   }
 }
 
-function linkSoftWatchToSession(sessionId: string, targetTitle: string, plannedSessionId?: string | null) {
+function linkSoftWatchToSession(
+  sessionId: string,
+  targetTitle: string,
+  plannedSessionId?: string | null,
+  softWatchId?: string | null,
+) {
+  if (softWatchId) {
+    const exact = getSoftWatchCommitment(softWatchId);
+    if (exact?.status === 'pending') {
+      exact.status = 'locked_in';
+      exact.lockedInSessionId = sessionId;
+      softWatchMap.set(exact.id, exact);
+      persistSoftWatch(exact);
+      updateCommitmentFollowThroughRate();
+    }
+    return;
+  }
   if (plannedSessionId) {
     const exact = getDb().prepare(`
       SELECT sw.id, sw.target_title as targetTitle, sw.goal_id as goalId, sw.task_id as taskId,

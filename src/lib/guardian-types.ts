@@ -215,6 +215,7 @@ export interface GuardianStartRequest {
   sessionContext?: string;  // free-form context: what they'll be doing, tools, tab-switching intent, etc.
   startRequestId?: string;
   plannedSessionId?: string | null;
+  softWatchId?: string | null;
 }
 
 export type WorkMode = 'deep_work' | 'research' | 'urgent_sprint' | 'learning' | 'recovery';

@@ -577,7 +577,7 @@ export function recordSessionOutcomeForCommitment(input: {
 
 export function rescheduleCommitment(id: number, delayMinutes = 30, now = new Date()): CoachingCommitment | null {
   const row = getRow(id);
-  if (!row) return null;
+  if (!row || !['scheduled', 'due', 'missed', 'rescheduled'].includes(row.state)) return null;
   const delay = Math.max(5, Math.min(24 * 60, Math.round(delayMinutes)));
   const nextStart = new Date(now.getTime() + delay * 60_000);
   const nextEnd = new Date(nextStart.getTime() + row.planned_minutes * 60_000);
@@ -616,7 +616,8 @@ export function rescheduleCommitment(id: number, delayMinutes = 30, now = new Da
 export function recordCommitmentBlocker(id: number, text: string, now = new Date()): CoachingCommitment | null {
   const row = getRow(id);
   const normalized = text.trim().slice(0, 1000);
-  if (!row || !normalized) return row ? toCommitment(row) : null;
+  if (!row || !['scheduled', 'due', 'missed', 'rescheduled'].includes(row.state)) return null;
+  if (!normalized) return toCommitment(row);
   const lower = normalized.toLowerCase();
   const kind = /tired|sleep|energy|exhaust/.test(lower) ? 'energy'
     : /phone|scroll|distract|instagram|youtube/.test(lower) ? 'distraction'
@@ -648,7 +649,7 @@ export function getCurrentCommitment(now = new Date()): CoachingCommitment | nul
 
 export function getCommitmentStartPlan(id: number): { commitment: CoachingCommitment; minutes: number } | null {
   const commitment = getCommitment(id);
-  if (!commitment) return null;
+  if (!commitment || !['scheduled', 'due', 'missed', 'rescheduled'].includes(commitment.state)) return null;
   let variant: InterventionVariant | null = null;
   if (commitment.interventionDecisionId) {
     const row = getDb().prepare('SELECT variant FROM coaching_decisions WHERE id=?').get(commitment.interventionDecisionId) as { variant: InterventionVariant | null } | undefined;

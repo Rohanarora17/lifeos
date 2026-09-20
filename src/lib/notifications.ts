@@ -1,5 +1,5 @@
 import { getDb, getSetting } from './db';
-import { sendTelegram, formatAlert, ALERT_KEYBOARD } from './telegram';
+import { sendTelegram, formatAlert, buildAlertKeyboard } from './telegram';
 import { getGuardianContext } from './guardian-runtime';
 import { getIntelligenceProfile, touchIntelligence } from './intelligence';
 import { getAdaptiveBands } from './adaptive-bands';
@@ -875,7 +875,7 @@ export async function sendAlert(
     );
 
     // Store in DB
-    db.prepare(
+    const alertInsert = db.prepare(
         'INSERT INTO alerts (type, message, severity, outcome_id, adaptive_reason) VALUES (?, ?, ?, ?, ?)'
     ).run(decision.typeKey, decision.message, decision.severity, outcome.lastInsertRowid, decision.reason);
 
@@ -884,7 +884,11 @@ export async function sendAlert(
 
     // Notify via Telegram + email for warning/urgent alerts
     if (decision.severity !== 'info') {
-        void sendTelegram(formatAlert(type, decision.message, decision.severity, { adaptiveReason: decision.reason }), 'HTML', ALERT_KEYBOARD);
+        void sendTelegram(
+            formatAlert(type, decision.message, decision.severity, { adaptiveReason: decision.reason }),
+            'HTML',
+            buildAlertKeyboard(Number(alertInsert.lastInsertRowid)),
+        );
         await trySendEmail(type, decision.message, decision.severity, decision.typeKey, decision.reason);
     }
 
