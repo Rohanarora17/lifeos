@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { shouldReloadForDomainRevision } from '@/lib/domain-sync';
+import { createDomainSyncOrigin, shouldReloadForDomainRevision } from '@/lib/domain-sync';
 
 const ENDPOINT = '/api/system/revision';
 const CHANNEL = 'lifeos-domain-sync-v1';
@@ -12,7 +12,7 @@ export default function LifeOSSyncProvider() {
 
   useEffect(() => {
     let active = true;
-    const tabId = crypto.randomUUID();
+    const tabId = createDomainSyncOrigin();
     const originalFetch = window.fetch.bind(window);
     const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
 
