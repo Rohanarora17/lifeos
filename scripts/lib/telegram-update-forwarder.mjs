@@ -4,16 +4,25 @@ function webhookUrl(appUrl) {
   return `${String(appUrl).replace(/\/$/, '')}/api/telegram/webhook`;
 }
 
+export function lifeosRequestHeaders(apiToken = '', initialHeaders = {}) {
+  const headers = new Headers(initialHeaders);
+  const resolvedApiToken = apiToken || process.env.LIFEOS_API_TOKEN || '';
+  if (resolvedApiToken) headers.set('Authorization', `Bearer ${resolvedApiToken}`);
+  return headers;
+}
+
 export async function forwardTelegramUpdate({
   appUrl,
+  apiToken = '',
   update,
   fetchImpl = fetch,
   timeoutMs = DEFAULT_WEBHOOK_TIMEOUT_MS,
 }) {
   try {
+    const headers = lifeosRequestHeaders(apiToken, { 'Content-Type': 'application/json' });
     const response = await fetchImpl(webhookUrl(appUrl), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(update),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -28,11 +37,11 @@ export async function forwardTelegramUpdate({
   }
 }
 
-export async function deliverTelegramUpdates({ appUrl, updates, fetchImpl = fetch }) {
+export async function deliverTelegramUpdates({ appUrl, apiToken = '', updates, fetchImpl = fetch }) {
   let nextOffset = null;
   let delivered = 0;
   for (const update of updates) {
-    const ok = await forwardTelegramUpdate({ appUrl, update, fetchImpl });
+    const ok = await forwardTelegramUpdate({ appUrl, apiToken, update, fetchImpl });
     if (!ok) break;
     delivered += 1;
     nextOffset = Number(update.update_id) + 1;
@@ -44,7 +53,7 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export async function startTelegramPolling({ appUrl, botToken, fetchImpl = fetch }) {
+export async function startTelegramPolling({ appUrl, apiToken = '', botToken, fetchImpl = fetch }) {
   let offset = 0;
   let failureDelayMs = 1_000;
   console.log('[telegram] Starting transport-only long-poll loop…');
@@ -63,7 +72,7 @@ export async function startTelegramPolling({ appUrl, botToken, fetchImpl = fetch
       const body = await response.json();
       if (!body.ok) throw new Error(body.description || 'getUpdates returned ok=false');
 
-      const result = await deliverTelegramUpdates({ appUrl, updates: body.result || [], fetchImpl });
+      const result = await deliverTelegramUpdates({ appUrl, apiToken, updates: body.result || [], fetchImpl });
       if (result.nextOffset !== null) offset = result.nextOffset;
       if ((body.result || []).length > result.delivered) {
         await wait(failureDelayMs);

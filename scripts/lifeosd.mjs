@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import process from 'node:process';
-import { startTelegramPolling } from './lib/telegram-update-forwarder.mjs';
+import { lifeosRequestHeaders, startTelegramPolling } from './lib/telegram-update-forwarder.mjs';
 
 const APP_URL = process.env.LIFEOS_APP_URL || 'http://127.0.0.1:3000';
 const PING_INTERVAL_MS = Number(process.env.LIFEOSD_PING_MS || '300000'); // 5 min default
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ALERT_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const LIFEOS_API_TOKEN = process.env.LIFEOS_API_TOKEN || '';
+const LIFEOS_API_HEADERS = lifeosRequestHeaders(LIFEOS_API_TOKEN);
 const startedAt = new Date().toISOString();
 
 // Sends a plain-text Telegram alert using the configured bot + chat ID.
@@ -39,7 +41,10 @@ const HEAP_ALERT_COOLDOWN_MS = 60 * 60 * 1000; // max one heap alert per hour
 async function pingGuardian(attempt = 0) {
   try {
     // Primary ping via soft-watch (also starts the checker)
-    const pingRes = await fetch(`${APP_URL}/api/guardian/soft-watch`, { signal: AbortSignal.timeout(8000) });
+    const pingRes = await fetch(`${APP_URL}/api/guardian/soft-watch`, {
+      headers: LIFEOS_API_HEADERS,
+      signal: AbortSignal.timeout(8000),
+    });
     if (!pingRes.ok) {
       console.error(`[lifeosd] soft-watch ping failed: HTTP ${pingRes.status}`);
       return;
@@ -51,6 +56,7 @@ async function pingGuardian(attempt = 0) {
       try {
         const commandsRes = await fetch(`${APP_URL}/api/telegram/register-commands`, {
           method: 'POST',
+          headers: LIFEOS_API_HEADERS,
           signal: AbortSignal.timeout(8000),
         });
         telegramCommandsRegistered = commandsRes.ok;
@@ -63,7 +69,10 @@ async function pingGuardian(attempt = 0) {
     // Health check — fetch telemetry every ping
     let health = null;
     try {
-      const healthRes = await fetch(`${APP_URL}/api/health`, { signal: AbortSignal.timeout(8000) });
+      const healthRes = await fetch(`${APP_URL}/api/health`, {
+        headers: LIFEOS_API_HEADERS,
+        signal: AbortSignal.timeout(8000),
+      });
       if (healthRes.ok) health = await healthRes.json();
     } catch { /* non-fatal — health endpoint may not exist on older builds */ }
 
@@ -711,5 +720,5 @@ if (!BOT_TOKEN) {
 
   void startPolling();
 } else {
-  void startTelegramPolling({ appUrl: APP_URL, botToken: BOT_TOKEN });
+  void startTelegramPolling({ appUrl: APP_URL, apiToken: LIFEOS_API_TOKEN, botToken: BOT_TOKEN });
 }

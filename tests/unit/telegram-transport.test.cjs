@@ -1,11 +1,13 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { afterEach, describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 describe('Telegram update transport', () => {
+  afterEach(() => { delete process.env.LIFEOS_API_TOKEN; });
+
   it('forwards command and callback updates unchanged to the application webhook', async () => {
     let transport = null;
     try {
@@ -27,6 +29,57 @@ describe('Telegram update transport', () => {
       { url: 'http://lifeos.test/api/telegram/webhook', body: command },
       { url: 'http://lifeos.test/api/telegram/webhook', body: callback },
     ]);
+  });
+
+  it('authenticates forwarded updates with the LifeOS API token', async () => {
+    const transport = await import(pathToFileURL(path.resolve(__dirname, '../../scripts/lib/telegram-update-forwarder.mjs')).href);
+    let authorization = null;
+    const ok = await transport.forwardTelegramUpdate({
+      appUrl: 'http://lifeos.test',
+      apiToken: 'internal-api-token',
+      update: { update_id: 12, callback_query: { id: 'cb-auth', data: 'commit:block:4' } },
+      fetchImpl: async (_url, init) => {
+        authorization = new Headers(init.headers).get('Authorization');
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    });
+
+    assert.equal(ok, true);
+    assert.equal(authorization, 'Bearer internal-api-token');
+  });
+
+  it('preserves LifeOS authentication through batched update delivery', async () => {
+    const transport = await import(pathToFileURL(path.resolve(__dirname, '../../scripts/lib/telegram-update-forwarder.mjs')).href);
+    const authorizations = [];
+    const result = await transport.deliverTelegramUpdates({
+      appUrl: 'http://lifeos.test',
+      apiToken: 'batch-api-token',
+      updates: [{ update_id: 13 }, { update_id: 14 }],
+      fetchImpl: async (_url, init) => {
+        authorizations.push(new Headers(init.headers).get('Authorization'));
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    });
+
+    assert.deepEqual(result, { nextOffset: 15, delivered: 2 });
+    assert.deepEqual(authorizations, ['Bearer batch-api-token', 'Bearer batch-api-token']);
+  });
+
+  it('uses the daemon LIFEOS_API_TOKEN when the poller caller does not pass one', async () => {
+    process.env.LIFEOS_API_TOKEN = 'daemon-environment-token';
+    const transport = await import(pathToFileURL(path.resolve(__dirname, '../../scripts/lib/telegram-update-forwarder.mjs')).href);
+    let authorization = null;
+    const result = await transport.deliverTelegramUpdates({
+      appUrl: 'http://lifeos.test',
+      updates: [{ update_id: 15 }],
+      fetchImpl: async (_url, init) => {
+        authorization = new Headers(init.headers).get('Authorization');
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    });
+
+    assert.deepEqual(result, { nextOffset: 16, delivered: 1 });
+    assert.equal(authorization, 'Bearer daemon-environment-token');
   });
 
   it('does not advance past a failed application delivery', async () => {
