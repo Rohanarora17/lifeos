@@ -62,6 +62,25 @@ describe('closed-loop coaching commitments', () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM coaching_decisions WHERE action_type='missed_start'").get().count, 1);
   });
 
+  it('does not rewrite unchanged commitment sources or advance the domain revision', () => {
+    const plannedAt = new Date('2026-09-10T10:00:00.000Z');
+    addPlannedSession({ startAt: plannedAt });
+    commitments.syncCommitmentSources(new Date('2026-09-10T09:00:00.000Z'));
+    const first = db.prepare(`
+      SELECT updated_at FROM coaching_commitments WHERE commitment_key='planned:plan-session-1'
+    `).get();
+    const revisionBefore = db.prepare("SELECT revision FROM domain_revisions WHERE scope='global'").pluck().get();
+
+    commitments.syncCommitmentSources(new Date('2026-09-10T09:30:00.000Z'));
+
+    const second = db.prepare(`
+      SELECT updated_at FROM coaching_commitments WHERE commitment_key='planned:plan-session-1'
+    `).get();
+    const revisionAfter = db.prepare("SELECT revision FROM domain_revisions WHERE scope='global'").pluck().get();
+    assert.equal(second.updated_at, first.updated_at);
+    assert.equal(revisionAfter, revisionBefore);
+  });
+
   it('closes an unanswered intervention as an abandoned commitment after thirty minutes', async () => {
     const plannedAt = new Date('2026-09-10T10:00:00.000Z');
     addPlannedSession({ startAt: plannedAt });

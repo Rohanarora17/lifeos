@@ -22,4 +22,21 @@ describe('domain revision schema', () => {
     `).run(plan.lastInsertRowid, task.lastInsertRowid);
     assert.equal(revision(), 3);
   });
+
+  it('ignores calendar sync metadata while tracking user-visible event changes', () => {
+    const { db } = createIsolatedDb('lifeos-domain-calendar-revision-');
+    const revision = () => db.prepare("SELECT revision FROM domain_revisions WHERE scope='global'").get().revision;
+    db.prepare(`
+      INSERT INTO calendar_events (id, title, start_time, end_time, synced_at)
+      VALUES ('calendar-revision', 'Cryptography', '2030-02-01T10:00:00.000Z',
+              '2030-02-01T11:00:00.000Z', '2030-01-31T10:00:00.000Z')
+    `).run();
+    assert.equal(revision(), 1);
+
+    db.prepare("UPDATE calendar_events SET synced_at='2030-01-31T10:15:00.000Z' WHERE id='calendar-revision'").run();
+    assert.equal(revision(), 1);
+
+    db.prepare("UPDATE calendar_events SET title='Advanced Cryptography' WHERE id='calendar-revision'").run();
+    assert.equal(revision(), 2);
+  });
 });

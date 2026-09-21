@@ -34,8 +34,10 @@ describe('coaching commitment routes', () => {
 
   it('exposes the current commitment and measured policy report', async () => {
     const seeded = await seedMissedCommitment();
+    const revisionBefore = db.prepare("SELECT revision FROM domain_revisions WHERE scope='global'").pluck().get();
     const response = await stateGET(new Request('http://lifeos.test/api/coaching/state'));
     const body = await response.json();
+    const revisionAfter = db.prepare("SELECT revision FROM domain_revisions WHERE scope='global'").pluck().get();
 
     assert.equal(response.status, 200);
     assert.equal(body.currentCommitment.id, seeded.commitment.id);
@@ -43,6 +45,7 @@ describe('coaching commitment routes', () => {
     assert.equal(body.interventionLearning.totalEvaluated, 0);
     assert.equal(body.decisions[0].commitmentId, seeded.commitment.id);
     assert.equal(body.decisions[0].variant, seeded.policy.variant);
+    assert.equal(revisionAfter, revisionBefore);
   });
 
   it('reschedules a missed commitment through the coaching action route', async () => {

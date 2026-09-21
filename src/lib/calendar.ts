@@ -33,7 +33,11 @@ function latestCalendarSyncAgeMs(): number | null {
     `).get() as { synced_at: string | null } | undefined;
     if (!row?.synced_at) return null;
 
-    const parsed = Date.parse(`${row.synced_at.replace(' ', 'T')}Z`);
+    const normalized = row.synced_at.replace(' ', 'T');
+    const timestamp = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)
+        ? normalized
+        : `${normalized}Z`;
+    const parsed = Date.parse(timestamp);
     return Number.isFinite(parsed) ? Date.now() - parsed : null;
 }
 

@@ -163,12 +163,22 @@ function upsertSource(input: {
   const terminal = ['completed', 'abandoned', 'cancelled'].includes(existing.state);
   const active = ['missed', 'started'].includes(existing.state);
   const nextState = terminal || active ? existing.state : input.sourceState;
+  const nextEpisodeId = input.episodeId ?? existing.episode_id;
+  const nextTaskId = input.taskId ?? existing.task_id;
+  const unchanged = nextEpisodeId === existing.episode_id
+    && nextTaskId === existing.task_id
+    && input.title === existing.title
+    && startAt === existing.planned_start_at
+    && plannedMinutes === existing.planned_minutes
+    && nextState === existing.state;
+  if (unchanged) return toCommitment(existing);
+
   db.prepare(`
     UPDATE coaching_commitments
-    SET episode_id = COALESCE(?, episode_id), task_id = COALESCE(?, task_id), title = ?,
+    SET episode_id = ?, task_id = ?, title = ?,
         planned_start_at = ?, planned_minutes = ?, state = ?, updated_at = ?
     WHERE id = ?
-  `).run(input.episodeId ?? null, input.taskId ?? null, input.title, startAt, plannedMinutes, nextState, at, existing.id);
+  `).run(nextEpisodeId, nextTaskId, input.title, startAt, plannedMinutes, nextState, at, existing.id);
   return toCommitment(getRow(existing.id)!);
 }
 
@@ -635,8 +645,7 @@ export function recordCommitmentBlocker(id: number, text: string, now = new Date
   return toCommitment(getRow(id)!);
 }
 
-export function getCurrentCommitment(now = new Date()): CoachingCommitment | null {
-  syncCommitmentSources(now);
+export function getCurrentCommitment(): CoachingCommitment | null {
   const row = getDb().prepare(`
     SELECT * FROM coaching_commitments
     WHERE state IN ('started','missed','due','scheduled','rescheduled')
