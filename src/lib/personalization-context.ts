@@ -1,3 +1,4 @@
+import { getStudyConversationDirective } from './study-chat-store';
 import { getDb, getSetting } from './db';
 import { getIntelligenceContext, getIntelligenceProfile } from './intelligence';
 import { getMemoryContext } from './memory';
@@ -23,6 +24,7 @@ import {
 } from './cognitive-self-answer';
 import { getCoachingState, type CoverageState, type EngagementState } from './coaching-state';
 import { getDailyActivityStats } from './scoring';
+import { getEndsemDirective } from './endsem-study';
 
 export type PersonalizationSurface =
   | 'agent'
@@ -49,6 +51,7 @@ export type PersonalizationSurface =
   | 'checkin';
 
 export interface PersonalizationSnapshot {
+  studyCommitment?: string | null;
   surface: PersonalizationSurface;
   generatedAt: string;
   today: {
@@ -449,6 +452,7 @@ export function buildPersonalizationSnapshot(opts?: {
   const partialForCoach: PersonalizationSnapshot = {
     surface,
     generatedAt,
+    studyCommitment: [getEndsemDirective(),getStudyConversationDirective()].filter(Boolean).join('\n') || null,
     today: {
       date,
       hour,
@@ -574,6 +578,7 @@ export function formatPersonalizationContext(snapshot: PersonalizationSnapshot):
     'Not every day is the same. Adapt tone, timing, suggestions, and intervention strength to this exact day.',
     `Surface: ${snapshot.surface}`,
     `Moment mode: ${snapshot.moment.mode} - ${snapshot.moment.guidance}`,
+    snapshot.studyCommitment || '',
     '',
     '=== TODAY ===',
     `Date/hour: ${snapshot.today.date} ${snapshot.today.hour}:00 (${snapshot.today.dayPhase})`,

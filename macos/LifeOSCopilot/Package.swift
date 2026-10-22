@@ -8,6 +8,8 @@ let package = Package(
         .executable(name: "LifeOSCopilot", targets: ["LifeOSCopilot"])
     ],
     targets: [
-        .executableTarget(name: "LifeOSCopilot")
+        .target(name: "StudyChatCore"),
+        .executableTarget(name: "LifeOSCopilot", dependencies: ["StudyChatCore"]),
+        .executableTarget(name: "StudyChatCoreTests", dependencies: ["StudyChatCore"], path: "Tests/StudyChatCoreTests")
     ]
 )

@@ -1,4 +1,5 @@
-import { getDb, getSetting } from './db';
+import { createHash } from 'node:crypto';
+import { getDb, getSetting, setSetting } from './db';
 import { rrulestr } from 'rrule';
 
 // ============================================================
@@ -27,17 +28,13 @@ const CALENDAR_SYNC_MAX_AGE_MS = 15 * 60_000;
 let calendarSyncInFlight: Promise<SyncResult> | null = null;
 
 function latestCalendarSyncAgeMs(): number | null {
-    const row = getDb().prepare(`
-        SELECT MAX(synced_at) as synced_at
-        FROM calendar_events
-    `).get() as { synced_at: string | null } | undefined;
-    if (!row?.synced_at) return null;
-
-    const normalized = row.synced_at.replace(' ', 'T');
-    const timestamp = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)
-        ? normalized
-        : `${normalized}Z`;
-    const parsed = Date.parse(timestamp);
+    // Event MAX(synced_at) cannot distinguish an empty successful fetch from a
+    // never-synced mirror, and a partial sync is not evidence of availability.
+    const url = getSetting('calendar_ics_url');
+    if (!url || getSetting('calendar_ics_last_success_source') !== createHash('sha256').update(url).digest('hex')) return null;
+    const stamp = getSetting('calendar_ics_last_success_at');
+    if (!stamp) return null;
+    const parsed = Date.parse(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(stamp) ? `${stamp.replace(' ', 'T')}Z` : stamp);
     return Number.isFinite(parsed) ? Date.now() - parsed : null;
 }
 
@@ -94,7 +91,10 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         // 1. Parse raw events
         let events: CalendarEvent[] = [];
         try {
+            if (!/^BEGIN:VCALENDAR\s*$/m.test(icsText) || !/^END:VCALENDAR\s*$/m.test(icsText)) throw new Error('Invalid ICS calendar envelope');
             events = parseICS(icsText);
+            const declaredEvents = (icsText.match(/^BEGIN:VEVENT\s*$/gm) || []).length;
+            if (declaredEvents !== events.length) throw new Error('Incomplete ICS events');
         } catch (e) {
             console.error('[Calendar] Failed to parse ICS format:', e);
             result.errors.push(`Parse error: ${String(e)}`);
@@ -140,9 +140,10 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                     }
                 } catch (rruleErr) {
                     console.error('[Calendar] Failed to expand RRULE for event:', ev.title, rruleErr);
+                    result.errors.push('Failed to expand a recurring calendar event');
                 }
             } else {
-                if (evStart >= windowStart && evStart <= windowEnd) {
+                if (evEnd > windowStart && evStart < windowEnd) {
                     instances.push({ start: evStart, end: evEnd });
                 }
             }
@@ -157,7 +158,7 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
                     eventCount++;
                     result.synced++;
                 } catch {
-                    // Ignore individual upsert collisions quietly
+                    result.errors.push('Failed to save a calendar event');
                 }
             }
         }
@@ -165,12 +166,16 @@ export async function syncCalendarFromICS(): Promise<SyncResult> {
         // Purge events within window that were deleted from Google Calendar (not updated in this sync batch)
         const deleteStmt = db.prepare(`
             DELETE FROM calendar_events
-            WHERE start_time >= ? AND start_time <= ? AND (synced_at IS NULL OR synced_at != ?)
+            WHERE end_time > ? AND start_time < ? AND (synced_at IS NULL OR synced_at != ?)
         `);
         const deletedInfo = deleteStmt.run(windowStart.toISOString(), windowEnd.toISOString(), syncBatchTime);
         console.log(`[Calendar] Purged ${deletedInfo.changes} deleted events from calendar window [${windowStart.toISOString()} to ${windowEnd.toISOString()}]`);
 
         result.total = eventCount;
+        if (result.errors.length === 0) {
+            setSetting('calendar_ics_last_success_at', syncBatchTime);
+            setSetting('calendar_ics_last_success_source', createHash('sha256').update(icsUrl).digest('hex'));
+        }
 
     } catch (err) {
         console.error('[Calendar] Sync failed completely:', err);
@@ -191,24 +196,32 @@ function parseICS(icsText: string): CalendarEvent[] {
     const lines = icsText.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
 
     let inEvent = false;
+    let allDay = false;
+    let recurrenceStartIsUTC = false;
     let current: Partial<CalendarEvent> = {};
 
     for (const line of lines) {
         if (line === 'BEGIN:VEVENT') {
             inEvent = true;
             current = {};
+            allDay = false;
+            recurrenceStartIsUTC = false;
             continue;
         }
 
         if (line === 'END:VEVENT') {
             inEvent = false;
+            if (current.rrule && !recurrenceStartIsUTC) {
+                throw new Error('Unsupported local-time ICS recurrence; use the OAuth calendar refresh');
+            }
             if (current.uid && current.title && current.startTime) {
                 events.push({
                     uid: current.uid,
                     title: current.title,
                     description: current.description || '',
                     startTime: current.startTime,
-                    endTime: current.endTime || current.startTime,
+                    // RFC 5545: a DATE event without DTEND lasts one day.
+                    endTime: current.endTime || (allDay ? new Date(Date.parse(current.startTime) + 86_400_000).toISOString() : current.startTime),
                     location: current.location || '',
                     rrule: current.rrule
                 });
@@ -216,14 +229,29 @@ function parseICS(icsText: string): CalendarEvent[] {
             continue;
         }
 
-        if (!inEvent) continue;
-
         const colonIdx = line.indexOf(':');
         if (colonIdx === -1) continue;
 
         const keyPart = line.slice(0, colonIdx);
         const value = line.slice(colonIdx + 1);
         const key = keyPart.split(';')[0]; // Strip parameters like DTSTART;VALUE=DATE
+
+        // This intentionally small parser cannot evaluate timezone transition
+        // rules or recurrence sets/exceptions. Reject them before mirror writes
+        // so a successful fetch cannot turn a real commitment into free time.
+        if (key === 'X-WR-TIMEZONE' && !['Asia/Kolkata', 'Asia/Calcutta'].includes(value)) {
+            throw new Error('Unsupported ICS calendar timezone; use the OAuth calendar refresh');
+        }
+        if (!inEvent) continue;
+        if (['RDATE', 'EXDATE', 'RECURRENCE-ID', 'EXRULE'].includes(key)) {
+            throw new Error(`Unsupported ICS ${key}; use the OAuth calendar refresh`);
+        }
+        if (key === 'DTSTART' || key === 'DTEND') {
+            const timezone = keyPart.match(/;TZID=("[^"]+"|[^;]+)/i)?.[1]?.replace(/^"|"$/g, '');
+            if (timezone && !['Asia/Kolkata', 'Asia/Calcutta'].includes(timezone)) {
+                throw new Error('Unsupported ICS event timezone; use the OAuth calendar refresh');
+            }
+        }
 
         switch (key) {
             case 'UID':
@@ -239,6 +267,8 @@ function parseICS(icsText: string): CalendarEvent[] {
                 current.location = unescapeICS(value);
                 break;
             case 'DTSTART':
+                allDay = value.length === 8;
+                recurrenceStartIsUTC = value.endsWith('Z');
                 current.startTime = parseICSDate(value);
                 break;
             case 'DTEND':

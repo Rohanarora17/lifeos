@@ -1,0 +1,58 @@
+.panel input,
+.panel select,
+.panel textarea {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: .55rem .7rem;
+  font: inherit;
+}
+
+.panel input:focus-visible,
+.panel select:focus-visible,
+.panel textarea:focus-visible,
+.panel button:focus-visible,
+.panel a:focus-visible,
+.panel summary:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 3px;
+}
+
+.panel textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+.panel button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.panel progress {
+  display: block;
+  overflow: hidden;
+  border: none;
+  border-radius: 20px;
+  background: var(--border);
+}
+
+.panel progress::-webkit-progress-bar {
+  background: var(--border);
+}
+
+.panel progress::-webkit-progress-value {
+  background: linear-gradient(90deg, #818cf8, #34d399);
+  border-radius: 20px;
+}
+
+.panel progress::-moz-progress-bar {
+  background: #818cf8;
+  border-radius: 20px;
+}
+
+.panel th,
+.panel td {
+  white-space: nowrap;
+  padding-right: 1rem;
+}

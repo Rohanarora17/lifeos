@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import StudyChat from '@/components/StudyChat';
+import { createClientRequestId } from '@/lib/polyfill-crypto-uuid';
 
 interface ChatMessage {
     id: string;
@@ -65,12 +67,22 @@ function buildPlaceholder(context: ChatContext | null) {
 }
 
 export default function ChatPage() {
+    const [mode, setMode] = useState<'study' | 'general'>('study');
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [context, setContext] = useState<ChatContext | null>(null);
     const [contextLoaded, setContextLoaded] = useState(false);
     const endRef = useRef<HTMLDivElement>(null);
+    const studyRevision = useRef<number | null>(null);
+    const studyDate = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (mode !== 'general') return;
+        let current = true;
+        fetch('/api/study-chat', { cache: 'no-store' }).then(r => r.json()).then(data => { if (current && Number.isInteger(data.revision)) { studyRevision.current = data.revision; studyDate.current = data.date; } }).catch(() => {});
+        return () => { current = false; };
+    }, [mode]);
 
     useEffect(() => {
         fetch('/api/dashboard')
@@ -114,7 +126,7 @@ export default function ChatPage() {
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: updatedMessages.map(m => ({ role: m.role, content: m.content })) })
+                body: JSON.stringify({ messages: updatedMessages.map(m => ({ role: m.role, content: m.content })), requestId: createClientRequestId(), studyRevision: studyRevision.current, studyDate: studyDate.current })
             });
 
             if (!res.ok || !res.body) {
@@ -122,8 +134,15 @@ export default function ChatPage() {
                 setMessages(prev => [...prev, {
                     id: (Date.now() + 1).toString(),
                     role: 'assistant',
-                    content: data.text || 'I encountered an error connecting to my cognition engine.'
+                    content: data.error || data.text || 'I encountered an error connecting to my cognition engine.'
                 }]);
+                return;
+            }
+
+            if (res.headers.get('content-type')?.includes('application/json')) {
+                const data = await res.json();
+                if (Number.isInteger(data.studyState?.revision)) { studyRevision.current = data.studyState.revision; studyDate.current = data.studyState.date; }
+                setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'assistant', content: data.response || data.text || data.error || 'No response returned.' }]);
                 return;
             }
 
@@ -142,7 +161,7 @@ export default function ChatPage() {
                 fullText += decoder.decode(value, { stream: true });
                 setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: fullText } : m));
             }
-        } catch (error) {
+        } catch {
             setMessages(prev => [...prev, {
                 id: (Date.now() + 1).toString(),
                 role: 'assistant',
@@ -154,7 +173,7 @@ export default function ChatPage() {
     };
 
     return (
-        <div className="max-w-4xl mx-auto h-[calc(100vh-6rem)] flex flex-col">
+        <div className="max-w-4xl mx-auto min-h-[calc(100vh-6rem)] flex flex-col">
             <header className="mb-6">
                 <h1 className="text-2xl font-black mb-1">Jarvis Chat 💬</h1>
                 <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
@@ -162,9 +181,10 @@ export default function ChatPage() {
                         ? `${modeLabel[context.personalization.mode]} · ${context.personalization.energy} energy · ${context.personalization.guidance}`
                         : 'Loading today’s LifeOS context...'}
                 </p>
+                <div className="flex gap-2 mt-4" aria-label="Conversation mode"><button className={`btn ${mode==='study'?'btn-primary':'btn-ghost'}`} aria-pressed={mode==='study'} onClick={()=>setMode('study')}>Study check-in</button><button className={`btn ${mode==='general'?'btn-primary':'btn-ghost'}`} aria-pressed={mode==='general'} onClick={()=>setMode('general')}>General chat</button></div>
             </header>
 
-            <div className="flex-1 card flex flex-col overflow-hidden" style={{ border: '2px solid var(--border)' }}>
+            {mode==='study' ? <StudyChat /> : <div className="flex-1 card flex flex-col overflow-hidden min-h-[60vh]" style={{ border: '2px solid var(--border)' }}>
                 {/* Chat Area */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-6">
                     {messages.map(m => (
@@ -216,7 +236,7 @@ export default function ChatPage() {
                         </button>
                     </div>
                 </div>
-            </div>
+            </div>}
         </div>
     );
 }

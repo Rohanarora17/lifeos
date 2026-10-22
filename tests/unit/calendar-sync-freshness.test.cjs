@@ -2,6 +2,7 @@
 
 const { afterEach, describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const { createIsolatedDb } = require('../helpers/temp-db.cjs');
 
 describe('calendar sync freshness', () => {
@@ -11,9 +12,11 @@ describe('calendar sync freshness', () => {
     global.fetch = originalFetch;
   });
 
-  it('does not resync a calendar whose latest ISO timestamp already includes a timezone', async () => {
+  it('does not resync a successfully fetched calendar whose ISO timestamp already includes a timezone', async () => {
     const env = createIsolatedDb('lifeos-calendar-freshness-');
     env.setSetting('calendar_ics_url', 'https://calendar.test/private.ics');
+    env.setSetting('calendar_ics_last_success_at', new Date().toISOString());
+    env.setSetting('calendar_ics_last_success_source', createHash('sha256').update('https://calendar.test/private.ics').digest('hex'));
     env.db.prepare(`
       INSERT INTO calendar_events (id, title, start_time, end_time, synced_at)
       VALUES ('fresh-event', 'Fresh event', '2030-01-01T09:00:00.000Z',

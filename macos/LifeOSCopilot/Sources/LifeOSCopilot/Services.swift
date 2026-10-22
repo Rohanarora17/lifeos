@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import StudyChatCore
 @preconcurrency import ScreenCaptureKit
 
 @MainActor
@@ -245,6 +246,7 @@ final class LifeOSAPIClient {
     private let deviceToken: String?
     private let deviceId: String
     private let clientVersion: String
+    private let studySession = URLSession(configuration: .ephemeral)
 
     init() {
         let environment = ProcessInfo.processInfo.environment
@@ -257,7 +259,7 @@ final class LifeOSAPIClient {
             ?? "macbook-primary"
         clientVersion = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String ?? "0.3.0"
+        ) as? String ?? "0.4.0"
     }
 
     private func authorize(_ request: inout URLRequest) {
@@ -557,4 +559,66 @@ private extension Data {
     mutating func append(_ string: String) {
         append(string.data(using: .utf8)!)
     }
+}
+
+// Text study conversation is independent of voice, screenshots, and Guardian sessions.
+extension LifeOSAPIClient {
+    var studyChatStorageKey: String { "lifeos.study-chat.\(serverBase.absoluteString).\(deviceId)" }
+
+    func studyChatState() async throws -> StudyChatState {
+        var components = URLComponents(url: serverBase.appendingPathComponent("/api/study-chat"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "deviceId", value: deviceId)]
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 15
+        authorize(&request)
+        return try await studyChatResponse(request)
+    }
+
+    func sendStudyChat(_ message: StudyChatRequest) async throws -> StudyChatState {
+        var request = URLRequest(url: serverBase.appendingPathComponent("/api/study-chat"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONEncoder().encode(message)
+        return try await studyChatResponse(request)
+    }
+
+    func acknowledgeStudyChatPrompt(_ id: String) async throws {
+        var request = URLRequest(url: serverBase.appendingPathComponent("/api/study-chat"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "action": "ack_prompt", "promptId": id, "deviceId": deviceId,
+        ])
+        let (_, response) = try await studySession.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            throw StudyChatAPIError(status: status, message: "Prompt acknowledgement failed", state: nil)
+        }
+    }
+
+    private func studyChatResponse(_ request: URLRequest) async throws -> StudyChatState {
+        let (data, response) = try await studySession.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            let body = try? JSONDecoder().decode(StudyChatErrorBody.self, from: data)
+            throw StudyChatAPIError(status: status, message: body?.error ?? "HTTP \(status)", state: body?.state)
+        }
+        let state = try JSONDecoder().decode(StudyChatState.self, from: data)
+        guard state.ok else { throw StudyChatAPIError(status: 503, message: "Study chat is unavailable", state: nil) }
+        return state
+    }
+}
+
+private struct StudyChatErrorBody: Decodable {
+    let error: String
+    let state: StudyChatState?
+}
+struct StudyChatAPIError: Error {
+    let status: Int
+    let message: String
+    let state: StudyChatState?
 }

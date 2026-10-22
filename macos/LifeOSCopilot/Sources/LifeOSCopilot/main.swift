@@ -276,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = OverlayWindow()
     private let classificationPrompt = ClassificationPromptController()
     private let presencePrompt = PresencePromptController()
+    private lazy var studyChat = StudyChatController(api: api)
     private var evidenceSequence = 0
     private var lastEvidenceAt = Date()
     private let speaker = AVSpeechSynthesizer()
@@ -290,6 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.title = "LifeOS"
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Study Chat", action: #selector(openStudyChat), keyEquivalent: "s"))
         menu.addItem(NSMenuItem(title: "Ask About Window", action: #selector(askAboutWindow), keyEquivalent: "g"))
         menu.addItem(NSMenuItem(title: "Toggle Push To Talk", action: #selector(togglePushToTalk), keyEquivalent: " "))
         menu.addItem(NSMenuItem(title: "Screen Recording Settings", action: #selector(showScreenRecordingSettings), keyEquivalent: ""))
@@ -311,6 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentApp = initial.app
         currentTitle = initial.title
         currentAppStartedAt = Date()
+        studyChat.start()
         Task { await pollHeartbeatLoop() }
         Task { await visionCaptureLoop() }
         Task { await classificationAskLoop() }
@@ -319,6 +322,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await self?.flushAppDwellIfActive()
             }
         }
+    }
+
+    @objc private func openStudyChat() {
+        studyChat.openFromMenu()
     }
 
     @objc private func quit() {
@@ -410,6 +417,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentPresenceCheckIfNeeded(_ check: NativePresenceCheck?) {
+        studyChat.setPresenceVisible(check != nil)
+        if check != nil {
+            classificationPrompt.hide()
+            studyChat.setClassificationVisible(false)
+        }
         guard let check else {
             presencePrompt.hide()
             presentedPresenceCheckId = nil
@@ -433,6 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.presencePrompt.hide()
                     self.presentedPresenceCheckId = nil
+                    self.studyChat.setPresenceVisible(false)
                 } catch {
                     self.presencePrompt.showResolutionError(
                         "Could not save your answer. Check the LifeOS connection and retry."
@@ -599,11 +612,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if classificationPrompt.isVisible {
                 await MainActor.run { classificationPrompt.hide() }
             }
+            studyChat.setClassificationVisible(classificationPrompt.isVisible)
             try? await Task.sleep(nanoseconds: 4_000_000_000)
         }
     }
 
     private func presentPendingClassificationAsk() async {
+        guard presentedPresenceCheckId == nil else { return }
         do {
             let response = try await api.fetchClassificationAsk()
             guard response.ok, let pending = response.pending else {
@@ -613,12 +628,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             await MainActor.run {
+                guard presentedPresenceCheckId == nil else { return }
+                studyChat.setClassificationVisible(true)
                 classificationPrompt.show(
                     app: pending.app,
                     sessionTitle: pending.sessionTargetTitle,
                     reason: "Is this productive for your focus session? (privacy: content not shown)"
                 ) { [weak self] category in
                     Task { @MainActor in
+                        self?.studyChat.setClassificationVisible(false)
                         await self?.submitClassificationChoice(category)
                     }
                 }
@@ -647,7 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-if !runNativeMessagingIfRequested() && !runVoiceAuditIfRequested() && !runOneShotCaptureIfRequested() {
+if !runNativeMessagingIfRequested() && !runStudyChatPreviewIfRequested() && !runVoiceAuditIfRequested() && !runOneShotCaptureIfRequested() {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate

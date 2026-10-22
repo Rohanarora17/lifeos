@@ -20,9 +20,15 @@ import {
     isCognitiveSelfQuestion,
 } from '@/lib/cognitive-self-answer';
 import { recordHumanContact } from '@/lib/coaching-state';
+import { getStudyChatState, processStudyChatMessage } from '@/lib/study-chat';
 
 const tools = [{
     functionDeclarations: [
+        {
+            name: 'updateStudyAgreement',
+            description: 'Apply the user\'s latest study check-in to the shared Mac Study Chat: lunch/break departures, return time, extensions, coming back, starting study, attended relevant classes, or day/sleep boundaries. Takes the exact latest human message; never invent details. The validated result is returned directly to the user.',
+            parameters: { type: Type.OBJECT, properties: {} },
+        },
         {
             name: 'getDashboardSnapshot',
             description: 'Fetch a compact summary of the user\'s productivity state: tasks, active goals, recent focus sessions, alerts, and today score.',
@@ -338,7 +344,7 @@ function executeTool(name: string, args: ToolArgs, personalization: Personalizat
 
 export async function POST(request: NextRequest) {
     try {
-        const body = await request.json() as { messages?: unknown; query?: unknown };
+        const body = await request.json() as { messages?: unknown; query?: unknown; requestId?: unknown; studyRevision?: unknown; studyDate?: unknown };
         const messages = normalizeMessages(body);
         if (!messages) return NextResponse.json({ error: 'messages or query required' }, { status: 400 });
         const lastUserMessage = [...messages].reverse().find(message => message.role === 'user');
@@ -392,6 +398,7 @@ export async function POST(request: NextRequest) {
             "If plannedFocus shows an upcoming planned block or weak follow-through, prioritize protecting or adjusting that schedule before suggesting unrelated new work.\\n" +
             "When users ask how/why/when their brain works, pressure dependency, or rewiring, call explainCognitiveWiring with their question and ground on the tool result — do not invent patterns.\\n" +
             "When users ask to create a task, check a habit, or start a guardian session, use the respective tool. If the user did not name a session length, omit duration_minutes and let LifeOS pick the learned adaptive length.\\n" +
+            "For study accountability, meal/break/return updates, class attendance, study start or rebalancing, use updateStudyAgreement. It uses the same saved conversation as the Mac Study Chat. Never claim an agreement, attendance credit, or replan was saved without its result.\\n" +
             "When users ask about concepts to study or which goal to focus on next, reference the Knowledge Graph status above.\\n" +
             "Always wait for the tool outcome before finalizing your answer. Do not show raw JSON to the user. Explain the adaptive reason naturally.";
 
@@ -445,6 +452,15 @@ export async function POST(request: NextRequest) {
                 // Execute each tool
                 for (const call of response.functionCalls) {
                     try {
+                        if (call.name === 'updateStudyAgreement') {
+                            if (typeof body.requestId !== 'string' || !Number.isInteger(body.studyRevision) || typeof body.studyDate !== 'string') {
+                                return NextResponse.json({ response: 'Open Study check-in to review the latest agreement, then send this update there.', studyState: getStudyChatState() });
+                            }
+                            // The model selects the tool; it cannot replace the human's
+                            // message or choose the revision/request identity of a mutation.
+                            const studyState = await processStudyChatMessage({ message: lastUserText, requestId: body.requestId, revision: body.studyRevision as number, date: body.studyDate });
+                            return NextResponse.json({ response: studyState.reply || studyState.messages.at(-1)?.text || 'Study check-in saved.', studyState });
+                        }
                         const toolResult = executeTool(call.name || '', (call.args || {}) as ToolArgs, personalization);
                         const safeResponse = toRecord(toolResult);
 
@@ -456,6 +472,9 @@ export async function POST(request: NextRequest) {
                         });
                     } catch (err: unknown) {
                         const message = err instanceof Error ? err.message : String(err);
+                        if (call.name === 'updateStudyAgreement') {
+                            return NextResponse.json({ response: message, studyState: getStudyChatState() });
+                        }
                         functionResponses.push({
                             functionResponse: {
                                 name: call.name || '',

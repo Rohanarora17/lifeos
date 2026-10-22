@@ -1,3 +1,4 @@
+import { refreshStudyChatCalendar, runStudyChatAccountability } from './study-chat';
 import { getSetting, setSetting, getDb } from './db';
 import {
   sendTelegram,
@@ -19,6 +20,7 @@ import { buildPersonalizationSnapshot } from './personalization-context';
 import { composeEveningPlanningReminder } from './notifications';
 import { shouldSuppressRoutineCoaching } from './coaching-state';
 import { runCommitmentExecutionCheck } from './coaching-commitments';
+import { runEndsemAccountability } from './endsem-accountability';
 
 // ============================================================
 //  CRON SCHEDULER — Automated jobs for LifeOS
@@ -635,6 +637,13 @@ export function initScheduler(baseUrl: string = 'http://localhost:3000') {
             headers: { 'Content-Type': 'application/json' },
             body: '{}',
         });
+    });
+
+    // Endsem campaign: deterministic daily study target and persisted nudges.
+    registerIntervalJob('endsem_lock_in', 60 * 1000, async () => {
+        await refreshStudyChatCalendar();
+        runStudyChatAccountability();
+        await runEndsemAccountability();
     });
 
     // Closed-loop accountability — detect an agreed start that is five minutes

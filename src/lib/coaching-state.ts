@@ -1,3 +1,4 @@
+import { getStudyProtection } from './study-chat-store';
 import { randomUUID } from 'crypto';
 import { getDb, getSetting, setSetting } from './db';
 import { getHistoryStartDate } from './history-epoch';
@@ -482,8 +483,9 @@ export function getRecentCoachingDecisions(limit = 20): CoachingDecision[] {
 
 export function shouldSuppressRoutineCoaching(kind: string): { suppress: boolean; reason: string; state: CoachingState } {
   const state = getCoachingState();
-  const suppress = state.engagement === 'disengaged' || state.engagement === 'reconnecting' || state.engagement === 'paused';
-  const reason = suppress
+  const study = getStudyProtection();
+  const suppress = study.protected || state.engagement === 'disengaged' || state.engagement === 'reconnecting' || state.engagement === 'paused';
+  const reason = study.protected ? study.reason || 'Agreed study commitment is protected.' : suppress
     ? `${kind} suppressed while coaching state is ${state.engagement}; the coordinated recovery policy owns proactive contact.`
     : `${kind} allowed while coaching state is ${state.engagement}.`;
   if (suppress) {

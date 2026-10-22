@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 import AdaptiveBandsLoader from './AdaptiveBandsLoader';
 import LifeOSSyncProvider from './LifeOSSyncProvider';
+import EndsemLockIn from './EndsemLockIn';
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
@@ -54,6 +55,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
             )}
             <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
             <main className="min-w-0 px-4 pb-6 pt-20 sm:px-6 lg:ml-[260px] lg:pt-6">
+                {pathname !== '/login' && <EndsemLockIn expanded={pathname === '/study-plan'} />}
                 {children}
             </main>
         </div>

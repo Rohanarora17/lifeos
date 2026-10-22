@@ -67,9 +67,9 @@ if [ ! -x "$INSTALL_BIN" ] || [ "$UPDATE" -eq 1 ]; then
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.0</string>
+    <string>0.4.0</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>4</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSAppTransportSecurity</key>

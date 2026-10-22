@@ -1,3 +1,4 @@
+import { getStudyProtection } from './study-chat-store';
 import { getDb, getSetting } from './db';
 import { getHistoryStartDate } from './history-epoch';
 import { sendTelegram, type InlineKeyboard } from './telegram';
@@ -426,7 +427,7 @@ export async function runCommitmentExecutionCheck(options: {
   policy: InterventionPolicy | null;
 }> {
   const now = options.now ?? new Date();
-  if (getSetting('coaching_paused') === 'true') return { action: 'paused', commitment: null, policy: null };
+  if (getSetting('coaching_paused') === 'true' || getStudyProtection(now).protected) return { action: 'paused', commitment: null, policy: null };
   syncCommitmentSources(now);
   closeExpiredUnobservedCommitments(now);
   evaluateTimedOutMisses(now);

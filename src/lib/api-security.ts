@@ -30,6 +30,7 @@ export interface ApiAuthorization {
 }
 
 const DEVICE_PATHS = [
+    '/api/study-chat',
     '/api/daemon/ingest',
     '/api/native/ingest',
     '/api/native/classification-ask',
