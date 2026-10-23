@@ -36,7 +36,7 @@ Once conversational mode is activated by a message, the older fixed 12/16/20/22 
 
 Runtime reads the calendar configured in LifeOS, not a Codex connector. ICS sync records freshness even when a successful feed is empty. A complete paginated OAuth read can be used as fallback. Failed, stale, malformed or unsupported feeds do not establish a free day.
 
-The existing ICS parser supports a limited subset. Unsupported timezone or recurrence-set semantics are rejected for scheduling certainty; configure the supported feed or OAuth rather than treating missing events as availability. Long ongoing commitments are imported by overlap. Linked focus mirrors are deduplicated only when they represent the same interval; external moves remain protected conflicts.
+The shared ICS reader uses the existing configured feed and expands named time zones, recurring classes, excluded dates and moved/cancelled occurrences. Floating and all-day times retain LifeOS’s IST interpretation. Malformed dates, unknown time zones and unsupported RDATE/EXRULE/range-wide recurrence changes fail before any mirror updates; a failed read never establishes free time. No new Google authorization is needed for an already connected compatible ICS feed. Long ongoing commitments are imported by overlap. Linked focus mirrors are deduplicated only when they represent the same interval; external moves remain protected conflicts.
 
 The eight-hour target never shrinks to fit available time. When a confirmed window is too small, LifeOS reports the shortfall and asks which future commitment or window can change. Unconfirmed calendar/day boundaries mean unknown capacity, not a fabricated shortfall.
 

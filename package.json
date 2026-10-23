@@ -58,6 +58,7 @@
     "livekit-server-sdk": "^2.15.0",
     "next": "16.1.6",
     "node-cron": "^4.2.1",
+    "node-ical": "0.27.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "resend": "^6.9.2",

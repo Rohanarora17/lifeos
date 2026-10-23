@@ -188,17 +188,17 @@ describe('remaining study day planning', () => {
     global.fetch=async()=>new Response('',{status:503});
     assert.equal((await planner.refreshStudyCalendar(new Date())).status,'stale');
   });
-  it('fails closed before mutating the mirror for unsupported timed ICS zones', async () => {
+  it('fails closed before mutating the mirror for unknown ICS zones', async () => {
     env.setSetting('calendar_ics_url','https://example.invalid/private.ics');
     db.prepare("INSERT INTO calendar_events(id,title,start_time,end_time,synced_at) VALUES('existing','Keep current mirror','2026-10-22T10:00:00Z','2026-10-22T11:00:00Z','2026-10-22T06:00:00Z')").run();
     const before=db.prepare('SELECT * FROM calendar_events').all();
-    global.fetch=async()=>new Response('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:london\r\nSUMMARY:Probability\r\nDTSTART;TZID=Europe/London:20261022T120000\r\nDTEND;TZID=Europe/London:20261022T130000\r\nEND:VEVENT\r\nEND:VCALENDAR',{status:200});
+    global.fetch=async()=>new Response('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:london\r\nSUMMARY:Probability\r\nDTSTART;TZID=Mars/Olympus:20261022T120000\r\nDTEND;TZID=Mars/Olympus:20261022T130000\r\nEND:VEVENT\r\nEND:VCALENDAR',{status:200});
     const snapshot=await planner.refreshStudyCalendar(now);
     assert.equal(snapshot.status,'stale'); assert.equal(env.requireLib('db.ts').getSetting('calendar_ics_last_success_at'),'');
     assert.deepEqual(db.prepare('SELECT * FROM calendar_events').all(),before);
     assert.equal(run({calendar:snapshot}).sessions.length,0);
   });
-  for(const recurrence of ['RDATE:20261022T110000Z','EXDATE:20261022T110000Z','RECURRENCE-ID:20261022T110000Z']) {
+  for(const recurrence of ['RDATE:20261022T110000Z','EXRULE:FREQ=DAILY']) {
     it(`rejects unsupported ICS ${recurrence.split(':')[0]} occurrence semantics before marking fresh`, async () => {
       env.setSetting('calendar_ics_url','https://example.invalid/private.ics');
       global.fetch=async()=>new Response(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:recurring\r\nSUMMARY:Probability\r\nDTSTART:20261020T110000Z\r\nDTEND:20261020T120000Z\r\n${recurrence}\r\nEND:VEVENT\r\nEND:VCALENDAR`,{status:200});
@@ -207,16 +207,18 @@ describe('remaining study day planning', () => {
       assert.equal(run({calendar:snapshot}).sessions.length,0);
     });
   }
-  it('rejects local-time RRULE expansion rather than shifting an IST BYDAY occurrence across midnight', async () => {
+  it('expands local-time RRULE without shifting an IST BYDAY occurrence across midnight', async () => {
     env.setSetting('calendar_ics_url','https://example.invalid/private.ics');
     global.fetch=async()=>new Response('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:local-weekly\r\nSUMMARY:Probability\r\nDTSTART;TZID=Asia/Kolkata:20261020T003000\r\nDTEND;TZID=Asia/Kolkata:20261020T013000\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nEND:VEVENT\r\nEND:VCALENDAR',{status:200});
-    assert.equal((await planner.refreshStudyCalendar(now)).status,'stale');
-    assert.equal(db.prepare('SELECT COUNT(*) n FROM calendar_events').get().n,0);
+    assert.equal((await planner.refreshStudyCalendar(now)).status,'fresh');
+    const occurrences=db.prepare("SELECT start_time FROM calendar_events WHERE id LIKE 'local-weekly_%'").all();
+    assert.ok(occurrences.length);
+    assert.ok(occurrences.every(row=>{const local=new Date(Date.parse(row.start_time)+19800000);return local.getUTCDay()===2 && local.getUTCHours()===0 && local.getUTCMinutes()===30;}));
   });
   it('falls back to the complete OAuth read when ICS uses unsupported semantics', async () => {
     env.setSetting('calendar_ics_url','https://example.invalid/private.ics');
     env.setSetting('google_calendar_refresh_token','test-read-token');
-    global.fetch=async()=>new Response('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:london\r\nSUMMARY:Probability\r\nDTSTART;TZID=Europe/London:20261022T120000\r\nDTEND;TZID=Europe/London:20261022T130000\r\nEND:VEVENT\r\nEND:VCALENDAR',{status:200});
+    global.fetch=async()=>new Response('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:london\r\nSUMMARY:Probability\r\nDTSTART;TZID=Mars/Olympus:20261022T120000\r\nDTEND;TZID=Mars/Olympus:20261022T130000\r\nEND:VEVENT\r\nEND:VCALENDAR',{status:200});
     google.calendar=()=>({events:{list:async()=>({data:{items:[{id:'class',summary:'Probability',start:{dateTime:'2026-10-22T12:00:00+01:00'},end:{dateTime:'2026-10-22T13:00:00+01:00'}}]}})}});
     const snapshot=await planner.refreshStudyCalendar(now);
     assert.equal(snapshot.status,'fresh'); assert.equal(snapshot.events[0].start,'2026-10-22T11:00:00.000Z');
