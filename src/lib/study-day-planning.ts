@@ -1,3 +1,5 @@
+import { getStudyWindow } from './study-window';
+import { studyExternalCalendarEvents } from './study-chat-store';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, getSetting } from './db';
 import { syncCalendarFromICS } from './calendar';
@@ -46,11 +48,10 @@ function availableMinutes(ranges: Range[], blocked: Range[]): number {
     return sum+range.end-range.start-overlap;
   },0)/MINUTE;
 }
-function midnight(date: string): number {return Date.parse(`${date}T00:00:00+05:30`);}
 
 /** Runtime reads the app's configured calendar; no MCP dependency or event writes. */
 export async function refreshStudyCalendar(now = new Date()): Promise<StudyCalendarSnapshot> {
-  const db = getDb(), date = endsemDate(now), lower = midnight(date), upper = lower+86_400_000;
+  const db = getDb(), period=getStudyWindow(now), lower=period.start, upper=period.end;
   const icsUrl = getSetting('calendar_ics_url');
   const oauthToken = getSetting('google_calendar_refresh_token');
   const warning = 'Calendar availability is uncertain. Refresh or configure the calendar before scheduling study.';
@@ -110,24 +111,24 @@ export async function refreshStudyCalendar(now = new Date()): Promise<StudyCalen
 }
 
 export function readStudyDayPlan(now = new Date()): StudyDayPlan | null {
-  const row=getDb().prepare('SELECT plan_json FROM study_chat_days WHERE date=?').get(endsemDate(now)) as {plan_json:string|null}|undefined;
+  const row=getDb().prepare('SELECT plan_json FROM study_chat_days WHERE date=?').get(getStudyWindow(now).key) as {plan_json:string|null}|undefined;
   if(!row?.plan_json) return null;
   try {return JSON.parse(row.plan_json) as StudyDayPlan;} catch {return null;}
 }
 
 /** Rebalance remaining LifeOS-owned, unstarted work. Earned time stays in the ledger. */
 export function rebalanceStudyDay(input: {now:Date; calendar:StudyCalendarSnapshot; protectedIntervals:StudyProtectedInterval[]; subject:StudySubject; revision:number}): StudyDayPlan {
-  const db=getDb(), {now,calendar,revision}=input, date=endsemDate(now), timestamp=now.getTime();
+  const db=getDb(), {now,calendar,revision}=input, period=getStudyWindow(now), date=period.key, timestamp=now.getTime();
   return db.transaction(()=>{
     const day=db.prepare('SELECT * FROM study_chat_days WHERE date=?').get(date) as DayRow|undefined;
     if(day && revision!==day.revision) throw new Error('Study plan revision changed; refresh before applying this plan.');
     const ledger=getEndsemState(now);
     const remainingSeconds=ledger.today.remainingSeconds;
     const end=instant(day?.day_end_at), wake=instant(day?.wake_at);
-    // Even an explicit after-midnight sleep time cannot borrow tomorrow's target.
-    const endAt=Number.isFinite(end) ? new Date(Math.min(end,midnight(date)+86_400_000)).toISOString() : null;
+    // Availability never moves the target's agreed deadline.
+    const endAt=Number.isFinite(end) ? new Date(Math.min(end,period.end)).toISOString() : null;
     const plan: StudyDayPlan={date,revision,sessions:[],remainingSeconds,scheduledMinutes:0,shortfallMinutes:Math.ceil(remainingSeconds/60),anticipatedClassMinutes:0,calendarStatus:calendar.status,needsInput:null,warning:calendar.warning,endAt};
-    const rows=db.prepare('SELECT * FROM planned_focus_sessions WHERE julianday(planned_end)>julianday(?) AND julianday(planned_start)<julianday(?)').all(new Date(midnight(date)).toISOString(),new Date(midnight(date)+86_400_000).toISOString()) as SessionRow[];
+    const rows=db.prepare('SELECT * FROM planned_focus_sessions WHERE julianday(planned_end)>julianday(?) AND julianday(planned_start)<julianday(?)').all(new Date(period.start).toISOString(),new Date(period.end).toISOString()) as SessionRow[];
     const owned=(row:SessionRow)=>{
       const marker=json(row.rule_json).studyChat;
       return marker===true || (!!marker && typeof marker==='object' && (marker as {date?:string}).date===date);
@@ -144,12 +145,12 @@ export function rebalanceStudyDay(input: {now:Date; calendar:StudyCalendarSnapsh
       db.prepare('INSERT INTO study_chat_days(date,revision,plan_json) VALUES(?,?,?) ON CONFLICT(date) DO UPDATE SET plan_json=excluded.plan_json').run(date,revision,JSON.stringify(plan));
       return plan;
     };
-    if(date<ENDSEM_START || date>ENDSEM_END) {plan.needsInput='Study campaign is outside its active dates.'; return save();}
+    if(endsemDate(now)<ENDSEM_START || endsemDate(now)>ENDSEM_END) {plan.needsInput='Study campaign is outside its active dates.'; return save();}
     if(!Number.isFinite(end)) {plan.needsInput='What time does your study day end, or when will you sleep tonight?';return save();}
     if(calendar.status!=='fresh') {plan.needsInput='Calendar availability is uncertain. Refresh or configure your calendar first.';plan.warning='No new study was scheduled. Conflicting future study was cancelled; other existing sessions remain unverified until the calendar is fresh.';return save();}
     if(day?.wake_at && !Number.isFinite(wake)) {plan.needsInput='Please confirm a valid wake time.';return save();}
     const start=Math.max(timestamp,Number.isFinite(wake)?wake:timestamp);
-    const stop=Math.min(end,midnight(date)+86_400_000);
+    const stop=Math.min(end,period.end);
     const mirrored=(row:SessionRow,event:StudyCalendarEvent)=>{
       const id=row.calendar_event_id;
       return !!id && (event.id===id || event.id===`study_oauth:${id}` || (event.id.startsWith(`${id}_`) && instant(event.id.slice(id.length+1))===instant(event.start)));
@@ -162,7 +163,7 @@ export function rebalanceStudyDay(input: {now:Date; calendar:StudyCalendarSnapsh
     // still exist on the calendar on the next turn. It cannot re-block the
     // released interval; an externally moved mirror still remains protected.
     const released=rows.filter(r=>owned(r) && r.status==='cancelled' && r.invalidated_reason==='study_chat_rebalance');
-    const events=calendar.events.filter(e=>!replace.some(r=>mirrored(r,e)) && ![...kept,...released].some(r=>mirrored(r,e) && instant(e.start)===instant(r.planned_start) && instant(e.end)===instant(r.planned_end)));
+    const events=studyExternalCalendarEvents(calendar).filter(e=>!replace.some(r=>mirrored(r,e)) && ![...kept,...released].some(r=>mirrored(r,e) && instant(e.start)===instant(r.planned_start) && instant(e.end)===instant(r.planned_end)));
     const movedMirror=rows.some(r=>!replace.includes(r) && ['planned','started'].includes(r.status) && events.some(e=>mirrored(r,e) && (instant(e.start)!==instant(r.planned_start) || instant(e.end)!==instant(r.planned_end))));
     const calendarRanges=events.map(e=>({start:instant(e.start),end:instant(e.end)}));
     if([...calendarRanges,...commitments].some(r=>!Number.isFinite(r.start) || !Number.isFinite(r.end) || r.end<=r.start)) {plan.needsInput='A commitment has unknown bounds. Confirm its start and return time.';return save();}

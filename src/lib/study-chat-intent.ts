@@ -5,6 +5,7 @@ import type { PendingStudyQuestion } from './study-chat-store';
 export type StudyIntent =
  | {type:'depart';kind:StudyActivityKind;title:string;minutes?:number;until?:string;eventId?:string}
  | {type:'extend';minutes?:number;until?:string;fromNow?:boolean}
+ | {type:'skip_class';subject?:StudySubject;eventId?:string}
  | {type:'return'} | {type:'start';subject?:StudySubject}
  | {type:'propose_start';subject?:StudySubject}
  | {type:'attendance';subject?:StudySubject;eventId?:string;start?:string;end?:string}
@@ -19,6 +20,7 @@ export function validateStudyIntent(value: unknown): StudyIntent | null {
  const minutes=v.minutes===undefined || (typeof v.minutes==='number' && Number.isInteger(v.minutes) && v.minutes>0 && v.minutes<=480);
  const until=v.until===undefined || iso(v.until);
  const subject=v.subject===undefined || v.subject==='probability' || v.subject==='adsa';
+ if (v.type==='skip_class' && subject && (v.eventId===undefined || typeof v.eventId==='string'))return v as unknown as StudyIntent;
  if (v.type==='return') return {type:'return'};
  if ((v.type==='start' || v.type==='propose_start') && subject) return {type:v.type,subject:v.subject as StudySubject|undefined};
  if (v.type==='depart' && ['meal','break','class','commitment'].includes(String(v.kind)) && typeof v.title==='string' && v.title.trim().length>0 && v.title.length<=200 && minutes && until) return v as unknown as StudyIntent;
@@ -38,18 +40,27 @@ function clock(value:string,date:string):string|null {
 }
 export function fallbackStudyIntent(message:string, c:IntentContext):StudyIntent|null {
  const words:Record<string,number>={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,sixteen:16,seventeen:17,eighteen:18,nineteen:19,twenty:20,thirty:30,forty:40,fifty:50,sixty:60,ninety:90};
- const text=message.toLowerCase().trim().replace(/\b(twenty|thirty|forty|fifty|sixty)[ -](one|two|three|four|five|six|seven|eight|nine)\b/g,(_,a:string,b:string)=>String(words[a]+words[b])).replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|ninety)\b/g,w=>String(words[w])), date=c.state.date;
+ const text=message.toLowerCase().trim().replace(/\b(twenty|thirty|forty|fifty|sixty)[ -](one|two|three|four|five|six|seven|eight|nine)\b/g,(_,a:string,b:string)=>String(words[a]+words[b])).replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|ninety)\b/g,w=>String(words[w])), date=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(c.now);
  const subject:StudySubject|undefined=/\bprobability\b/.test(text)?'probability':/\badsa\b/.test(text)?'adsa':undefined;
+ if ((c.pending?.type==='skip_class' && subject) || /\b(?:skip|skipping|miss|not attend|won.t attend)\b/.test(text) && /\b(?:class|lecture|probability|adsa)\b/.test(text)){const candidates=c.calendar.events.filter(e=>(e.kind==='class'||!!e.subject)&&Date.parse(e.end)>c.now.getTime()&&(!subject||e.subject===subject));const time=/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/.exec(text);const at=time?clock(time[1],date):null;const selected=at?candidates.filter(e=>Date.parse(e.start)===Date.parse(at)||Date.parse(e.start)===Date.parse(at)+86400000):candidates;return {type:'skip_class',subject,eventId:selected.length===1?selected[0].id:undefined};}
  const duration=/(\d+)\s*(minutes?|mins?|hours?|hrs?)\b/.exec(text);
  const inferred=/\banother\s+(\d+)\s*$/.exec(text);
  const minutes=duration?Number(duration[1])*(/^h/.test(duration[2])?60:1):c.state.activity&&inferred?Number(inferred[1]):undefined;
  const untilMatch=/(?:until|back (?:at|by)|return (?:at|by))\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/.exec(text);
- const until=untilMatch?clock(untilMatch[1],date)||undefined:undefined;
+ let until=untilMatch?clock(untilMatch[1],date)||undefined:undefined;
+ if(until && c.state.window && Date.parse(until)<=c.now.getTime())until=new Date(Date.parse(until)+86400000).toISOString();
+ const sleepMatch=/(?:wake(?: up)?|awake) (?:at|by)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/.exec(text);
+ if(/\b(?:sleep|sleeping|going to bed)\b/.test(text) && !/\band\s+sleep/.test(text)){
+  let wake=sleepMatch?clock(sleepMatch[1],date):until;
+  if(wake && c.state.window && Date.parse(wake)<=c.now.getTime())wake=new Date(Date.parse(wake)+86400000).toISOString();
+  return {type:'depart',kind:'commitment',title:'Sleep',until:wake||undefined,minutes};
+ }
+ if(/\b(?:busy|appointment|errand|travel)\b/.test(text))return {type:'depart',kind:'commitment',title:'Unplanned commitment',until,minutes};
  if(c.pending?.type==='start' && /^(?:yes|yeah|ok|okay|do it|start it)[.!]?$/.test(text))return {type:'start',subject:c.pending.subject};
  if(c.pending?.type==='start' && subject && /\b(?:instead|make it|switch|rather)\b/.test(text))return {type:'propose_start',subject};
  if(/\bready to\s*study\b/.test(text))return {type:'propose_start',subject};
  const window=/wake(?:\s+up)?\s+(?:at\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+and\s+(?:sleep|end(?:\s+(?:my|the))?\s+day)\s+(?:at\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/.exec(text);
- if (window) {const wakeAt=clock(window[1],date),endAt=clock(window[2],date);return wakeAt&&endAt?{type:'window',wakeAt,endAt}:null;}
+ if (window) {const wakeAt=clock(window[1],date);let endAt=clock(window[2],date);if(wakeAt&&endAt&&c.state.window&&Date.parse(endAt)<=Date.parse(wakeAt))endAt=new Date(Date.parse(endAt)+86400000).toISOString();return wakeAt&&endAt?{type:'window',wakeAt,endAt}:null;}
  const times=/from\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+to\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/.exec(text);
  if (/\battended\b|\bwas in (?:the )?class\b/.test(text) || (c.pending?.type==='attendance' && times)) {
   const start=times?clock(times[1],date)||undefined:undefined,end=times?clock(times[2],date)||undefined:undefined;
@@ -93,7 +104,7 @@ export async function interpretStudyIntent(message:string,c:IntentContext):Promi
   const {tryGetGenAI,generateWithFallback}=await import('./ai');
   const ai=tryGetGenAI();if(!ai)return null;
   const {MODEL_PRO}=await import('./models');
-  const response=await generateWithFallback(ai,{model:MODEL_PRO,contents:JSON.stringify({instruction:'Interpret the user text into ONE JSON action or null. Never claim an action executed. Never invent times, durations, attendance, wake or sleep constraints. Types: depart(kind meal|break|class|commitment,title,minutes? or until? ISO), extend(minutes? or until?), return, start(subject? probability|adsa), attendance(subject?,eventId?,start?,end? ISO actual past attendance), window(wakeAt,endAt ISO), class_late(minutes? or until?), clarify(question). Only use dates and times explicitly supplied by user, resolving clock times in Asia/Kolkata. Pending followups use provided pending context.',message,now:c.now.toISOString(),date:c.state.date,activity:c.state.activity,pending:c.pending,events:c.calendar.events}),config:{responseMimeType:'application/json',maxOutputTokens:768}},{feature:'lockin_intent',trigger:'study-chat'});
+  const response=await generateWithFallback(ai,{model:MODEL_PRO,contents:JSON.stringify({instruction:'Interpret the user text into ONE JSON action or null. Never claim an action executed. Never invent times, durations, attendance, wake or sleep constraints. Types: skip_class(subject?,eventId?) for explicitly skipping a calendar class; depart(kind meal|break|class|commitment,title,minutes? or until? ISO), extend(minutes? or until?), return, start(subject? probability|adsa), attendance(subject?,eventId?,start?,end? ISO actual past attendance), window(wakeAt,endAt ISO), class_late(minutes? or until?), clarify(question). Only use dates and times explicitly supplied by user, resolving clock times in Asia/Kolkata. Pending followups use provided pending context.',message,now:c.now.toISOString(),date:c.state.date,activity:c.state.activity,pending:c.pending,events:c.calendar.events}),config:{responseMimeType:'application/json',maxOutputTokens:768}},{feature:'lockin_intent',trigger:'study-chat'});
   return validateStudyIntent(JSON.parse((response.text||'null').replace(/^```(?:json)?\s*|\s*```$/g,'')));
  } catch {return null;}
 }

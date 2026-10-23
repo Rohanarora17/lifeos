@@ -1,4 +1,6 @@
-import { getDb, getSetting } from './db';
+import { randomUUID } from 'node:crypto';
+import { getDb, getSetting, setSetting } from './db';
+import { getStudyWindow, studyCalendarDate } from './study-window';
 import {
   ENDSEM_START, ENDSEM_END, ENDSEM_TARGET_SECONDS, ENDSEM_TIME_ZONE,
   type EndsemDay, type EndsemState, type StudySubject,
@@ -33,6 +35,8 @@ export function getEndsemDirective(now = new Date()): string | null {
   if(date<'2026-10-21' || date>ENDSEM_END) return null;
   const config = loadConfig();
   const probabilityDone = date>'2026-11-10' || (!!config.probability_finished_at && config.probability_finished_at<=now.toISOString());
+  const period=getStudyWindow(now);
+  if(period.anchor!==null)return `ENDSEM COMMITMENT: eight hours of actual Probability/ADSA study per consecutive 24-hour window, through 13 November 2026 IST. Current window: ${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()}; no midnight reset. Probability exam: 10 November; ADSA: 13 November. ${probabilityDone?'Prioritize ADSA.':'Prioritize both exams, Probability first.'} Calendar entries are provisional commitments, not attendance evidence or immutable rules: honor explicit skips and unplanned obligations, then rebalance. Protect declared sleep and expected returns. Never infer study credit from a calendar, return message, or vague claim about studying overnight; use the ledger and explicit actual intervals. Keep the eight-hour target unchanged. ${config.paused?'Prompts are paused.':''}`;
   return `ENDSEM COMMITMENT (explicitly agreed by Rohan): 480 minutes (8 hours) of actual study every day, 22 October through 13 November 2026 inclusive, Asia/Kolkata. Probability endsem: 10 November 2026. ADSA endsem: 13 November 2026. These are the highest priorities. ${probabilityDone?'Probability is finished; ADSA is now the sole exam priority.':'Protect both subjects; Probability is the nearest exam. Do not invent exam start/end times.'} Use firm, concrete next study actions and the existing Guardian workflow. Adapt block size and breaks, but do not silently reduce the eight-hour daily target. Breaks/distractions do not count; paper logs are explicitly self-reported. Do not invent hours studied from generic activity; the Endsem counter is the source of truth. ${config.paused?'Accountability prompts are paused by the user; respect that.':''}`;
 }
 
@@ -117,31 +121,36 @@ function creditDay(spans: Span[], start: number, end: number) {
 }
 
 export function getEndsemState(now = new Date()): EndsemState {
-  const db = getDb(), config = loadConfig(), date = endsemDate(now);
+  const db = getDb(), config = loadConfig(), period = getStudyWindow(now), date = period.key, calendarDate=endsemDate(now);
   const hours = JSON.parse(config.checkpoint_hours) as number[];
   const spans = loadSpans(now);
   const responses = db.prepare('SELECT * FROM endsem_days').all() as DayRow[];
   function day(key: string): EndsemDay {
     const response = responses.find(r=>r.date===key);
     const delayResolved = response?.delay_until && spans.some(span=>span.end>Date.parse(response.delay_until!)-10*60_000 && span.start<midnight(key)+86_400_000 && span.end>midnight(key));
-    const totals = creditDay(spans,midnight(key),midnight(key)+86_400_000);
+    const anchored=period.anchor!==null && key>=studyCalendarDate(new Date(period.anchor));
+    const start = !anchored?midnight(key):period.anchor! + Math.round((midnight(key)-midnight(studyCalendarDate(new Date(period.anchor!))))/86400000)*86400000;
+    const end = Math.min(start+86400000,midnight(ENDSEM_END)+86400000);
+    const totals = creditDay(spans,start,end);
     const totalSeconds = totals.measuredSeconds+totals.selfReportedSeconds;
-    const expectedSeconds = key < date ? ENDSEM_TARGET_SECONDS : key > date ? 0 : hours.filter(h=>endsemHour(now)>=h).length*7200;
+    const expectedSeconds = anchored ? Math.min(ENDSEM_TARGET_SECONDS,Math.max(0,(now.getTime()-start)/86400000*ENDSEM_TARGET_SECONDS)) : key < date ? ENDSEM_TARGET_SECONDS : key > date ? 0 : hours.filter(h=>endsemHour(now)>=h).length*7200;
     return {date:key,...totals,totalSeconds,remainingSeconds:Math.max(0,ENDSEM_TARGET_SECONDS-totalSeconds),expectedSeconds,
-      status:key>date?'upcoming':totalSeconds>=ENDSEM_TARGET_SECONDS?'complete':key<date?'missed':totalSeconds<expectedSeconds?'behind':'on_track',
+      status:start>now.getTime()?'upcoming':totalSeconds>=ENDSEM_TARGET_SECONDS?'complete':end<=now.getTime()?'missed':totalSeconds<expectedSeconds?'behind':'on_track',
       delayUntil:delayResolved?null:response?.delay_until || null,delayCount:response?.delay_count || 0,blocker:response?.blocker || null,
       review:response?.review || null,nextStartAt:response?.next_start_at || null};
   }
   const days: EndsemDay[] = [];
-  for (let t=midnight(ENDSEM_START);t<=midnight(ENDSEM_END);t+=86_400_000) days.push(day(endsemDate(new Date(t))));
+  if(period.anchor!==null)for(let t=midnight(ENDSEM_START);t<midnight(studyCalendarDate(new Date(period.anchor)));t+=86400000)days.push(day(endsemDate(new Date(t))));
+  for (let t=period.anchor??midnight(ENDSEM_START);t<midnight(ENDSEM_END)+86400000;t+=86_400_000) days.push(day(endsemDate(new Date(t))));
   const measured = spans.filter(s=>s.measured && s.active && s.end>now.getTime()-120_000 && s.start<=now.getTime());
   const client = db.prepare('SELECT last_seen_at,screen_recording_status,capture_capable FROM native_client_status ORDER BY last_seen_at DESC LIMIT 1').get() as {last_seen_at:string; screen_recording_status:string; capture_capable:number} | undefined;
   const latest = db.prepare('SELECT message FROM endsem_events WHERE date = ? ORDER BY created_at DESC LIMIT 1').get(date) as {message:string} | undefined;
   const delivered = db.prepare('SELECT MAX(telegram_sent_at) AS at FROM endsem_events').get() as {at:string|null};
   const nextStart = responses.map(r=>r.next_start_at).filter((at):at is string=>!!at && endsemDate(new Date(at))===date).sort()[0] || null;
   return {date,timeZone:ENDSEM_TIME_ZONE,startDate:ENDSEM_START,endDate:ENDSEM_END,targetSeconds:ENDSEM_TARGET_SECONDS,
-    phase:date<ENDSEM_START?'setup':date>ENDSEM_END?'finished':'active',paused:config.paused===1,conversationalMode:config.conversational_mode===1,checkpointHours:hours,
-    nextSubject:date>'2026-11-10' || (config.probability_finished_at && config.probability_finished_at<=now.toISOString())?'adsa':'probability',
+    ...(period.anchor!==null?{window:{mode:'consecutive24' as const,startsAt:new Date(period.start).toISOString(),endsAt:new Date(period.end).toISOString()}}:{}),
+    phase:calendarDate<ENDSEM_START?'setup':calendarDate>ENDSEM_END?'finished':'active',paused:config.paused===1,conversationalMode:config.conversational_mode===1,checkpointHours:hours,
+    nextSubject:calendarDate>'2026-11-10' || (config.probability_finished_at && config.probability_finished_at<=now.toISOString())?'adsa':'probability',
     probabilityFinishedAt:config.probability_finished_at,exams:[{subject:'probability',date:'2026-11-10'},{subject:'adsa',date:'2026-11-13'}],
     today:day(date),days,activeStudy:measured.length>0,
     telegramConfigured:!!((process.env.TELEGRAM_BOT_TOKEN || getSetting('telegram_bot_token')) && (process.env.TELEGRAM_CHAT_ID || getSetting('telegram_chat_id'))),
@@ -161,6 +170,32 @@ function dateInput(value: unknown, name: string): number {
 
 export function recordEndsemAction(input: Record<string,unknown>, now = new Date()): void {
   const db = getDb(), date = endsemDate(now);
+  if (input.action==='rolling_window') {
+    if(date<ENDSEM_START || date>ENDSEM_END)throw new EndsemInputError('Study campaign is outside its active dates.');
+    const anchor=input.anchorAt?dateInput(input.anchorAt,'Window start'):now.getTime();
+    const existing=getSetting('study_window_anchor_at');
+    if(existing && Date.parse(existing)!==anchor && input.anchorAt)throw new EndsemInputError('The 24-hour anchor is already set; do not reset earned progress.');
+    const start=existing?Date.parse(existing):anchor;
+    if(start>now.getTime() || start<now.getTime()-86400000)throw new EndsemInputError('Choose the agreed window start within the last 24 hours.');
+    const wake=dateInput(input.wakeAt,'Expected wake time');
+    const end=Math.min(start+86400000,midnight(ENDSEM_END)+86400000);
+    if(wake<=now.getTime() || wake>=end)throw new EndsemInputError('The expected wake time must be after now and before this window ends.');
+    db.transaction(()=>{
+      setSetting('study_window_anchor_at',new Date(start).toISOString());
+      const key=getStudyWindow(now).key,stamp=now.toISOString();
+      db.prepare('INSERT OR IGNORE INTO study_chat_days(date) VALUES(?)').run(key);
+      db.prepare('UPDATE study_chat_days SET wake_at=?,day_end_at=?,revision=revision+1,plan_json=NULL,calendar_json=NULL WHERE date=?').run(new Date(wake).toISOString(),new Date(end).toISOString(),key);
+      const row=db.prepare('SELECT revision FROM study_chat_days WHERE date=?').get(key) as {revision:number};
+      const previous=db.prepare("SELECT id FROM study_activities WHERE date=? AND title='Sleep' AND status IN ('pending','away') ORDER BY revision DESC LIMIT 1").get(key) as {id:string}|undefined;
+      db.prepare("UPDATE study_activities SET status='returned' WHERE date=? AND status IN ('pending','away') AND id!=?").run(key,previous?.id||'');
+      if(previous)db.prepare("UPDATE study_activities SET expected_return_at=?,status='away',revision=? WHERE id=?").run(new Date(wake).toISOString(),row.revision,previous.id);
+      else db.prepare("INSERT INTO study_activities(id,date,kind,title,started_at,expected_return_at,status,revision) VALUES(?,?,'commitment','Sleep',?,?,'away',?)").run(randomUUID(),key,stamp,new Date(wake).toISOString(),row.revision);
+      db.prepare('UPDATE study_chat_prompts SET resolved_at=? WHERE date=? AND resolved_at IS NULL').run(stamp,key);
+      db.prepare('UPDATE endsem_config SET conversational_mode=1,paused=0 WHERE id=1').run();
+      const label=(at:number)=>new Date(at).toLocaleString('en-IN',{timeZone:ENDSEM_TIME_ZONE,day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+      db.prepare("INSERT OR IGNORE INTO study_chat_turns(date,role,text,request_id,created_at) VALUES(?,'assistant',?,?,?)").run(key,`Your eight-hour target now runs in consecutive 24-hour windows: ${label(start)} to ${label(end)} IST. Midnight will not reset it. Sleep is protected until ${label(wake)} IST; I will check back then. Tell me when plans change, including skipped classes or unplanned commitments, and I will rebalance.`, `rolling-window:${new Date(start).toISOString()}`,stamp);
+    })();return;
+  }
   if (input.action==='checkpoints') {
     const hours = input.hours;
     if (!Array.isArray(hours) || hours.length!==4 || hours.some((h,i)=>!Number.isInteger(h) || h<8 || h>22 || (i>0 && h<=hours[i-1]))) throw new EndsemInputError('Choose four increasing checkpoint hours between 08 and 22 IST.');
@@ -185,11 +220,11 @@ export function recordEndsemAction(input: Record<string,unknown>, now = new Date
   }
   if (date<ENDSEM_START || date>ENDSEM_END) throw new EndsemInputError('Daily actions are available from 22 October through 13 November.');
   if (input.action==='delay') {
-    db.prepare('INSERT INTO endsem_days(date,delay_until,delay_count) VALUES(?,?,1) ON CONFLICT(date) DO UPDATE SET delay_until=excluded.delay_until,delay_count=delay_count+1').run(date,new Date(now.getTime()+10*60_000).toISOString()); return;
+    db.prepare('INSERT INTO endsem_days(date,delay_until,delay_count) VALUES(?,?,1) ON CONFLICT(date) DO UPDATE SET delay_until=excluded.delay_until,delay_count=delay_count+1').run(getStudyWindow(now).key,new Date(now.getTime()+10*60_000).toISOString()); return;
   }
   if (input.action==='blocker') {
     const blocker = text(input.text,'Blocker');
-    db.prepare('INSERT INTO endsem_days(date,blocker) VALUES(?,?) ON CONFLICT(date) DO UPDATE SET blocker=excluded.blocker').run(date,blocker); return;
+    db.prepare('INSERT INTO endsem_days(date,blocker) VALUES(?,?) ON CONFLICT(date) DO UPDATE SET blocker=excluded.blocker').run(getStudyWindow(now).key,blocker); return;
   }
   if (input.action==='review') {
     const review = text(input.text,'Reflection');

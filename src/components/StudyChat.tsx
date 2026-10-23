@@ -103,6 +103,7 @@ export default function StudyChat() {
       <div><h2>Study check-in</h2><p>Tell me where you’re going, when you’ll return, or what’s stopping you.</p></div>
       {state && <span className={styles.remaining}>{studyDuration(state.remainingSeconds)} left / 8h</span>}
     </div>
+    {state?.window && <p className={styles.agreement}>Eight-hour window ends {new Date(state.window.endsAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} IST · no midnight reset</p>}
     {state?.activity && <p className={styles.agreement}>{state.activity.title}{state.activity.expectedReturnAt ? ` · return ${time(state.activity.expectedReturnAt)} IST` : ' · return time needed'}</p>}
     <div ref={conversation} className={styles.messages} role="log" aria-label="Saved study messages" aria-live="polite">
       {!state ? <p>{connectionError || 'Loading your saved conversation…'}</p> : !state.messages.length ? <p className={styles.empty}>Start with “I’m ready to study” or “I’m going for lunch.” I’ll ask for missing timings and help fit the remaining study around your day.</p> : state.messages.map(message => <div key={message.id} className={message.role === 'user' ? styles.user : styles.assistant}>

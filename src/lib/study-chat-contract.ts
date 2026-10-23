@@ -78,4 +78,5 @@ export interface StudyChatState {
   selfReportedSeconds: number;
   classSeconds: number;
   reply?: string;
+  window?: {mode:'consecutive24';startsAt:string;endsAt:string};
 }

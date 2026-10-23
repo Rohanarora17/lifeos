@@ -35,6 +35,7 @@ export interface EndsemState {
   nextSubject: StudySubject;
   probabilityFinishedAt: string | null;
   exams: Array<{subject: StudySubject; date: string}>;
+  window?: {mode: 'consecutive24'; startsAt: string; endsAt: string};
   today: EndsemDay;
   days: EndsemDay[];
   activeStudy: boolean;

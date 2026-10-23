@@ -1,10 +1,11 @@
-import { getDb } from './db';
+import { getDb, getSetting } from './db';
+import { getStudyWindow } from './study-window';
 import { endsemDate } from './endsem-study';
 import { ENDSEM_START, ENDSEM_END } from './endsem-contract';
 import type { StudyActivity, StudyChatPrompt, StudyProtectedInterval, StudyCalendarEvent } from './study-chat-contract';
 
 export interface PendingStudyQuestion {
-  type: 'return_time' | 'attendance' | 'class_end' | 'window' | 'start';
+  type: 'return_time' | 'attendance' | 'class_end' | 'window' | 'start' | 'skip_class';
   question: string;
   activityId?: string;
   event?: StudyCalendarEvent;
@@ -16,10 +17,15 @@ export interface StudyDayRow {
   wake_at: string | null; day_end_at: string | null; plan_json: string | null; calendar_json: string | null;
 }
 export function readStudyDay(now = new Date()): StudyDayRow | null {
-  return getDb().prepare('SELECT * FROM study_chat_days WHERE date = ?').get(endsemDate(now)) as StudyDayRow | undefined || null;
+  return getDb().prepare('SELECT * FROM study_chat_days WHERE date = ?').get(getStudyWindow(now).key) as StudyDayRow | undefined || null;
 }
 export function ensureStudyDay(now: Date): StudyDayRow {
-  getDb().prepare('INSERT OR IGNORE INTO study_chat_days(date) VALUES(?)').run(endsemDate(now));
+  const period=getStudyWindow(now);
+  if(period.anchor!==null){
+    const previous=getDb().prepare('SELECT pending_json,preferred_subject FROM study_chat_days WHERE date<? ORDER BY date DESC LIMIT 1').get(period.key) as Pick<StudyDayRow,'pending_json'|'preferred_subject'>|undefined;
+    getDb().prepare('INSERT OR IGNORE INTO study_chat_days(date,wake_at,day_end_at,pending_json,preferred_subject) VALUES(?,?,?,?,?)').run(period.key,new Date(period.start).toISOString(),new Date(period.end).toISOString(),previous?.pending_json||null,previous?.preferred_subject||null);
+  }
+  else getDb().prepare('INSERT OR IGNORE INTO study_chat_days(date) VALUES(?)').run(period.key);
   return readStudyDay(now)!;
 }
 export function readPendingStudyQuestion(day: StudyDayRow | null): PendingStudyQuestion | null {
@@ -27,7 +33,8 @@ export function readPendingStudyQuestion(day: StudyDayRow | null): PendingStudyQ
   try { return JSON.parse(day.pending_json) as PendingStudyQuestion; } catch { return null; }
 }
 export function readStudyActivity(now = new Date()): StudyActivity | null {
-  const row = getDb().prepare("SELECT * FROM study_activities WHERE date=? AND status IN ('pending','away') ORDER BY revision DESC LIMIT 1").get(endsemDate(now)) as {id:string;kind:StudyActivity['kind'];title:string;started_at:string;expected_return_at:string|null;status:StudyActivity['status'];revision:number;calendar_event_id:string|null} | undefined;
+  const period=getStudyWindow(now);
+  const row = getDb().prepare("SELECT * FROM study_activities WHERE (date=? OR (?=1 AND date<=?)) AND status IN ('pending','away') ORDER BY started_at DESC,revision DESC LIMIT 1").get(period.key,period.anchor!==null?1:0,period.key) as {id:string;kind:StudyActivity['kind'];title:string;started_at:string;expected_return_at:string|null;status:StudyActivity['status'];revision:number;calendar_event_id:string|null} | undefined;
   return row ? {id:row.id,kind:row.kind,title:row.title,startedAt:row.started_at,expectedReturnAt:row.expected_return_at,status:row.status,revision:row.revision,calendarEventId:row.calendar_event_id} : null;
 }
 /** Exact exported focus bounds represent the same planned study, not another
@@ -35,7 +42,8 @@ export function readStudyActivity(now = new Date()): StudyActivity | null {
 export function studyExternalCalendarEvents(calendar:{events:StudyCalendarEvent[]}):StudyCalendarEvent[] {
   const linked=getDb().prepare('SELECT calendar_event_id,planned_start,planned_end FROM planned_focus_sessions WHERE calendar_event_id IS NOT NULL').all() as Array<{calendar_event_id:string;planned_start:string;planned_end:string}>;
   const instant=(value:string)=>Date.parse(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?$/.test(value)?value.replace(' ','T')+'Z':value);
-  return calendar.events.filter(e=>!linked.some(row=>{
+  let skipped:Array<{id:string;start:string;end:string}>=[];try{skipped=JSON.parse(getSetting('study_calendar_overrides')||'[]');}catch{}
+  return calendar.events.filter(e=>!skipped.some(x=>x.id===e.id && instant(x.start)===instant(e.start) && instant(x.end)===instant(e.end))).filter(e=>!linked.some(row=>{
     const id=row.calendar_event_id;
     const exactId=e.id===id || e.id==='study_oauth:'+id || (e.id.startsWith(id+'_') && instant(e.id.slice(id.length+1))===instant(e.start));
     return exactId && instant(e.start)===instant(row.planned_start) && instant(e.end)===instant(row.planned_end);
@@ -59,12 +67,12 @@ export function studyStartWindowUsable(sessionId:string,now=new Date()):boolean 
   } catch {return false;}
 }
 export function readStudyPrompt(now = new Date()): StudyChatPrompt | null {
-  const row = getDb().prepare("SELECT p.* FROM study_chat_prompts p WHERE date=? AND resolved_at IS NULL AND (session_id IS NULL OR EXISTS (SELECT 1 FROM planned_focus_sessions s WHERE s.id=p.session_id AND s.status='planned')) ORDER BY created_at DESC,id DESC LIMIT 1").get(endsemDate(now)) as {id:string;text:string;kind:StudyChatPrompt['kind'];created_at:string;session_id:string|null}|undefined;
+  const row = getDb().prepare("SELECT p.* FROM study_chat_prompts p WHERE date=? AND resolved_at IS NULL AND (session_id IS NULL OR EXISTS (SELECT 1 FROM planned_focus_sessions s WHERE s.id=p.session_id AND s.status='planned')) ORDER BY created_at DESC,id DESC LIMIT 1").get(getStudyWindow(now).key) as {id:string;text:string;kind:StudyChatPrompt['kind'];created_at:string;session_id:string|null}|undefined;
   if(row?.kind==='start' && row.session_id && !studyStartWindowUsable(row.session_id,now))return null;
   return row ? {id:row.id,text:row.text,kind:row.kind,createdAt:row.created_at} : null;
 }
 export function studyProtectedIntervals(now = new Date()): StudyProtectedInterval[] {
-  return (getDb().prepare("SELECT id,title,started_at AS start,expected_return_at AS end,kind FROM study_activities WHERE date=? AND status IN ('pending','away') AND expected_return_at IS NOT NULL").all(endsemDate(now)) as StudyProtectedInterval[]).filter(r=>Date.parse(r.end)>now.getTime());
+  return (getDb().prepare("SELECT id,title,started_at AS start,expected_return_at AS end,kind FROM study_activities WHERE (date=? OR (julianday(expected_return_at)>julianday(?) AND julianday(started_at)<julianday(?))) AND status IN ('pending','away') AND expected_return_at IS NOT NULL").all(getStudyWindow(now).key,new Date(getStudyWindow(now).start).toISOString(),new Date(getStudyWindow(now).end).toISOString()) as StudyProtectedInterval[]).filter(r=>Date.parse(r.end)>now.getTime());
 }
 // No imports of Guardian, AI, planner or coaching: safe for their lightweight gates.
 export function getStudyProtection(now = new Date()): {protected:boolean; reason:string|null; until:string|null} {

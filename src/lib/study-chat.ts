@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { getDb } from './db';
+import { getDb, getSetting, setSetting } from './db';
+import { getStudyWindow } from './study-window';
 import { endsemDate, getEndsemState } from './endsem-study';
 import { ENDSEM_START, ENDSEM_END, STUDY_SUBJECT_LABELS } from './endsem-contract';
 import type { StudyCalendarSnapshot, StudyChatState, StudyCalendarEvent } from './study-chat-contract';
@@ -12,21 +13,21 @@ export class StudyChatError extends Error {
 }
 function timeLabel(iso:string):string {return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit'}).format(new Date(iso));}
 function prompt(kind:'return'|'overdue'|'start'|'clarification',key:string,text:string,now:Date,revision:number,activityId:string|null=null,sessionId:string|null=null) {
-  const db=getDb(),date=endsemDate(now);
+  const db=getDb(),date=getStudyWindow(now).key;
   // A prompt is superseded by a newer prompt for its agreement, not by display.
   if (db.prepare('SELECT 1 FROM study_chat_prompts WHERE prompt_key=?').get(key)) return;
   db.prepare('UPDATE study_chat_prompts SET resolved_at=? WHERE date=? AND resolved_at IS NULL').run(now.toISOString(),date);
   db.prepare('INSERT INTO study_chat_prompts(id,prompt_key,date,activity_id,session_id,revision,kind,text,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(randomUUID(),key,date,activityId,sessionId,revision,kind,text,now.toISOString());
 }
 export function getStudyChatState(now=new Date()):StudyChatState {
-  const endsem=getEndsemState(now),day=readStudyDay(now),pending=readPendingStudyQuestion(day);
+  const endsem=getEndsemState(now),day=getStudyWindow(now).anchor!==null?ensureStudyDay(now):readStudyDay(now),pending=readPendingStudyQuestion(day);
   // The first conversation can be opened without Guardian. One durable daily
   // question makes the required explicit waking constraints reachable.
   if (endsem.phase==='active' && (!day?.wake_at || !day.day_end_at) && !readStudyPrompt(now)) {
     prompt('clarification',`${endsem.date}:setup`,'What time did you wake up, and when should today’s study day end? For example: “I wake at 08:00 and sleep at 23:00”.',now,day?.revision||0);
   }
-  const messages=getDb().prepare('SELECT id,role,text,created_at AS createdAt FROM (SELECT * FROM study_chat_turns WHERE date=? ORDER BY id DESC LIMIT 100) ORDER BY id').all(endsem.date) as StudyChatState['messages'];
-  return {ok:true,date:endsem.date,revision:day?.revision||0,enabled:endsem.phase==='active',messages,
+  const messages=getDb().prepare('SELECT id,role,text,created_at AS createdAt FROM (SELECT * FROM study_chat_turns WHERE date=? OR (?=1 AND date<=?) ORDER BY id DESC LIMIT 100) ORDER BY id').all(endsem.date,endsem.window?1:0,endsem.date) as StudyChatState['messages'];
+  return {ok:true,date:endsem.date,...(endsem.window?{window:endsem.window}:{}),revision:day?.revision||0,enabled:endsem.phase==='active',messages,
     activity:readStudyActivity(now),pendingPrompt:getStudyProtection(now).protected?null:readStudyPrompt(now),pendingQuestion:pending?.question||null,plan:readStudyDayPlan(now),
     remainingSeconds:endsem.today.remainingSeconds,measuredSeconds:endsem.today.measuredSeconds,
     selfReportedSeconds:endsem.today.selfReportedSeconds-endsem.today.classSeconds,classSeconds:endsem.today.classSeconds};
@@ -55,7 +56,7 @@ function calendarIdentity(calendar:StudyCalendarSnapshot):string {
 }
 function cancelConflictingStudyBlocks(now:Date,calendar:StudyCalendarSnapshot):void {
   if(!freshCalendar(calendar,now))return;
-  const db=getDb(),date=endsemDate(now),events=studyExternalCalendarEvents(calendar);
+  const db=getDb(),date=getStudyWindow(now).key,events=studyExternalCalendarEvents(calendar);
   const rows=db.prepare("SELECT id,planned_start,planned_end,rule_json FROM planned_focus_sessions WHERE status='planned' AND julianday(planned_end)>julianday(?)").all(now.toISOString()) as Array<{id:string;planned_start:string;planned_end:string;rule_json:string}>;
   for(const row of rows) {
     let marker:unknown;try {marker=JSON.parse(row.rule_json).studyChat;} catch {continue;}
@@ -72,7 +73,7 @@ export interface StudyChatOptions {
 }
 /** Scheduler refreshes the read-only calendar independently of conversation. */
 export async function refreshStudyChatCalendar(now=new Date(),refresh=refreshStudyCalendar):Promise<void> {
-  const state=getEndsemState(now),initial=readStudyDay(now);
+  const state=getEndsemState(now),initial=state.window?ensureStudyDay(now):readStudyDay(now);
   if(state.phase!=='active' || !state.conversationalMode || !initial)return;
   let calendar:StudyCalendarSnapshot;
   try {calendar=await refresh(now);} catch {calendar={status:'stale',events:[],syncedAt:null,warning:'Calendar availability is uncertain.'};}
@@ -94,8 +95,8 @@ export async function refreshStudyChatCalendar(now=new Date(),refresh=refreshStu
 }
 export async function processStudyChatMessage(input:{message:unknown;requestId:unknown;revision:unknown;date:unknown},options:StudyChatOptions={}):Promise<StudyChatState> {
   if (typeof input.message!=='string' || !input.message.trim() || input.message.trim().length>2000 || typeof input.requestId!=='string' || !/^[\w.:-]{1,150}$/.test(input.requestId) || !Number.isInteger(input.revision) || Number(input.revision)<0) throw new StudyChatError('Send a message up to 2000 characters, a request ID and a nonnegative revision.');
-  const now=options.now||new Date(),date=endsemDate(now),message=input.message.trim(),requestId=input.requestId,revision=Number(input.revision),db=getDb();
-  if (date<ENDSEM_START || date>ENDSEM_END) throw new StudyChatError('Study chat agreements are available from 22 October through 13 November 2026.');
+  const now=options.now||new Date(),date=getStudyWindow(now).key,message=input.message.trim(),requestId=input.requestId,revision=Number(input.revision),db=getDb();
+  if (endsemDate(now)<ENDSEM_START || endsemDate(now)>ENDSEM_END) throw new StudyChatError('Study chat agreements are available from 22 October through 13 November 2026.');
   if (input.date!==date) throw new StudyChatError('The study day changed. Review today’s state before sending this update.',409);
   const fingerprint=createHash('sha256').update(JSON.stringify({date,message,revision})).digest('hex');
   function existingReply():string|null {
@@ -129,16 +130,30 @@ export async function processStudyChatMessage(input:{message:unknown;requestId:u
     const setReturn=(value:{minutes?:number;until?:string},base:number):string|null=>{
       const at=value.until?Date.parse(value.until):value.minutes?base+value.minutes*60_000:NaN;
       if(!Number.isFinite(at))return null;
-      if(at<=now.getTime() || endsemDate(new Date(at))!==date || at-now.getTime()>12*60*60_000) throw new StudyChatError('Agree a future return time today, within twelve hours.');
+      if(at<=now.getTime() || (getStudyWindow(now).anchor===null && endsemDate(new Date(at))!==date) || at-now.getTime()>(getStudyWindow(now).anchor!==null?24:12)*60*60_000) throw new StudyChatError(getStudyWindow(now).anchor!==null?'Agree a future return within the next 24 hours.':'Agree a future return time today, within twelve hours.');
       return new Date(at).toISOString();
     };
-    if(intent?.type==='window') {
+    if(intent?.type==='skip_class') {
+      const events=calendar.events.filter(e=>(e.kind==='class' || !!e.subject) && Date.parse(e.end)>now.getTime() && (!intent.subject || e.subject===intent.subject) && (!intent.eventId || e.id===intent.eventId));
+      if(events.length!==1){text=`Which calendar class should I skip? ${events.map(e=>e.title+' at '+timeLabel(e.start)+' IST').join('; ') || 'Name its subject and occurrence.'}`;question={type:'skip_class',subject:intent.subject,question:text};}
+      else {
+        let skipped:Array<{id:string;start:string;end:string}>=[];try{skipped=JSON.parse(getSetting('study_calendar_overrides')||'[]');}catch{}
+        const event=events[0];skipped=skipped.filter(e=>e.id!==event.id);skipped.push({id:event.id,start:event.start,end:event.end});
+        setSetting('study_calendar_overrides',JSON.stringify(skipped.slice(-100)));
+        if(activity?.calendarEventId===event.id)db.prepare("UPDATE study_activities SET status='cancelled',revision=? WHERE id=?").run(next,activity.id);
+        text=`Saved that you are skipping ${event.title}. I removed that occurrence from study protection and rebalanced the remaining goal. No attendance credit or external calendar change was made.`;replan=true;question=null;
+      }
+    } else if(intent?.type==='window') {
       const wake=Date.parse(intent.wakeAt),end=Date.parse(intent.endAt);
-      if(endsemDate(new Date(wake))!==date || endsemDate(new Date(end))!==date || end<=wake || end<=now.getTime()) throw new StudyChatError('Give today’s wake and study end times, with the end after now and after waking.');
+      if(wake<getStudyWindow(now).start || end>getStudyWindow(now).end || end<=wake || end<=now.getTime()) throw new StudyChatError('Give today’s wake and study end times, with the end after now and after waking.');
       db.prepare('UPDATE study_chat_days SET wake_at=?,day_end_at=? WHERE date=?').run(new Date(wake).toISOString(),new Date(end).toISOString(),date);
       text=`Saved today’s waking/study window, ${timeLabel(intent.wakeAt)}–${timeLabel(intent.endAt)} IST. The target remains eight hours.`;question=null;replan=true;
     } else if(intent?.type==='depart') {
       const until=setReturn(intent,now.getTime()),id=randomUUID();
+      if(activity)db.prepare("UPDATE study_activities SET status='cancelled' WHERE id=?").run(activity.id);
+      if(getStudyWindow(now).anchor!==null && activity?.title.toLowerCase()==='sleep' && intent.title.toLowerCase()!=='sleep')db.prepare('UPDATE study_chat_days SET wake_at=? WHERE date=?').run(now.toISOString(),date);
+      if(getStudyWindow(now).anchor!==null && intent.title.toLowerCase()==='sleep' && until)db.prepare('UPDATE study_chat_days SET wake_at=? WHERE date=?').run(until,date);
+      if(intent.kind==='class' && intent.eventId){let skipped:Array<{id:string}>=[];try{skipped=JSON.parse(getSetting('study_calendar_overrides')||'[]');}catch{}setSetting('study_calendar_overrides',JSON.stringify(skipped.filter(e=>e.id!==intent.eventId)));}
       db.prepare("UPDATE study_activities SET status='cancelled' WHERE date=? AND status IN ('pending','away')").run(date);
       db.prepare('INSERT INTO study_activities(id,date,kind,title,started_at,expected_return_at,status,revision,calendar_event_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id,date,intent.kind,intent.title,now.toISOString(),until,until?'away':'pending',next,intent.eventId||null);
       lifecycle=()=>{const session=guardian?.getActiveGuardianSession();return session?.state==='ACTIVE' && guardian?.pauseGuardianSession(session.sessionId)?' Guardian is paused.':'';};
@@ -185,6 +200,7 @@ export async function processStudyChatMessage(input:{message:unknown;requestId:u
       }
     } else if(intent?.type==='return') {
       if(activity) db.prepare("UPDATE study_activities SET status='returned',revision=? WHERE id=?").run(next,activity.id);
+      if(getStudyWindow(now).anchor!==null && activity?.title.toLowerCase()==='sleep')db.prepare('UPDATE study_chat_days SET wake_at=? WHERE date=?').run(now.toISOString(),date);
       const subject=day.preferred_subject||getEndsemState(now).nextSubject;
       question={type:'start',subject,question:`Ready to start ${STUDY_SUBJECT_LABELS[subject]}? Reply yes, choose another subject, or tell me about your next commitment.`};
       text=`Saved your return. ${question.question} A return alone does not earn study credit.`;replan=true;
@@ -253,7 +269,8 @@ export async function processStudyChatMessage(input:{message:unknown;requestId:u
       else if(!intent.start || !intent.end) {question={type:'attendance',event,question:`For ${event.title}, what actual start and end times did you attend? Reply “from 10:00 to 11:00” (IST).`};text=question.question;}
       else {
         const start=Date.parse(intent.start),end=Date.parse(intent.end),subject=event.subject;
-        if(!subject || end<=start || end>now.getTime() || end-start>12*60*60_000 || endsemDate(new Date(start))!==date || endsemDate(new Date(end))!==date || start>=Date.parse(event.end) || end<=Date.parse(event.start)) throw new StudyChatError('Confirm an actual past interval today overlapping that relevant class, with end after start (up to twelve hours).');
+        const period=getStudyWindow(now),withinPeriod=period.anchor!==null?start>=period.start && end<=period.end:endsemDate(new Date(start))===date && endsemDate(new Date(end))===date;
+        if(!subject || end<=start || end>now.getTime() || end-start>12*60*60_000 || !withinPeriod || start>=Date.parse(event.end) || end<=Date.parse(event.start)) throw new StudyChatError('Confirm an actual past interval within this study window overlapping that relevant class, with end after start (up to twelve hours).');
         const late=db.prepare("SELECT MAX(expected_return_at) AS end FROM study_activities WHERE calendar_event_id=? AND kind='class'").get(event.id) as {end:string|null};
         if(start<Date.parse(event.start) || end>Math.max(Date.parse(event.end),Date.parse(late.end||event.end))) {
           question={type:'attendance',event,question:`Those actual times fall outside the scheduled ${event.title} bounds. Confirm a class-running-late agreement first, or give the attended interval within ${timeLabel(event.start)}–${timeLabel(event.end)} IST.`};text=question.question;

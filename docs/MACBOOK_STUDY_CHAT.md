@@ -1,12 +1,12 @@
 # MacBook study conversation
 
-The approved Endsem commitment is eight hours daily from **22 October through 13 November 2026**, in Asia/Kolkata. Probability is on **10 November** and ADSA on **13 November**. The Mac conversation and the web Study check-in share saved agreements and the same study ledger.
+The Endsem commitment is eight hours of actual study per **consecutive 24-hour window**, through **13 November 2026**, in Asia/Kolkata. This follows the user’s 23 October change from calendar days. The saved anchor stays fixed; midnight does not reset credit or extend the deadline. The last window ends at campaign expiry, and any capacity shortfall remains visible. Probability is on **10 November** and ADSA on **13 November**. The Mac conversation and the web Study check-in share saved agreements and the same study ledger.
 
 ## Use
 
 Open **LifeOS → Study Chat** from the Mac menu. The web equivalent is in **Study Plans**, or **Jarvis → Study check-in**. No active Guardian session or microphone is required to chat. Measuring computer study still requires the existing collector readiness and Screen Recording permission.
 
-Start by stating today's waking and study-end times, for example `I wake at 08:00 and sleep at 23:00`. These are examples, not preset meal or sleep times. The app asks for missing constraints rather than assuming them.
+The activated window has its own deadline. Tell LifeOS about sleep, meals and commitments as plans change; for example `Going to sleep, wake by 8pm` or `Busy for 45 minutes`. On 23 October, the user’s declared sleep is protected until 8pm IST. Future sleep is declared through the same chat rather than inferred from dates. The app asks for missing return times.
 
 | You say | LifeOS saves or asks |
 | --- | --- |
@@ -16,15 +16,18 @@ Start by stating today's waking and study-end times, for example `I wake at 08:0
 | `I'm back` | Closes the absence and proposes the next study start |
 | `Make it ADSA instead` then `yes` | Changes the pending subject, then requests the actual Guardian start |
 | `My ADSA class is running late` | Resolves the class and asks for its revised end if missing |
+| `I am skipping Probability class` | Excludes that occurrence from local planning; asks which one if ambiguous, without modifying the external calendar |
+| `Busy for 45 minutes` | Adds an off-calendar commitment and rebalances |
+| `Going to sleep, wake by 8am` | Protects declared sleep, including across midnight or a window boundary |
 | `I attended Probability from 11:00 to 11:30` | Confirms a known occurrence and actual past attendance interval |
 
 An ordinary reply, a scheduled class, opening chat, or returning from lunch earns zero study time. Measured evidence, self-reported paper study and confirmed self-reported class attendance are distinguished. Overlap counts once. Anticipated future class minutes affect planning capacity but do not increase earned time.
 
-Replanning changes future unstarted LifeOS study blocks around calendar commitments and declared breaks. Existing completed, active and other manually planned work is preserved. If a manual session conflicts, LifeOS asks for resolution. Internal replanning does not silently write to Google Calendar. An explicit Guardian start retains that existing workflow's session behavior.
+Calendar entries are provisional commitments, not hard rules or attendance evidence. Explicit skipped classes are stored by occurrence and exact bounds; a moved occurrence is reconsidered. Replanning changes future unstarted LifeOS study blocks around the remaining calendar commitments and declared breaks. Existing completed, active and other manually planned work is preserved. If a manual session conflicts, LifeOS asks for resolution. Internal replanning does not silently write to Google Calendar. An explicit Guardian start retains that existing workflow's session behavior.
 
 ## Follow-through
 
-The native panel presents an agreed return at its deadline, permits five minutes of grace, then repeats overdue follow-up at most every ten minutes during the explicit waking window. It retains the original departure and latest agreement. Missing return time receives a follow-up rather than indefinite protection. Calendar commitments and agreed sleep suppress conflicting attention.
+The native panel presents an agreed return at its deadline, permits five minutes of grace, then repeats overdue follow-up at most every ten minutes during the available part of the study window. Unresolved absences and saved conversation carry across the next 24-hour boundary; only earned time resets into a new target. It retains the original departure and latest agreement. Missing return time receives a follow-up rather than indefinite protection. Calendar commitments and agreed sleep suppress conflicting attention.
 
 Existing presence checks have priority, followed by classification prompts, then queued study prompts. Proactive study presentation does not activate the application or steal typing focus. Click the composer or open Study Chat from the menu to type. Minimizing or closing hides the panel without resolving an agreement. Drafts, pending requests and saved conversation survive polling and reopening.
 
@@ -58,7 +61,7 @@ The client version is **0.4.0**, build **4**. It uses the existing scoped device
 Use isolated databases for test mutations; do not run reset/fixture scripts against real study history.
 
 ```sh
-node --test tests/unit/study-chat*.test.cjs tests/unit/study-day-planning.test.cjs tests/unit/endsem-*.test.cjs tests/unit/jarvis-study-chat.test.cjs
+node --test tests/unit/study-chat*.test.cjs tests/unit/study-window.test.cjs tests/unit/study-day-planning.test.cjs tests/unit/endsem-*.test.cjs tests/unit/jarvis-study-chat.test.cjs
 npm test
 npx tsc --noEmit --pretty false
 npx eslint src/lib/study-*.ts src/lib/endsem*.ts src/app/api/study-chat/route.ts src/app/api/chat/route.ts src/components/StudyChat.tsx src/components/EndsemLockIn.tsx src/app/chat/page.tsx
@@ -70,6 +73,6 @@ SWIFT_MODULECACHE_PATH=/tmp/lifeos-study-chat-modules CLANG_MODULE_CACHE_PATH=/t
 
 The bounded `--study-chat-preview` diagnostic uses the actual AppKit panel with a loopback fixture, without the collectors, saved preferences or permission requests. Reproduction commands are in the implementation reports. It exercises window focus, prompt priority, polling, drafts and reopening; it does not prove real comprehension, attendance, or production capture quality.
 
-Verified on 23 October 2026: **350/350 unit tests**, production build, TypeScript, scoped ESLint and **11 native core checks** passed. Earlier native release compilation and **9 AppKit checks** passed, including the panel against an isolated local LifeOS server. The final built server also accepted scoped-device lunch check-ins and an idempotent retry without Guardian or earned study credit.
+The Mac Mini and installed MacBook client were updated on 23 October. Live readiness confirmed client 0.4.0 with authorized Screen Recording and capture capability. Calendar sync reuses the existing connected feed; no new Google authorization or calendar event writes were needed. Native verification included 11 core checks and 9 AppKit checks. The server accepted scoped-device conversation and idempotent retry without invented study credit.
 
-The approved plan records the detailed evidence and limits. Production activation and a short acceptance check while another application is being typed in remain pending. The code is implemented locally; the Mac Mini server and installed MacBook client have not been updated.
+The 24-hour follow-up adds regressions for midnight credit, next-window absence retention, sleep carry and early return, attended classes after midnight, skipped classes, and preserving the anchor. See the approved implementation plan and local activation report for exact release verification. No iPhone or OS-lock enforcement is included.

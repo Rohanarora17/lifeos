@@ -91,3 +91,10 @@ Fresh parent checks on the final source:
 Parent logs: `/tmp/lifeos-study-chat-completion-tests.log`, `/tmp/lifeos-study-chat-completion-build.log`, `/tmp/lifeos-study-chat-completion-types.log`, `/tmp/lifeos-study-chat-completion-lint.log`, `/tmp/lifeos-study-chat-completion-native.log`. Review/fix evidence is retained under `.superpowers/sdd/2026-10-22-macbook-study-chat/`.
 
 Pending operational work: deploy the reviewed source through the existing backed-up Mac Mini deployment path, update the intended MacBook client with `bash scripts/install-native-copilot.sh --update`, then check live calendar freshness, a normal conversation and collector readiness. Local code has not changed either running installation. No unresolved product/architecture choice remains for this delivery; iPhone and OS-lock enforcement remain deferred. No commits or pushes were made; unrelated working changes remain intact. See `docs/MACBOOK_STUDY_CHAT.md` for continuation commands.
+
+
+## Activation and 24-hour update — 23 October 2026
+
+Production and client 0.4.0/build4 are updated; live Screen Recording/capture readiness was verified after user reauthorization. Existing calendar feed compatibility repair deployed at dc057539c6a69be28fe5efb1d52d6b6c139f059d, preserving newer upstream work and remote staged service wrappers.
+
+User explicitly requested a fixed-anchor consecutive 24-hour target, flexible calendar skips, off-calendar commitments, and sleep until 8pm IST. Parent implements and verifies this continuation without additional subagents. The 24-hour anchor comes from the persisted activation request; no fabricated study is credited and no calendar events are changed. Seven focused boundary regressions cover the new behavior. Full release verification and exact deployment details are recorded in the activation report.
