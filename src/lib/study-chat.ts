@@ -238,7 +238,7 @@ export async function processStudyChatMessage(input:{message:unknown;requestId:u
               if(!freshCalendar(calendar,now) || !current?.wake_at || !current?.day_end_at)return ' Guardian has not started: calendar availability and today’s waking/study window must be confirmed first.';
               if(now.getTime()<Date.parse(current.wake_at) || now.getTime()>=Date.parse(current.day_end_at))return ' Guardian has not started: now is outside the agreed waking/study window. Confirm a window change first.';
               if(!session && !block)return ' Guardian has not started: no concrete planned study block is available now. Review or change the current plan first.';
-              const minutes=Math.min(block?Math.floor((Date.parse(block.end)-now.getTime())/60_000):50,available,Math.ceil(getEndsemState(now).today.remainingSeconds/60));
+              const minutes=Math.min(block?Math.floor((Date.parse(block.end)-now.getTime())/60_000):50,available,Math.max(5,Math.ceil(getEndsemState(now).today.remainingSeconds/60)));
               if(minutes<5)return ' Guardian has not started: fewer than five study minutes fit before the next commitment or day end. Which window should change?';
               const remainingSessionMinutes=session?Math.ceil((session.endsAt-(session.pausedAt??now.getTime()))/60_000):0;
               if(session && remainingSessionMinutes>available)return ' Guardian has not resumed: its remaining duration overlaps a commitment. Open Guardian to adjust the block.';

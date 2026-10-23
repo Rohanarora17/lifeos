@@ -55,3 +55,11 @@ it('retains pre-transition history and stores after-midnight blockers against th
  const now=new Date('2026-10-23T20:00:00Z');s.recordEndsemAction({action:'blocker',text:'Stuck on recurrence proof'},now);
  const state=s.getEndsemState(now);assert.equal(state.days.find(d=>d.date==='2026-10-22').totalSeconds,3600);assert.equal(state.today.totalSeconds,0);assert.equal(state.today.blocker,'Stuck on recurrence proof');
 });
+it('does not count fragments that are too short for Guardian to start',t=>{
+ const e=createIsolatedDb('lifeos-rolling-fragment-');e.requireLib('endsem-study.ts').recordEndsemAction({action:'rolling_window',wakeAt:wake},anchor);
+ const now=new Date(wake),end='2026-10-23T15:00:00Z';
+ const planner=e.requireLib('study-day-planning.ts'),input={now,calendar:{status:'fresh',events:[{id:'busy',title:'Commitment',kind:'commitment',start:end,end:'2026-10-23T16:00:00Z'}],syncedAt:now.toISOString(),warning:null},protectedIntervals:[],subject:'probability',revision:1};
+ planner.rebalanceStudyDay(input);e.db.prepare("UPDATE planned_focus_sessions SET rule_json=json_set(rule_json,'$.preferredMinutes',20)").run();
+ const plan=planner.rebalanceStudyDay(input);
+ assert.ok(plan.sessions.every(s=>s.durationMinutes>=5));assert.ok(plan.scheduledMinutes>=480);assert.equal(plan.shortfallMinutes,0);
+});

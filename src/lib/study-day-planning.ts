@@ -204,8 +204,15 @@ export function rebalanceStudyDay(input: {now:Date; calendar:StudyCalendarSnapsh
     let nextStart=start;
     for(const window of windows) {
       let position=Math.max(window.start,nextStart);
-      while(needed>0 && position+MINUTE<=window.end) {
-        const duration=Math.min(preferred,needed,Math.floor((window.end-position)/MINUTE));
+      // Guardian starts require at least five available minutes. Do not count
+      // tiny calendar gaps as capacity; a final partial target can use a full
+      // five-minute block without inventing earned credit.
+      while(needed>0 && position+5*MINUTE<=window.end) {
+        let duration=Math.min(preferred,Math.max(5,needed),Math.floor((window.end-position)/MINUTE));
+        // Leave a startable final block instead of rounding an otherwise exact
+        // target up because the preferred block would leave 1–4 minutes.
+        const tail=needed-duration;
+        if(tail>0 && tail<5 && duration-(5-tail)>=5)duration-=5-tail;
         const model=replace.find(r=>subjectOf(r.title)===subject);
         const id=`study_chat_${randomUUID()}`;
         const session:StudyDaySession={id,title:model?.title || `${STUDY_SUBJECT_LABELS[subject]} — Endsem study`,subject,start:new Date(position).toISOString(),end:new Date(position+duration*MINUTE).toISOString(),durationMinutes:duration,status:'planned'};
